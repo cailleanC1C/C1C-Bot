@@ -20,18 +20,23 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip && pip install -r /app/requirements.txt
 
 # Copy the rest
-COPY . /app
+COPY --chown=appuser:appuser . /app
 ENV PYTHONPATH="/app:${PYTHONPATH}"
 
 # Register the internal CoreOps package
 RUN pip install -e packages/c1c-coreops \
  && python -c "import c1c_coreops; print('c1c_coreops import OK')"
 
+RUN chown -R appuser:appuser /app
+
 # Expose the health server port (Render sets $PORT; this is just doc)
 EXPOSE 10000
 
 # Use tini as init to reap zombies
 ENTRYPOINT ["/usr/bin/tini","--"]
+
+# Run as non-root
+USER appuser
 
 # Start the bot; ensure your app.py binds health server to $PORT (Render provides it)
 CMD ["python","app.py"]

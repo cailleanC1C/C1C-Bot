@@ -4,6 +4,7 @@ import asyncio
 import datetime as dt
 import logging
 import os
+import signal
 import time
 from typing import Optional
 
@@ -44,6 +45,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("c1c.app")
 
+LOG_MESSAGE_CONTENT_MAX_LEN = 200
+
 INTENTS = discord.Intents.default()
 INTENTS.message_content = True
 INTENTS.members = True
@@ -62,6 +65,36 @@ bot = commands.Bot(
 bot.remove_command("help")
 
 runtime = Runtime(bot)
+_shutdown_lock: asyncio.Lock | None = None
+_shutdown_started = False
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+LOG_MESSAGE_CONTENT = _env_bool("LOG_MESSAGE_CONTENT", False)
+
+
+def _truncate_text(text: str, max_len: int = LOG_MESSAGE_CONTENT_MAX_LEN) -> str:
+    if len(text) <= max_len:
+        return text
+    if max_len <= 1:
+        return text[:max_len]
+    return f"{text[: max_len - 1]}…"
+
+
+def _safe_logged_message_content(content: str) -> str:
+    sanitized = sanitize_text(content)
+    return _truncate_text(str(sanitized), LOG_MESSAGE_CONTENT_MAX_LEN)
 
 
 def _can_dispatch_bare_coreops(member: discord.abc.User | discord.Member | None) -> bool:
@@ -313,14 +346,30 @@ async def on_message(message: discord.Message):
     if await _maybe_capture_onboarding_answer(message):
         return
 
-    log.info(
-        "seen msg: guild=%s chan=%s content=%r",
+    content = message.content or ""
+    attachments_count = len(getattr(message, "attachments", []) or [])
+    base_fields = (
         getattr(message.guild, "id", None),
         getattr(message.channel, "id", None),
-        message.content,
+        getattr(message, "id", None),
+        getattr(getattr(message, "author", None), "id", None),
+        len(content),
+        attachments_count,
     )
+    if LOG_MESSAGE_CONTENT:
+        safe_content = _safe_logged_message_content(content)
+        log.info(
+            "seen msg: guild=%s chan=%s msg=%s author=%s content_len=%s attachments=%s content=%r",
+            *base_fields,
+            safe_content,
+        )
+    else:
+        log.info(
+            "seen msg: guild=%s chan=%s msg=%s author=%s content_len=%s attachments=%s",
+            *base_fields,
+        )
 
-    content = (message.content or "").strip()
+    content = content.strip()
 
     mention_invocation = _extract_mention_invocation(message)
     if mention_invocation:
@@ -430,9 +479,39 @@ async def main() -> None:
     if not token:
         raise RuntimeError("DISCORD_TOKEN not set")
     try:
+        loop = asyncio.get_running_loop()
+        global _shutdown_lock
+        _shutdown_lock = asyncio.Lock()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(
+                    sig, lambda s=sig: asyncio.create_task(_shutdown(f"signal:{s.name}"))
+                )
+            except NotImplementedError:
+                log.warning("Signal handlers not supported", extra={"signal": sig.name})
         await runtime.start(token)
     finally:
+        await _shutdown("runtime_exit")
+
+
+async def _shutdown(reason: str) -> None:
+    global _shutdown_started, _shutdown_lock
+    if _shutdown_lock is None:
+        _shutdown_lock = asyncio.Lock()
+    async with _shutdown_lock:
+        if _shutdown_started:
+            return
+        _shutdown_started = True
+    log.info("Shutdown requested", extra={"reason": reason})
+    try:
+        if not bot.is_closed():
+            await bot.close()
+    except Exception:
+        log.exception("Bot shutdown failed")
+    try:
         await runtime.close()
+    except Exception:
+        log.exception("Runtime shutdown failed")
 
 
 if __name__ == "__main__":
