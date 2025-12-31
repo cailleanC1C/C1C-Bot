@@ -92,9 +92,9 @@ def test_env_overview_grouping(monkeypatch, bot):
 
     assert len(embeds) == 4
     assert [field.name for field in embeds[1].fields][:3] == [
-        "CHANNELS",
-        "THREADS",
-        "OTHER",
+        "Channels",
+        "Threads",
+        "Other",
     ]
 
     channels_value = "\n".join(field.value for field in embeds[1].fields)
@@ -104,7 +104,7 @@ def test_env_overview_grouping(monkeypatch, bot):
     assert "ROLEMAP_CHANNEL_ID" not in roles_value
 
     sheet_fields = [field.name for field in embeds[3].fields]
-    assert sheet_fields[:3] == ["SHEETS", "TABS", "CONFIG"]
+    assert sheet_fields[:3] == ["Sheets", "Tabs", "Config"]
     assert "Warnings" not in [field.name for field in embeds[0].fields]
     assert warnings == []
 
@@ -215,7 +215,7 @@ def test_env_overview_splits_large_pages(monkeypatch, bot):
     assert len(embeds) >= 4
     total = len(embeds)
     expected_titles = [
-        f"TestBot — env: dev — Page {page}/{total}" for page in range(1, total + 1)
+        f"TestBot · env: dev · Page {page}/{total}" for page in range(1, total + 1)
     ]
     assert [embed.title for embed in embeds] == expected_titles
     for index, embed in enumerate(embeds, start=1):
@@ -270,7 +270,7 @@ def test_env_overview_no_split_renumbers(monkeypatch, bot):
 
     assert len(embeds) == 4
     expected_titles = [
-        f"TestBot — env: dev — Page {page}/4" for page in range(1, len(embeds) + 1)
+        f"TestBot · env: dev · Page {page}/4" for page in range(1, len(embeds) + 1)
     ]
     assert [embed.title for embed in embeds] == expected_titles
     for index, embed in enumerate(embeds, start=1):

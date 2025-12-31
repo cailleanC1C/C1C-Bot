@@ -7,7 +7,6 @@ from c1c_coreops.cog import (
     CoreOpsCog,
     _EnvEntry,
     _MAX_EMBED_LENGTH,
-    _ZERO_WIDTH_SPACE,
     _chunk_field_lines,
     _embed_length,
 )
@@ -21,10 +20,9 @@ def test_chunk_field_lines_single_chunk():
     assert len(chunks) == 1
     name, value = chunks[0]
     assert name == "CHANNELS"
-    assert value.startswith("```ini\n")
     for line in lines:
         assert line in value
-    assert value.rstrip().endswith("```")
+    assert value == "\n".join(lines)
 
 
 def test_chunk_field_lines_multiple_chunks():
@@ -33,15 +31,12 @@ def test_chunk_field_lines_multiple_chunks():
     chunks = _chunk_field_lines("CHANNELS", lines, soft_limit=50)
 
     assert len(chunks) > 1
-    first_label, first_value = chunks[0]
-    continuation_labels = {label for label, _ in chunks[1:]}
-    assert first_label == "CHANNELS"
-    assert continuation_labels == {_ZERO_WIDTH_SPACE}
-    assert first_value.startswith("```ini") and first_value.rstrip().endswith("```")
+    total = len(chunks)
+    expected_labels = [f"CHANNELS ({idx}/{total})" for idx in range(1, total + 1)]
+    assert [label for label, _ in chunks] == expected_labels
     reconstructed = []
     for _, value in chunks:
-        body = value.removeprefix("```ini\n").removesuffix("\n```")
-        reconstructed.extend(body.split("\n"))
+        reconstructed.extend(value.split("\n"))
     assert reconstructed == lines
 
 
@@ -54,7 +49,8 @@ def test_env_embeds_chunk_large_fields(monkeypatch):
     monkeypatch.setattr("c1c_coreops.cog.get_feature_toggles", lambda: {})
 
     def simple_line(key, entry, warnings, warning_keys, *, treat_ids=True):
-        return [f"{key} = {entry.display if entry else '—'}"]
+        value = entry.display if entry else "—"
+        return [f"**{key}**", f"  {value}"]
 
     monkeypatch.setattr(cog, "_format_entry_lines", simple_line)
 
@@ -121,10 +117,9 @@ def test_env_embeds_chunk_large_fields(monkeypatch):
     assert not warnings
     assert not warning_keys
     assert len(embeds) >= 4
-    assert any(field.name == _ZERO_WIDTH_SPACE for embed in embeds for field in embed.fields)
+    assert any("Channels (" in field.name for embed in embeds for field in embed.fields)
     for page, embed in enumerate(embeds, start=1):
         assert f"Page {page}/{len(embeds)}" in embed.title
         assert _embed_length(embed) <= _MAX_EMBED_LENGTH
         for field in embed.fields:
-            assert len(str(field.value)) < 3000
-
+            assert len(str(field.value)) <= 900
