@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 
 import discord
 from discord.ext import commands
 
 from c1c_coreops.helpers import help_metadata, tier
+from c1c_coreops.help import build_coreops_footer
 from c1c_coreops.rbac import admin_only
 from modules.common import feature_flags, runtime as runtime_helpers
 from modules.common.logs import channel_label
-from shared.theme import colors
 from modules.ops import cluster_role_map, server_map
 from shared.config import get_who_we_are_channel_id
 from shared.sheets import recruitment as recruitment_sheet
@@ -20,36 +21,91 @@ from shared.sheets import recruitment as recruitment_sheet
 
 log = logging.getLogger(__name__)
 
+CACHE_REFRESH_JOBS = {
+    "cache_refresh:clans",
+    "cache_refresh:templates",
+    "cache_refresh:clan_tags",
+    "cache_refresh:onboarding_questions",
+}
+RECRUITMENT_JOBS = {
+    "onboarding_idle_watcher",
+    "welcome_incomplete_scan",
+}
+HOUSEKEEPING_JOBS = {
+    "server_map_refresh",
+    "cleanup_watcher",
+    "housekeeping_keepalive",
+}
+GROUP_ORDER = ("Cache Refresh", "recruitment", "housekeeping", "other")
+
 
 def _format_interval_label(delta: timedelta) -> str:
     seconds = int(delta.total_seconds())
     if seconds % 3600 == 0:
-        hours = seconds // 3600
-        return f"every {hours} hr" if hours == 1 else f"every {hours} hrs"
-    if seconds % 60 == 0:
-        minutes = seconds // 60
-        return f"every {minutes} min"
-    return f"every {seconds} sec"
+        hours = max(1, seconds // 3600)
+        return f"every {hours} hrs"
+    minutes = max(1, int(round(seconds / 60)))
+    return f"every {minutes} min"
 
 
-def _chunk_lines(lines: list[str], limit: int = 900) -> list[str]:
+def _job_identifier(job: object) -> str:
+    return getattr(job, "name", None) or getattr(job, "tag", None) or "job"
+
+
+def _group_for_job(job_name: str) -> str:
+    if job_name in CACHE_REFRESH_JOBS:
+        return "Cache Refresh"
+    if job_name in RECRUITMENT_JOBS:
+        return "recruitment"
+    if job_name in HOUSEKEEPING_JOBS:
+        return "housekeeping"
+    return "other"
+
+
+def _display_job_name(job_name: str, group_name: str) -> str:
+    if group_name == "Cache Refresh" and job_name.startswith("cache_refresh:"):
+        return job_name.split("cache_refresh:", 1)[1]
+    return job_name
+
+
+def _job_sort_key(job: object) -> tuple[datetime, str]:
+    next_run = getattr(job, "next_run", None)
+    if isinstance(next_run, datetime):
+        next_key = next_run
+    else:
+        next_key = datetime.max.replace(tzinfo=timezone.utc)
+    job_name = _job_identifier(job)
+    return (next_key, job_name)
+
+
+def _format_next_run(next_run: datetime | None) -> str:
+    if next_run is None:
+        return "pending"
+    try:
+        return next_run.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    except Exception:
+        return "pending"
+
+
+def _chunk_job_entries(entries: list[list[str]], limit: int = 1024) -> list[str]:
     chunks: list[str] = []
     current: list[str] = []
     current_len = 0
-    for line in lines:
-        projected = current_len + len(line) + 1
+    for entry in entries:
+        entry_text = "\n".join(entry)
+        projected = current_len + len(entry_text) + (1 if current else 0)
         if current and projected > limit:
             chunks.append("\n".join(current))
             current = []
             current_len = 0
-        current.append(line)
-        current_len += len(line) + 1
+        current.append(entry_text)
+        current_len += len(entry_text) + (1 if current_len else 0)
     if current:
         chunks.append("\n".join(current))
     return chunks or ["—"]
 
 
-def _build_scheduler_embed(runtime, component: str | None) -> discord.Embed:
+def _build_scheduler_embeds(runtime, component: str | None) -> list[discord.Embed]:
     jobs = runtime.scheduler.jobs if hasattr(runtime, "scheduler") else []
     filter_token = component.strip().lower() if component else None
     if filter_token:
@@ -63,43 +119,69 @@ def _build_scheduler_embed(runtime, component: str | None) -> discord.Embed:
     if filter_token:
         title = f"{title} ({filter_token})"
 
-    embed = discord.Embed(title=title, colour=colors.admin)
+    embed_color = discord.Colour.blurple()
+    footer_text = build_coreops_footer(bot_version=os.getenv("BOT_VERSION", "dev"))
 
     if not jobs:
         scope = filter_token or "any component"
+        embed = discord.Embed(title=title, colour=embed_color)
         embed.description = f"No scheduled jobs under {scope}."
-        return embed
+        embed.set_footer(text=footer_text)
+        return [embed]
 
-    grouped: dict[str, list] = {}
+    grouped: dict[str, list] = {group: [] for group in GROUP_ORDER}
     for job in jobs:
-        key = (getattr(job, "component", "default") or "default").lower()
-        grouped.setdefault(key, []).append(job)
+        job_name = _job_identifier(job)
+        group_name = _group_for_job(job_name)
+        grouped.setdefault(group_name, []).append(job)
 
-    for comp in sorted(grouped):
-        lines: list[str] = []
-        for job in sorted(
-            grouped[comp], key=lambda j: (getattr(j, "next_run", None) or datetime.min)
-        ):
-            next_run = getattr(job, "next_run", None)
-            if next_run is None:
-                next_label = "pending"
-            else:
-                try:
-                    next_label = next_run.astimezone(timezone.utc).strftime(
-                        "%Y-%m-%d %H:%M UTC"
-                    )
-                except Exception:
-                    next_label = "pending"
+    fields: list[tuple[str, str]] = []
+    for group_name in GROUP_ORDER:
+        group_jobs = grouped.get(group_name) or []
+        if not group_jobs:
+            continue
+        entries: list[list[str]] = []
+        for job in sorted(group_jobs, key=_job_sort_key):
+            job_name = _job_identifier(job)
+            display_name = _display_job_name(job_name, group_name)
+            next_label = _format_next_run(getattr(job, "next_run", None))
             interval = getattr(job, "interval", None)
-            cadence = _format_interval_label(interval) if interval else "recurring"
-            name = getattr(job, "name", None) or getattr(job, "tag", None) or "job"
-            lines.append(f"• {name} — next: {next_label} ({cadence})")
+            cadence = _format_interval_label(interval) if interval else "every ?"
+            entries.append(
+                [
+                    f"• {display_name}",
+                    f"  next: {next_label} ({cadence})",
+                ]
+            )
+        for chunk in _chunk_job_entries(entries):
+            fields.append((group_name, chunk))
 
-        for index, chunk in enumerate(_chunk_lines(lines)):
-            label = comp if index == 0 else f"{comp} (cont.)"
-            embed.add_field(name=label, value=chunk, inline=False)
+    embeds: list[discord.Embed] = []
+    current = discord.Embed(title=title, colour=embed_color)
+    current_len = len(title)
+    field_count = 0
+    reserve = len(footer_text)
 
-    return embed
+    for name, value in fields:
+        field_len = len(name) + len(value)
+        if (
+            field_count >= 25
+            or current_len + field_len + reserve > 6000
+        ):
+            current.set_footer(text=footer_text)
+            embeds.append(current)
+            current = discord.Embed(title=title, colour=embed_color)
+            current_len = len(title)
+            field_count = 0
+        current.add_field(name=name, value=value, inline=False)
+        current_len += field_len
+        field_count += 1
+
+    if not embeds or field_count:
+        current.set_footer(text=footer_text)
+        embeds.append(current)
+
+    return embeds
 
 class AppAdmin(commands.Cog):
     """Lightweight administrative utilities for bot operators."""
@@ -228,8 +310,13 @@ class AppAdmin(commands.Cog):
         if runtime is None:
             await ctx.reply("Scheduler unavailable.", mention_author=False)
             return
-        embed = _build_scheduler_embed(runtime, component)
-        await ctx.reply(embed=embed, mention_author=False)
+        embeds = _build_scheduler_embeds(runtime, component)
+        if not embeds:
+            await ctx.reply("Scheduler unavailable.", mention_author=False)
+            return
+        await ctx.reply(embed=embeds[0], mention_author=False)
+        for embed in embeds[1:]:
+            await ctx.send(embed=embed)
 
     @tier("admin")
     @help_metadata(
