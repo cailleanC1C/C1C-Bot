@@ -41,6 +41,7 @@ from c1c_coreops.render import (
     build_checksheet_tabs_embed,
     build_digest_embed,
     build_digest_line,
+    build_env_embed,
     build_health_embed,
     build_refresh_embed,
 )
@@ -509,50 +510,11 @@ def _chunk_field_lines(
     label: str,
     lines: Iterable[str],
     *,
-    code_block_lang: str = "ini",
-    soft_limit: int = _FIELD_CHUNK_SOFT_LIMIT,
+    soft_limit: int = _FIELD_CHAR_LIMIT,
 ) -> List[tuple[str, str]]:
-    """Split a large list of lines into multiple field values.
+    """Split a large list of lines into multiple field values."""
 
-    - First chunk uses ``label`` as field name.
-    - Subsequent chunks use a zero-width space so they appear visually under the
-      same heading without repeated labels.
-    - Each chunk is wrapped in a fenced code block.
-    - The soft limit keeps chunks reasonably small so embed splitting can keep
-      each embed within Discord's limits.
-    """
-
-    chunks: List[tuple[str, str]] = []
-    current_lines: list[str] = []
-    current_len = 0
-
-    def flush_chunk(chunk_label: str) -> None:
-        nonlocal current_lines, current_len
-        if not current_lines:
-            return
-        body = "\n".join(current_lines)
-        value = f"```{code_block_lang}\n{body}\n```"
-        chunks.append((chunk_label, value))
-        current_lines = []
-        current_len = 0
-
-    for line in lines:
-        projected_len = current_len + len(line) + 1
-        if current_lines and projected_len > soft_limit:
-            chunk_label = label if not chunks else _ZERO_WIDTH_SPACE
-            flush_chunk(chunk_label)
-        current_lines.append(line)
-        current_len += len(line) + 1
-
-    if current_lines:
-        chunk_label = label if not chunks else _ZERO_WIDTH_SPACE
-        flush_chunk(chunk_label)
-
-    if not chunks:
-        value = f"```{code_block_lang}\n\n```"
-        chunks.append((label, value))
-
-    return chunks
+    return _chunk_field_values(label, lines, limit=soft_limit)
 
 
 def _split_long_line(line: str, limit: int) -> List[str]:
@@ -575,12 +537,9 @@ def _chunk_field_values(
     lines: Iterable[str],
     *,
     limit: int = _FIELD_CHAR_LIMIT,
-    code_block_lang: str = "ini",
 ) -> List[tuple[str, str]]:
-    prefix = f"```{code_block_lang}\n"
-    suffix = "\n```"
-    body_limit = max(1, limit - len(prefix) - len(suffix))
-    normalized = list(lines) or ["—"]
+    body_limit = max(1, limit)
+    normalized = [line if line is not None else "—" for line in lines] or ["—"]
 
     safe_lines: list[str] = []
     for line in normalized:
@@ -591,7 +550,7 @@ def _chunk_field_values(
     fields: list[tuple[str, str]] = []
     for index, chunk in enumerate(chunks, start=1):
         name = label if total_chunks == 1 else f"{label} ({index}/{total_chunks})"
-        value = f"{prefix}{chunk}{suffix}"
+        value = chunk or "—"
         fields.append((name, value))
     return fields
 
@@ -756,6 +715,22 @@ def _mask_sheet_id(sheet_id: str) -> str:
     if not text:
         return "—"
     return f"***{text[-4:]}"
+
+
+def _format_env_footer(
+    *,
+    footer_text: str,
+    env: str,
+    guild_name: str,
+    page: int | None = None,
+    total_pages: int | None = None,
+) -> str:
+    parts: list[str] = []
+    if page and total_pages:
+        parts.append(f"Page {page}/{total_pages}")
+    parts.append(f"env: {env} · Guild: {guild_name}")
+    base = " · ".join(parts) if parts else f"env: {env} · Guild: {guild_name}"
+    return f"{base}\n{footer_text}" if footer_text else base
 
 
 def _format_sheet_log_label(sheet_title: str, sheet_id: str) -> str:
@@ -2583,10 +2558,15 @@ class CoreOpsCog(commands.Cog):
             bot_name=bot_name,
             env=env,
             guild_name=guild_name,
+            version=version,
             footer_text=footer_text,
             timestamp=now,
         )
-        await ctx.reply(embed=sanitize_embed(embed), mention_author=False)
+        await ctx.reply(
+            embed=sanitize_embed(embed),
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     async def _env_section_impl(self, ctx: commands.Context, section: str) -> None:
         bot_name = get_bot_name()
@@ -2604,6 +2584,7 @@ class CoreOpsCog(commands.Cog):
             section=section,
             bot_name=bot_name,
             env=env,
+            version=version,
             guild_name=guild_name,
             entries=entries,
             sheet_sections=sheet_sections,
@@ -2629,16 +2610,30 @@ class CoreOpsCog(commands.Cog):
         for index, batch in enumerate(batches):
             try:
                 if index == 0:
-                    await ctx.reply(embeds=batch, mention_author=False)
+                    await ctx.reply(
+                        embeds=batch,
+                        mention_author=False,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
                 else:
-                    await ctx.send(embeds=batch)
+                    await ctx.send(
+                        embeds=batch,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
             except (TypeError, discord.HTTPException):
                 for embed in batch:
                     if index == 0:
-                        await ctx.reply(embed=embed, mention_author=False)
+                        await ctx.reply(
+                            embed=embed,
+                            mention_author=False,
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
                         index = 1
                     else:
-                        await ctx.send(embed=embed)
+                        await ctx.send(
+                            embed=embed,
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
 
     @tier("admin")
     @help_metadata(function_group="operational", section="config_health", access_tier="admin")
@@ -2732,6 +2727,33 @@ class CoreOpsCog(commands.Cog):
     async def env_config(self, ctx: commands.Context) -> None:
         await self._env_section_impl(ctx, "config")
 
+    def _build_env_base_embed(
+        self,
+        *,
+        bot_name: str,
+        env: str,
+        version: str,
+        guild_name: str,
+        footer_text: str,
+        timestamp: dt.datetime,
+        title: str,
+        description: str | None = None,
+    ) -> discord.Embed:
+        meta = _config_meta_from_app()
+        embed = build_env_embed(
+            bot_name=bot_name,
+            env=env,
+            version=version,
+            cfg_meta=meta,
+        )
+        embed.clear_fields()
+        embed.title = title
+        if description is not None:
+            embed.description = description
+        embed.timestamp = timestamp
+        embed.set_footer(text=footer_text)
+        return embed
+
     def _build_env_embeds(
         self,
         *,
@@ -2750,18 +2772,20 @@ class CoreOpsCog(commands.Cog):
         total_pages = 4
 
         def _title(page: int) -> str:
-            return f"{bot_name} — env: {env} — Page {page}/{total_pages}"
+            return f"{bot_name} · env: {env} · Page {page}/{total_pages}"
 
         def _footer(page: int) -> str:
-            base = f"Page {page}/{total_pages} · env: {env} · Guild: {guild_name}"
-            return f"{base}\n{footer_text}" if footer_text else base
+            return _format_env_footer(
+                footer_text=footer_text,
+                env=env,
+                guild_name=guild_name,
+                page=page,
+                total_pages=total_pages,
+            )
 
         def _add_field(embed: discord.Embed, name: str, lines: Sequence[str]) -> None:
-            text_lines = list(lines) or ["—"]
-            if all(not line for line in text_lines):
-                text_lines = ["—"]
-            for chunk in _chunk_lines(text_lines, _FIELD_CHAR_LIMIT):
-                embed.add_field(name=name, value=f"```{chunk}```", inline=False)
+            for field_name, field_value in _chunk_field_values(name, lines):
+                embed.add_field(name=field_name, value=field_value, inline=False)
 
         def _format_group(
             keys: Sequence[str], *, treat_ids: bool = True
@@ -2779,8 +2803,15 @@ class CoreOpsCog(commands.Cog):
 
         embeds: list[discord.Embed] = []
 
-        embed = discord.Embed(title=_title(1), colour=colors.admin)
-        embed.timestamp = timestamp
+        embed = self._build_env_base_embed(
+            bot_name=bot_name,
+            env=env,
+            version=version,
+            guild_name=guild_name,
+            footer_text=_footer(1),
+            timestamp=timestamp,
+            title=_title(1),
+        )
         _add_field(
             embed,
             "Core Identity",
@@ -2792,25 +2823,31 @@ class CoreOpsCog(commands.Cog):
         if toggles:
             for name in sorted(toggles):
                 value = "ON" if toggles[name] else "OFF"
-                toggle_lines.append(f"{name} = {value}")
+                toggle_lines.extend(self._format_key_block(name, [value]))
         else:
-            toggle_lines.append("(none)")
+            toggle_lines.append("—")
         _add_field(embed, "Feature Toggles", toggle_lines)
-        embed.set_footer(text=_footer(1))
         embeds.append(embed)
 
-        channels_embed = discord.Embed(title=_title(2), colour=colors.admin)
-        channels_embed.timestamp = timestamp
-        channel_sections = {"CHANNELS": [], "THREADS": [], "OTHER": []}
+        channels_embed = self._build_env_base_embed(
+            bot_name=bot_name,
+            env=env,
+            version=version,
+            guild_name=guild_name,
+            footer_text=_footer(2),
+            timestamp=timestamp,
+            title=_title(2),
+        )
+        channel_sections = {"Channels": [], "Threads": [], "Other": []}
 
         def _channel_bucket(key: str) -> str:
             if key == "PANEL_THREAD_MODE":
-                return "OTHER"
+                return "Other"
             if "THREAD" in key:
-                return "THREADS"
+                return "Threads"
             if "CHANNEL" in key or key == "GUILD_IDS":
-                return "CHANNELS"
-            return "OTHER"
+                return "Channels"
+            return "Other"
 
         ordered_channels = [
             "GUILD_IDS",
@@ -2862,18 +2899,24 @@ class CoreOpsCog(commands.Cog):
             )
             used_keys.add(key)
 
-        for name in ("CHANNELS", "THREADS", "OTHER"):
+        for name in ("Channels", "Threads", "Other"):
             lines = channel_sections[name] or ["—"]
-            for field_name, field_value in _chunk_field_lines(name, lines):
+            for field_name, field_value in _chunk_field_values(name, lines):
                 channels_embed.add_field(
                     name=field_name, value=field_value, inline=False
                 )
 
-        channels_embed.set_footer(text=_footer(2))
         embeds.append(channels_embed)
 
-        roles_embed = discord.Embed(title=_title(3), colour=colors.admin)
-        roles_embed.timestamp = timestamp
+        roles_embed = self._build_env_base_embed(
+            bot_name=bot_name,
+            env=env,
+            version=version,
+            guild_name=guild_name,
+            footer_text=_footer(3),
+            timestamp=timestamp,
+            title=_title(3),
+        )
         role_sections: list[str] = []
         ordered_roles = [
             "ADMIN_ROLE_IDS",
@@ -2898,13 +2941,21 @@ class CoreOpsCog(commands.Cog):
                 self._format_entry_lines(key, entries.get(key), warnings, warning_keys)
             )
 
-        for field_name, field_value in _chunk_field_lines("Roles", role_sections or ["—"]):
+        for field_name, field_value in _chunk_field_values(
+            "Roles", role_sections or ["—"]
+        ):
             roles_embed.add_field(name=field_name, value=field_value, inline=False)
-        roles_embed.set_footer(text=_footer(3))
         embeds.append(roles_embed)
 
-        sheets_embed = discord.Embed(title=_title(4), colour=colors.admin)
-        sheets_embed.timestamp = timestamp
+        sheets_embed = self._build_env_base_embed(
+            bot_name=bot_name,
+            env=env,
+            version=version,
+            guild_name=guild_name,
+            footer_text=_footer(4),
+            timestamp=timestamp,
+            title=_title(4),
+        )
         sheets_lines: list[str] = []
         tab_lines: list[str] = []
         config_lines: list[str] = []
@@ -2935,26 +2986,27 @@ class CoreOpsCog(commands.Cog):
                 used_keys.add(key)
 
         if sheet_sections:
-            if config_lines:
-                config_lines.append("")
             for label, rows in sheet_sections:
-                config_lines.append(f"{label} overrides:")
                 for row_key, value, resolved in rows:
-                    text = f"  {row_key} = {value}"
+                    value_text = f"{value}"
                     if resolved and resolved != "—":
-                        text += f" ({resolved})"
-                    config_lines.append(text)
-                if rows:
-                    config_lines.append("")
-            while config_lines and not config_lines[-1].strip():
-                config_lines.pop()
+                        value_text = f"{value_text} → {resolved}"
+                    config_lines.extend(
+                        self._format_key_block(
+                            f"{label} override: {row_key}",
+                            [value_text],
+                        )
+                    )
 
         meta = _config_meta_from_app()
         source = str(meta.get("source", "runtime"))
         status = str(meta.get("status", "ok"))
-        if config_lines:
-            config_lines.append("")
-        config_lines.append(f"Loader: {source} · {status}")
+        config_lines.extend(
+            self._format_key_block(
+                "Config Loader",
+                [f"{source} · {status}"],
+            )
+        )
         loaded_at = meta.get("loaded_at")
         if loaded_at:
             config_lines.append(f"  loaded_at: {loaded_at}")
@@ -2962,15 +3014,23 @@ class CoreOpsCog(commands.Cog):
         if last_error:
             config_lines.append(f"  last_error: {last_error}")
 
-        for field_name, field_value in _chunk_field_lines("SHEETS", sheets_lines or ["—"]):
+        for field_name, field_value in _chunk_field_values(
+            "Sheets", sheets_lines or ["—"]
+        ):
             sheets_embed.add_field(name=field_name, value=field_value, inline=False)
-        for field_name, field_value in _chunk_field_lines("TABS", tab_lines or ["—"]):
+        for field_name, field_value in _chunk_field_values(
+            "Tabs", tab_lines or ["—"]
+        ):
             sheets_embed.add_field(name=field_name, value=field_value, inline=False)
-        for field_name, field_value in _chunk_field_lines("CONFIG", config_lines or ["—"]):
+        for field_name, field_value in _chunk_field_values(
+            "Config", config_lines or ["—"]
+        ):
             sheets_embed.add_field(name=field_name, value=field_value, inline=False)
-        _add_field(sheets_embed, "Secrets (masked)", self._format_secrets(entries))
-
-        sheets_embed.set_footer(text=_footer(4))
+        _add_field(
+            sheets_embed,
+            "Secrets (masked)",
+            self._format_secrets(entries),
+        )
         embeds.append(sheets_embed)
 
         if warnings:
@@ -2980,18 +3040,29 @@ class CoreOpsCog(commands.Cog):
                 warning_lines.append(
                     f"… and {remaining} more missing / not-found entries."
                 )
-            embeds[0].add_field(
-                name="Warnings", value="\n".join(warning_lines), inline=False
-            )
+            for field_name, field_value in _chunk_field_values(
+                "Warnings",
+                warning_lines,
+            ):
+                embeds[0].add_field(
+                    name=field_name,
+                    value=field_value,
+                    inline=False,
+                )
 
         embeds = _split_embeds(embeds)
 
         total_pages = len(embeds)
         for page, embed in enumerate(embeds, start=1):
-            embed.title = f"{bot_name} — env: {env} — Page {page}/{total_pages}"
-            footer_base = f"Page {page}/{total_pages} · env: {env} · Guild: {guild_name}"
+            embed.title = f"{bot_name} · env: {env} · Page {page}/{total_pages}"
             embed.set_footer(
-                text=f"{footer_base}\n{footer_text}" if footer_text else footer_base
+                text=_format_env_footer(
+                    footer_text=footer_text,
+                    env=env,
+                    guild_name=guild_name,
+                    page=page,
+                    total_pages=total_pages,
+                )
             )
 
         return embeds, warnings, warning_keys
@@ -3002,26 +3073,32 @@ class CoreOpsCog(commands.Cog):
         bot_name: str,
         env: str,
         guild_name: str,
+        version: str,
         footer_text: str,
         timestamp: dt.datetime,
     ) -> discord.Embed:
-        embed = discord.Embed(
-            title=f"{bot_name} — env: {env}",
-            description=(
-                "Environment overview for this bot.\n\n"
-                "**Subcommands**\n"
-                "• `!env channels` — channel/thread/guild IDs\n"
-                "• `!env roles` — role IDs\n"
-                "• `!env sheets` — sheet IDs + sheet config\n"
-                "• `!env config` — runtime/config settings\n\n"
-                "Secrets are masked. Use subcommands for details."
-            ),
-            colour=colors.admin,
+        description = (
+            "Environment overview for this bot.\n\n"
+            "**Subcommands**\n"
+            "• !env channels — channel/thread/guild IDs\n"
+            "• !env roles — role IDs\n"
+            "• !env sheets — sheet IDs + sheet config\n"
+            "• !env config — runtime/config settings\n\n"
+            "Secrets are masked. Use subcommands for details."
         )
-        embed.timestamp = timestamp
-        footer_base = f"env: {env} · Guild: {guild_name}"
-        embed.set_footer(
-            text=f"{footer_base}\n{footer_text}" if footer_text else footer_base
+        embed = self._build_env_base_embed(
+            bot_name=bot_name,
+            env=env,
+            version=version,
+            guild_name=guild_name,
+            footer_text=_format_env_footer(
+                footer_text=footer_text,
+                env=env,
+                guild_name=guild_name,
+            ),
+            timestamp=timestamp,
+            title=f"{bot_name} · env: {env}",
+            description=description,
         )
         return embed
 
@@ -3031,6 +3108,7 @@ class CoreOpsCog(commands.Cog):
         section: str,
         bot_name: str,
         env: str,
+        version: str,
         guild_name: str,
         entries: Dict[str, _EnvEntry],
         sheet_sections: List[Tuple[str, List[Tuple[str, str, str]]]],
@@ -3043,13 +3121,21 @@ class CoreOpsCog(commands.Cog):
         def _field_chunks(
             name: str, lines: Sequence[str]
         ) -> list[tuple[str, str]]:
-            return _chunk_field_lines(name, lines or ["—"])
+            return _chunk_field_values(name, lines or ["—"])
 
-        embed = discord.Embed(
-            title=f"{bot_name} — env: {env} — {section_title}",
-            colour=colors.admin,
+        embed = self._build_env_base_embed(
+            bot_name=bot_name,
+            env=env,
+            version=version,
+            guild_name=guild_name,
+            footer_text=_format_env_footer(
+                footer_text=footer_text,
+                env=env,
+                guild_name=guild_name,
+            ),
+            timestamp=timestamp,
+            title=f"{bot_name} · env: {env} · {section_title}",
         )
-        embed.timestamp = timestamp
 
         if normalized in {"channels", "roles", "sheets"}:
             if normalized == "channels":
@@ -3066,14 +3152,25 @@ class CoreOpsCog(commands.Cog):
 
             embeds = _split_fields_into_embeds(embed, fields)
             total_pages = len(embeds)
-            if total_pages > 1:
-                for page, page_embed in enumerate(embeds, start=1):
-                    page_embed.set_footer(text=f"Page {page}/{total_pages}")
+            for page, page_embed in enumerate(embeds, start=1):
+                title_suffix = f" · Page {page}/{total_pages}" if total_pages > 1 else ""
+                page_embed.title = (
+                    f"{bot_name} · env: {env} · {section_title}{title_suffix}"
+                )
+                page_embed.set_footer(
+                    text=_format_env_footer(
+                        footer_text=footer_text,
+                        env=env,
+                        guild_name=guild_name,
+                        page=page if total_pages > 1 else None,
+                        total_pages=total_pages if total_pages > 1 else None,
+                    )
+                )
             return embeds
 
         else:
             section_title = "Config"
-            embed.title = f"{bot_name} — env: {env} — {section_title}"
+            embed.title = f"{bot_name} · env: {env} · {section_title}"
 
             core_lines = self._format_core_identity(entries)
             feature_lines = self._format_features(entries)
@@ -3140,8 +3237,9 @@ class CoreOpsCog(commands.Cog):
                 if key not in used_keys and not _is_secret_key(key)
             ]
             other_lines = [
-                self._format_simple_line(key, entries.get(key))
+                line
                 for key in sorted(other_keys)
+                for line in self._format_simple_line(key, entries.get(key))
             ] or ["—"]
 
             for field_name, field_value in _field_chunks("Core Identity", core_lines):
@@ -3157,19 +3255,19 @@ class CoreOpsCog(commands.Cog):
             for field_name, field_value in _field_chunks("Other", other_lines):
                 embed.add_field(name=field_name, value=field_value, inline=False)
 
-        footer_base = f"env: {env} · Guild: {guild_name}"
-        embed.set_footer(
-            text=f"{footer_base}\n{footer_text}" if footer_text else footer_base
-        )
-
         embeds = _split_embeds([embed])
         total_pages = len(embeds)
         if total_pages > 1:
             for page, page_embed in enumerate(embeds, start=1):
-                page_embed.title = f"{embed.title} — Page {page}/{total_pages}"
-                footer_base = f"Page {page}/{total_pages} · env: {env} · Guild: {guild_name}"
+                page_embed.title = f"{embed.title} · Page {page}/{total_pages}"
                 page_embed.set_footer(
-                    text=f"{footer_base}\n{footer_text}" if footer_text else footer_base
+                    text=_format_env_footer(
+                        footer_text=footer_text,
+                        env=env,
+                        guild_name=guild_name,
+                        page=page,
+                        total_pages=total_pages,
+                    )
                 )
 
         return embeds
@@ -4494,9 +4592,18 @@ class CoreOpsCog(commands.Cog):
             entries[key] = _EnvEntry(key=key, normalized=normalized, display=display_value)
         return entries
 
-    def _format_simple_line(self, key: str, entry: Optional[_EnvEntry]) -> str:
+    def _format_key_block(self, key: str, values: Sequence[str] | None) -> List[str]:
+        lines = [f"**{key}**"]
+        if not values:
+            return lines + ["  —"]
+        for value in values:
+            text = str(value).strip()
+            lines.append(f"  {text if text else '—'}")
+        return lines
+
+    def _format_simple_line(self, key: str, entry: Optional[_EnvEntry]) -> List[str]:
         value = entry.display if entry else "—"
-        return f"{key} = {value}"
+        return self._format_key_block(key, [value])
 
     def _format_entry_lines(
         self,
@@ -4511,7 +4618,7 @@ class CoreOpsCog(commands.Cog):
         if missing is not None:
             warnings.append(f"⚠ {key} has no configured value (\"{missing}\")")
             warning_keys.add(key)
-            return [self._format_simple_line(key, entry)]
+            return self._format_simple_line(key, entry)
 
         if treat_ids and entry is not None:
             ids = self._extract_visible_ids(key, entry.normalized)
@@ -4525,11 +4632,14 @@ class CoreOpsCog(commands.Cog):
                     warning_keys.add(key)
                 return lines
 
-        return [self._format_simple_line(key, entry)]
+        return self._format_simple_line(key, entry)
 
     def _format_core_identity(self, entries: Dict[str, _EnvEntry]) -> List[str]:
         keys = ("BOT_NAME", "BOT_VERSION", "ENV_NAME")
-        return [self._format_simple_line(key, entries.get(key)) for key in keys]
+        lines: List[str] = []
+        for key in keys:
+            lines.extend(self._format_simple_line(key, entries.get(key)))
+        return lines
 
     def _format_guild_channels(self, entries: Dict[str, _EnvEntry]) -> List[str]:
         ordered = [
@@ -4565,12 +4675,12 @@ class CoreOpsCog(commands.Cog):
 
     def _format_channel_entry(self, key: str, entry: Optional[_EnvEntry]) -> List[str]:
         if key == "PANEL_THREAD_MODE":
-            return [self._format_simple_line(key, entry)]
+            return self._format_simple_line(key, entry)
         if entry is None:
-            return [f"{key} = —"]
+            return self._format_key_block(key, ["—"])
         ids = self._extract_visible_ids(key, entry.normalized)
         if not ids:
-            return [self._format_simple_line(key, entry)]
+            return self._format_simple_line(key, entry)
         return self._format_id_lines(key, ids)
 
     def _format_roles(self, entries: Dict[str, _EnvEntry]) -> List[str]:
@@ -4599,10 +4709,10 @@ class CoreOpsCog(commands.Cog):
 
     def _format_role_entry(self, key: str, entry: Optional[_EnvEntry]) -> List[str]:
         if entry is None:
-            return [f"{key} = —"]
+            return self._format_key_block(key, ["—"])
         ids = self._extract_visible_ids(key, entry.normalized)
         if not ids:
-            return [self._format_simple_line(key, entry)]
+            return self._format_simple_line(key, entry)
         return self._format_id_lines(key, ids)
 
     def _format_sheet_keys(
@@ -4615,7 +4725,7 @@ class CoreOpsCog(commands.Cog):
         seen: Set[str] = set()
         for key in ordered:
             seen.add(key)
-            lines.append(self._format_simple_line(key, entries.get(key)))
+            lines.extend(self._format_simple_line(key, entries.get(key)))
 
         dynamic = [
             key
@@ -4625,46 +4735,42 @@ class CoreOpsCog(commands.Cog):
             and ("SHEET" in key or "TAB" in key)
         ]
         for key in sorted(dynamic):
-            lines.append(self._format_simple_line(key, entries.get(key)))
+            lines.extend(self._format_simple_line(key, entries.get(key)))
 
         if sheet_sections:
-            if lines:
-                lines.append("")
             for label, rows in sheet_sections:
-                lines.append(f"{label} overrides:")
                 for row_key, value, resolved in rows:
-                    text = f"  {row_key} = {value}"
+                    value_text = f"{value}"
                     if resolved and resolved != "—":
-                        text += f" ({resolved})"
-                    lines.append(text)
-                if rows:
-                    lines.append("")
-            while lines and not lines[-1].strip():
-                lines.pop()
+                        value_text = f"{value_text} → {resolved}"
+                    lines.extend(
+                        self._format_key_block(
+                            f"{label} override: {row_key}",
+                            [value_text],
+                        )
+                    )
 
         toggles = get_feature_toggles()
-        if lines:
-            lines.append("")
-        lines.append("Feature Toggles:")
+        toggle_lines: list[str] = []
         if toggles:
             for name in sorted(toggles):
                 value = "ON" if toggles[name] else "OFF"
-                lines.append(f"  {name} = {value}")
+                toggle_lines.append(f"{name}: {value}")
         else:
-            lines.append("  (none)")
+            toggle_lines.append("(none)")
+        lines.extend(self._format_key_block("Feature Toggles", toggle_lines))
 
         meta = _config_meta_from_app()
         source = str(meta.get("source", "runtime"))
         status = str(meta.get("status", "ok"))
-        if lines:
-            lines.append("")
-        lines.append(f"Loader: {source} · {status}")
+        loader_lines = [f"{source} · {status}"]
         loaded_at = meta.get("loaded_at")
         if loaded_at:
-            lines.append(f"  loaded_at: {loaded_at}")
+            loader_lines.append(f"loaded_at: {loaded_at}")
         last_error = meta.get("last_error")
         if last_error:
-            lines.append(f"  last_error: {last_error}")
+            loader_lines.append(f"last_error: {last_error}")
+        lines.extend(self._format_key_block("Config Loader", loader_lines))
 
         return lines or ["—"]
 
@@ -4674,7 +4780,11 @@ class CoreOpsCog(commands.Cog):
             "PANEL_THREAD_MODE",
             "SEARCH_RESULTS_SOFT_CAP",
         ]
-        lines = [self._format_simple_line(key, entries.get(key)) for key in ordered]
+        lines = [
+            line
+            for key in ordered
+            for line in self._format_simple_line(key, entries.get(key))
+        ]
         seen = set(ordered)
         dynamic = [
             key
@@ -4688,7 +4798,7 @@ class CoreOpsCog(commands.Cog):
             )
         ]
         for key in sorted(dynamic):
-            lines.append(self._format_simple_line(key, entries.get(key)))
+            lines.extend(self._format_simple_line(key, entries.get(key)))
         return lines or ["—"]
 
     def _format_cache_refresh(self, entries: Dict[str, _EnvEntry]) -> List[str]:
@@ -4699,7 +4809,11 @@ class CoreOpsCog(commands.Cog):
             "CLEANUP_INTERVAL_HOURS",
             "KEEPALIVE_INTERVAL_HOURS",
         ]
-        lines = [self._format_simple_line(key, entries.get(key)) for key in ordered]
+        lines = [
+            line
+            for key in ordered
+            for line in self._format_simple_line(key, entries.get(key))
+        ]
         seen = set(ordered)
         dynamic = [
             key
@@ -4709,7 +4823,7 @@ class CoreOpsCog(commands.Cog):
             and ("TTL" in key or "REFRESH" in key)
         ]
         for key in sorted(dynamic):
-            lines.append(self._format_simple_line(key, entries.get(key)))
+            lines.extend(self._format_simple_line(key, entries.get(key)))
         return lines or ["—"]
 
     def _format_watchdog(self, entries: Dict[str, _EnvEntry]) -> List[str]:
@@ -4721,7 +4835,11 @@ class CoreOpsCog(commands.Cog):
             "PORT",
             "LOG_LEVEL",
         ]
-        lines = [self._format_simple_line(key, entries.get(key)) for key in ordered]
+        lines = [
+            line
+            for key in ordered
+            for line in self._format_simple_line(key, entries.get(key))
+        ]
         seen = set(ordered)
         dynamic = [
             key
@@ -4731,14 +4849,17 @@ class CoreOpsCog(commands.Cog):
             and (key.startswith("WATCHDOG_") or key in {"TIMEZONE", "PORT", "LOG_LEVEL"})
         ]
         for key in sorted(dynamic):
-            lines.append(self._format_simple_line(key, entries.get(key)))
+            lines.extend(self._format_simple_line(key, entries.get(key)))
         return lines or ["—"]
 
     def _format_render(self, entries: Dict[str, _EnvEntry]) -> List[str]:
         keys = [key for key in entries.keys() if key.startswith("RENDER_")]
         if not keys:
             return ["—"]
-        return [self._format_simple_line(key, entries.get(key)) for key in sorted(keys)]
+        lines: List[str] = []
+        for key in sorted(keys):
+            lines.extend(self._format_simple_line(key, entries.get(key)))
+        return lines or ["—"]
 
     def _format_secrets(self, entries: Dict[str, _EnvEntry]) -> List[str]:
         secrets = [key for key in entries.keys() if _is_secret_key(key)]
@@ -4748,13 +4869,13 @@ class CoreOpsCog(commands.Cog):
         for key in sorted(secrets):
             entry = entries.get(key)
             if entry is None:
-                lines.append(f"{key} = —")
+                lines.extend(self._format_key_block(key, ["—"]))
                 continue
             value = entry.display
             if value == "—":
-                lines.append(f"{key} = —")
+                lines.extend(self._format_key_block(key, ["—"]))
             else:
-                lines.append(f"{key} = {value} (masked)")
+                lines.extend(self._format_key_block(key, [f"{value} (masked)"]))
         return lines
 
     def _format_id_lines(self, key: str, ids: Sequence[int]) -> List[str]:
@@ -4771,16 +4892,16 @@ class CoreOpsCog(commands.Cog):
             cleaned.append(snowflake)
 
         if not cleaned:
-            return [f"{key} = —"]
+            return self._format_key_block(key, ["—"])
 
-        label = f"{key}:"
-        indent = " " * len(label)
-        lines: List[str] = []
-        for index, snowflake in enumerate(cleaned):
+        values: List[str] = []
+        for snowflake in cleaned:
             resolved = _trim_resolved_label(self._id_resolver.resolve(self.bot, snowflake))
-            prefix = label if index == 0 else indent
-            lines.append(f"{prefix} {snowflake} → {resolved}")
-        return lines
+            if resolved and resolved != "—":
+                values.append(f"{snowflake} → {resolved}")
+            else:
+                values.append(str(snowflake))
+        return self._format_key_block(key, values)
 
     def _format_id_lines_with_missing(
         self, key: str, ids: Sequence[int]
