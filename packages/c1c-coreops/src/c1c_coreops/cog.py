@@ -2464,7 +2464,25 @@ class CoreOpsCog(commands.Cog):
     async def digest(self, ctx: commands.Context) -> None:
         await self._digest_impl(ctx)
 
-    async def _env_impl(self, ctx: commands.Context) -> None:
+    async def _env_overview_impl(self, ctx: commands.Context) -> None:
+        bot_name = get_bot_name()
+        env = get_env_name()
+        version = os.getenv("BOT_VERSION", "dev")
+        guild_name = getattr(getattr(ctx, "guild", None), "name", "unknown")
+        now = dt.datetime.now(UTC)
+        footer_text = build_coreops_footer(
+            bot_version=version, notes=" • source: ENV + Sheet Config"
+        )
+        embed = self._build_env_overview_embed(
+            bot_name=bot_name,
+            env=env,
+            guild_name=guild_name,
+            footer_text=footer_text,
+            timestamp=now,
+        )
+        await ctx.reply(embed=sanitize_embed(embed), mention_author=False)
+
+    async def _env_section_impl(self, ctx: commands.Context, section: str) -> None:
         bot_name = get_bot_name()
         env = get_env_name()
         version = os.getenv("BOT_VERSION", "dev")
@@ -2476,10 +2494,10 @@ class CoreOpsCog(commands.Cog):
             bot_version=version, notes=" • source: ENV + Sheet Config"
         )
 
-        embeds, warnings, warning_keys = self._build_env_embeds(
+        embeds = self._build_env_section_embeds(
+            section=section,
             bot_name=bot_name,
             env=env,
-            version=version,
             guild_name=guild_name,
             entries=entries,
             sheet_sections=sheet_sections,
@@ -2487,69 +2505,62 @@ class CoreOpsCog(commands.Cog):
             timestamp=now,
         )
 
-        if warnings:
-            missing = ",".join(sorted(warning_keys))
-            logger.warning(
-                f"⚠ env:missing_config • env={env} • missing={missing}"
-            )
+        if not embeds:
+            await ctx.reply("No environment data available.", mention_author=False)
+            return
 
-        for idx, embed in enumerate(embeds, start=1):
-            data = embed.to_dict()
-            json_len = len(json.dumps(data, ensure_ascii=False))
-            field_count = len(embed.fields)
-
-            logger.info(
-                "env:embed_debug • env=%s • idx=%s • total=%s • json_len=%s • fields=%s • title=%r",
-                env,
-                idx,
-                len(embeds),
-                json_len,
-                field_count,
-                embed.title,
-            )
-
-            if json_len > 6000:
-                for f_idx, field in enumerate(embed.fields):
-                    logger.warning(
-                        "env:embed_debug_fields • env=%s • page_idx=%s • field_idx=%s • name=%r • value_len=%s",
-                        env,
-                        idx,
-                        f_idx,
-                        field.name,
-                        len(field.value),
-                    )
-
-                logger.error(
-                    "env:embed_oversize • env=%s • idx=%s • json_len=%s",
-                    env,
-                    idx,
-                    json_len,
-                )
-                await ctx.reply(
-                    "⚠ `!env` is currently too large to render fully. "
-                    "Please check the logs for `env:embed_oversize` and `env:embed_debug_fields`.",
-                    mention_author=False,
-                )
-                return
-
-        await ctx.reply(embeds=[sanitize_embed(embed) for embed in embeds])
+        await ctx.reply(embeds=[sanitize_embed(embed) for embed in embeds], mention_author=False)
 
     @tier("admin")
     @help_metadata(function_group="operational", section="config_health", access_tier="admin")
-    @ops.command(
+    @ops.group(
         name="env",
+        invoke_without_command=True,
         help="Shows environment info for this bot.",
         brief="Shows environment info for this bot.",
     )
     @guild_only_denied_msg()
     @admin_only()
     async def ops_env(self, ctx: commands.Context) -> None:
-        await self._env_impl(ctx)
+        await self._env_overview_impl(ctx)
 
     @tier("admin")
     @help_metadata(function_group="operational", section="config_health", access_tier="admin")
-    @commands.command(
+    @ops_env.command(name="channels", help="Shows channel-related environment settings.")
+    @admin_only()
+    async def ops_env_channels(self, ctx: commands.Context) -> None:
+        await self._env_section_impl(ctx, "channels")
+
+    @tier("admin")
+    @help_metadata(function_group="operational", section="config_health", access_tier="admin")
+    @ops_env.command(name="roles", help="Shows role-related environment settings.")
+    @admin_only()
+    async def ops_env_roles(self, ctx: commands.Context) -> None:
+        await self._env_section_impl(ctx, "roles")
+
+    @tier("admin")
+    @help_metadata(function_group="operational", section="config_health", access_tier="admin")
+    @ops_env.command(name="sheets", help="Shows sheet-related environment settings.")
+    @admin_only()
+    async def ops_env_sheets(self, ctx: commands.Context) -> None:
+        await self._env_section_impl(ctx, "sheets")
+
+    @tier("admin")
+    @help_metadata(function_group="operational", section="config_health", access_tier="admin")
+    @ops_env.command(
+        name="config",
+        aliases=("runtime",),
+        help="Shows runtime configuration settings.",
+    )
+    @admin_only()
+    async def ops_env_config(self, ctx: commands.Context) -> None:
+        await self._env_section_impl(ctx, "config")
+
+    @tier("admin")
+    @help_metadata(function_group="operational", section="config_health", access_tier="admin")
+    @commands.group(
         name="env",
+        invoke_without_command=True,
         hidden=True,
         help="Shows environment info for this bot.",
         brief="Shows environment info for this bot.",
@@ -2557,7 +2568,40 @@ class CoreOpsCog(commands.Cog):
     @guild_only_denied_msg()
     @admin_only()
     async def env(self, ctx: commands.Context) -> None:
-        await self._env_impl(ctx)
+        await self._env_overview_impl(ctx)
+
+    @tier("admin")
+    @help_metadata(function_group="operational", section="config_health", access_tier="admin")
+    @env.command(name="channels", hidden=True, help="Shows channel-related environment settings.")
+    @admin_only()
+    async def env_channels(self, ctx: commands.Context) -> None:
+        await self._env_section_impl(ctx, "channels")
+
+    @tier("admin")
+    @help_metadata(function_group="operational", section="config_health", access_tier="admin")
+    @env.command(name="roles", hidden=True, help="Shows role-related environment settings.")
+    @admin_only()
+    async def env_roles(self, ctx: commands.Context) -> None:
+        await self._env_section_impl(ctx, "roles")
+
+    @tier("admin")
+    @help_metadata(function_group="operational", section="config_health", access_tier="admin")
+    @env.command(name="sheets", hidden=True, help="Shows sheet-related environment settings.")
+    @admin_only()
+    async def env_sheets(self, ctx: commands.Context) -> None:
+        await self._env_section_impl(ctx, "sheets")
+
+    @tier("admin")
+    @help_metadata(function_group="operational", section="config_health", access_tier="admin")
+    @env.command(
+        name="config",
+        aliases=("runtime",),
+        hidden=True,
+        help="Shows runtime configuration settings.",
+    )
+    @admin_only()
+    async def env_config(self, ctx: commands.Context) -> None:
+        await self._env_section_impl(ctx, "config")
 
     def _build_env_embeds(
         self,
@@ -2822,6 +2866,179 @@ class CoreOpsCog(commands.Cog):
             )
 
         return embeds, warnings, warning_keys
+
+    def _build_env_overview_embed(
+        self,
+        *,
+        bot_name: str,
+        env: str,
+        guild_name: str,
+        footer_text: str,
+        timestamp: dt.datetime,
+    ) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"{bot_name} — env: {env}",
+            description=(
+                "Environment overview for this bot.\n\n"
+                "**Subcommands**\n"
+                "• `!env channels` — channel/thread/guild IDs\n"
+                "• `!env roles` — role IDs\n"
+                "• `!env sheets` — sheet IDs + sheet config\n"
+                "• `!env config` — runtime/config settings\n\n"
+                "Secrets are masked. Use subcommands for details."
+            ),
+            colour=colors.admin,
+        )
+        embed.timestamp = timestamp
+        footer_base = f"env: {env} · Guild: {guild_name}"
+        embed.set_footer(
+            text=f"{footer_base}\n{footer_text}" if footer_text else footer_base
+        )
+        return embed
+
+    def _build_env_section_embeds(
+        self,
+        *,
+        section: str,
+        bot_name: str,
+        env: str,
+        guild_name: str,
+        entries: Dict[str, _EnvEntry],
+        sheet_sections: List[Tuple[str, List[Tuple[str, str, str]]]],
+        footer_text: str,
+        timestamp: dt.datetime,
+    ) -> list[discord.Embed]:
+        normalized = section.strip().lower()
+        section_title = normalized.capitalize()
+
+        def _field_chunks(
+            name: str, lines: Sequence[str]
+        ) -> list[tuple[str, str]]:
+            return _chunk_field_lines(name, lines or ["—"])
+
+        embed = discord.Embed(
+            title=f"{bot_name} — env: {env} — {section_title}",
+            colour=colors.admin,
+        )
+        embed.timestamp = timestamp
+
+        if normalized == "channels":
+            for field_name, field_value in _field_chunks(
+                "Channels", self._format_guild_channels(entries)
+            ):
+                embed.add_field(name=field_name, value=field_value, inline=False)
+        elif normalized == "roles":
+            for field_name, field_value in _field_chunks(
+                "Roles", self._format_roles(entries)
+            ):
+                embed.add_field(name=field_name, value=field_value, inline=False)
+        elif normalized == "sheets":
+            for field_name, field_value in _field_chunks(
+                "Sheets & Config", self._format_sheet_keys(entries, sheet_sections)
+            ):
+                embed.add_field(name=field_name, value=field_value, inline=False)
+        else:
+            section_title = "Config"
+            embed.title = f"{bot_name} — env: {env} — {section_title}"
+
+            core_lines = self._format_core_identity(entries)
+            feature_lines = self._format_features(entries)
+            cache_lines = self._format_cache_refresh(entries)
+            watchdog_lines = self._format_watchdog(entries)
+            render_lines = self._format_render(entries)
+
+            used_keys: set[str] = set()
+            used_keys.update({"BOT_NAME", "BOT_VERSION", "ENV_NAME"})
+            used_keys.update({"STRICT_PROBE", "PANEL_THREAD_MODE", "SEARCH_RESULTS_SOFT_CAP"})
+            used_keys.update(
+                key
+                for key in entries.keys()
+                if key.startswith("ENABLE_")
+                or key.endswith("_ENABLED")
+                or key in {"STRICT_PROBE", "PANEL_THREAD_MODE"}
+            )
+            used_keys.update(
+                {
+                    "CLAN_TAGS_CACHE_TTL_SEC",
+                    "REFRESH_TIMES",
+                    "REPORT_DAILY_POST_TIME",
+                    "CLEANUP_INTERVAL_HOURS",
+                    "KEEPALIVE_INTERVAL_HOURS",
+                }
+            )
+            used_keys.update(
+                key for key in entries.keys() if "TTL" in key or "REFRESH" in key
+            )
+            used_keys.update(
+                {
+                    "WATCHDOG_CHECK_SEC",
+                    "WATCHDOG_STALL_SEC",
+                    "WATCHDOG_DISCONNECT_GRACE_SEC",
+                    "TIMEZONE",
+                    "PORT",
+                    "LOG_LEVEL",
+                }
+            )
+            used_keys.update(
+                key
+                for key in entries.keys()
+                if key.startswith("WATCHDOG_") or key in {"TIMEZONE", "PORT", "LOG_LEVEL"}
+            )
+            used_keys.update(
+                key for key in entries.keys() if key.startswith("RENDER_")
+            )
+            used_keys.update(
+                key
+                for key in entries.keys()
+                if any(token in key for token in ("CHANNEL", "THREAD", "GUILD"))
+                or key in {"PANEL_THREAD_MODE"}
+            )
+            used_keys.update(key for key in entries.keys() if "ROLE" in key)
+            used_keys.update(
+                key
+                for key in entries.keys()
+                if "SHEET" in key or "TAB" in key
+            )
+
+            other_keys = [
+                key
+                for key in entries.keys()
+                if key not in used_keys and not _is_secret_key(key)
+            ]
+            other_lines = [
+                self._format_simple_line(key, entries.get(key))
+                for key in sorted(other_keys)
+            ] or ["—"]
+
+            for field_name, field_value in _field_chunks("Core Identity", core_lines):
+                embed.add_field(name=field_name, value=field_value, inline=False)
+            for field_name, field_value in _field_chunks("Feature Flags", feature_lines):
+                embed.add_field(name=field_name, value=field_value, inline=False)
+            for field_name, field_value in _field_chunks("Cache / Refresh", cache_lines):
+                embed.add_field(name=field_name, value=field_value, inline=False)
+            for field_name, field_value in _field_chunks("Watchdog / Runtime", watchdog_lines):
+                embed.add_field(name=field_name, value=field_value, inline=False)
+            for field_name, field_value in _field_chunks("Render", render_lines):
+                embed.add_field(name=field_name, value=field_value, inline=False)
+            for field_name, field_value in _field_chunks("Other", other_lines):
+                embed.add_field(name=field_name, value=field_value, inline=False)
+
+        footer_base = f"env: {env} · Guild: {guild_name}"
+        embed.set_footer(
+            text=f"{footer_base}\n{footer_text}" if footer_text else footer_base
+        )
+
+        embeds = _split_embeds([embed])
+        total_pages = len(embeds)
+        if total_pages > 1:
+            for page, page_embed in enumerate(embeds, start=1):
+                page_embed.title = f"{embed.title} — Page {page}/{total_pages}"
+                footer_base = f"Page {page}/{total_pages} · env: {env} · Guild: {guild_name}"
+                page_embed.set_footer(
+                    text=f"{footer_base}\n{footer_text}" if footer_text else footer_base
+                )
+
+        return embeds
 
     @tier("user")
     @ops.command(

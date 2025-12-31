@@ -12,6 +12,7 @@ from c1c_coreops.helpers import help_metadata, tier
 from c1c_coreops.rbac import admin_only
 from modules.common import feature_flags, runtime as runtime_helpers
 from modules.common.logs import channel_label
+from shared.theme import colors
 from modules.ops import cluster_role_map, server_map
 from shared.config import get_who_we_are_channel_id
 from shared.sheets import recruitment as recruitment_sheet
@@ -31,31 +32,62 @@ def _format_interval_label(delta: timedelta) -> str:
     return f"every {seconds} sec"
 
 
-def _build_scheduler_overview(runtime, component: str | None) -> str:
+def _chunk_lines(lines: list[str], limit: int = 900) -> list[str]:
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in lines:
+        projected = current_len + len(line) + 1
+        if current and projected > limit:
+            chunks.append("\n".join(current))
+            current = []
+            current_len = 0
+        current.append(line)
+        current_len += len(line) + 1
+    if current:
+        chunks.append("\n".join(current))
+    return chunks or ["—"]
+
+
+def _build_scheduler_embed(runtime, component: str | None) -> discord.Embed:
     jobs = runtime.scheduler.jobs if hasattr(runtime, "scheduler") else []
     filter_token = component.strip().lower() if component else None
     if filter_token:
-        jobs = [job for job in jobs if (getattr(job, "component", "") or "").lower() == filter_token]
+        jobs = [
+            job
+            for job in jobs
+            if (getattr(job, "component", "") or "").lower() == filter_token
+        ]
+
+    title = "Scheduler — Next Runs"
+    if filter_token:
+        title = f"{title} ({filter_token})"
+
+    embed = discord.Embed(title=title, colour=colors.admin)
 
     if not jobs:
         scope = filter_token or "any component"
-        return f"🧭 Scheduled jobs — no jobs under {scope}."
+        embed.description = f"No scheduled jobs under {scope}."
+        return embed
 
     grouped: dict[str, list] = {}
     for job in jobs:
         key = (getattr(job, "component", "default") or "default").lower()
         grouped.setdefault(key, []).append(job)
 
-    lines = ["🧭 Scheduled jobs" + (f" — {filter_token}" if filter_token else "")]
     for comp in sorted(grouped):
-        lines.append(comp)
-        for job in sorted(grouped[comp], key=lambda j: (getattr(j, "next_run", None) or datetime.min)):
+        lines: list[str] = []
+        for job in sorted(
+            grouped[comp], key=lambda j: (getattr(j, "next_run", None) or datetime.min)
+        ):
             next_run = getattr(job, "next_run", None)
             if next_run is None:
                 next_label = "pending"
             else:
                 try:
-                    next_label = next_run.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                    next_label = next_run.astimezone(timezone.utc).strftime(
+                        "%Y-%m-%d %H:%M UTC"
+                    )
                 except Exception:
                     next_label = "pending"
             interval = getattr(job, "interval", None)
@@ -63,7 +95,11 @@ def _build_scheduler_overview(runtime, component: str | None) -> str:
             name = getattr(job, "name", None) or getattr(job, "tag", None) or "job"
             lines.append(f"• {name} — next: {next_label} ({cadence})")
 
-    return "\n".join(lines)
+        for index, chunk in enumerate(_chunk_lines(lines)):
+            label = comp if index == 0 else f"{comp} (cont.)"
+            embed.add_field(name=label, value=chunk, inline=False)
+
+    return embed
 
 class AppAdmin(commands.Cog):
     """Lightweight administrative utilities for bot operators."""
@@ -192,8 +228,8 @@ class AppAdmin(commands.Cog):
         if runtime is None:
             await ctx.reply("Scheduler unavailable.", mention_author=False)
             return
-        message = _build_scheduler_overview(runtime, component)
-        await ctx.reply(message, mention_author=False)
+        embed = _build_scheduler_embed(runtime, component)
+        await ctx.reply(embed=embed, mention_author=False)
 
     @tier("admin")
     @help_metadata(

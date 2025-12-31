@@ -5,6 +5,8 @@ import logging
 
 from discord.ext import commands
 
+from c1c_coreops.helpers import help_metadata, tier
+from c1c_coreops.rbac import admin_only
 from modules.housekeeping.mirralith_overview import run_mirralith_overview_job
 
 log = logging.getLogger("c1c.housekeeping.mirralith.cog")
@@ -17,14 +19,18 @@ class MirralithOverviewCog(commands.Cog):
         self.bot = bot
         self._last_manual_run: float | None = None
 
+    @tier("admin")
+    @help_metadata(function_group="operational", section="utilities", access_tier="admin")
     @commands.group(name="mirralith", invoke_without_command=True)
-    @commands.has_permissions(administrator=True)
+    @admin_only()
     async def mirralith_group(self, ctx: commands.Context) -> None:
         if ctx.invoked_subcommand is None:
             await ctx.send('Use "!mirralith refresh" to regenerate the Mirralith overview.')
 
+    @tier("admin")
+    @help_metadata(function_group="operational", section="utilities", access_tier="admin")
     @mirralith_group.command(name="refresh")
-    @commands.has_permissions(administrator=True)
+    @admin_only()
     async def mirralith_refresh(self, ctx: commands.Context) -> None:
         now = asyncio.get_event_loop().time()
         if self._last_manual_run is not None:
