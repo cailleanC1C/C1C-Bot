@@ -160,22 +160,22 @@ class LeaguesCog(commands.Cog):
         await self.run_leagues_job(trigger="reaction", status_channel=channel)
 
     # === Commands ===
+    @tier("admin")
+    @help_metadata(function_group="operational", section="utilities", access_tier="admin")
     @commands.group(
         name="leagues",
         invoke_without_command=True,
         help="C1C Leagues admin commands.",
     )
-    @tier("admin")
-    @help_metadata(function_group="operational", section="utilities", access_tier="admin")
     @admin_only()
     async def leagues(self, ctx: commands.Context) -> None:
         if ctx.invoked_subcommand is not None:
             return
         await ctx.send("Usage: !leagues post")
 
-    @leagues.command(name="post", help="Manually run the C1C Leagues posting job.")
     @tier("admin")
     @help_metadata(function_group="operational", section="utilities", access_tier="admin")
+    @leagues.command(name="post", help="Manually run the C1C Leagues posting job.")
     @admin_only()
     async def leagues_post(self, ctx: commands.Context) -> None:
         await self.run_leagues_job(trigger="command", status_channel=ctx.channel)
