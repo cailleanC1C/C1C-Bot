@@ -40,9 +40,10 @@ class ResumeCog(commands.Cog):
     )
     @commands.command(
         name="onb",
+        brief="Recruiter-only recovery for onboarding threads.",
         help=(
             "Recruiter-only recovery for onboarding threads. Run `!onb resume @member` "
-            "inside the recruit's ticket to restore their panel (requires Manage Threads)."
+            "inside the recruiter's ticket thread to restore their panel (requires Manage Threads)."
         ),
     )
     @commands.has_permissions(manage_threads=True)
