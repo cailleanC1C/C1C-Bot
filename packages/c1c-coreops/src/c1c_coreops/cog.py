@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import sys
+import textwrap
 import time
 from importlib import import_module
 from dataclasses import asdict, dataclass, replace
@@ -120,6 +121,8 @@ _sheet_cache_load_errors_logged: Set[str] = set()
 _digest_section_errors_logged: Set[str] = set()
 _FIELD_CHAR_LIMIT = 900
 _FIELD_CHUNK_SOFT_LIMIT = 1500
+_EMBED_TOTAL_CHAR_LIMIT = 6000
+_EMBED_FIELD_LIMIT = 25
 _MAX_EMBED_LENGTH = 4500
 _ZERO_WIDTH_SPACE = "\u200b"
 _DIGEST_SHEET_BUCKETS: Tuple[Tuple[str, str], ...] = (
@@ -552,9 +555,112 @@ def _chunk_field_lines(
     return chunks
 
 
+def _split_long_line(line: str, limit: int) -> List[str]:
+    if line == "":
+        return [""]
+    if len(line) <= limit:
+        return [line]
+    return textwrap.wrap(
+        line,
+        width=limit,
+        break_long_words=True,
+        break_on_hyphens=False,
+        replace_whitespace=False,
+        drop_whitespace=False,
+    )
+
+
+def _chunk_field_values(
+    label: str,
+    lines: Iterable[str],
+    *,
+    limit: int = _FIELD_CHAR_LIMIT,
+    code_block_lang: str = "ini",
+) -> List[tuple[str, str]]:
+    prefix = f"```{code_block_lang}\n"
+    suffix = "\n```"
+    body_limit = max(1, limit - len(prefix) - len(suffix))
+    normalized = list(lines) or ["—"]
+
+    safe_lines: list[str] = []
+    for line in normalized:
+        safe_lines.extend(_split_long_line(line, body_limit))
+
+    chunks = _chunk_lines(safe_lines, body_limit)
+    total_chunks = len(chunks)
+    fields: list[tuple[str, str]] = []
+    for index, chunk in enumerate(chunks, start=1):
+        name = label if total_chunks == 1 else f"{label} ({index}/{total_chunks})"
+        value = f"{prefix}{chunk}{suffix}"
+        fields.append((name, value))
+    return fields
+
+
 def _embed_length(embed: discord.Embed) -> int:
     data = embed.to_dict()
     return len(json.dumps(data, ensure_ascii=False))
+
+
+def _embed_char_count(embed: discord.Embed) -> int:
+    total = 0
+    if embed.title:
+        total += len(embed.title)
+    if embed.description:
+        total += len(embed.description)
+    if embed.footer and embed.footer.text:
+        total += len(embed.footer.text)
+    if embed.author and embed.author.name:
+        total += len(embed.author.name)
+    for field in embed.fields:
+        total += len(field.name) + len(field.value)
+    return total
+
+
+def _clone_base_embed(embed: discord.Embed) -> discord.Embed:
+    base_kwargs: dict[str, Any] = {
+        "colour": embed.colour,
+        "title": embed.title,
+        "description": embed.description,
+    }
+    cloned = discord.Embed(**base_kwargs)
+    cloned.timestamp = embed.timestamp
+    if embed.author and embed.author.name:
+        cloned.set_author(
+            name=embed.author.name,
+            icon_url=getattr(embed.author, "icon_url", discord.Embed.Empty),
+        )
+    return cloned
+
+
+def _split_fields_into_embeds(
+    base: discord.Embed,
+    fields: Sequence[tuple[str, str]],
+    *,
+    max_chars: int = _EMBED_TOTAL_CHAR_LIMIT,
+    max_fields: int = _EMBED_FIELD_LIMIT,
+) -> list[discord.Embed]:
+    if not fields:
+        return [base]
+
+    embeds: list[discord.Embed] = []
+    current = _clone_base_embed(base)
+
+    for name, value in fields:
+        if (
+            current.fields
+            and (
+                len(current.fields) >= max_fields
+                or _embed_char_count(current) + len(name) + len(value) > max_chars
+            )
+        ):
+            embeds.append(current)
+            current = _clone_base_embed(base)
+        current.add_field(name=name, value=value, inline=False)
+
+    if current.fields:
+        embeds.append(current)
+
+    return embeds
 
 
 def _split_embeds(embeds: list[discord.Embed]) -> list[discord.Embed]:
@@ -2509,7 +2615,30 @@ class CoreOpsCog(commands.Cog):
             await ctx.reply("No environment data available.", mention_author=False)
             return
 
-        await ctx.reply(embeds=[sanitize_embed(embed) for embed in embeds], mention_author=False)
+        await self._reply_with_env_embeds(
+            ctx, [sanitize_embed(embed) for embed in embeds]
+        )
+
+    async def _reply_with_env_embeds(
+        self, ctx: commands.Context, embeds: Sequence[discord.Embed]
+    ) -> None:
+        if not embeds:
+            return
+
+        batches = [list(embeds[i : i + 10]) for i in range(0, len(embeds), 10)]
+        for index, batch in enumerate(batches):
+            try:
+                if index == 0:
+                    await ctx.reply(embeds=batch, mention_author=False)
+                else:
+                    await ctx.send(embeds=batch)
+            except (TypeError, discord.HTTPException):
+                for embed in batch:
+                    if index == 0:
+                        await ctx.reply(embed=embed, mention_author=False)
+                        index = 1
+                    else:
+                        await ctx.send(embed=embed)
 
     @tier("admin")
     @help_metadata(function_group="operational", section="config_health", access_tier="admin")
@@ -2922,21 +3051,26 @@ class CoreOpsCog(commands.Cog):
         )
         embed.timestamp = timestamp
 
-        if normalized == "channels":
-            for field_name, field_value in _field_chunks(
-                "Channels", self._format_guild_channels(entries)
-            ):
-                embed.add_field(name=field_name, value=field_value, inline=False)
-        elif normalized == "roles":
-            for field_name, field_value in _field_chunks(
-                "Roles", self._format_roles(entries)
-            ):
-                embed.add_field(name=field_name, value=field_value, inline=False)
-        elif normalized == "sheets":
-            for field_name, field_value in _field_chunks(
-                "Sheets & Config", self._format_sheet_keys(entries, sheet_sections)
-            ):
-                embed.add_field(name=field_name, value=field_value, inline=False)
+        if normalized in {"channels", "roles", "sheets"}:
+            if normalized == "channels":
+                fields = _chunk_field_values(
+                    "Channels", self._format_guild_channels(entries)
+                )
+            elif normalized == "roles":
+                fields = _chunk_field_values("Roles", self._format_roles(entries))
+            else:
+                fields = _chunk_field_values(
+                    "Sheets & Config",
+                    self._format_sheet_keys(entries, sheet_sections),
+                )
+
+            embeds = _split_fields_into_embeds(embed, fields)
+            total_pages = len(embeds)
+            if total_pages > 1:
+                for page, page_embed in enumerate(embeds, start=1):
+                    page_embed.set_footer(text=f"Page {page}/{total_pages}")
+            return embeds
+
         else:
             section_title = "Config"
             embed.title = f"{bot_name} — env: {env} — {section_title}"
