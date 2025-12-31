@@ -2823,9 +2823,9 @@ class CoreOpsCog(commands.Cog):
         if toggles:
             for name in sorted(toggles):
                 value = "ON" if toggles[name] else "OFF"
-                toggle_lines.extend(self._format_key_block(name, [value]))
+                toggle_lines.extend(self._format_key_block(name, [(value, "state")]))
         else:
-            toggle_lines.append("—")
+            toggle_lines.append("— (unset)")
         _add_field(embed, "Feature Toggles", toggle_lines)
         embeds.append(embed)
 
@@ -2989,30 +2989,25 @@ class CoreOpsCog(commands.Cog):
             for label, rows in sheet_sections:
                 for row_key, value, resolved in rows:
                     value_text = f"{value}"
-                    if resolved and resolved != "—":
-                        value_text = f"{value_text} → {resolved}"
+                    label = resolved if resolved and resolved != "—" else "value"
                     config_lines.extend(
                         self._format_key_block(
                             f"{label} override: {row_key}",
-                            [value_text],
+                            [(value_text, label)],
                         )
                     )
 
         meta = _config_meta_from_app()
         source = str(meta.get("source", "runtime"))
         status = str(meta.get("status", "ok"))
-        config_lines.extend(
-            self._format_key_block(
-                "Config Loader",
-                [f"{source} · {status}"],
-            )
-        )
+        loader_values = [(source, status)]
         loaded_at = meta.get("loaded_at")
         if loaded_at:
-            config_lines.append(f"  loaded_at: {loaded_at}")
+            loader_values.append((str(loaded_at), "loaded_at"))
         last_error = meta.get("last_error")
         if last_error:
-            config_lines.append(f"  last_error: {last_error}")
+            loader_values.append((str(last_error), "last_error"))
+        config_lines.extend(self._format_key_block("Config Loader", loader_values))
 
         for field_name, field_value in _chunk_field_values(
             "Sheets", sheets_lines or ["—"]
@@ -3080,10 +3075,10 @@ class CoreOpsCog(commands.Cog):
         description = (
             "Environment overview for this bot.\n\n"
             "**Subcommands**\n"
-            "• !env channels — channel/thread/guild IDs\n"
-            "• !env roles — role IDs\n"
-            "• !env sheets — sheet IDs + sheet config\n"
-            "• !env config — runtime/config settings\n\n"
+            "!env channels — channel/thread/guild IDs\n"
+            "!env roles — role IDs\n"
+            "!env sheets — sheet IDs + sheet config\n"
+            "!env config — runtime/config settings\n\n"
             "Secrets are masked. Use subcommands for details."
         )
         embed = self._build_env_base_embed(
@@ -4592,18 +4587,30 @@ class CoreOpsCog(commands.Cog):
             entries[key] = _EnvEntry(key=key, normalized=normalized, display=display_value)
         return entries
 
-    def _format_key_block(self, key: str, values: Sequence[str] | None) -> List[str]:
+    def _format_key_block(
+        self, key: str, values: Sequence[tuple[str, str | None] | str] | None
+    ) -> List[str]:
         lines = [f"**{key}**"]
         if not values:
-            return lines + ["  —"]
+            return lines + ["  — (unset)"]
         for value in values:
-            text = str(value).strip()
-            lines.append(f"  {text if text else '—'}")
+            if isinstance(value, tuple):
+                raw_value, raw_label = value
+            else:
+                raw_value, raw_label = value, None
+            text = str(raw_value).strip()
+            if not text or text == "—":
+                lines.append("  — (unset)")
+                continue
+            label = str(raw_label).strip() if raw_label is not None else "value"
+            if not label:
+                label = "value"
+            lines.append(f"  {text} → {label}")
         return lines
 
     def _format_simple_line(self, key: str, entry: Optional[_EnvEntry]) -> List[str]:
         value = entry.display if entry else "—"
-        return self._format_key_block(key, [value])
+        return self._format_key_block(key, [(value, "value")])
 
     def _format_entry_lines(
         self,
@@ -4677,7 +4684,7 @@ class CoreOpsCog(commands.Cog):
         if key == "PANEL_THREAD_MODE":
             return self._format_simple_line(key, entry)
         if entry is None:
-            return self._format_key_block(key, ["—"])
+            return self._format_key_block(key, None)
         ids = self._extract_visible_ids(key, entry.normalized)
         if not ids:
             return self._format_simple_line(key, entry)
@@ -4709,7 +4716,7 @@ class CoreOpsCog(commands.Cog):
 
     def _format_role_entry(self, key: str, entry: Optional[_EnvEntry]) -> List[str]:
         if entry is None:
-            return self._format_key_block(key, ["—"])
+            return self._format_key_block(key, None)
         ids = self._extract_visible_ids(key, entry.normalized)
         if not ids:
             return self._format_simple_line(key, entry)
@@ -4741,35 +4748,33 @@ class CoreOpsCog(commands.Cog):
             for label, rows in sheet_sections:
                 for row_key, value, resolved in rows:
                     value_text = f"{value}"
-                    if resolved and resolved != "—":
-                        value_text = f"{value_text} → {resolved}"
+                    label = resolved if resolved and resolved != "—" else "value"
                     lines.extend(
                         self._format_key_block(
                             f"{label} override: {row_key}",
-                            [value_text],
+                            [(value_text, label)],
                         )
                     )
 
         toggles = get_feature_toggles()
-        toggle_lines: list[str] = []
+        toggle_values: list[tuple[str, str]] | None = None
         if toggles:
+            toggle_values = []
             for name in sorted(toggles):
                 value = "ON" if toggles[name] else "OFF"
-                toggle_lines.append(f"{name}: {value}")
-        else:
-            toggle_lines.append("(none)")
-        lines.extend(self._format_key_block("Feature Toggles", toggle_lines))
+                toggle_values.append((value, name))
+        lines.extend(self._format_key_block("Feature Toggles", toggle_values))
 
         meta = _config_meta_from_app()
         source = str(meta.get("source", "runtime"))
         status = str(meta.get("status", "ok"))
-        loader_lines = [f"{source} · {status}"]
+        loader_lines: list[tuple[str, str | None]] = [(source, status)]
         loaded_at = meta.get("loaded_at")
         if loaded_at:
-            loader_lines.append(f"loaded_at: {loaded_at}")
+            loader_lines.append((str(loaded_at), "loaded_at"))
         last_error = meta.get("last_error")
         if last_error:
-            loader_lines.append(f"last_error: {last_error}")
+            loader_lines.append((str(last_error), "last_error"))
         lines.extend(self._format_key_block("Config Loader", loader_lines))
 
         return lines or ["—"]
@@ -4869,13 +4874,13 @@ class CoreOpsCog(commands.Cog):
         for key in sorted(secrets):
             entry = entries.get(key)
             if entry is None:
-                lines.extend(self._format_key_block(key, ["—"]))
+                lines.extend(self._format_key_block(key, None))
                 continue
             value = entry.display
             if value == "—":
-                lines.extend(self._format_key_block(key, ["—"]))
+                lines.extend(self._format_key_block(key, None))
             else:
-                lines.extend(self._format_key_block(key, [f"{value} (masked)"]))
+                lines.extend(self._format_key_block(key, [(value, "masked")]))
         return lines
 
     def _format_id_lines(self, key: str, ids: Sequence[int]) -> List[str]:
@@ -4892,15 +4897,13 @@ class CoreOpsCog(commands.Cog):
             cleaned.append(snowflake)
 
         if not cleaned:
-            return self._format_key_block(key, ["—"])
+            return self._format_key_block(key, None)
 
-        values: List[str] = []
+        values: List[tuple[str, str | None]] = []
         for snowflake in cleaned:
             resolved = _trim_resolved_label(self._id_resolver.resolve(self.bot, snowflake))
-            if resolved and resolved != "—":
-                values.append(f"{snowflake} → {resolved}")
-            else:
-                values.append(str(snowflake))
+            label = resolved if resolved and resolved != "—" else "unresolved"
+            values.append((str(snowflake), label))
         return self._format_key_block(key, values)
 
     def _format_id_lines_with_missing(
