@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Iterable, Mapping
 import discord
 from discord.ext import commands
 
+from c1c_coreops.helpers import help_metadata, tier
+from c1c_coreops.rbac import admin_only
 from modules.community.leagues.config import (
     LeagueBundle,
     LeagueSpec,
@@ -163,14 +165,18 @@ class LeaguesCog(commands.Cog):
         invoke_without_command=True,
         help="C1C Leagues admin commands.",
     )
-    @commands.has_guild_permissions(manage_guild=True)
+    @tier("admin")
+    @help_metadata(function_group="operational", section="utilities", access_tier="admin")
+    @admin_only()
     async def leagues(self, ctx: commands.Context) -> None:
         if ctx.invoked_subcommand is not None:
             return
         await ctx.send("Usage: !leagues post")
 
     @leagues.command(name="post", help="Manually run the C1C Leagues posting job.")
-    @commands.has_guild_permissions(manage_guild=True)
+    @tier("admin")
+    @help_metadata(function_group="operational", section="utilities", access_tier="admin")
+    @admin_only()
     async def leagues_post(self, ctx: commands.Context) -> None:
         await self.run_leagues_job(trigger="command", status_channel=ctx.channel)
 

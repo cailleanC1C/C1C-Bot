@@ -8,7 +8,8 @@ import re
 import discord
 from discord.ext import commands
 
-from c1c_coreops import rbac
+from c1c_coreops.helpers import help_metadata, tier
+from c1c_coreops.rbac import admin_only
 from shared.sheets import reaction_roles
 from shared.sheets.cache_service import cache
 
@@ -285,15 +286,12 @@ class ReactionRolesCog(commands.Cog):
             },
         )
 
+    @tier("admin")
+    @help_metadata(function_group="operational", section="permissions", access_tier="admin")
     @commands.command(name="reactrole")
     @commands.guild_only()
+    @admin_only()
     async def reactrole_cmd(self, ctx: commands.Context, key: str) -> None:  # type: ignore[override]
-        if not rbac.is_admin_member(ctx.author):
-            await ctx.send(
-                "Only CoreOps admins can wire reaction roles. Please poke an admin if you need one set up.",
-            )
-            return
-
         target = None
         if ctx.message.reference and isinstance(ctx.message.reference.resolved, discord.Message):
             target = ctx.message.reference.resolved
