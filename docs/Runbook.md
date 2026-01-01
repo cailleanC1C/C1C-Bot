@@ -112,8 +112,8 @@ when onboarding, welcome, recruitment, or placement flows misbehave.
   - Confirm the FeatureToggles sheet still lists every module expected in
     [`docs/modules/`](modules).
 - **Monthly:**
-  - Audit `config/bot_access_lists.json` via `!perm bot list --json` and compare
-    against Discord channel reality.
+  - Validate the Permissions UI (`!perm`) in the test guild before major roster
+    rotations.
   - Validate onboarding question tabs with `!ops onb check` plus a manual ticket
     walkthrough in the test guild.
   - Re-run the welcome template cache with `!welcome-refresh` to ensure new copy
@@ -127,4 +127,4 @@ when onboarding, welcome, recruitment, or placement flows misbehave.
   mitigation tips.
 - [`docs/ops/Watchers.md`](ops/Watchers.md) — watcher gating and scheduler details.
 
-Doc last updated: 2025-12-05 (v0.9.8.2)
+Doc last updated: 2025-12-31 (v0.9.8.2)

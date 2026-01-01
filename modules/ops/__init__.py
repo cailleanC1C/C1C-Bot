@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 __all__ = [
-    "permissions_sync",
-    "watchers_permissions",
+    "permissions_ui",
     "server_map",
     "cluster_role_map",
 ]

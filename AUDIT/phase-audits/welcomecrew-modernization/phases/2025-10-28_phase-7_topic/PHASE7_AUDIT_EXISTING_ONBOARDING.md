@@ -5,7 +5,6 @@
 | --- | --- | --- |
 | `modules/onboarding/watcher_welcome.py` | ADAPT | Shared watcher base already logs thread closures; needs new dialog trigger + 🧭 fallback handling layered on existing closure flow. 【F:modules/onboarding/watcher_welcome.py†L70-L175】 |
 | `modules/onboarding/watcher_promo.py` | ADAPT | Mirrors welcome watcher for promo threads; reuse structure but extend with dialog + manual fallback behavior tied to promo parent. 【F:modules/onboarding/watcher_promo.py†L70-L170】 |
-| `modules/ops/watchers_permissions.py` | KEEP | Cog keeps role overwrites in sync; no Phase 7 code changes expected beyond optional reuse of logging helper. 【F:modules/ops/watchers_permissions.py†L16-L66】 |
 
 ## 2) Config sources map
 - **welcome_dialog**
@@ -36,7 +35,6 @@
 ## 3) Import hygiene
 - `modules/onboarding/watcher_welcome.py` — **OK** (defines helpers/Cog/async setup only; no work runs on import). 【F:modules/onboarding/watcher_welcome.py†L1-L175】
 - `modules/onboarding/watcher_promo.py` — **OK** (mirrors welcome watcher; import only binds definitions). 【F:modules/onboarding/watcher_promo.py†L1-L170】
-- `modules/ops/watchers_permissions.py` — **OK** (Cog definitions plus async `setup`; actual work deferred to Discord events). 【F:modules/ops/watchers_permissions.py†L16-L66】
 
 ## 4) Event hooks we will extend
 - `modules/onboarding/watcher_welcome.py::WelcomeWatcher.on_thread_update(before, after)` — listens for welcome threads transitioning to archived/locked, then logs closure to Sheets and runtime channel. 【F:modules/onboarding/watcher_welcome.py†L109-L141】
@@ -44,7 +42,6 @@
 - `modules/onboarding/watcher_promo.py::PromoWatcher.on_thread_update(before, after)` — identical pattern for promo threads; extend for promo dialog fallback. 【F:modules/onboarding/watcher_promo.py†L104-L137】
 - `modules/onboarding/watcher_promo.py::_ThreadClosureWatcher._record_closure(thread)` — parallel logging routine for promo closures; same insertion point for 🧭 dialog orchestration. 【F:modules/onboarding/watcher_promo.py†L112-L137】
 - `modules/onboarding/watcher_*::_announce(bot, message)` — helper creating background tasks that post watcher state to the runtime log channel via `rt.send_log_message`; reuse for dialog state notifications. 【F:modules/onboarding/watcher_welcome.py†L61-L68】【F:modules/onboarding/watcher_promo.py†L61-L68】
-- `modules/ops/watchers_permissions.py::BotPermissionWatcher.on_guild_channel_create(channel)` / `on_guild_channel_update(before, after)` — ops watcher updating permission overwrites; remains a reference for log-channel messaging style. 【F:modules/ops/watchers_permissions.py†L23-L63】
 
 ## 5) Gaps & decisions (to inform PR #2–#4)
 - Welcome/promo watchers never check `welcome_dialog`, so the dialog feature cannot be toggled on/off yet — **Recommendation:** gate new dialog+fallback logic in `modules/onboarding/watcher_welcome.setup` / `watcher_promo.setup` by adding `feature_flags.is_enabled("welcome_dialog")` alongside existing toggles. 【F:modules/onboarding/watcher_welcome.py†L152-L175】【F:modules/common/feature_flags.py†L256-L266】

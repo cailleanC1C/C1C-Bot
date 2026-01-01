@@ -6,7 +6,7 @@ refreshing caches, and nudging Render so the container never idles. This single
 source of truth covers every automation hook:
 
 - **Event-driven watchers** listen to welcome/promo threads and infrastructure
-  events, writing to Sheets and keeping permissions aligned.
+  events, writing to Sheets and keeping onboarding state aligned.
 - **Scheduled jobs** preload caches, post the Daily Recruiter Update, and surface
   health telemetry so command handlers always operate against fresh data.
 - **Keepalive** pings the public route to prevent Render from hibernating,
@@ -18,7 +18,6 @@ source of truth covers every automation hook:
 | --- | --- | --- | --- | --- | --- |
 | **Welcome watcher** | `modules.onboarding.watcher_welcome.WelcomeWatcher` | Ticket Tool greeting, 🎫 emoji, manual ticket close, Ticket Tool close message | Posts/reposts the onboarding questionnaire in the configured welcome channel, records answers into the onboarding Sheet, prompts for clan confirmation, reconciles reservations, and renames threads on closure. Also emits the onboarding lifecycle notice during startup. | `c1c.onboarding.welcome_watcher` logger with `✅/📘 Welcome watcher` startup lines (channel + channel_id) and `Welcome panel` lifecycle logs scoped to `WELCOME_CHANNEL_ID`. | Requires `WELCOME_CHANNEL_ID`, `WELCOME_TICKETS_TAB`, and FeatureToggles keys `welcome_enabled`, `enable_welcome_hook`, `welcome_dialog`, and `recruitment_welcome`. |
 | **Promo watcher** | `modules.onboarding.watcher_promo.PromoTicketWatcher` | Promo ticket open + close events | Logs promo ticket lifecycle events to `PROMO_TICKETS_TAB`, maps R/M/L prefixes to type strings, attaches the Open Questions panel for promo triggers in the configured promo channel, and prompts for clan tag/progression on closure. | `c1c.onboarding.promo_watcher` logger with `✅ Promo watcher` startup entries plus `Promo panel` lifecycle logs (trigger + flow) scoped to `PROMO_CHANNEL_ID`. | Requires `PROMO_CHANNEL_ID` plus FeatureToggles keys `promo_enabled` and `enable_promo_hook`. |
-| **Bot permission watcher** | `modules.ops.watchers_permissions.BotPermissionWatcher` | `on_guild_channel_create` and `on_guild_channel_update` (category move) | Automatically reapplies the bot-role overwrite profile when new channels are created or moved under an allowed category, matching the behaviour of `!perm bot sync`. | Posts `🔐 Bot permissions applied automatically …` via `modules.common.runtime.send_log_message`; WARN lines log as `Watcher failed to update overwrites` when Discord rejects the write. | Respects `config/bot_access_lists.json` and the persisted `threads_default` option managed by the `!perm bot` command group. |
 | **League submission watcher** | `modules.community.leagues.cog.LeaguesCog` | Image attachments in `LEAGUES_SUBMISSION_CHANNEL_ID` | Grants `C1C_LEAGUE_ROLE_ID` on the first qualifying attachment so submitters are tagged for weekly announcements. | `c1c.community.leagues` info line on successful grants. | Requires `LEAGUES_SUBMISSION_CHANNEL_ID` and `C1C_LEAGUE_ROLE_ID`. |
 
 ### Scheduled jobs & loops
@@ -84,9 +83,6 @@ runtime keeps the bot “warm” in two additional layers:
 - **Daily Recruiter Update.** Use `!ops health` to check the `recruitment_reports`
   flag and verify that `scheduler_daily_recruiter_update` is running. The
   scheduler can be restarted via `modules.recruitment.reporting.daily_recruiter_update.ensure_scheduler_started()`.
-- **Permission watcher.** When new channels lack overwrites, run `!perm bot sync
-  --dry false` to remediate and review `Watcher failed to update overwrites`
-  logs for Discord-side errors (missing permissions, manual denies, etc.).
 
 ## Related docs
 - [`docs/Architecture.md`](../Architecture.md) — runtime surfaces and scheduler
@@ -99,4 +95,4 @@ runtime keeps the bot “warm” in two additional layers:
   scheduler wiring, and watchdog contracts.
 - [`docs/modules/`](../modules) — module owners for the watchers listed here.
 
-Doc last updated: 2025-12-06 (v0.9.8.2)
+Doc last updated: 2025-12-31 (v0.9.8.2)

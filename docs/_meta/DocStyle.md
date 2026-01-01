@@ -13,7 +13,7 @@ surfaces should link here instead of repeating common rules.
 - ♻️ refresh / restart / cache
 - 🧭 scheduler / cadence controllers
 - 🐶 watchdog / keepalive
-- 🔐 permissions / RBAC sync
+- 🔐 permissions / access controls
 - 📘 lifecycle / onboarding progress
 - 📋 neutral/info catch-all when none of the above apply.
 
@@ -130,4 +130,4 @@ this UX format.
 - [`docs/ops/CommandMatrix.md`](../ops/CommandMatrix.md) — runtime layout of the
   help system.
 
-Doc last updated: 2025-11-17 (v0.9.8.2)
+Doc last updated: 2025-12-31 (v0.9.8.2)

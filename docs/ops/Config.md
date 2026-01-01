@@ -188,6 +188,10 @@ Blacklist keys for server map rendering are environment variables (`SERVER_MAP_C
 
 The `SERVER_MAP` FeatureToggle in the FeatureToggles worksheet still gates the automation. These blacklist keys only hide specific entries; they do not disable scheduling or posting.
 
+Permissions UI blacklist keys are also environment variables:
+- `PERMS_BLACKLIST_CHANNEL_IDS` — comma-separated channel IDs excluded from `!perm`.
+- `PERMS_BLACKLIST_CATEGORY_IDS` — comma-separated category IDs excluded from `!perm` (and their child channels).
+
 ### Recruitment sheet keys
 - 'CLANS_TAB'
 - 'WELCOME_TEMPLATES_TAB'
@@ -281,7 +285,6 @@ Feature Toggles:
   housekeeping_enabled = ON
   mirralith_overview_enabled = ON
   ops_permissions_enabled = ON
-  ops_watchers_enabled = ON
   promo_watcher_enabled = ON
   resume_command_enabled = ON
   welcome_watcher_enabled = ON
@@ -293,7 +296,7 @@ Feature Toggles:
 - `PROMO_ENABLED`, `ENABLE_PROMO_HOOK`, `promo_enabled`, `enable_promo_hook`, `promo_dialog` — promo watcher activation + dialog gating.
 - `welcome_dialog`, `promo_dialog` — dialog/panel toggles; promo dialog is reserved for future onboarding steps.
 - `housekeeping_enabled`, `mirralith_overview_enabled` — gate cleanup/keepalive cadences and the Mirralith overview autoposter scheduler.
-- `ops_permissions_enabled`, `ops_watchers_enabled` — gate Permissions Sync registration and watcher telemetry commands.
+- `ops_permissions_enabled` — gate Permissions UI registration.
 - `welcome_watcher_enabled`, `promo_watcher_enabled`, `resume_command_enabled` — gate onboarding watcher registration and `!onb resume`; these default to ON when rows are missing so existing deployments remain unchanged.
 
 ### Milestones sheet keys
@@ -336,7 +339,6 @@ Feature Toggles:
   housekeeping_enabled,TRUE
   mirralith_overview_enabled,TRUE
   ops_permissions_enabled,TRUE
-  ops_watchers_enabled,TRUE
   welcome_watcher_enabled,TRUE
   promo_watcher_enabled,TRUE
   resume_command_enabled,TRUE
@@ -349,7 +351,7 @@ Feature Toggles:
 **Behavior**
 
 - Missing tab or header ⇒ all features disabled; emits one admin-ping warning in the runtime log channel.
-- Missing feature row ⇒ that feature disabled; logs one admin-ping warning the first time the key is evaluated. Housekeeping/ops/onboarding loader toggles (`housekeeping_enabled`, `mirralith_overview_enabled`, `ops_permissions_enabled`, `ops_watchers_enabled`, `welcome_watcher_enabled`, `promo_watcher_enabled`, `resume_command_enabled`) default to ON when absent so current deployments remain stable.
+- Missing feature row ⇒ that feature disabled; logs one admin-ping warning the first time the key is evaluated. Housekeeping/ops/onboarding loader toggles (`housekeeping_enabled`, `mirralith_overview_enabled`, `ops_permissions_enabled`, `welcome_watcher_enabled`, `promo_watcher_enabled`, `resume_command_enabled`) default to ON when absent so current deployments remain stable.
 - Invalid value ⇒ disabled; logs one admin-ping warning per feature key.
 - Startup continues regardless; platform services (cache, scheduler, watchdog, RBAC) are never gated.
 - The `recruitment_reports` row powers the Daily Recruiter Update (scheduler + manual command). The `placement_*` rows still control stub modules that only log load state.
@@ -371,4 +373,4 @@ Feature enable/disable is always sourced from the FeatureToggles worksheet; ENV 
 
 > **Template note:** The `.env.example` file in this directory mirrors the tables below. Treat that file as the canonical template for new deployments and update both assets together.
 
-Doc last updated: 2025-12-07 (v0.9.8.3)
+Doc last updated: 2025-12-31 (v0.9.8.2)

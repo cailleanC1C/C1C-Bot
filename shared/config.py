@@ -65,6 +65,8 @@ __all__ = [
     "get_keepalive_channel_ids",
     "get_keepalive_thread_ids",
     "get_keepalive_interval_hours",
+    "get_perms_blacklist_channel_ids",
+    "get_perms_blacklist_category_ids",
     "get_onboarding_cleanup_after_summary",
     "get_panel_thread_mode",
     "get_panel_fixed_thread_id",
@@ -501,6 +503,12 @@ def _load_config() -> Dict[str, object]:
         "KEEPALIVE_INTERVAL_HOURS": _int_env(
             "KEEPALIVE_INTERVAL_HOURS", 144, min_value=1
         ),
+        "PERMS_BLACKLIST_CHANNEL_IDS": _int_set(
+            os.getenv("PERMS_BLACKLIST_CHANNEL_IDS")
+        ),
+        "PERMS_BLACKLIST_CATEGORY_IDS": _int_set(
+            os.getenv("PERMS_BLACKLIST_CATEGORY_IDS")
+        ),
         "PANEL_THREAD_MODE": (os.getenv("PANEL_THREAD_MODE") or "same").strip().lower() or "same",
         "PANEL_FIXED_THREAD_ID": _first_int(os.getenv("PANEL_FIXED_THREAD_ID")),
         "BOT_VERSION": os.getenv("BOT_VERSION", "dev"),
@@ -604,7 +612,6 @@ class _ConfigFeatures:
         "housekeeping_enabled",
         "mirralith_overview_enabled",
         "ops_permissions_enabled",
-        "ops_watchers_enabled",
         "promo_watcher_enabled",
         "resume_command_enabled",
         "shard_tracker_enabled",
@@ -615,7 +622,6 @@ class _ConfigFeatures:
         self.housekeeping_enabled = True
         self.mirralith_overview_enabled = True
         self.ops_permissions_enabled = True
-        self.ops_watchers_enabled = True
         self.promo_watcher_enabled = True
         self.resume_command_enabled = True
         self.shard_tracker_enabled = False
@@ -628,7 +634,6 @@ class _ConfigFeatures:
             values.get("mirralith_overview_enabled", True)
         )
         self.ops_permissions_enabled = bool(values.get("ops_permissions_enabled", True))
-        self.ops_watchers_enabled = bool(values.get("ops_watchers_enabled", True))
         self.promo_watcher_enabled = bool(values.get("promo_watcher_enabled", True))
         self.resume_command_enabled = bool(values.get("resume_command_enabled", True))
         candidates = ("shardtracker", "shard_tracker", "shard_tracker_enabled")
@@ -1029,6 +1034,20 @@ def get_keepalive_interval_hours(default: int = 144) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def get_perms_blacklist_channel_ids() -> Set[int]:
+    value = _CONFIG.get("PERMS_BLACKLIST_CHANNEL_IDS")
+    if isinstance(value, set):
+        return set(value)
+    return set()
+
+
+def get_perms_blacklist_category_ids() -> Set[int]:
+    value = _CONFIG.get("PERMS_BLACKLIST_CATEGORY_IDS")
+    if isinstance(value, set):
+        return set(value)
+    return set()
 
 
 def get_onboarding_cleanup_after_summary() -> bool:

@@ -21,7 +21,7 @@ def _ensure_src_on_path() -> None:
 _ensure_src_on_path()
 
 from c1c_coreops.cog import CoreOpsCog  # noqa: E402  pylint: disable=wrong-import-position
-from modules.ops.permissions_sync import BotPermissionCog  # noqa: E402  pylint: disable=wrong-import-position
+from modules.ops.permissions_ui import PermissionsUICog  # noqa: E402  pylint: disable=wrong-import-position
 from cogs.recruitment_clan_profile import ClanProfileCog  # noqa: E402  pylint: disable=wrong-import-position
 from cogs.recruitment_member import RecruitmentMember  # noqa: E402  pylint: disable=wrong-import-position
 from cogs.recruitment_recruiter import RecruiterPanelCog  # noqa: E402  pylint: disable=wrong-import-position
@@ -42,7 +42,7 @@ def test_operational_metadata_exposed(monkeypatch: pytest.MonkeyPatch) -> None:
     async def runner() -> None:
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
         await bot.add_cog(CoreOpsCog(bot))
-        await bot.add_cog(BotPermissionCog(bot))
+        await bot.add_cog(PermissionsUICog(bot))
         await bot.add_cog(RecruiterPanelCog(bot))
         await bot.add_cog(WelcomeBridge(bot))
         await bot.add_cog(RecruitmentMember(bot))

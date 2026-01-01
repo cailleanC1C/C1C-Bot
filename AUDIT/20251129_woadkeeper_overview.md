@@ -20,7 +20,7 @@ The Woadkeeper is the unified Discord bot in this repo that merges prior recruit
 | Recruitment welcome service | `modules/recruitment/welcome.py` | Builds templated welcome messages using cached templates and sends to threads; refreshes cache. | Staff | Recruitment templates sheet. | Yes – sheet IDs, role/channel config. |
 | Recruitment reporting | `modules/recruitment/reporting/daily_recruiter_update.py` | Generates Daily Recruiter Update embeds and posts to configured destination. | Admin/Staff | Recruitment sheet (FeatureToggles + report tabs). | Yes – report destination env, feature toggle. |
 | Reservation jobs | `modules/placement/reservation_jobs.py` | Scheduled reminders and auto-release tasks for reservation ledger; logs and recomputes availability. | Admin/Recruiter | Reservations sheet ledger. | Yes – recruiter channel/thread env IDs, feature toggles. |
-| Permission watcher | `modules/ops/watchers_permissions.py` | Applies bot permission profile on new/moved channels. | Admin/Internal | No | Yes – uses configured permissions profile loaded at runtime. |
+| Permissions UI | `modules/ops/permissions_ui.py` | Admin `!perm` interactive permissions UI for role overwrite management. | Admin | No | Yes – uses permissions blacklist env keys. |
 | Cleanup watcher | `modules/ops/cleanup_watcher.py` | Periodic cleanup of configured threads (bulk delete old panel messages). | Admin/Internal | No | Yes – `CLEANUP_THREAD_IDS`, `CLEANUP_AGE_HOURS`. |
 | Keepalive helper | `modules/common/keepalive.py` | Periodic HTTP pings to keep service alive; configurable URL/interval. | Internal | No | Yes – `KEEPALIVE_URL`, `KEEPALIVE_INTERVAL`, `RENDER_EXTERNAL_URL`, `PORT`. |
 | Server map utilities | `modules/ops/server_map*.py` | Builds automated server map posts with category/channel filtering. | Admin/Internal | No direct sheet dependency. | Yes – server map toggles and channel IDs. |
@@ -31,12 +31,13 @@ The Woadkeeper is the unified Discord bot in this repo that merges prior recruit
 - **`!whoweare`** (`AppAdmin.whoweare`): Admin-only; renders Who We Are roster from recruitment sheet role map tab into configured channel, with cleanup of previous bot posts and logging.【F:cogs/app_admin.py†L130-L205】
 - **`!welcome-refresh`** (`WelcomeBridge.welcome_refresh`): Admin-only; reloads cached welcome templates for staff command parity.【F:cogs/recruitment_welcome.py†L59-L70】
 - **`!report recruiters`** (`RecruitmentReporting.report_group`): Admin-only; posts Daily Recruiter Update if the feature toggle is enabled and logs outcome; replies with usage if invoked incorrectly.【F:cogs/recruitment_reporting.py†L21-L65】
+- **`!perm`** (`PermissionsUICog.perm`): Admin-only; launches the interactive Permissions UI for role overwrites.【F:modules/ops/permissions_ui.py†L900-L934】
 
 **Staff/Restricted operational commands**
 - **`!welcome`** (`WelcomeBridge.welcome`): Staff-only (CoreOps staff/admin roles); posts templated welcome message for specified clan and optional note, using recruitment templates cache.【F:cogs/recruitment_welcome.py†L39-L57】
 
 **Diagnostic/maintenance watchers (no explicit commands)**
-- Cleanup watcher, permissions watcher, keepalive helper, and reservation jobs operate in the background (see §4.5.3); no direct commands but rely on env configuration.
+- Cleanup watcher, keepalive helper, and reservation jobs operate in the background (see §4.5.3); no direct commands but rely on env configuration.
 
 ## 4.4. Configuration Map
 ### 1) ENV variables
@@ -50,7 +51,7 @@ The Woadkeeper is the unified Discord bot in this repo that merges prior recruit
 - **Reservations sheet**: Reservation ledger read/write for reminders and auto-release logic; interacts with welcome ticket parsing for thread names.【F:modules/placement/reservation_jobs.py†L1-L65】
 
 ### 3) Local config files
-- `config/bot_access_lists.json` (RBAC allow-lists) loaded via shared config helpers (not modified here); feature toggles resolved from sheet config per guardrails.
+- No local permission allow-list files; permissions are managed via the Permissions UI.
 
 ## 4.5. Flow Descriptions
 ### 4.5.1. Welcome Flow
@@ -75,7 +76,6 @@ The Woadkeeper is the unified Discord bot in this repo that merges prior recruit
 - **Welcome watcher**: Registers persistent panel view on ready, monitors welcome threads for panel interactions, reminders (3h/5h warnings), auto-close after 36h, and posts summaries/reservation updates; backed by reminder task scheduler started in setup.【F:modules/onboarding/watcher_welcome.py†L1275-L1344】【F:modules/onboarding/watcher_welcome.py†L2460-L2483】
 - **Promo watcher**: Listens for promo ticket messages/closures in promo channel; posts panel and records ticket rows when toggles enabled.【F:modules/onboarding/watcher_promo.py†L700-L744】
 - **Reservation jobs**: Daily reminder and auto-release tasks for reservations ledger; iterates due rows, posts reminders to recruiter channel, recomputes availability context, and logs releases.【F:modules/placement/reservation_jobs.py†L1-L120】
-- **Permission watcher**: Applies bot permission profile to new/moved channels to keep overwrites in sync.【F:modules/ops/watchers_permissions.py†L17-L64】
 - **Cleanup watcher**: Deletes old messages in configured threads on a schedule using env-configured thread IDs and age threshold.【F:modules/ops/cleanup_watcher.py†L10-L80】
 - **Keepalive**: Periodic HTTP pings using env-configured URL/interval or Render URL+port fallback to keep service responsive.【F:modules/common/keepalive.py†L21-L120】
 
@@ -88,4 +88,3 @@ The Woadkeeper is the unified Discord bot in this repo that merges prior recruit
 - Promo watcher relies on HTML trigger comments and thread name parsing; unclear whether Ticket Tool always injects the trigger markers in all environments—worth validating against production channel history.【F:modules/onboarding/watcher_promo.py†L1-L70】
 - Reservation job feature gating spans multiple keys (`FEATURE_RESERVATIONS`, `placement_reservations`), suggesting legacy toggle aliases; confirm which sheet keys remain authoritative before altering reminders/autorelease cadence.【F:modules/placement/reservation_jobs.py†L13-L24】
 - Welcome watcher writes reservation updates and ticket logs; interplay between manual `!welcome` command and automated dialog summaries may require further parity checks (not visible in this audit).【F:cogs/recruitment_welcome.py†L39-L70】【F:modules/onboarding/watcher_welcome.py†L1805-L2483】
-

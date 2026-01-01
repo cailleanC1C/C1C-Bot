@@ -47,7 +47,7 @@ docs/ops/.env.example
   3. Reflected in CI/guardrails as needed.
 
 **RBAC / Access Lists**
-- Path: `config/bot_access_lists.json` — this file contains channel/guild allow-lists and `options.threads_default`. **IDs only**; numeric; comma-separated if needed.
+- Permissions UI blacklists: `PERMS_BLACKLIST_CHANNEL_IDS`, `PERMS_BLACKLIST_CATEGORY_IDS` — **IDs only**; numeric; comma-separated if needed.
 - `GUILD_IDS` env var exists for allowed guilds.
 
 **Deploy / Runtime**
@@ -121,10 +121,10 @@ For PR formatting rules, labels, and doc footers see `docs/contracts/Collaborati
 - [ ] `DISCORD_TOKEN` present in env.example (no value in repo).
 - [ ] `GSPREAD_CREDENTIALS` or `GOOGLE_SERVICE_ACCOUNT_JSON` present in env.example.
 - [ ] Sheet ID env entries present in env.example for any sheet used (e.g., `RECRUITMENT_SHEET_ID`, `ONBOARDING_SHEET_ID`, etc.).
-- [ ] `config/bot_access_lists.json` exists and contains numeric IDs with `options.threads_default`.
+- [ ] `PERMS_BLACKLIST_CHANNEL_IDS` / `PERMS_BLACKLIST_CATEGORY_IDS` set when exclusions are required (IDs only).
 - [ ] `LOG_CHANNEL_ID` present in env.example and used by logging code.
 - [ ] Any change to access/intents documented in PR and this file updated in same PR.
 
 ---
 
-Doc last updated: 2025-11-30 (v0.9.8.1)
+Doc last updated: 2025-12-31 (v0.9.8.2)

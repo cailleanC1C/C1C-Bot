@@ -33,7 +33,7 @@ def _resolve_member(target):
 
 from c1c_coreops.cog import CoreOpsCog, _reset_help_diagnostics_cache
 from c1c_coreops.helpers import tier
-from modules.ops.permissions_sync import BotPermissionCog
+from modules.ops.permissions_ui import PermissionsUICog
 from cogs.recruitment_clan_profile import ClanProfileCog
 from cogs.recruitment_member import RecruitmentMember
 from cogs.recruitment_recruiter import RecruiterPanelCog
@@ -179,7 +179,7 @@ async def _gather_help_embeds(
     bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
 
     await bot.add_cog(CoreOpsCog(bot))
-    await bot.add_cog(BotPermissionCog(bot))
+    await bot.add_cog(PermissionsUICog(bot))
     await bot.add_cog(RecruiterPanelCog(bot))
     await bot.add_cog(WelcomeBridge(bot))
     await bot.add_cog(RecruitmentMember(bot))
@@ -227,7 +227,7 @@ def test_help_admin_view_usage_policy(monkeypatch: pytest.MonkeyPatch) -> None:
         assert "`!ops checksheet`" in admin_text
         assert "`!ops config`" in admin_text
         assert "`!welcome-refresh`" in admin_text
-        assert "`!perm bot list`" in admin_text
+        assert "`!perm`" in admin_text
         assert "`@Bot help`" not in admin_text
         assert "`@Bot ping`" not in admin_text
         assert "`!clan`" not in admin_text
@@ -272,7 +272,7 @@ def test_help_staff_view(monkeypatch: pytest.MonkeyPatch) -> None:
         assert "`!ops config`" not in staff_text
         assert "`!welcome-refresh`" not in staff_text
         assert "`!refresh all`" not in staff_text
-        assert "`!perm bot list`" not in staff_text
+        assert "`!perm`" not in staff_text
 
         assert "`@Bot help`" in user_text
         assert "`@Bot ping`" in user_text

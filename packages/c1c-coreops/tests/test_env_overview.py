@@ -285,7 +285,6 @@ def test_feature_defaults_enable_new_toggles():
     assert shared_config.features.housekeeping_enabled is True
     assert shared_config.features.mirralith_overview_enabled is True
     assert shared_config.features.ops_permissions_enabled is True
-    assert shared_config.features.ops_watchers_enabled is True
     assert shared_config.features.promo_watcher_enabled is True
     assert shared_config.features.resume_command_enabled is True
     assert shared_config.features.welcome_watcher_enabled is True

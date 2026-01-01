@@ -37,7 +37,7 @@ Admins handle the bigger picture:
 - Caches staying fresh  
 - Sheets staying clean  
 - Reservation ledger behaving  
-- Permissions syncing properly  
+- Permissions UI working properly  
 - Onboarding running without stalling  
 Start with:
 - **Ops Runbook:** `docs/Runbook.md`
@@ -56,7 +56,7 @@ If you’re curious how the bot thinks, check:
   - `docs/modules/Recruitment.md`  
   - `docs/modules/Placement.md`  
   - `docs/modules/CoreOps.md`  
-  - `docs/modules/PermissionsSync.md`
+  - `docs/modules/PermissionsUI.md`
     
 Each module doc explains what that subsystem does and how it fits into the bigger picture.
 # 📚 Quick Documentation Links
@@ -71,4 +71,4 @@ Each module doc explains what that subsystem does and how it fits into the bigge
   - `docs/contracts/CollaborationContract.md`
   - ADRs in `docs/adr/`
 
-Doc last updated: 2025-12-02 (v0.9.8.2)
+Doc last updated: 2025-12-31 (v0.9.8.2)

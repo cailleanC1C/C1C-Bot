@@ -62,7 +62,7 @@ Every audit and CI check validates against this document.
 - **F-02 Defaults:** Each toggle has an explicit `TRUE` or `FALSE` default stored in the sheet. Missing entries are treated as `FALSE`.
 - **F-03 Scope:** Toggles control runtime activation of recruitment modules and experiments. They do not alter infrastructure or cluster-wide settings.
 - **F-04 Current Toggles:** The guardrail reads the `feature_name` column from the FeatureToggles worksheet via the same loader used at runtime (`modules.common.feature_flags.refresh` / `.values`). It then scans runtime code (excluding `AUDIT/` and tests) for usages of the central accessor `feature_flags.is_enabled("<toggle>")`. Any sheet-declared toggle not referenced through that accessor is reported here.
-  - Current sheet entries include (non-exhaustive): `member_panel`, `recruiter_panel`, `clan_profile`, `recruitment_welcome`, `recruitment_reports`, `welcome_dialog`, `WELCOME_ENABLED`, `ENABLE_WELCOME_HOOK`, `PROMO_ENABLED`, `ENABLE_PROMO_HOOK`, `promo_dialog`, `FEATURE_RESERVATIONS`, `placement_target_select`, `placement_reservations`, `ClusterRoleMap`, `SERVER_MAP`, `housekeeping_enabled`, `mirralith_overview_enabled`, `ops_permissions_enabled`, `ops_watchers_enabled`, `promo_watcher_enabled`, `resume_command_enabled`, `welcome_watcher_enabled`.
+  - Current sheet entries include (non-exhaustive): `member_panel`, `recruiter_panel`, `clan_profile`, `recruitment_welcome`, `recruitment_reports`, `welcome_dialog`, `WELCOME_ENABLED`, `ENABLE_WELCOME_HOOK`, `PROMO_ENABLED`, `ENABLE_PROMO_HOOK`, `promo_dialog`, `FEATURE_RESERVATIONS`, `placement_target_select`, `placement_reservations`, `ClusterRoleMap`, `SERVER_MAP`, `housekeeping_enabled`, `mirralith_overview_enabled`, `ops_permissions_enabled`, `promo_watcher_enabled`, `resume_command_enabled`, `welcome_watcher_enabled`.
   - Resolution: remove unused rows from the sheet if a toggle is retired, or gate the relevant runtime path with `feature_flags.is_enabled("<feature_name>")` when the toggle should be enforced.
 - **F-05 Additions:** New toggles must be added to the sheet and documented here with one-line purpose notes.
 - **F-06 Runtime Behavior:** Toggles are evaluated dynamically at startup; no redeploy required solely for configuration updates.
@@ -153,4 +153,4 @@ Every audit and CI check validates against this document.
 ### Verification
 Compliance script must check: structure (S), code (C), docs (D), governance (G), feature toggles (F) and write `AUDIT/<timestamp>_GUARDRAILS/report.md`.
 
-Doc last updated: 2025-12-07 (v0.9.8.2)
+Doc last updated: 2025-12-31 (v0.9.8.2)

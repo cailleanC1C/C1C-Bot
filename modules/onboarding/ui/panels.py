@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
-from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Sequence
 
 import discord
@@ -56,7 +54,6 @@ __all__ = [
     "register_panel_message",
     "register_persistent_views",
     "register_views",
-    "threads_default_label",
     "unbind_controller",
 ]
 
@@ -309,35 +306,6 @@ def _component_counts(view: discord.ui.View) -> tuple[int, int, int]:
     return buttons, text_inputs, selects
 
 
-def _threads_default_label() -> str | None:
-    path = Path("config/bot_access_lists.json")
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    try:
-        payload = json.loads(raw)
-    except ValueError:
-        return None
-    options = payload.get("options", {}) if isinstance(payload, dict) else {}
-    value = options.get("threads_default")
-    if isinstance(value, bool):
-        return "on" if value else "off"
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"1", "true", "yes", "on"}:
-            return "on"
-        if lowered in {"0", "false", "no", "off"}:
-            return "off"
-    return None
-
-
-def threads_default_label() -> str | None:
-    """Public helper exposing the configured thread default label."""
-
-    return _threads_default_label()
-
-
 def register_persistent_views(bot: discord.Client) -> dict[str, Any]:
     view = OpenQuestionsPanelView()
     started = time.perf_counter()
@@ -384,7 +352,6 @@ def register_persistent_views(bot: discord.Client) -> dict[str, Any]:
     info: dict[str, Any] = {
         "view": view.__class__.__name__,
         "components": components,
-        "threads_default": _threads_default_label(),
         "duration_ms": duration_ms,
         "registered": registered,
         "duplicate_registration": duplicate,
