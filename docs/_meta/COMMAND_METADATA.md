@@ -1,7 +1,7 @@
 # Command Metadata Audit
 
 ## Summary
-- Total commands discovered: 42
+- Total commands discovered: 36
 - Commands missing access_tier: 0
 - Commands missing function_group: 0
 - Commands missing both: 0
@@ -43,13 +43,7 @@
 | report | cogs/recruitment_reporting.py:27 | admin | operational | |
 | welcome | cogs/recruitment_welcome.py:41 | staff | recruitment | |
 | welcome-refresh | cogs/recruitment_welcome.py:56 | admin | operational | |
-| perm | modules/ops/permissions_sync.py:932 | admin | operational | |
-| perm bot | modules/ops/permissions_sync.py:941 | admin | operational | |
-| perm bot list | modules/ops/permissions_sync.py:956 | admin | operational | |
-| perm bot allow | modules/ops/permissions_sync.py:1034 | admin | operational | |
-| perm bot deny | modules/ops/permissions_sync.py:1087 | admin | operational | |
-| perm bot remove | modules/ops/permissions_sync.py:1140 | admin | operational | |
-| perm bot sync | modules/ops/permissions_sync.py:1173 | admin | operational | |
+| perm | modules/ops/permissions_ui.py:904 | admin | operational | |
 | reload | packages/c1c-coreops/src/c1c_coreops/commands/reload.py:64 | admin | operational | |
 
 ## Hotspots
@@ -62,4 +56,4 @@
 ## Suggested fixes
 - Ensure new commands and aliases include `help_metadata(...)` coverage so the help surface stays descriptive.
 
-Doc last updated: 2025-11-18 (v0.9.8.2)
+Doc last updated: 2025-12-31 (v0.9.8.2)

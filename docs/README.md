@@ -76,7 +76,7 @@ Collaboration Contract and core infra conventions.
 * [`PromoTickets.md`](ops/PromoTickets.md) — promo ticket creation flow, gating rules, and state lifecycle.
 * [`Welcome_Summary_Spec.md`](ops/Welcome_Summary_Spec.md) — welcome summary embed specification and handoff rules.
 * [`housekeeping_mirralith_overview.md`](housekeeping_mirralith_overview.md) — Mirralith and cluster overview autoposter housekeeping job.
-* [`PermCommandQuickstart.md`](ops/PermCommandQuickstart.md) — quickstart for the `!perm bot` command surface.
+* [`PermCommandQuickstart.md`](ops/PermCommandQuickstart.md) — quickstart for the `!perm` Permissions UI.
 * [`modules/ShardTracker.md`](ops/modules/ShardTracker.md) — shard & mercy tracker runbook, channel/thread routing, and mercy math reference.
 * [`Promo_Summary_Spec.md`](ops/Promo_Summary_Spec.md) — promo summary embeds readability spec and per-flow layout mapping.
 * [`.env.example`](ops/.env.example) — reference environment file for local/testing setups.
@@ -97,7 +97,7 @@ Collaboration Contract and core infra conventions.
 * [`Welcome.md`](modules/Welcome.md) — welcome UX scope, ticket-thread flow, summary formatting, and integrations.
 * [`Recruitment.md`](modules/Recruitment.md) — recruitment module responsibilities, sheet schemas, panels, and reporting flows.
 * [`Placement.md`](modules/Placement.md) — placement ledger, clan math reconciliation, and reservation upkeep (commands + cron jobs).
-* [`PermissionsSync.md`](modules/PermissionsSync.md) — bot access list administration and channel overwrite sync runbook.
+* [`PermissionsUI.md`](modules/PermissionsUI.md) — interactive permissions UI runbook and overwrite apply workflow.
 
 ## 🧩 Module Documentation `/docs/modules`
 Each module has a **dedicated deep-dive file** describing its scope, flows, data sources, and integrations.
@@ -107,7 +107,7 @@ Each module has a **dedicated deep-dive file** describing its scope, flows, data
 * [`modules/Welcome.md`](modules/Welcome.md) - Discord-facing onboarding UX: threads, panels, summary embed, inline reply capture (no Enter Answer button), and hand-off into recruitment.
 * [`modules/Recruitment.md`](modules/Recruitment.md) - Recruitment workflow: reservations, sheet mapping, recruiter tools.
 * [`modules/Placement.md`](modules/Placement.md) - Placement logic: clan matching, ledger, seat availability, recomputations.
-* [`modules/PermissionsSync.md`](modules/PermissionsSync.md) - Permission sync module: ACL workflows, overwrite syncing. All commands referenced here **must** also be present in the CommandMatrix.
+* [`modules/PermissionsUI.md`](modules/PermissionsUI.md) - Permissions UI module: interactive role overwrite workflows. All commands referenced here **must** also be present in the CommandMatrix.
 
 ## 🔧 Maintenance Rules
 * Any PR touching documentation must update this index and all affected references.
@@ -120,4 +120,4 @@ Each module has a **dedicated deep-dive file** describing its scope, flows, data
 ## Cross-References
 * [`docs/contracts/CollaborationContract.md`](contracts/CollaborationContract.md) documents contributor responsibilities and embeds this index under “Documentation Discipline.”
 
-Doc last updated: 2025-12-07 (v0.9.8.3)
+Doc last updated: 2025-12-31 (v0.9.8.2)

@@ -34,7 +34,6 @@ _DEFAULT_TRUE_FEATURES = {
     "housekeeping_enabled",
     "mirralith_overview_enabled",
     "ops_permissions_enabled",
-    "ops_watchers_enabled",
     "promo_watcher_enabled",
     "resume_command_enabled",
     "welcome_watcher_enabled",

@@ -8,7 +8,7 @@
   - Promo/move/leadership ticket handling (R/M/L flows with clan selection and log writes).
   - Recruitment tools (clan profiles, clan search panels, recruiter panels, welcome templates, recruiter daily report).
   - Placement & reservations (reservation commands, reminders, auto-release, availability recomputation).
-  - CoreOps/admin ops (health/config/env/checksheet/digest/refresh/reload/help/ping surfaces; watchdog and cache preload scheduling; server map and role map admin utilities; permission sync and allow/deny lists).
+  - CoreOps/admin ops (health/config/env/checksheet/digest/refresh/reload/help/ping surfaces; watchdog and cache preload scheduling; server map and role map admin utilities; permissions UI).
   - Community features (Shard & Mercy tracker panel).
 - **Out of Scope:** No other bots present; `modules/placement/target_select.py` and `modules/onboarding/ops_check.py` are explicitly stubs with no runtime behavior or commands.
 
@@ -29,8 +29,7 @@
 | ReactionFallback | modules/onboarding/reaction_fallback.py | Fallback 🧭 reaction handler to start onboarding panel in welcome/promo threads. | Staff/Admin/Internal | Onboarding sheet. | Yes – ticket channel IDs, role IDs. | No commands; listener only. |
 | Onboarding Resume | modules/onboarding/cmd_resume.py | Recruiter recovery command `!onb resume` to restore onboarding wizard in thread. | Staff (Manage Threads) | Onboarding session cache. | Yes – none direct. | Loaded always. |
 | Onboarding Ops Check | modules/onboarding/ops_check.py | Stub cog to satisfy loader (no commands). | Internal | None | Yes – none. | Stub. |
-| Permissions Sync | modules/ops/permissions_sync.py | Admin `!perm bot ...` allow/deny management and sync runner with CSV audit; uses bot_access_lists.json. | Admin | Stores snapshot locally; no Sheets. | Yes – config path, guild/channel IDs. | Includes sync confirmation and deduped logging. |
-| Permission Watchers | modules/ops/watchers_permissions.py | Listeners reacting to channel/thread creations to log/sync allow-list applicability. | Internal/Admin | bot_access_lists.json | Yes – access list config. | No commands. |
+| Permissions UI | modules/ops/permissions_ui.py | Admin `!perm` interactive permissions UI with role/target/permission picker and overwrite apply. | Admin | No Sheets. | Yes – blacklist env, guild/channel IDs. | Includes preview + confirmation and per-channel logging. |
 | CoreOps cmd_cfg extension | modules/coreops/cmd_cfg.py | Always-on extension exposing Ops command metadata/config helper. | Internal/Admin | Shared config snapshot. | Yes – core env keys. | Always loaded. |
 | Placement Reservations | modules/placement/reservations.py | Staff reservation management (`!reserve`, `!reservations`) plus helper flows for ticket context and availability recompute. | Staff/Admin/Clan Leads (read) | Reservations sheet; recruitment sheet for clan rows. | Yes – recruiter roles/channel/thread IDs, interact channel ID. | Feature-gated by reservations toggles. |
 | Placement Reservation Jobs | modules/placement/reservation_jobs.py | Scheduled reminders and auto-release for reservations, posting recruiter pings and recomputing availability. | Internal/Admin/Recruiters (notifications) | Reservations sheet | Yes – recruiter channel/thread IDs, logging channel ID. | Scheduled at 12:00Z/18:00Z via runtime scheduler. |
@@ -78,12 +77,8 @@ Grouped by cog/module; all commands are prefix-based unless noted.
 - `reserve <clan> [@recruit]` — Staff/Admin; reserve seat for recruit in ticket thread; supports `release` and `extend` sub-commands. (`modules/placement/reservations.py`)
 - `reservations [clan_tag]` — Staff/Admin; shows active reservations for recruit or clan (clan scope restricted to interact channel; clan leads can view). (`modules/placement/reservations.py`)
 
-### Permissions / Access Lists
-- `perm bot list` — Admin; show allow/deny lists with optional JSON export. (`modules/ops/permissions_sync.py`)
-- `perm bot allow <targets>` — Admin; add channels/categories to allow list, remove from deny. (`modules/ops/permissions_sync.py`)
-- `perm bot deny <targets>` — Admin; add to deny list, remove from allow. (`modules/ops/permissions_sync.py`)
-- `perm bot remove <targets>` — Admin; remove from both lists. (`modules/ops/permissions_sync.py`)
-- `perm bot sync [--dry] [--threads=on/off] [--include=voice,stage] [--limit=N]` — Admin; preview or apply permission sync across guild, with confirmation and deduped logging. (`modules/ops/permissions_sync.py`)
+### Permissions
+- `perm` — Admin; launch the interactive Permissions UI and apply role overwrites. (`modules/ops/permissions_ui.py`)
 
 ### Community / Shards
 - `shards [type]` — User; opens shard tracker panel in dedicated channel/thread. (`modules/community/shard_tracker/cog.py`)
@@ -122,12 +117,12 @@ Grouped by cog/module; all commands are prefix-based unless noted.
 ### CoreOps / Admin Ops
 - **Modules:** `packages/c1c-coreops`, `modules/coreops/cmd_cfg.py`, runtime scheduler/keepalive.
 - **Commands:** health, env, config, digest, checksheet, refresh, reload, help, ping; admin bang aliases.
-- **Config:** Broad ENV set (tokens, guild IDs, watchog timings, log channel IDs), FeatureToggles for ops watchers, cache schedules from shared config.
+- **Config:** Broad ENV set (tokens, guild IDs, watchog timings, log channel IDs), FeatureToggles for ops modules, cache schedules from shared config.
 
 ### Ops & Infra Helpers
-- **Modules:** `modules/ops/permissions_sync.py`, `modules/ops/watchers_permissions.py`, `modules/ops/server_map.py`, `modules/ops/cleanup_watcher.py`, `modules/common/keepalive.py`.
-- **Commands:** `perm bot ...`, `servermap refresh`; allow/deny management plus sync; hidden ping.
-- **Config:** bot_access_lists.json, SERVER_MAP_* env, CLEANUP_AGE_HOURS, permission role IDs.
+- **Modules:** `modules/ops/permissions_ui.py`, `modules/ops/server_map.py`, `modules/ops/cleanup_watcher.py`, `modules/common/keepalive.py`.
+- **Commands:** `perm`, `servermap refresh`; permissions UI and server map tooling; hidden ping.
+- **Config:** `PERMS_BLACKLIST_*`, `SERVER_MAP_*` env, `CLEANUP_AGE_HOURS`, permission role IDs.
 
 ### Community-Facing Systems
 - **Shard tracker** (above) and **Who We Are** roster via `whoweare` command; server map embeds; clan profile/search panels.
@@ -150,8 +145,7 @@ Grouped by cog/module; all commands are prefix-based unless noted.
 - **Reminders/Milestones/Other:** Reminder sheet (reminder jobs), telemetry uses cache buckets for clans/templates/onboarding_questions, etc.
 
 ### Local Config Files
-- `config/bot_access_lists.json` — allow/deny lists and threads_default flag for permission sync (`modules/ops/permissions_sync.py`).
-- `AUDIT/diagnostics/*` — optional CSV outputs for permission sync (not runtime inputs).
+- `AUDIT/diagnostics/*` — optional diagnostic outputs (not runtime inputs).
 
 ## 4.6. Background Jobs, Watchers, Schedulers
 - **Runtime watchdog/keepalive:** Started in `app.py` and `modules/common/runtime` (heartbeat, socket touch, keepalive web route); watchdog logs interval/stall/grace settings.
@@ -163,7 +157,6 @@ Grouped by cog/module; all commands are prefix-based unless noted.
 - **Welcome watcher listeners:** Detect Ticket Tool events/close messages, handle button triggers, auto-panel start, message capture for answers, finalize logging/reservation reconciliation, thread rename on close.
 - **Promo watcher listeners:** `modules/onboarding/watcher_promo.py` monitors promo channel threads, Ticket Tool messages with markers, handles panel posting, clan select view, writes promo rows, renames threads and logs on closure.
 - **Reaction fallback listener:** `modules/onboarding/reaction_fallback.py` handles 🧭 reaction by staff/admin/guardian knights to launch onboarding panel in welcome/promo threads.
-- **Permission watchers:** `modules/ops/watchers_permissions.py` listens for channel/thread create events to log allow-list applicability and prevent stale config.
 - **Reservation jobs:** `modules/placement/reservation_jobs.py` schedules daily 12:00Z reminders to recruiters for expiring reservations and 18:00Z auto-release of overdue reservations, posting summaries and recomputing availability.
 - **Shard tracker UI:** `modules/community/shard_tracker/cog.py` manages persistent views per-thread; no scheduled jobs, but relies on channel constraint.
 - **CoreOps help/ping routing:** `app.py` mention/bang handlers intercept messages to route help/ping through ops commands; onboarding auto-capture from thread messages runs on every message.
@@ -175,4 +168,3 @@ Grouped by cog/module; all commands are prefix-based unless noted.
 - `modules/coreops/cmd_cfg.py` — always-on helper extension; internal only.
 - `packages/c1c-coreops/commands/reload.py` — legacy reload command coexisting with CoreOps reload; both loaded, but CoreOps `reload` commands already provided.
 - Older audit files under AUDIT/ are excluded by guardrail; not used at runtime.
-

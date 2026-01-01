@@ -22,7 +22,7 @@ def _ensure_src_on_path() -> None:
 _ensure_src_on_path()
 
 from c1c_coreops.cog import CoreOpsCog, _reset_help_diagnostics_cache
-from modules.ops.permissions_sync import BotPermissionCog
+from modules.ops.permissions_ui import PermissionsUICog
 from cogs.recruitment_clan_profile import ClanProfileCog
 from cogs.recruitment_member import RecruitmentMember
 from cogs.recruitment_recruiter import RecruiterPanelCog
@@ -171,7 +171,7 @@ async def _setup_bot(monkeypatch: pytest.MonkeyPatch) -> tuple[commands.Bot, Dum
     monkeypatch.setattr(bot, "get_channel", lambda snowflake: channel if snowflake == 999 else None)
 
     await bot.add_cog(CoreOpsCog(bot))
-    await bot.add_cog(BotPermissionCog(bot))
+    await bot.add_cog(PermissionsUICog(bot))
     await bot.add_cog(RecruiterPanelCog(bot))
     await bot.add_cog(WelcomeBridge(bot))
     await bot.add_cog(RecruitmentMember(bot))
@@ -225,7 +225,7 @@ def test_help_diagnostics_admin_logs_admin_entries(
 
     message = asyncio.run(runner())
     assert "welcome-refresh | admin | operational | true | yes | ok" in message
-    assert "perm bot allow | admin | operational | true | yes | ok" in message
+    assert "perm | admin | operational | true | yes | ok" in message
 
 
 def test_help_diagnostics_ttl_throttles(monkeypatch: pytest.MonkeyPatch) -> None:

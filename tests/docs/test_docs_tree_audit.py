@@ -31,7 +31,7 @@ REQUIRED_MODULE_DOCS = {
     "Welcome.md",
     "Recruitment.md",
     "Placement.md",
-    "PermissionsSync.md",
+    "PermissionsUI.md",
 }
 
 

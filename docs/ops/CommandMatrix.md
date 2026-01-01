@@ -31,11 +31,7 @@ _Module note:_ CoreOps now resides in `packages/c1c-coreops` via `c1c_coreops.*`
 | `!servermap refresh` | ✅ | Rebuild the pinned `#server-map` message(s) from the current Discord category/channel structure. | `!servermap refresh` |
 | `!leagues post` | ✅ | Manually run the C1C Leagues weekly posting job (Legendary, Rising Stars, Stormforged) and announcement. | `!leagues post` |
 | `!whoweare` | ✅ | Generate the live "Who We Are" role map from the WhoWeAre sheet with snarky blurbs and current role holders. | `!whoweare` |
-| `!perm bot list` | ✅ | Admin-only; show the current bot allow/deny lists with counts, IDs, and optional JSON export. More details: [`PermissionsSync`](../modules/PermissionsSync.md). | `!perm bot list [--json]` |
-| `!perm bot allow <targets…>` | ✅ | Admin-only; add channels/categories to the allow list and clear conflicting deny entries. Targets accept channel mentions or quoted category names. More details: [`PermissionsSync`](../modules/PermissionsSync.md). | `!perm bot allow <targets…>` |
-| `!perm bot deny <targets…>` | ✅ | Admin-only; add channels/categories to the deny list while removing matching allow entries. Use for surgical blocks. More details: [`PermissionsSync`](../modules/PermissionsSync.md). | `!perm bot deny <targets…>` |
-| `!perm bot remove <targets…>` | ✅ | Admin-only; remove channels/categories from both allow and deny lists to reset inheritance. More details: [`PermissionsSync`](../modules/PermissionsSync.md). | `!perm bot remove <targets…>` |
-| `!perm bot sync` | ✅ | Admin-only; bulk apply bot role overwrites with CSV audits. Defaults to dry-run, prompts before live writes, and respects manual denies. More details: [`PermissionsSync`](../modules/PermissionsSync.md). | `!perm bot sync [--dry] [--threads on|off] [--include voice|stage] [--limit N]` |
+| `!perm` | ✅ | Admin-only; launch the interactive Permissions UI to apply role overwrites. More details: [`PermissionsUI`](../modules/PermissionsUI.md). | `!perm` |
 | `!report recruiters` | ✅ | Posts Daily Recruiter Update to the configured destination (manual trigger; UTC snapshot also posts automatically). | `!report recruiters` |
 | `!welcome-refresh` | ✅ | Reload the `WelcomeTemplates` cache bucket before running `!welcome`. | `!welcome-refresh` |
 
@@ -67,4 +63,4 @@ Shard tracker buttons are owner-only, use shard-emoji tab selectors, and keep a 
 
 > Feature toggle note — `recruitment_reports` powers the Daily Recruiter Update (manual + scheduled). `feature_reservations` gates the `!reserve` command. `placement_target_select` remains a stub module that only logs when enabled. `onboarding_rules_v2` enables the deterministic onboarding rules DSL (visibility + navigation); disable to fall back to the legacy string parser.
 
-Doc last updated: 2025-12-03 (v0.9.8.2)
+Doc last updated: 2025-12-31 (v0.9.8.2)

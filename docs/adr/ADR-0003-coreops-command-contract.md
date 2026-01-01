@@ -13,7 +13,7 @@ environment.
 
 - CoreOps v0.9.x ships the following supported commands: `@Bot help`, `@Bot ping`,
   `!ops config`, `!ops digest`, `!ops health`, `!ops refresh <bucket>`, `!ops refresh all`,
-  `!ops reload`, `!checksheet`, `!perm bot <subcommand>`, and `!welcome-refresh`.
+  `!ops reload`, `!checksheet`, `!perm`, and `!welcome-refresh`.
 - Cogs expose only `async def setup(bot)` and register commands through the shared loader.
 - RBAC is enforced with decorators from `c1c_coreops.rbac`, ensuring tier checks occur
   before cache access.
@@ -39,4 +39,4 @@ environment.
 
 Accepted — 2025-10-20
 
-Doc last updated: 2025-10-26 (v0.9.6)
+Doc last updated: 2025-12-31 (v0.9.8.2)

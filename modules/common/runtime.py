@@ -991,8 +991,7 @@ class Runtime:
         from modules.onboarding import watcher_welcome as onboarding_welcome
         from modules.onboarding import watcher_promo as onboarding_promo
         from modules.onboarding import cmd_resume as onboarding_cmd_resume
-        from modules.ops import permissions_sync as ops_permissions
-        from modules.ops import watchers_permissions as ops_watchers
+        from modules.ops import permissions_ui as ops_permissions
         from c1c_coreops import ops as ops_cog
 
         await coreops_cog.setup(self.bot)
@@ -1159,17 +1158,11 @@ class Runtime:
 
         await ops_cog.setup(self.bot)
 
+        await ops_permissions.setup(self.bot)
         if toggles.ops_permissions_enabled:
-            await ops_permissions.setup(self.bot)
             log.info("modules: ops_permissions enabled")
         else:
             log.info("modules: ops_permissions disabled")
-
-        if toggles.ops_watchers_enabled:
-            await ops_watchers.setup(self.bot)
-            log.info("modules: ops_watchers enabled")
-        else:
-            log.info("modules: ops_watchers disabled")
 
         # === Always-on internal extensions (admin-gated debug/ops commands) ===
         ALWAYS_EXTENSIONS = ("modules.coreops.cmd_cfg",)

@@ -35,7 +35,7 @@ from cogs.recruitment_clan_profile import ClanProfileCog
 from cogs.recruitment_member import RecruitmentMember
 from cogs.recruitment_recruiter import RecruiterPanelCog
 from cogs.recruitment_welcome import WelcomeBridge
-from modules.ops.permissions_sync import BotPermissionCog
+from modules.ops.permissions_ui import PermissionsUICog
 
 
 class DummyMember:
@@ -171,7 +171,7 @@ async def _setup_test_bot(
     bot.help_command = None
 
     await bot.add_cog(CoreOpsCog(bot))
-    await bot.add_cog(BotPermissionCog(bot))
+    await bot.add_cog(PermissionsUICog(bot))
     await bot.add_cog(RecruiterPanelCog(bot))
     await bot.add_cog(WelcomeBridge(bot))
     await bot.add_cog(RecruitmentMember(bot))
@@ -245,7 +245,7 @@ def test_help_admin_view(monkeypatch: pytest.MonkeyPatch) -> None:
         assert "`!env`" in admin_text
         assert "`!health`" in admin_text
         assert "`!refresh all`" in admin_text
-        assert "`!perm bot sync`" in admin_text
+        assert "`!perm`" in admin_text
         assert "`!welcome-refresh`" in admin_text
         assert "`@Bot help`" not in admin_text
         assert "`@Bot ping`" not in admin_text
@@ -377,7 +377,7 @@ def test_help_no_hardcoding(monkeypatch: pytest.MonkeyPatch) -> None:
 
             monkeypatch.setattr(bot, "walk_commands", _walk_commands)
 
-            await bot.add_cog(BotPermissionCog(bot))
+            await bot.add_cog(PermissionsUICog(bot))
             await bot.add_cog(RecruiterPanelCog(bot))
             await bot.add_cog(WelcomeBridge(bot))
             await bot.add_cog(RecruitmentMember(bot))

@@ -374,22 +374,6 @@ class LogTemplates:
         )
 
     @staticmethod
-    def perm_sync(
-        *,
-        applied: int,
-        errors: Mapping[str, int],
-        threads_on: bool,
-    ) -> str:
-        emoji = LOG_EMOJI["security"]
-        error_total = sum(errors.values())
-        details = ", ".join(f"{count}× {reason}" for reason, count in errors.items())
-        details = details or "-"
-        return (
-            f"{emoji} **Permission sync** — applied={fmt_count(applied)} • errors={fmt_count(error_total)} "
-            f"• threads={'on' if threads_on else 'off'} • details: {details}"
-        )
-
-    @staticmethod
     def welcome(
         *,
         tag: str,
