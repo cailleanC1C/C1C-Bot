@@ -3220,8 +3220,8 @@ class CoreOpsCog(commands.Cog):
             sections = [
                 ("Core Identity", core_lines),
                 ("Feature Flags", feature_lines),
-                ("Cache", cache_lines),
-                ("Watchdog", watchdog_lines),
+                ("Cache / Refresh", cache_lines),
+                ("Watchdog / Runtime", watchdog_lines),
                 ("Render", render_lines),
                 ("Other", other_lines),
             ]
@@ -4555,9 +4555,9 @@ class CoreOpsCog(commands.Cog):
     def _format_key_block(
         self, key: str, values: Sequence[tuple[str, str | None] | str] | None
     ) -> List[str]:
+        lines = [key]
         if not values:
-            return [f"{key} = — (unset)"]
-        lines: list[str] = []
+            return lines + ["  — (unset)"]
         for value in values:
             if isinstance(value, tuple):
                 raw_value, raw_label = value
@@ -4565,11 +4565,11 @@ class CoreOpsCog(commands.Cog):
                 raw_value, raw_label = value, None
             text = str(raw_value).strip()
             if not text or text == "—":
-                lines.append(f"{key} = — (unset)")
+                lines.append("  — (unset)")
                 continue
             label = str(raw_label).strip() if raw_label is not None else ""
             suffix = f" → {label}" if label and label != "value" else ""
-            lines.append(f"{key} = {text}{suffix}")
+            lines.append(f"  {text}{suffix}")
         return lines
 
     def _format_simple_line(self, key: str, entry: Optional[_EnvEntry]) -> List[str]:
