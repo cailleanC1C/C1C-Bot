@@ -24,7 +24,14 @@ rt_stub = types.SimpleNamespace(monotonic_ms=lambda: int(time.monotonic() * 1000
 sys.modules.setdefault("modules.common.runtime", rt_stub)
 
 import c1c_coreops.cog as coreops_cog
-from c1c_coreops.cog import CoreOpsCog, _EnvEntry, UTC, _MAX_EMBED_LENGTH, _embed_length
+from c1c_coreops.cog import (
+    CoreOpsCog,
+    UTC,
+    _EnvEntry,
+    _EnvRenderMeta,
+    _MAX_EMBED_LENGTH,
+    _embed_length,
+)
 from shared import config as shared_config
 from shared.testing.environment import apply_required_test_environment
 
@@ -80,14 +87,14 @@ def test_env_overview_grouping(monkeypatch, bot):
     )
 
     embeds, warnings, _ = cog._build_env_embeds(
-        bot_name="TestBot",
-        env="dev",
-        version="1.2.3",
-        guild_name="Guild",
         entries=entries,
         sheet_sections=[],
-        footer_text="footer",
-        timestamp=dt.datetime.now(UTC),
+        render_meta=_EnvRenderMeta(
+            bot_name="TestBot",
+            env="dev",
+            version="1.2.3",
+            timestamp=dt.datetime.now(UTC),
+        ),
     )
 
     assert len(embeds) == 4
@@ -147,14 +154,14 @@ def test_env_overview_warnings(monkeypatch, bot):
     )
 
     embeds, warnings, keys = cog._build_env_embeds(
-        bot_name="TestBot",
-        env="dev",
-        version="1.2.3",
-        guild_name="Guild",
         entries=entries,
         sheet_sections=[],
-        footer_text="footer",
-        timestamp=dt.datetime.now(UTC),
+        render_meta=_EnvRenderMeta(
+            bot_name="TestBot",
+            env="dev",
+            version="1.2.3",
+            timestamp=dt.datetime.now(UTC),
+        ),
     )
 
     warning_field = next(field for field in embeds[0].fields if field.name == "Warnings")
@@ -202,25 +209,23 @@ def test_env_overview_splits_large_pages(monkeypatch, bot):
     monkeypatch.setattr(type(cog._id_resolver), "resolve", lambda *_: "#role")
 
     embeds, warnings, _ = cog._build_env_embeds(
-        bot_name="TestBot",
-        env="dev",
-        version="1.2.3",
-        guild_name="Guild",
         entries=entries,
         sheet_sections=[],
-        footer_text="footer",
-        timestamp=dt.datetime.now(UTC),
+        render_meta=_EnvRenderMeta(
+            bot_name="TestBot",
+            env="dev",
+            version="1.2.3",
+            timestamp=dt.datetime.now(UTC),
+        ),
     )
 
     assert len(embeds) >= 4
-    total = len(embeds)
-    expected_titles = [
-        f"TestBot · env: dev · Page {page}/{total}" for page in range(1, total + 1)
-    ]
-    assert [embed.title for embed in embeds] == expected_titles
+    assert embeds[0].title.endswith("Overview")
+    assert embeds[1].title.endswith("Channels")
+    assert "Roles" in embeds[2].title
+    assert "Sheets & Config" in embeds[-1].title
     for index, embed in enumerate(embeds, start=1):
         assert _embed_length(embed) <= _MAX_EMBED_LENGTH
-        assert f"Page {index}/{total}" in (embed.footer.text or "")
     assert warnings == []
 
 
@@ -258,24 +263,26 @@ def test_env_overview_no_split_renumbers(monkeypatch, bot):
     monkeypatch.setattr(type(cog._id_resolver), "resolve", lambda *_: "#channel")
 
     embeds, warnings, _ = cog._build_env_embeds(
-        bot_name="TestBot",
-        env="dev",
-        version="1.2.3",
-        guild_name="Guild",
         entries=entries,
         sheet_sections=[],
-        footer_text="footer",
-        timestamp=dt.datetime.now(UTC),
+        render_meta=_EnvRenderMeta(
+            bot_name="TestBot",
+            env="dev",
+            version="1.2.3",
+            timestamp=dt.datetime.now(UTC),
+        ),
     )
 
     assert len(embeds) == 4
     expected_titles = [
-        f"TestBot · env: dev · Page {page}/4" for page in range(1, len(embeds) + 1)
+        "TestBot · env: dev · Overview",
+        "TestBot · env: dev · Channels",
+        "TestBot · env: dev · Roles",
+        "TestBot · env: dev · Sheets & Config",
     ]
     assert [embed.title for embed in embeds] == expected_titles
     for index, embed in enumerate(embeds, start=1):
         assert _embed_length(embed) <= _MAX_EMBED_LENGTH
-        assert f"Page {index}/4" in (embed.footer.text or "")
     assert warnings == []
 
 
