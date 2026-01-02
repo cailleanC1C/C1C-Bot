@@ -2752,7 +2752,11 @@ class CoreOpsCog(commands.Cog):
         if description is not None:
             embed.description = description
         embed.timestamp = meta.timestamp
-        embed.set_footer(text=build_coreops_footer(bot_version=meta.version))
+        embed.set_footer(
+            text=build_coreops_footer(
+                bot_version=meta.version, notes=" • source: ENV + Sheet Config"
+            )
+        )
         return embed
 
     def render_env_embed(
@@ -2781,7 +2785,12 @@ class CoreOpsCog(commands.Cog):
             total_pages = len(embeds)
             for page, embed in enumerate(embeds, start=1):
                 embed.title = f"{page_title} · Page {page}/{total_pages}"
-                embed.set_footer(text=build_coreops_footer(bot_version=footer_meta.version))
+                embed.set_footer(
+                    text=build_coreops_footer(
+                        bot_version=footer_meta.version,
+                        notes=" • source: ENV + Sheet Config",
+                    )
+                )
         return embeds
 
     def _build_env_embeds(
@@ -4559,7 +4568,7 @@ class CoreOpsCog(commands.Cog):
                 lines.append(f"{key} = — (unset)")
                 continue
             label = str(raw_label).strip() if raw_label is not None else ""
-            suffix = f" ({label})" if label and label != "value" else ""
+            suffix = f" → {label}" if label and label != "value" else ""
             lines.append(f"{key} = {text}{suffix}")
         return lines
 
