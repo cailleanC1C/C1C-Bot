@@ -121,6 +121,7 @@ _sheet_cache_errors_logged: Set[str] = set()
 _sheet_cache_load_errors_logged: Set[str] = set()
 _digest_section_errors_logged: Set[str] = set()
 _FIELD_CHAR_LIMIT = 900
+_CODE_BLOCK_OVERHEAD = len("```\n\n```")
 _FIELD_CHUNK_SOFT_LIMIT = 1500
 _EMBED_TOTAL_CHAR_LIMIT = 6000
 _EMBED_FIELD_LIMIT = 25
@@ -480,6 +481,14 @@ class _EnvEntry:
     display: str
 
 
+@dataclass(frozen=True)
+class _EnvRenderMeta:
+    bot_name: str
+    env: str
+    version: str
+    timestamp: dt.datetime
+
+
 def _format_bucket_label(name: str) -> str:
     cleaned = name.replace("_", " ").strip()
     if not cleaned:
@@ -553,6 +562,10 @@ def _chunk_field_values(
         value = chunk or "—"
         fields.append((name, value))
     return fields
+
+
+def _wrap_code_block(text: str) -> str:
+    return f"```\n{text}\n```"
 
 
 def _embed_length(embed: discord.Embed) -> int:
@@ -693,6 +706,10 @@ def _is_secret_key(key: str) -> bool:
     )
 
 
+def _is_sheet_key(key: str) -> bool:
+    return key.endswith("_TAB") or "_SHEET_ID" in key
+
+
 def _trim_resolved_label(label: str) -> str:
     if label.endswith(" (guild)"):
         label = label[:-8]
@@ -715,22 +732,6 @@ def _mask_sheet_id(sheet_id: str) -> str:
     if not text:
         return "—"
     return f"***{text[-4:]}"
-
-
-def _format_env_footer(
-    *,
-    footer_text: str,
-    env: str,
-    guild_name: str,
-    page: int | None = None,
-    total_pages: int | None = None,
-) -> str:
-    parts: list[str] = []
-    if page and total_pages:
-        parts.append(f"Page {page}/{total_pages}")
-    parts.append(f"env: {env} · Guild: {guild_name}")
-    base = " · ".join(parts) if parts else f"env: {env} · Guild: {guild_name}"
-    return f"{base}\n{footer_text}" if footer_text else base
 
 
 def _format_sheet_log_label(sheet_title: str, sheet_id: str) -> str:
@@ -2549,47 +2550,52 @@ class CoreOpsCog(commands.Cog):
         bot_name = get_bot_name()
         env = get_env_name()
         version = os.getenv("BOT_VERSION", "dev")
-        guild_name = getattr(getattr(ctx, "guild", None), "name", "unknown")
+        entries = self._collect_env_entries()
+        sheet_sections = self._collect_sheet_sections()
         now = dt.datetime.now(UTC)
-        footer_text = build_coreops_footer(
-            bot_version=version, notes=" • source: ENV + Sheet Config"
-        )
-        embed = self._build_env_overview_embed(
+        render_meta = _EnvRenderMeta(
             bot_name=bot_name,
             env=env,
-            guild_name=guild_name,
             version=version,
-            footer_text=footer_text,
             timestamp=now,
         )
-        await ctx.reply(
-            embed=sanitize_embed(embed),
-            mention_author=False,
-            allowed_mentions=discord.AllowedMentions.none(),
+        embeds, warnings, warning_keys = self._build_env_embeds(
+            entries=entries,
+            sheet_sections=sheet_sections,
+            render_meta=render_meta,
+        )
+
+        if not embeds:
+            await ctx.reply("No environment data available.", mention_author=False)
+            return
+
+        if warning_keys:
+            warning_summary = ",".join(sorted(warning_keys))
+            logger.warning("⚠ env:missing_config keys=%s", warning_summary)
+
+        await self._reply_with_env_embeds(
+            ctx, [sanitize_embed(embed) for embed in embeds]
         )
 
     async def _env_section_impl(self, ctx: commands.Context, section: str) -> None:
         bot_name = get_bot_name()
         env = get_env_name()
         version = os.getenv("BOT_VERSION", "dev")
-        guild_name = getattr(getattr(ctx, "guild", None), "name", "unknown")
         entries = self._collect_env_entries()
         sheet_sections = self._collect_sheet_sections()
         now = dt.datetime.now(UTC)
-        footer_text = build_coreops_footer(
-            bot_version=version, notes=" • source: ENV + Sheet Config"
+        render_meta = _EnvRenderMeta(
+            bot_name=bot_name,
+            env=env,
+            version=version,
+            timestamp=now,
         )
 
         embeds = self._build_env_section_embeds(
             section=section,
-            bot_name=bot_name,
-            env=env,
-            version=version,
-            guild_name=guild_name,
             entries=entries,
             sheet_sections=sheet_sections,
-            footer_text=footer_text,
-            timestamp=now,
+            render_meta=render_meta,
         )
 
         if not embeds:
@@ -2730,62 +2736,64 @@ class CoreOpsCog(commands.Cog):
     def _build_env_base_embed(
         self,
         *,
-        bot_name: str,
-        env: str,
-        version: str,
-        guild_name: str,
-        footer_text: str,
-        timestamp: dt.datetime,
+        meta: _EnvRenderMeta,
         title: str,
         description: str | None = None,
     ) -> discord.Embed:
-        meta = _config_meta_from_app()
+        cfg_meta = _config_meta_from_app()
         embed = build_env_embed(
-            bot_name=bot_name,
-            env=env,
-            version=version,
-            cfg_meta=meta,
+            bot_name=meta.bot_name,
+            env=meta.env,
+            version=meta.version,
+            cfg_meta=cfg_meta,
         )
         embed.clear_fields()
         embed.title = title
         if description is not None:
             embed.description = description
-        embed.timestamp = timestamp
-        embed.set_footer(text=footer_text)
+        embed.timestamp = meta.timestamp
+        embed.set_footer(text=build_coreops_footer(bot_version=meta.version))
         return embed
+
+    def render_env_embed(
+        self,
+        page_title: str,
+        sections: Sequence[tuple[str, Sequence[str]]],
+        footer_meta: _EnvRenderMeta,
+        *,
+        description: str | None = None,
+    ) -> list[discord.Embed]:
+        fields: list[tuple[str, str]] = []
+        body_limit = max(1, _FIELD_CHAR_LIMIT - _CODE_BLOCK_OVERHEAD)
+        for name, lines in sections:
+            for field_name, field_value in _chunk_field_values(
+                name, lines or ["—"], limit=body_limit
+            ):
+                fields.append((field_name, _wrap_code_block(field_value)))
+
+        base = self._build_env_base_embed(
+            meta=footer_meta,
+            title=page_title,
+            description=description,
+        )
+        embeds = _split_fields_into_embeds(base, fields)
+        if len(embeds) > 1:
+            total_pages = len(embeds)
+            for page, embed in enumerate(embeds, start=1):
+                embed.title = f"{page_title} · Page {page}/{total_pages}"
+                embed.set_footer(text=build_coreops_footer(bot_version=footer_meta.version))
+        return embeds
 
     def _build_env_embeds(
         self,
         *,
-        bot_name: str,
-        env: str,
-        version: str,
-        guild_name: str,
         entries: Dict[str, _EnvEntry],
         sheet_sections: List[Tuple[str, List[Tuple[str, str, str]]]],
-        footer_text: str,
-        timestamp: dt.datetime,
+        render_meta: _EnvRenderMeta,
     ) -> tuple[list[discord.Embed], list[str], set[str]]:
         warnings: list[str] = []
         warning_keys: set[str] = set()
         used_keys: set[str] = set()
-        total_pages = 4
-
-        def _title(page: int) -> str:
-            return f"{bot_name} · env: {env} · Page {page}/{total_pages}"
-
-        def _footer(page: int) -> str:
-            return _format_env_footer(
-                footer_text=footer_text,
-                env=env,
-                guild_name=guild_name,
-                page=page,
-                total_pages=total_pages,
-            )
-
-        def _add_field(embed: discord.Embed, name: str, lines: Sequence[str]) -> None:
-            for field_name, field_value in _chunk_field_values(name, lines):
-                embed.add_field(name=field_name, value=field_value, inline=False)
 
         def _format_group(
             keys: Sequence[str], *, treat_ids: bool = True
@@ -2801,43 +2809,23 @@ class CoreOpsCog(commands.Cog):
                 )
             return lines
 
-        embeds: list[discord.Embed] = []
-
-        embed = self._build_env_base_embed(
-            bot_name=bot_name,
-            env=env,
-            version=version,
-            guild_name=guild_name,
-            footer_text=_footer(1),
-            timestamp=timestamp,
-            title=_title(1),
+        overview_sections: list[tuple[str, list[str]]] = []
+        overview_sections.append(
+            (
+                "Core Identity",
+                _format_group(("BOT_NAME", "BOT_VERSION", "ENV_NAME"), treat_ids=False),
+            )
         )
-        _add_field(
-            embed,
-            "Core Identity",
-            _format_group(("BOT_NAME", "BOT_VERSION", "ENV_NAME"), treat_ids=False),
-        )
-
         toggles = get_feature_toggles()
         toggle_lines: list[str] = []
         if toggles:
             for name in sorted(toggles):
                 value = "ON" if toggles[name] else "OFF"
-                toggle_lines.extend(self._format_key_block(name, [(value, "state")]))
+                toggle_lines.extend(self._format_key_block(name, [(value, "value")]))
         else:
-            toggle_lines.append("— (unset)")
-        _add_field(embed, "Feature Toggles", toggle_lines)
-        embeds.append(embed)
+            toggle_lines.append("—")
+        overview_sections.append(("Feature Flags", toggle_lines))
 
-        channels_embed = self._build_env_base_embed(
-            bot_name=bot_name,
-            env=env,
-            version=version,
-            guild_name=guild_name,
-            footer_text=_footer(2),
-            timestamp=timestamp,
-            title=_title(2),
-        )
         channel_sections = {"Channels": [], "Threads": [], "Other": []}
 
         def _channel_bucket(key: str) -> str:
@@ -2899,24 +2887,6 @@ class CoreOpsCog(commands.Cog):
             )
             used_keys.add(key)
 
-        for name in ("Channels", "Threads", "Other"):
-            lines = channel_sections[name] or ["—"]
-            for field_name, field_value in _chunk_field_values(name, lines):
-                channels_embed.add_field(
-                    name=field_name, value=field_value, inline=False
-                )
-
-        embeds.append(channels_embed)
-
-        roles_embed = self._build_env_base_embed(
-            bot_name=bot_name,
-            env=env,
-            version=version,
-            guild_name=guild_name,
-            footer_text=_footer(3),
-            timestamp=timestamp,
-            title=_title(3),
-        )
         role_sections: list[str] = []
         ordered_roles = [
             "ADMIN_ROLE_IDS",
@@ -2933,7 +2903,7 @@ class CoreOpsCog(commands.Cog):
             if "ROLE" in key
             and key not in used_keys
             and not _is_secret_key(key)
-            and not key.endswith("_TAB")
+            and not _is_sheet_key(key)
         ]
         for key in sorted(dynamic_roles):
             used_keys.add(key)
@@ -2941,21 +2911,6 @@ class CoreOpsCog(commands.Cog):
                 self._format_entry_lines(key, entries.get(key), warnings, warning_keys)
             )
 
-        for field_name, field_value in _chunk_field_values(
-            "Roles", role_sections or ["—"]
-        ):
-            roles_embed.add_field(name=field_name, value=field_value, inline=False)
-        embeds.append(roles_embed)
-
-        sheets_embed = self._build_env_base_embed(
-            bot_name=bot_name,
-            env=env,
-            version=version,
-            guild_name=guild_name,
-            footer_text=_footer(4),
-            timestamp=timestamp,
-            title=_title(4),
-        )
         sheets_lines: list[str] = []
         tab_lines: list[str] = []
         config_lines: list[str] = []
@@ -2963,27 +2918,28 @@ class CoreOpsCog(commands.Cog):
         for key, entry in entries.items():
             if key in used_keys or _is_secret_key(key):
                 continue
-            if key.endswith("_SHEET_ID"):
-                sheets_lines.extend(
-                    self._format_entry_lines(
-                        key, entry, warnings, warning_keys, treat_ids=False
+            if _is_sheet_key(key):
+                if key.endswith("_TAB"):
+                    tab_lines.extend(
+                        self._format_entry_lines(
+                            key, entry, warnings, warning_keys, treat_ids=False
+                        )
                     )
-                )
-                used_keys.add(key)
-            elif key.endswith("_TAB"):
-                tab_lines.extend(
-                    self._format_entry_lines(
-                        key, entry, warnings, warning_keys, treat_ids=False
+                else:
+                    sheets_lines.extend(
+                        self._format_entry_lines(
+                            key, entry, warnings, warning_keys, treat_ids=False
+                        )
                     )
-                )
                 used_keys.add(key)
-            else:
-                config_lines.extend(
-                    self._format_entry_lines(
-                        key, entry, warnings, warning_keys, treat_ids=False
-                    )
+                continue
+
+            config_lines.extend(
+                self._format_entry_lines(
+                    key, entry, warnings, warning_keys, treat_ids=False
                 )
-                used_keys.add(key)
+            )
+            used_keys.add(key)
 
         if sheet_sections:
             for label, rows in sheet_sections:
@@ -3009,25 +2965,6 @@ class CoreOpsCog(commands.Cog):
             loader_values.append((str(last_error), "last_error"))
         config_lines.extend(self._format_key_block("Config Loader", loader_values))
 
-        for field_name, field_value in _chunk_field_values(
-            "Sheets", sheets_lines or ["—"]
-        ):
-            sheets_embed.add_field(name=field_name, value=field_value, inline=False)
-        for field_name, field_value in _chunk_field_values(
-            "Tabs", tab_lines or ["—"]
-        ):
-            sheets_embed.add_field(name=field_name, value=field_value, inline=False)
-        for field_name, field_value in _chunk_field_values(
-            "Config", config_lines or ["—"]
-        ):
-            sheets_embed.add_field(name=field_name, value=field_value, inline=False)
-        _add_field(
-            sheets_embed,
-            "Secrets (masked)",
-            self._format_secrets(entries),
-        )
-        embeds.append(sheets_embed)
-
         if warnings:
             warning_lines = warnings[:10]
             remaining = len(warnings) - len(warning_lines)
@@ -3035,137 +2972,174 @@ class CoreOpsCog(commands.Cog):
                 warning_lines.append(
                     f"… and {remaining} more missing / not-found entries."
                 )
-            for field_name, field_value in _chunk_field_values(
-                "Warnings",
-                warning_lines,
-            ):
-                embeds[0].add_field(
-                    name=field_name,
-                    value=field_value,
-                    inline=False,
-                )
+            overview_sections.append(("Warnings", warning_lines))
 
-        embeds = _split_embeds(embeds)
+        overview_title = f"{render_meta.bot_name} · env: {render_meta.env} · Overview"
+        channels_title = f"{render_meta.bot_name} · env: {render_meta.env} · Channels"
+        roles_title = f"{render_meta.bot_name} · env: {render_meta.env} · Roles"
+        sheets_title = f"{render_meta.bot_name} · env: {render_meta.env} · Sheets & Config"
 
-        total_pages = len(embeds)
-        for page, embed in enumerate(embeds, start=1):
-            embed.title = f"{bot_name} · env: {env} · Page {page}/{total_pages}"
-            embed.set_footer(
-                text=_format_env_footer(
-                    footer_text=footer_text,
-                    env=env,
-                    guild_name=guild_name,
-                    page=page,
-                    total_pages=total_pages,
-                )
-            )
+        overview_embeds = self.render_env_embed(
+            overview_title, overview_sections, render_meta
+        )
+        channels_embeds = self.render_env_embed(
+            channels_title,
+            [
+                ("Channels", channel_sections["Channels"] or ["—"]),
+                ("Threads", channel_sections["Threads"] or ["—"]),
+                ("Other", channel_sections["Other"] or ["—"]),
+            ],
+            render_meta,
+        )
+        roles_embeds = self.render_env_embed(
+            roles_title, [("Roles", role_sections or ["—"])], render_meta
+        )
+        sheets_embeds = self.render_env_embed(
+            sheets_title,
+            [
+                ("Sheets", sheets_lines or ["—"]),
+                ("Tabs", tab_lines or ["—"]),
+                ("Config", config_lines or ["—"]),
+                ("Secrets (masked)", self._format_secrets(entries)),
+            ],
+            render_meta,
+        )
 
+        embeds = [*overview_embeds, *channels_embeds, *roles_embeds, *sheets_embeds]
         return embeds, warnings, warning_keys
-
-    def _build_env_overview_embed(
-        self,
-        *,
-        bot_name: str,
-        env: str,
-        guild_name: str,
-        version: str,
-        footer_text: str,
-        timestamp: dt.datetime,
-    ) -> discord.Embed:
-        description = (
-            "Environment overview for this bot.\n\n"
-            "**Subcommands**\n"
-            "!env channels — channel/thread/guild IDs\n"
-            "!env roles — role IDs\n"
-            "!env sheets — sheet IDs + sheet config\n"
-            "!env config — runtime/config settings\n\n"
-            "Secrets are masked. Use subcommands for details."
-        )
-        embed = self._build_env_base_embed(
-            bot_name=bot_name,
-            env=env,
-            version=version,
-            guild_name=guild_name,
-            footer_text=_format_env_footer(
-                footer_text=footer_text,
-                env=env,
-                guild_name=guild_name,
-            ),
-            timestamp=timestamp,
-            title=f"{bot_name} · env: {env}",
-            description=description,
-        )
-        return embed
 
     def _build_env_section_embeds(
         self,
         *,
         section: str,
-        bot_name: str,
-        env: str,
-        version: str,
-        guild_name: str,
         entries: Dict[str, _EnvEntry],
         sheet_sections: List[Tuple[str, List[Tuple[str, str, str]]]],
-        footer_text: str,
-        timestamp: dt.datetime,
+        render_meta: _EnvRenderMeta,
     ) -> list[discord.Embed]:
         normalized = section.strip().lower()
         section_title = normalized.capitalize()
 
-        def _field_chunks(
-            name: str, lines: Sequence[str]
-        ) -> list[tuple[str, str]]:
-            return _chunk_field_values(name, lines or ["—"])
-
-        embed = self._build_env_base_embed(
-            bot_name=bot_name,
-            env=env,
-            version=version,
-            guild_name=guild_name,
-            footer_text=_format_env_footer(
-                footer_text=footer_text,
-                env=env,
-                guild_name=guild_name,
-            ),
-            timestamp=timestamp,
-            title=f"{bot_name} · env: {env} · {section_title}",
-        )
-
         if normalized in {"channels", "roles", "sheets"}:
             if normalized == "channels":
-                fields = _chunk_field_values(
-                    "Channels", self._format_guild_channels(entries)
-                )
-            elif normalized == "roles":
-                fields = _chunk_field_values("Roles", self._format_roles(entries))
-            else:
-                fields = _chunk_field_values(
-                    "Sheets & Config",
-                    self._format_sheet_keys(entries, sheet_sections),
-                )
+                channel_sections = {"Channels": [], "Threads": [], "Other": []}
 
-            embeds = _split_fields_into_embeds(embed, fields)
-            total_pages = len(embeds)
-            for page, page_embed in enumerate(embeds, start=1):
-                title_suffix = f" · Page {page}/{total_pages}" if total_pages > 1 else ""
-                page_embed.title = (
-                    f"{bot_name} · env: {env} · {section_title}{title_suffix}"
-                )
-                page_embed.set_footer(
-                    text=_format_env_footer(
-                        footer_text=footer_text,
-                        env=env,
-                        guild_name=guild_name,
-                        page=page if total_pages > 1 else None,
-                        total_pages=total_pages if total_pages > 1 else None,
+                def _channel_bucket(key: str) -> str:
+                    if key == "PANEL_THREAD_MODE":
+                        return "Other"
+                    if "THREAD" in key:
+                        return "Threads"
+                    if "CHANNEL" in key or key == "GUILD_IDS":
+                        return "Channels"
+                    return "Other"
+
+                ordered_channels = [
+                    "GUILD_IDS",
+                    "LOG_CHANNEL_ID",
+                    "WELCOME_CHANNEL_ID",
+                    "WELCOME_GENERAL_CHANNEL_ID",
+                    "NOTIFY_CHANNEL_ID",
+                    "PROMO_CHANNEL_ID",
+                    "RECRUITERS_CHANNEL_ID",
+                    "RECRUITERS_THREAD_ID",
+                    "REPORT_RECRUITERS_DEST_ID",
+                    "PANEL_FIXED_THREAD_ID",
+                    "PANEL_THREAD_MODE",
+                    "ROLEMAP_CHANNEL_ID",
+                    "SERVER_MAP_CHANNEL_ID",
+                ]
+                seen_channels: set[str] = set()
+                for key in ordered_channels:
+                    seen_channels.add(key)
+                    bucket = _channel_bucket(key)
+                    channel_sections[bucket].extend(
+                        self._format_channel_entry(key, entries.get(key))
                     )
-                )
-            return embeds
+
+                dynamic_channels = [
+                    key
+                    for key in entries.keys()
+                    if key not in seen_channels
+                    and not _is_secret_key(key)
+                    and any(token in key for token in ("CHANNEL", "THREAD", "GUILD"))
+                ]
+                for key in sorted(dynamic_channels):
+                    bucket = _channel_bucket(key)
+                    channel_sections[bucket].extend(
+                        self._format_channel_entry(key, entries.get(key))
+                    )
+
+                sections = [
+                    ("Channels", channel_sections["Channels"] or ["—"]),
+                    ("Threads", channel_sections["Threads"] or ["—"]),
+                    ("Other", channel_sections["Other"] or ["—"]),
+                ]
+            elif normalized == "roles":
+                sections = [("Roles", self._format_roles(entries))]
+            else:
+                sheets_lines: list[str] = []
+                tab_lines: list[str] = []
+                config_lines: list[str] = []
+
+                for key, entry in entries.items():
+                    if _is_secret_key(key):
+                        continue
+                    if _is_sheet_key(key):
+                        if key.endswith("_TAB"):
+                            tab_lines.extend(
+                                self._format_simple_line(key, entry)
+                            )
+                        else:
+                            sheets_lines.extend(
+                                self._format_simple_line(key, entry)
+                            )
+
+                if sheet_sections:
+                    for label, rows in sheet_sections:
+                        for row_key, value, resolved in rows:
+                            value_text = f"{value}"
+                            label = resolved if resolved and resolved != "—" else "value"
+                            config_lines.extend(
+                                self._format_key_block(
+                                    f"{label} override: {row_key}",
+                                    [(value_text, label)],
+                                )
+                            )
+
+                toggles = get_feature_toggles()
+                if toggles:
+                    for name in sorted(toggles):
+                        value = "ON" if toggles[name] else "OFF"
+                        config_lines.extend(
+                            self._format_key_block(name, [(value, "value")])
+                        )
+
+                meta = _config_meta_from_app()
+                source = str(meta.get("source", "runtime"))
+                status = str(meta.get("status", "ok"))
+                loader_values = [(source, status)]
+                loaded_at = meta.get("loaded_at")
+                if loaded_at:
+                    loader_values.append((str(loaded_at), "loaded_at"))
+                last_error = meta.get("last_error")
+                if last_error:
+                    loader_values.append((str(last_error), "last_error"))
+                config_lines.extend(self._format_key_block("Config Loader", loader_values))
+
+                sections = [
+                    ("Sheets", sheets_lines or ["—"]),
+                    ("Tabs", tab_lines or ["—"]),
+                    ("Config", config_lines or ["—"]),
+                    ("Secrets (masked)", self._format_secrets(entries)),
+                ]
+
+            return self.render_env_embed(
+                f"{render_meta.bot_name} · env: {render_meta.env} · {section_title}",
+                sections,
+                render_meta,
+            )
 
         else:
             section_title = "Config"
-            embed.title = f"{bot_name} · env: {env} · {section_title}"
 
             core_lines = self._format_core_identity(entries)
             feature_lines = self._format_features(entries)
@@ -3219,12 +3193,10 @@ class CoreOpsCog(commands.Cog):
                 if any(token in key for token in ("CHANNEL", "THREAD", "GUILD"))
                 or key in {"PANEL_THREAD_MODE"}
             )
-            used_keys.update(key for key in entries.keys() if "ROLE" in key)
             used_keys.update(
-                key
-                for key in entries.keys()
-                if "SHEET" in key or "TAB" in key
+                key for key in entries.keys() if "ROLE" in key and not _is_sheet_key(key)
             )
+            used_keys.update(key for key in entries.keys() if _is_sheet_key(key))
 
             other_keys = [
                 key
@@ -3236,36 +3208,20 @@ class CoreOpsCog(commands.Cog):
                 for key in sorted(other_keys)
                 for line in self._format_simple_line(key, entries.get(key))
             ] or ["—"]
+            sections = [
+                ("Core Identity", core_lines),
+                ("Feature Flags", feature_lines),
+                ("Cache", cache_lines),
+                ("Watchdog", watchdog_lines),
+                ("Render", render_lines),
+                ("Other", other_lines),
+            ]
 
-            for field_name, field_value in _field_chunks("Core Identity", core_lines):
-                embed.add_field(name=field_name, value=field_value, inline=False)
-            for field_name, field_value in _field_chunks("Feature Flags", feature_lines):
-                embed.add_field(name=field_name, value=field_value, inline=False)
-            for field_name, field_value in _field_chunks("Cache / Refresh", cache_lines):
-                embed.add_field(name=field_name, value=field_value, inline=False)
-            for field_name, field_value in _field_chunks("Watchdog / Runtime", watchdog_lines):
-                embed.add_field(name=field_name, value=field_value, inline=False)
-            for field_name, field_value in _field_chunks("Render", render_lines):
-                embed.add_field(name=field_name, value=field_value, inline=False)
-            for field_name, field_value in _field_chunks("Other", other_lines):
-                embed.add_field(name=field_name, value=field_value, inline=False)
-
-        embeds = _split_embeds([embed])
-        total_pages = len(embeds)
-        if total_pages > 1:
-            for page, page_embed in enumerate(embeds, start=1):
-                page_embed.title = f"{embed.title} · Page {page}/{total_pages}"
-                page_embed.set_footer(
-                    text=_format_env_footer(
-                        footer_text=footer_text,
-                        env=env,
-                        guild_name=guild_name,
-                        page=page,
-                        total_pages=total_pages,
-                    )
-                )
-
-        return embeds
+        return self.render_env_embed(
+            f"{render_meta.bot_name} · env: {render_meta.env} · {section_title}",
+            sections,
+            render_meta,
+        )
 
     @tier("user")
     @ops.command(
@@ -4590,9 +4546,9 @@ class CoreOpsCog(commands.Cog):
     def _format_key_block(
         self, key: str, values: Sequence[tuple[str, str | None] | str] | None
     ) -> List[str]:
-        lines = [f"**{key}**"]
         if not values:
-            return lines + ["  — (unset)"]
+            return [f"{key} = — (unset)"]
+        lines: list[str] = []
         for value in values:
             if isinstance(value, tuple):
                 raw_value, raw_label = value
@@ -4600,12 +4556,11 @@ class CoreOpsCog(commands.Cog):
                 raw_value, raw_label = value, None
             text = str(raw_value).strip()
             if not text or text == "—":
-                lines.append("  — (unset)")
+                lines.append(f"{key} = — (unset)")
                 continue
-            label = str(raw_label).strip() if raw_label is not None else "value"
-            if not label:
-                label = "value"
-            lines.append(f"  {text} → {label}")
+            label = str(raw_label).strip() if raw_label is not None else ""
+            suffix = f" ({label})" if label and label != "value" else ""
+            lines.append(f"{key} = {text}{suffix}")
         return lines
 
     def _format_simple_line(self, key: str, entry: Optional[_EnvEntry]) -> List[str]:
@@ -4707,7 +4662,10 @@ class CoreOpsCog(commands.Cog):
         dynamic = [
             key
             for key in entries.keys()
-            if key not in seen and not _is_secret_key(key) and "ROLE" in key
+            if key not in seen
+            and not _is_secret_key(key)
+            and "ROLE" in key
+            and not _is_sheet_key(key)
         ]
         for key in sorted(dynamic):
             lines.extend(self._format_role_entry(key, entries.get(key)))
@@ -4721,63 +4679,6 @@ class CoreOpsCog(commands.Cog):
         if not ids:
             return self._format_simple_line(key, entry)
         return self._format_id_lines(key, ids)
-
-    def _format_sheet_keys(
-        self,
-        entries: Dict[str, _EnvEntry],
-        sheet_sections: List[Tuple[str, List[Tuple[str, str, str]]]],
-    ) -> List[str]:
-        ordered = ["RECRUITMENT_SHEET_ID", "ONBOARDING_SHEET_ID"]
-        lines: List[str] = []
-        seen: Set[str] = set()
-        for key in ordered:
-            seen.add(key)
-            lines.extend(self._format_simple_line(key, entries.get(key)))
-
-        dynamic = [
-            key
-            for key in entries.keys()
-            if key not in seen
-            and not _is_secret_key(key)
-            and ("SHEET" in key or "TAB" in key)
-        ]
-        for key in sorted(dynamic):
-            lines.extend(self._format_simple_line(key, entries.get(key)))
-
-        if sheet_sections:
-            for label, rows in sheet_sections:
-                for row_key, value, resolved in rows:
-                    value_text = f"{value}"
-                    label = resolved if resolved and resolved != "—" else "value"
-                    lines.extend(
-                        self._format_key_block(
-                            f"{label} override: {row_key}",
-                            [(value_text, label)],
-                        )
-                    )
-
-        toggles = get_feature_toggles()
-        toggle_values: list[tuple[str, str]] | None = None
-        if toggles:
-            toggle_values = []
-            for name in sorted(toggles):
-                value = "ON" if toggles[name] else "OFF"
-                toggle_values.append((value, name))
-        lines.extend(self._format_key_block("Feature Toggles", toggle_values))
-
-        meta = _config_meta_from_app()
-        source = str(meta.get("source", "runtime"))
-        status = str(meta.get("status", "ok"))
-        loader_lines: list[tuple[str, str | None]] = [(source, status)]
-        loaded_at = meta.get("loaded_at")
-        if loaded_at:
-            loader_lines.append((str(loaded_at), "loaded_at"))
-        last_error = meta.get("last_error")
-        if last_error:
-            loader_lines.append((str(last_error), "last_error"))
-        lines.extend(self._format_key_block("Config Loader", loader_lines))
-
-        return lines or ["—"]
 
     def _format_features(self, entries: Dict[str, _EnvEntry]) -> List[str]:
         ordered = [
