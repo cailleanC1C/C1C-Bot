@@ -123,6 +123,7 @@ _digest_section_errors_logged: Set[str] = set()
 _FIELD_CHAR_LIMIT = 1024
 _CODE_BLOCK_OVERHEAD = len("```\n\n```")
 _FIELD_CHUNK_SOFT_LIMIT = 1500
+_ENV_FIELD_CHUNK_LIMIT = 1000
 _EMBED_TOTAL_CHAR_LIMIT = 6000
 _EMBED_FIELD_LIMIT = 25
 _MAX_EMBED_LENGTH = 4500
@@ -601,6 +602,8 @@ def _clone_base_embed(embed: discord.Embed) -> discord.Embed:
             name=embed.author.name,
             icon_url=getattr(embed.author, "icon_url", discord.Embed.Empty),
         )
+    if embed.footer and embed.footer.text:
+        cloned.set_footer(text=embed.footer.text)
     return cloned
 
 
@@ -2738,7 +2741,6 @@ class CoreOpsCog(commands.Cog):
         *,
         meta: _EnvRenderMeta,
         title: str,
-        description: str | None = None,
     ) -> discord.Embed:
         cfg_meta = _config_meta_from_app()
         embed = build_env_embed(
@@ -2749,8 +2751,7 @@ class CoreOpsCog(commands.Cog):
         )
         embed.clear_fields()
         embed.title = title
-        if description is not None:
-            embed.description = description
+        embed.description = None
         embed.timestamp = meta.timestamp
         embed.set_footer(
             text=build_coreops_footer(
@@ -2759,38 +2760,33 @@ class CoreOpsCog(commands.Cog):
         )
         return embed
 
-    def render_env_embed(
+    def _render_env_sections_as_fields(
         self,
-        page_title: str,
+        base_embed: discord.Embed,
         sections: Sequence[tuple[str, Sequence[str]]],
-        footer_meta: _EnvRenderMeta,
-        *,
-        description: str | None = None,
     ) -> list[discord.Embed]:
         fields: list[tuple[str, str]] = []
-        body_limit = max(1, _FIELD_CHAR_LIMIT - _CODE_BLOCK_OVERHEAD)
+        body_limit = max(1, _ENV_FIELD_CHUNK_LIMIT)
         for name, lines in sections:
+            normalized_lines = list(lines) if lines else ["—"]
             for field_name, field_value in _chunk_field_values(
-                name, lines or ["—"], limit=body_limit
+                name, normalized_lines, limit=body_limit
             ):
                 fields.append((field_name, _wrap_code_block(field_value)))
 
-        base = self._build_env_base_embed(
-            meta=footer_meta,
-            title=page_title,
-            description=description,
-        )
-        embeds = _split_fields_into_embeds(base, fields)
-        if len(embeds) > 1:
-            total_pages = len(embeds)
-            for page, embed in enumerate(embeds, start=1):
-                embed.title = f"{page_title} · Page {page}/{total_pages}"
-                embed.set_footer(
-                    text=build_coreops_footer(
-                        bot_version=footer_meta.version,
-                        notes=" • source: ENV + Sheet Config",
-                    )
-                )
+        embeds = _split_fields_into_embeds(base_embed, fields)
+        if not embeds:
+            return []
+
+        total_pages = len(embeds)
+        for page, embed in enumerate(embeds, start=1):
+            if total_pages > 1:
+                embed.title = f"{base_embed.title} — Page {page}/{total_pages}"
+            else:
+                embed.title = base_embed.title
+            embed.timestamp = base_embed.timestamp
+            if base_embed.footer and base_embed.footer.text:
+                embed.set_footer(text=base_embed.footer.text)
         return embeds
 
     def _build_env_embeds(
@@ -2983,35 +2979,53 @@ class CoreOpsCog(commands.Cog):
                 )
             overview_sections.append(("Warnings", warning_lines))
 
-        overview_title = f"{render_meta.bot_name} · env: {render_meta.env} · Overview"
-        channels_title = f"{render_meta.bot_name} · env: {render_meta.env} · Channels"
-        roles_title = f"{render_meta.bot_name} · env: {render_meta.env} · Roles"
-        sheets_title = f"{render_meta.bot_name} · env: {render_meta.env} · Sheets & Config"
+        overview_title = f"{render_meta.bot_name} — env: {render_meta.env} — Overview"
+        channels_title = f"{render_meta.bot_name} — env: {render_meta.env} — Channels"
+        roles_title = f"{render_meta.bot_name} — env: {render_meta.env} — Roles"
+        sheets_title = f"{render_meta.bot_name} — env: {render_meta.env} — Sheets & Config"
 
-        overview_embeds = self.render_env_embed(
-            overview_title, overview_sections, render_meta
+        overview_base = self._build_env_base_embed(
+            meta=render_meta,
+            title=overview_title,
         )
-        channels_embeds = self.render_env_embed(
-            channels_title,
+        overview_embeds = self._render_env_sections_as_fields(
+            overview_base, overview_sections
+        )
+
+        channels_base = self._build_env_base_embed(
+            meta=render_meta,
+            title=channels_title,
+        )
+        channels_embeds = self._render_env_sections_as_fields(
+            channels_base,
             [
                 ("Channels", channel_sections["Channels"] or ["—"]),
                 ("Threads", channel_sections["Threads"] or ["—"]),
                 ("Other", channel_sections["Other"] or ["—"]),
             ],
-            render_meta,
         )
-        roles_embeds = self.render_env_embed(
-            roles_title, [("Roles", role_sections or ["—"])], render_meta
+
+        roles_base = self._build_env_base_embed(
+            meta=render_meta,
+            title=roles_title,
         )
-        sheets_embeds = self.render_env_embed(
-            sheets_title,
+        roles_embeds = self._render_env_sections_as_fields(
+            roles_base,
+            [("Roles", role_sections or ["—"])],
+        )
+
+        sheets_base = self._build_env_base_embed(
+            meta=render_meta,
+            title=sheets_title,
+        )
+        sheets_embeds = self._render_env_sections_as_fields(
+            sheets_base,
             [
                 ("Sheets", sheets_lines or ["—"]),
                 ("Tabs", tab_lines or ["—"]),
                 ("Config", config_lines or ["—"]),
                 ("Secrets (masked)", self._format_secrets(entries)),
             ],
-            render_meta,
         )
 
         embeds = [*overview_embeds, *channels_embeds, *roles_embeds, *sheets_embeds]
@@ -3141,11 +3155,11 @@ class CoreOpsCog(commands.Cog):
                     ("Secrets (masked)", self._format_secrets(entries)),
                 ]
 
-            return self.render_env_embed(
-                f"{render_meta.bot_name} · env: {render_meta.env} · {section_title}",
-                sections,
-                render_meta,
+            base_embed = self._build_env_base_embed(
+                meta=render_meta,
+                title=f"{render_meta.bot_name} — env: {render_meta.env} — {section_title}",
             )
+            return self._render_env_sections_as_fields(base_embed, sections)
 
         else:
             section_title = "Config"
@@ -3226,11 +3240,11 @@ class CoreOpsCog(commands.Cog):
                 ("Other", other_lines),
             ]
 
-        return self.render_env_embed(
-            f"{render_meta.bot_name} · env: {render_meta.env} · {section_title}",
-            sections,
-            render_meta,
+        base_embed = self._build_env_base_embed(
+            meta=render_meta,
+            title=f"{render_meta.bot_name} — env: {render_meta.env} — {section_title}",
         )
+        return self._render_env_sections_as_fields(base_embed, sections)
 
     @tier("user")
     @ops.command(
@@ -4568,12 +4582,13 @@ class CoreOpsCog(commands.Cog):
                 lines.append("  — (unset)")
                 continue
             if raw_label is None:
-                label = text
+                lines.append(f"  {text}")
+                continue
+            label = str(raw_label).strip() or text
+            if label in {"value", text}:
+                lines.append(f"  {text}")
             else:
-                label = str(raw_label).strip() or text
-                if label == "value":
-                    label = text
-            lines.append(f"  {text} → {label}")
+                lines.append(f"  {text} → {label}")
         return lines
 
     def _format_simple_line(self, key: str, entry: Optional[_EnvEntry]) -> List[str]:
