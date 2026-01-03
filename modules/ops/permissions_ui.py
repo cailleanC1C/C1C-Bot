@@ -55,7 +55,9 @@ class TargetResolution:
     selected_channels: list[discord.abc.GuildChannel]
     expanded_channels: list[discord.abc.GuildChannel]
     blacklisted: list[discord.abc.GuildChannel]
-    uneditable: list[discord.abc.GuildChannel]
+    no_access: list[discord.abc.GuildChannel]
+    cannot_edit: list[discord.abc.GuildChannel]
+    unsupported: list[discord.abc.GuildChannel]
     eligible: list[discord.abc.GuildChannel]
 
 
@@ -106,6 +108,113 @@ def _format_channel_label(channel: discord.abc.GuildChannel) -> str:
     return f"• {channel.name}"
 
 
+_SUPPORTED_CHANNEL_TYPES = {
+    discord.ChannelType.text,
+    discord.ChannelType.voice,
+    discord.ChannelType.stage_voice,
+    discord.ChannelType.forum,
+    discord.ChannelType.news,
+    discord.ChannelType.category,
+}
+
+
+def _is_supported_channel(channel: discord.abc.GuildChannel) -> bool:
+    channel_type = getattr(channel, "type", None)
+    return channel_type in _SUPPORTED_CHANNEL_TYPES
+
+
+def _group_channels_by_category(
+    channels: Iterable[discord.abc.GuildChannel],
+) -> list[tuple[str, list[discord.abc.GuildChannel]]]:
+    grouped: dict[Optional[int], dict[str, object]] = {}
+    for channel in channels:
+        if isinstance(channel, discord.CategoryChannel):
+            key = channel.id
+            name = channel.name
+            position = channel.position
+        else:
+            category = getattr(channel, "category", None)
+            if category is None:
+                key = None
+                name = "No Category"
+                position = 1_000_000
+            else:
+                key = category.id
+                name = category.name
+                position = category.position
+        entry = grouped.setdefault(key, {"name": name, "position": position, "channels": []})
+        entry["channels"].append(channel)
+
+    def _channel_sort_key(item: discord.abc.GuildChannel) -> tuple[int, str]:
+        return (getattr(item, "position", 0), getattr(item, "name", "").lower())
+
+    sorted_groups = sorted(
+        grouped.values(),
+        key=lambda item: (item["position"], str(item["name"]).lower()),
+    )
+    results: list[tuple[str, list[discord.abc.GuildChannel]]] = []
+    for group in sorted_groups:
+        channels_list = list(group["channels"])
+        channels_list.sort(key=_channel_sort_key)
+        results.append((str(group["name"]), channels_list))
+    return results
+
+
+def _grouped_channel_lines(
+    channels: Iterable[discord.abc.GuildChannel],
+    *,
+    reason_map: Optional[dict[int, str]] = None,
+    limit: Optional[int] = None,
+) -> tuple[list[str], int]:
+    grouped = _group_channels_by_category(channels)
+    total_channels = sum(len(group_channels) for _, group_channels in grouped)
+    lines: list[str] = []
+    included = 0
+
+    for category_name, group_channels in grouped:
+        if limit is not None and included >= limit:
+            break
+        group_lines: list[str] = []
+        for channel in group_channels:
+            if limit is not None and included >= limit:
+                break
+            label = _format_channel_label(channel)
+            reason = reason_map.get(channel.id) if reason_map else None
+            entry = f"• {label}"
+            if reason:
+                entry = f"{entry} — {reason}"
+            group_lines.append(entry)
+            included += 1
+        if group_lines:
+            lines.append(category_name)
+            lines.extend(group_lines)
+
+    remaining = max(0, total_channels - included)
+    if remaining > 0:
+        lines.append(f"…and {remaining} more")
+    return lines, remaining
+
+
+def _build_list_embeds(
+    *,
+    title: str,
+    description: Optional[str],
+    sections: list[tuple[str, list[str]]],
+    colour: discord.Colour,
+) -> list[discord.Embed]:
+    embeds: list[discord.Embed] = []
+    current = discord.Embed(title=title, description=description, colour=colour)
+    for section_name, lines in sections:
+        for chunk in _chunk_lines(lines, limit=1000):
+            if len(current.fields) >= 25:
+                embeds.append(current)
+                current = discord.Embed(title=f"{title} (cont.)", colour=colour)
+            current.add_field(name=section_name, value=chunk, inline=False)
+    if current.fields or current.description:
+        embeds.append(current)
+    return embeds
+
+
 def _page_slice(items: list, page: int, page_size: int) -> list:
     start = page * page_size
     end = start + page_size
@@ -140,7 +249,9 @@ def _resolve_targets(
 
     expanded_channels = list(expanded.values())
     blacklisted: list[discord.abc.GuildChannel] = []
-    uneditable: list[discord.abc.GuildChannel] = []
+    no_access: list[discord.abc.GuildChannel] = []
+    cannot_edit: list[discord.abc.GuildChannel] = []
+    unsupported: list[discord.abc.GuildChannel] = []
     eligible: list[discord.abc.GuildChannel] = []
 
     for channel in expanded_channels:
@@ -156,12 +267,19 @@ def _resolve_targets(
             blacklisted.append(channel)
             continue
 
+        if not _is_supported_channel(channel):
+            unsupported.append(channel)
+            continue
+
         if bot_member is None:
-            uneditable.append(channel)
+            no_access.append(channel)
             continue
         perms = channel.permissions_for(bot_member)
+        if not perms.view_channel:
+            no_access.append(channel)
+            continue
         if not perms.manage_channels:
-            uneditable.append(channel)
+            cannot_edit.append(channel)
             continue
 
         eligible.append(channel)
@@ -171,7 +289,9 @@ def _resolve_targets(
         selected_channels=selected_channels,
         expanded_channels=expanded_channels,
         blacklisted=blacklisted,
-        uneditable=uneditable,
+        no_access=no_access,
+        cannot_edit=cannot_edit,
+        unsupported=unsupported,
         eligible=eligible,
     )
 
@@ -230,7 +350,9 @@ class PermissionsBuilderView(_PermissionsBaseView):
             f"**Selected channels:** {len(self.state.channel_ids)}",
             f"**Expanded channel count:** {len(resolution.expanded_channels)}",
             f"**Excluded by blacklist:** {len(resolution.blacklisted)}",
-            f"**Excluded (bot lacks permission):** {len(resolution.uneditable)}",
+            f"**Excluded (bot lacks access):** {len(resolution.no_access)}",
+            f"**Excluded (cannot edit overwrites):** {len(resolution.cannot_edit)}",
+            f"**Excluded (unsupported type):** {len(resolution.unsupported)}",
             f"**Permission changes:** {len(changes)}",
         ]
 
@@ -517,7 +639,9 @@ class TargetPickerView(_PermissionsBaseView):
             f"**Selected channels:** {len(self.state.channel_ids)}",
             f"**Expanded channel count:** {len(resolution.expanded_channels)}",
             f"**Excluded by blacklist:** {len(resolution.blacklisted)}",
-            f"**Excluded (bot lacks permission):** {len(resolution.uneditable)}",
+            f"**Excluded (bot lacks access):** {len(resolution.no_access)}",
+            f"**Excluded (cannot edit overwrites):** {len(resolution.cannot_edit)}",
+            f"**Excluded (unsupported type):** {len(resolution.unsupported)}",
         ]
         embed.add_field(name="Summary", value="\n".join(summary_lines), inline=False)
         self._sync_components()
@@ -724,6 +848,11 @@ class PermissionsPickerView(_PermissionsBaseView):
 
 
 class PreviewView(_PermissionsBaseView):
+    def __init__(self, state: PermissionsState, bot: commands.Bot):
+        super().__init__(state, bot)
+        self.full_list_embeds: list[discord.Embed] = []
+        self.has_more_targets = False
+
     def render_embed(self, guild: discord.Guild) -> discord.Embed:
         role = guild.get_role(self.state.role_id) if self.state.role_id else None
         blacklist_channels = shared_config.get_perms_blacklist_channel_ids()
@@ -744,21 +873,104 @@ class PreviewView(_PermissionsBaseView):
                 f"**Role:** {role.mention if role else '—'}\n"
                 f"**Expanded channel count:** {len(resolution.expanded_channels)}\n"
                 f"**Excluded by blacklist:** {len(resolution.blacklisted)}\n"
-                f"**Excluded (bot lacks permission):** {len(resolution.uneditable)}\n"
+                f"**Excluded (bot lacks access):** {len(resolution.no_access)}\n"
+                f"**Excluded (cannot edit overwrites):** {len(resolution.cannot_edit)}\n"
+                f"**Excluded (unsupported type):** {len(resolution.unsupported)}\n"
                 f"**Eligible channels:** {len(resolution.eligible)}"
             ),
             colour=discord.Colour.orange(),
         )
+        target_lines, remaining_targets = _grouped_channel_lines(
+            resolution.eligible,
+            limit=25,
+        )
+        targets_title = "Target Channels"
+        if remaining_targets:
+            targets_title = "Target Channels (first 25)"
+        for chunk in _chunk_lines(target_lines, limit=1000):
+            if len(embed.fields) >= 25:
+                break
+            embed.add_field(name=targets_title, value=chunk, inline=False)
+            targets_title = "Target Channels (cont.)"
+
+        skipped_reasons = {
+            channel.id: "blacklisted" for channel in resolution.blacklisted
+        }
+        skipped_reasons.update(
+            {channel.id: "bot lacks access" for channel in resolution.no_access}
+        )
+        skipped_reasons.update(
+            {channel.id: "cannot edit overwrites" for channel in resolution.cannot_edit}
+        )
+        skipped_reasons.update(
+            {channel.id: "unsupported type" for channel in resolution.unsupported}
+        )
+        skipped_channels = (
+            resolution.blacklisted
+            + resolution.no_access
+            + resolution.cannot_edit
+            + resolution.unsupported
+        )
+        skipped_lines, _ = _grouped_channel_lines(
+            skipped_channels,
+            reason_map=skipped_reasons,
+        )
+        for chunk in _chunk_lines(skipped_lines, limit=1000):
+            if len(embed.fields) >= 25:
+                break
+            embed.add_field(name="Skipped Channels", value=chunk, inline=False)
         if allowed:
             for chunk in _chunk_lines(allowed):
+                if len(embed.fields) >= 25:
+                    break
                 embed.add_field(name="Allow", value=chunk, inline=False)
         if denied:
             for chunk in _chunk_lines(denied):
+                if len(embed.fields) >= 25:
+                    break
                 embed.add_field(name="Deny", value=chunk, inline=False)
         if not allowed and not denied:
-            embed.add_field(name="Permission changes", value="—", inline=False)
+            if len(embed.fields) < 25:
+                embed.add_field(name="Permission changes", value="—", inline=False)
         embed.set_footer(text="Default mode is dry-run until confirmed.")
+
+        full_target_lines, _ = _grouped_channel_lines(resolution.eligible)
+        full_skipped_lines, _ = _grouped_channel_lines(
+            skipped_channels,
+            reason_map=skipped_reasons,
+        )
+        self.has_more_targets = remaining_targets > 0
+        if self.has_more_targets:
+            self.full_list_embeds = _build_list_embeds(
+                title="Permissions Preview - Full Target List",
+                description=None,
+                sections=[
+                    ("Target Channels", full_target_lines),
+                    ("Skipped Channels", full_skipped_lines),
+                ],
+                colour=discord.Colour.orange(),
+            )
+        else:
+            self.full_list_embeds = []
+        self.show_full_list.disabled = not self.has_more_targets
         return embed
+
+    @discord.ui.button(label="Show full target list", style=discord.ButtonStyle.secondary)
+    async def show_full_list(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ) -> None:
+        if not self.full_list_embeds:
+            await interaction.response.send_message("No additional channels to show.", ephemeral=True)
+            return
+        embeds = self.full_list_embeds
+        first_batch = embeds[:10]
+        await interaction.response.send_message(embeds=first_batch, ephemeral=True)
+        remaining = embeds[10:]
+        for start in range(0, len(remaining), 10):
+            await interaction.followup.send(
+                embeds=remaining[start : start + 10],
+                ephemeral=True,
+            )
 
     @discord.ui.button(label="CONFIRM APPLY", style=discord.ButtonStyle.danger)
     async def confirm_apply(
