@@ -120,7 +120,7 @@ _SHEET_CONFIG_SOURCES: Tuple[Tuple[str, str], ...] = (
 _sheet_cache_errors_logged: Set[str] = set()
 _sheet_cache_load_errors_logged: Set[str] = set()
 _digest_section_errors_logged: Set[str] = set()
-_FIELD_CHAR_LIMIT = 900
+_FIELD_CHAR_LIMIT = 1024
 _CODE_BLOCK_OVERHEAD = len("```\n\n```")
 _FIELD_CHUNK_SOFT_LIMIT = 1500
 _EMBED_TOTAL_CHAR_LIMIT = 6000
@@ -4567,9 +4567,13 @@ class CoreOpsCog(commands.Cog):
             if not text or text == "—":
                 lines.append("  — (unset)")
                 continue
-            label = str(raw_label).strip() if raw_label is not None else ""
-            suffix = f" → {label}" if label and label != "value" else ""
-            lines.append(f"  {text}{suffix}")
+            if raw_label is None:
+                label = text
+            else:
+                label = str(raw_label).strip() or text
+                if label == "value":
+                    label = text
+            lines.append(f"  {text} → {label}")
         return lines
 
     def _format_simple_line(self, key: str, entry: Optional[_EnvEntry]) -> List[str]:
