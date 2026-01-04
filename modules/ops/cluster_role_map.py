@@ -174,7 +174,7 @@ def _category_order(entries: Iterable[RoleMapRow]) -> tuple[List[str], Dict[str,
 
 
 def _category_emoji(name: str) -> str:
-    normalized = name.strip().lower()
+    normalized = "".join(ch for ch in name.strip().lower() if ch.isalnum())
     return CATEGORY_EMOJIS.get(normalized, "•")
 
 
@@ -293,7 +293,8 @@ def _build_role_block(role: RoleEntryRender) -> List[str]:
     description = role.description or DEFAULT_DESCRIPTION
     lines = [f"**{role.display_name}**", description]
     if role.members:
-        lines.append(f":small_blue_diamond: {', '.join(role.members)}")
+        for member in role.members:
+            lines.append(f":small_blue_diamond: {member}")
     else:
         lines.append(":small_blue_diamond: (currently unassigned)")
     if usage:
