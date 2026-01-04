@@ -21,7 +21,12 @@ class MirralithOverviewCog(commands.Cog):
 
     @tier("admin")
     @help_metadata(function_group="operational", section="utilities", access_tier="admin")
-    @commands.group(name="mirralith", invoke_without_command=True)
+    @commands.group(
+        name="mirralith",
+        invoke_without_command=True,
+        help="Post or refresh the Mirralith overview.",
+        brief="Post or refresh the Mirralith overview.",
+    )
     @admin_only()
     async def mirralith_group(self, ctx: commands.Context) -> None:
         if ctx.invoked_subcommand is None:
