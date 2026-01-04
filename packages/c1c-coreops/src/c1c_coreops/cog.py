@@ -2580,6 +2580,43 @@ class CoreOpsCog(commands.Cog):
             ctx, [sanitize_embed(embed) for embed in embeds]
         )
 
+    async def _env_index_impl(self, ctx: commands.Context) -> None:
+        bot_name = get_bot_name()
+        env = get_env_name()
+        version = os.getenv("BOT_VERSION", "dev")
+        now = dt.datetime.now(UTC)
+        guild_name = getattr(ctx.guild, "name", None) or "unknown guild"
+        footer_parts = [
+            f"env: {env}",
+            f"guild: {guild_name}",
+            build_coreops_footer(bot_version=version),
+            "source: ENV + Sheet Config",
+        ]
+
+        embed = discord.Embed(
+            title=f"{bot_name} • env: {env}",
+            description="Environment overview for this bot.",
+            colour=discord.Colour.dark_teal(),
+        )
+        embed.add_field(
+            name="Subcommands",
+            value=(
+                "• `!env channels` — channel/thread/guild IDs\n"
+                "• `!env roles` — role IDs\n"
+                "• `!env sheets` — sheet IDs + sheet config\n"
+                "• `!env config` — runtime/config settings"
+            ),
+            inline=False,
+        )
+        embed.timestamp = now
+        embed.set_footer(text=" • ".join(part for part in footer_parts if part))
+
+        await ctx.reply(
+            embed=sanitize_embed(embed),
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
     async def _env_section_impl(self, ctx: commands.Context, section: str) -> None:
         bot_name = get_bot_name()
         env = get_env_name()
@@ -2649,31 +2686,44 @@ class CoreOpsCog(commands.Cog):
     @ops.group(
         name="env",
         invoke_without_command=True,
+        extras={"hide_in_help": True},
         help="Shows environment info for this bot.",
         brief="Shows environment info for this bot.",
     )
     @guild_only_denied_msg()
     @admin_only()
     async def ops_env(self, ctx: commands.Context) -> None:
-        await self._env_overview_impl(ctx)
+        await self._env_index_impl(ctx)
 
     @tier("admin")
     @help_metadata(function_group="operational", section="config_health", access_tier="admin")
-    @ops_env.command(name="channels", help="Shows channel-related environment settings.")
+    @ops_env.command(
+        name="channels",
+        help="Shows channel-related environment settings.",
+        extras={"hide_in_help": True},
+    )
     @admin_only()
     async def ops_env_channels(self, ctx: commands.Context) -> None:
         await self._env_section_impl(ctx, "channels")
 
     @tier("admin")
     @help_metadata(function_group="operational", section="config_health", access_tier="admin")
-    @ops_env.command(name="roles", help="Shows role-related environment settings.")
+    @ops_env.command(
+        name="roles",
+        help="Shows role-related environment settings.",
+        extras={"hide_in_help": True},
+    )
     @admin_only()
     async def ops_env_roles(self, ctx: commands.Context) -> None:
         await self._env_section_impl(ctx, "roles")
 
     @tier("admin")
     @help_metadata(function_group="operational", section="config_health", access_tier="admin")
-    @ops_env.command(name="sheets", help="Shows sheet-related environment settings.")
+    @ops_env.command(
+        name="sheets",
+        help="Shows sheet-related environment settings.",
+        extras={"hide_in_help": True},
+    )
     @admin_only()
     async def ops_env_sheets(self, ctx: commands.Context) -> None:
         await self._env_section_impl(ctx, "sheets")
@@ -2684,6 +2734,7 @@ class CoreOpsCog(commands.Cog):
         name="config",
         aliases=("runtime",),
         help="Shows runtime configuration settings.",
+        extras={"hide_in_help": True},
     )
     @admin_only()
     async def ops_env_config(self, ctx: commands.Context) -> None:
@@ -2695,12 +2746,25 @@ class CoreOpsCog(commands.Cog):
         name="env",
         invoke_without_command=True,
         hidden=True,
-        help="Shows environment info for this bot.",
-        brief="Shows environment info for this bot.",
+        help="Shows environment info for this bot (use subcommands for details).",
+        brief="Shows environment info for this bot (use subcommands for details).",
     )
     @guild_only_denied_msg()
     @admin_only()
     async def env(self, ctx: commands.Context) -> None:
+        await self._env_index_impl(ctx)
+
+    @tier("admin")
+    @help_metadata(function_group="operational", section="config_health", access_tier="admin")
+    @env.command(
+        name="overview",
+        hidden=True,
+        help="Shows environment info for this bot.",
+        brief="Shows environment info for this bot.",
+        extras={"hide_in_help": True},
+    )
+    @admin_only()
+    async def env_overview(self, ctx: commands.Context) -> None:
         await self._env_overview_impl(ctx)
 
     @tier("admin")
