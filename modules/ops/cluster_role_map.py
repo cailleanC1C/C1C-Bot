@@ -41,6 +41,7 @@ class RoleMapRow:
     """Structured view of a WhoWeAre worksheet row."""
 
     category: str
+    category_display: str
     role_id: int
     sheet_role_name: str
     role_description: str
@@ -113,6 +114,7 @@ def parse_role_map_records(rows: Sequence[Mapping[str, object]]) -> List[RoleMap
         category = _cell(row, "category")
         if not category:
             continue
+        category_display = _cell(row, "category_display", "category display")
         role_id_text = _cell(row, "role_id", "role id")
         if not role_id_text:
             continue
@@ -126,6 +128,7 @@ def parse_role_map_records(rows: Sequence[Mapping[str, object]]) -> List[RoleMap
         entries.append(
             RoleMapRow(
                 category=category,
+                category_display=category_display,
                 role_id=role_id,
                 sheet_role_name=sheet_role_name,
                 role_description=role_description,
@@ -177,6 +180,7 @@ def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleM
     """Compose the Discord message for the supplied WhoWeAre rows."""
 
     order, grouped = _category_order(entries)
+    category_display: Dict[str, str] = {}
     role_count = 0
     unassigned_roles = 0
     categories: List[RoleMapCategoryRender] = []
@@ -187,16 +191,18 @@ def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleM
         emoji = _category_emoji(category)
         role_rows: List[RoleEntryRender] = []
         for row in grouped.get(category, []):
+            if category not in category_display:
+                category_display[category] = row.category_display or row.category
             role_count += 1
             role = get_role(row.role_id) if callable(get_role) else None
-            display_name = ""
+            display_name = _normalize_text(row.sheet_role_name)
+            members = []
             if role is not None:
-                display_name = _normalize_text(getattr(role, "name", ""))
                 members = list(getattr(role, "members", []) or [])
-            else:
-                members = []
+                if not display_name:
+                    display_name = _normalize_text(getattr(role, "name", ""))
             if not display_name:
-                display_name = row.sheet_role_name or f"role {row.role_id}"
+                display_name = f"role {row.role_id}"
             description = row.role_description or DEFAULT_DESCRIPTION
             usage = row.role_usage
             mentions: List[str] = []
@@ -218,8 +224,9 @@ def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleM
                 )
             )
         if role_rows:
+            display_name = category_display.get(category, category)
             categories.append(
-                RoleMapCategoryRender(name=category, emoji=emoji, roles=role_rows)
+                RoleMapCategoryRender(name=display_name, emoji=emoji, roles=role_rows)
             )
 
     return RoleMapRender(

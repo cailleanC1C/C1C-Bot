@@ -36,6 +36,7 @@ def test_parse_role_map_records_filters_invalid_rows():
 
     assert len(entries) == 2
     assert entries[0].category == "ClusterLeadership"
+    assert entries[0].category_display == ""
     assert entries[1].category == "Recruitment"
     assert entries[1].role_description == ""
 
@@ -44,6 +45,7 @@ def test_build_role_map_render_renders_categories_and_members():
     entries = [
         cluster_role_map.RoleMapRow(
             category="ClusterLeadership",
+            category_display="Cluster Leadership",
             role_id=1,
             sheet_role_name="Lead", 
             role_description="Runs it",
@@ -51,6 +53,7 @@ def test_build_role_map_render_renders_categories_and_members():
         ),
         cluster_role_map.RoleMapRow(
             category="ClusterSupport",
+            category_display="",
             role_id=2,
             sheet_role_name="Support", 
             role_description="",
@@ -58,6 +61,7 @@ def test_build_role_map_render_renders_categories_and_members():
         ),
         cluster_role_map.RoleMapRow(
             category="ClusterSupport",
+            category_display="",
             role_id=99,
             sheet_role_name="Backup", 
             role_description="Keeps receipts",
@@ -80,13 +84,13 @@ def test_build_role_map_render_renders_categories_and_members():
     assert len(render.categories) == 2
     leadership = render.categories[0]
     support = render.categories[1]
-    assert leadership.name == "ClusterLeadership"
-    assert leadership.roles[0].display_name == "Leader"
+    assert leadership.name == "Cluster Leadership"
+    assert leadership.roles[0].display_name == "Lead"
     assert leadership.roles[0].members == ["<@1>"]
     assert support.roles[0].description == "no description set"
     category_body = cluster_role_map.build_category_message(leadership)
-    assert "**🔥 ClusterLeadership**" in category_body
-    assert "**Leader**" in category_body
+    assert "**🔥 Cluster Leadership**" in category_body
+    assert "**Lead**" in category_body
     assert "Runs it" in category_body
     assert "<@1>" in category_body
 
