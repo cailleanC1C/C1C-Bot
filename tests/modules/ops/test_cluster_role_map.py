@@ -36,6 +36,7 @@ def test_parse_role_map_records_filters_invalid_rows():
 
     assert len(entries) == 2
     assert entries[0].category == "ClusterLeadership"
+    assert entries[0].category_display == ""
     assert entries[1].category == "Recruitment"
     assert entries[1].role_description == ""
 
@@ -44,6 +45,7 @@ def test_build_role_map_render_renders_categories_and_members():
     entries = [
         cluster_role_map.RoleMapRow(
             category="ClusterLeadership",
+            category_display="Cluster Leadership",
             role_id=1,
             sheet_role_name="Lead", 
             role_description="Runs it",
@@ -51,6 +53,7 @@ def test_build_role_map_render_renders_categories_and_members():
         ),
         cluster_role_map.RoleMapRow(
             category="ClusterSupport",
+            category_display="",
             role_id=2,
             sheet_role_name="Support", 
             role_description="",
@@ -58,6 +61,7 @@ def test_build_role_map_render_renders_categories_and_members():
         ),
         cluster_role_map.RoleMapRow(
             category="ClusterSupport",
+            category_display="",
             role_id=99,
             sheet_role_name="Backup", 
             role_description="Keeps receipts",
