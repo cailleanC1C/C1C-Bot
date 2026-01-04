@@ -26,8 +26,8 @@ CATEGORY_EMOJIS: Dict[str, str] = {
 
 DEFAULT_DESCRIPTION = "no description set"
 MARKER_LINE = ":white_small_square::white_small_square::white_small_square:"
-INVISIBLE_MARKER = "\u2063\u2063\u2063\u2063\u2063"
-ROLE_MAP_MARKER = MARKER_LINE
+INVISIBLE_MARKER = "\u2063\u200b\u2060\u2063\u200b\u2060\u2063\u200b\u2060\u2063\u200b\u2060"
+ROLE_MAP_MARKER = INVISIBLE_MARKER
 INDEX_HEADER_LINES = [
     "# WHO WE ARE — C1C Role Map",
     "Roles first. Humans optional. Snark mandatory.",
@@ -295,7 +295,7 @@ async def cleanup_previous_role_map_messages(
     bot_id: int | None,
     limit: int = 400,
 ) -> int:
-    """Remove prior !whoweare posts (marked via MARKER_LINE)."""
+    """Remove prior !whoweare posts (marked via INVISIBLE_MARKER)."""
 
     if bot_id is None:
         return 0
