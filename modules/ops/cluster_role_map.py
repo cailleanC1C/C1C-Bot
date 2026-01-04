@@ -28,6 +28,8 @@ DEFAULT_DESCRIPTION = "no description set"
 MARKER_LINE = ":white_small_square::white_small_square::white_small_square:"
 INVISIBLE_MARKER = "\u2063\u200b\u2060\u2063\u200b\u2060\u2063\u200b\u2060\u2063\u200b\u2060"
 ROLE_MAP_MARKER = INVISIBLE_MARKER
+EMBED_DESCRIPTION_LIMIT = 4096
+MESSAGE_CONTENT_LIMIT = 2000
 INDEX_HEADER_LINES = [
     "# WHO WE ARE — C1C Role Map",
     "Roles first. Humans optional. Snark mandatory.",
@@ -169,7 +171,7 @@ def _category_order(entries: Iterable[RoleMapRow]) -> tuple[List[str], Dict[str,
 
 
 def _category_emoji(name: str) -> str:
-    normalized = name.strip().lower()
+    normalized = "".join(ch for ch in name.strip().lower() if ch.isalnum())
     return CATEGORY_EMOJIS.get(normalized, "•")
 
 
@@ -189,14 +191,15 @@ def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleM
         for row in grouped.get(category, []):
             role_count += 1
             role = get_role(row.role_id) if callable(get_role) else None
-            display_name = ""
+            display_name = _normalize_text(row.sheet_role_name)
             if role is not None:
-                display_name = _normalize_text(getattr(role, "name", ""))
                 members = list(getattr(role, "members", []) or [])
             else:
                 members = []
             if not display_name:
-                display_name = row.sheet_role_name or f"role {row.role_id}"
+                display_name = _normalize_text(getattr(role, "name", "")) if role is not None else ""
+            if not display_name:
+                display_name = f"role {row.role_id}"
             description = row.role_description or DEFAULT_DESCRIPTION
             usage = row.role_usage
             mentions: List[str] = []
@@ -239,6 +242,15 @@ def _mark_message(lines: Sequence[str]) -> str:
     return f"{body}\n{INVISIBLE_MARKER}"
 
 
+def _append_marker(content: str) -> str:
+    body = content.rstrip()
+    if not body:
+        return INVISIBLE_MARKER
+    if body.endswith(INVISIBLE_MARKER):
+        return body
+    return f"{body}\n{INVISIBLE_MARKER}"
+
+
 def build_index_placeholder() -> str:
     lines = list(INDEX_HEADER_LINES)
     lines.append("")
@@ -265,24 +277,109 @@ def build_index_message(links: Sequence[IndexLink], *, empty_reason: str | None 
 
 
 def build_category_message(category: RoleMapCategoryRender) -> str:
-    lines = [f"**{category.emoji} {category.name}**", ""]
+    lines = _build_category_lines(category)
+    return "\n".join(lines)
+
+
+def _build_role_block(role: RoleEntryRender) -> List[str]:
+    usage = _normalize_usage(role.usage)
+    description = role.description or DEFAULT_DESCRIPTION
+    lines = [f"**{role.display_name}**", description]
+    if role.members:
+        for member in role.members:
+            lines.append(f":small_blue_diamond: {member}")
+    else:
+        lines.append(":small_blue_diamond: (currently unassigned)")
+    if usage:
+        lines.append(f"↳ Use <@&{role.role_id}> for {usage}")
+    return lines
+
+
+def _build_category_lines(category: RoleMapCategoryRender) -> List[str]:
+    lines: List[str] = []
     for role in category.roles:
-        usage = _normalize_usage(role.usage)
-        lines.append(f"**{role.display_name}**")
-        description = role.description or DEFAULT_DESCRIPTION
-        lines.append(f"{description}")
-        if role.members:
-            lines.append(
-                f":small_blue_diamond: {', '.join(role.members)}"
-            )
-        else:
-            lines.append(":small_blue_diamond: (currently unassigned)")
-        if usage:
-            lines.append(f"↳ Use <@&{role.role_id}> for {usage}")
+        lines.extend(_build_role_block(role))
         lines.append("")
     if lines and lines[-1] == "":
         lines.pop()
-    return _mark_message(lines)
+    return lines
+
+
+def _split_blocks(blocks: Sequence[str], limit: int) -> tuple[List[str], bool]:
+    chunks: List[str] = []
+    current: List[str] = []
+    current_len = 0
+    for block in blocks:
+        block_len = len(block)
+        if block_len > limit:
+            return [], True
+        join_len = block_len if not current else block_len + 2
+        if current_len + join_len > limit:
+            chunks.append("\n\n".join(current))
+            current = [block]
+            current_len = block_len
+            continue
+        current.append(block)
+        current_len += join_len
+    if current:
+        chunks.append("\n\n".join(current))
+    return chunks, False
+
+
+def build_category_embeds(category: RoleMapCategoryRender) -> List[discord.Embed]:
+    blocks = ["\n".join(_build_role_block(role)) for role in category.roles]
+    chunk_texts, oversized = _split_blocks(blocks, EMBED_DESCRIPTION_LIMIT)
+    if oversized:
+        log.warning(
+            "cluster_role_map: role block exceeds embed limit; falling back to content",
+            extra={"category": category.name},
+        )
+        return []
+    total = len(chunk_texts)
+    embeds: List[discord.Embed] = []
+    for idx, chunk in enumerate(chunk_texts, start=1):
+        if total == 1:
+            title = f"{category.emoji} {category.name}"
+        else:
+            title = f"{category.emoji} {category.name} ({idx}/{total})"
+        embed = discord.Embed(title=title, description=chunk)
+        embeds.append(embed)
+    return embeds
+
+
+def build_category_fallback_messages(category: RoleMapCategoryRender) -> List[str]:
+    lines = _build_category_lines(category)
+    if not lines:
+        return []
+    chunks: List[str] = []
+    current: List[str] = []
+    current_len = 0
+    for line in lines:
+        line_len = len(line)
+        if line_len > MESSAGE_CONTENT_LIMIT:
+            log.warning(
+                "cluster_role_map: line exceeds message limit; splitting content",
+                extra={"category": category.name},
+            )
+            if current:
+                chunks.append(_append_marker("\n".join(current)))
+                current = []
+                current_len = 0
+            for start in range(0, line_len, MESSAGE_CONTENT_LIMIT):
+                segment = line[start : start + MESSAGE_CONTENT_LIMIT]
+                chunks.append(_append_marker(segment))
+            continue
+        join_len = line_len if not current else line_len + 1
+        if current_len + join_len > MESSAGE_CONTENT_LIMIT:
+            chunks.append(_append_marker("\n".join(current)))
+            current = [line]
+            current_len = line_len
+            continue
+        current.append(line)
+        current_len += join_len
+    if current:
+        chunks.append(_append_marker("\n".join(current)))
+    return chunks
 
 
 def build_jump_url(guild_id: int, channel_id: int, message_id: int) -> str:
@@ -367,6 +464,8 @@ __all__ = [
     "build_index_placeholder",
     "build_index_message",
     "build_category_message",
+    "build_category_embeds",
+    "build_category_fallback_messages",
     "build_jump_url",
     "cleanup_previous_role_map_messages",
     "fetch_role_map_rows",

@@ -26,6 +26,7 @@ class FakeMessage:
         content: str,
         author: FakeAuthor,
         *,
+        embed=None,
         created_at: dt.datetime | None = None,
     ) -> None:
         self.id = FakeMessage._next_id
@@ -33,6 +34,7 @@ class FakeMessage:
         self.channel = channel
         self.author = author
         self.content = content
+        self.embed = embed
         self.created_at = created_at or dt.datetime.now(dt.timezone.utc)
         self.deleted = False
         self.edited_content: str | None = None
@@ -69,8 +71,8 @@ class FakeChannel:
             count += 1
             yield message
 
-    async def send(self, content: str) -> FakeMessage:
-        message = FakeMessage(self, content, author=self._bot_user)
+    async def send(self, content: str | None = None, *, embed=None) -> FakeMessage:
+        message = FakeMessage(self, content or "", author=self._bot_user, embed=embed)
         self.history_messages.append(message)
         self.sent_messages.append(message)
         return message
@@ -375,9 +377,10 @@ def test_whoweare_command_posts_multi_message_map(monkeypatch):
             category_message.id,
         )
         assert f"🔥 [ClusterLeadership]({expected_link})" in index_message.content
-        assert "**🔥 ClusterLeadership**" in category_message.content
-        assert "Cluster Leader" in category_message.content
-        assert ":small_blue_diamond: <@100>" in category_message.content
+        assert category_message.embed is not None
+        assert category_message.embed.title == "🔥 ClusterLeadership"
+        assert "Cluster Leader" in category_message.embed.description
+        assert ":small_blue_diamond: <@100>" in category_message.embed.description
         assert index_message.content.rstrip().endswith(cluster_role_map.INVISIBLE_MARKER)
         assert category_message.content.rstrip().endswith(cluster_role_map.INVISIBLE_MARKER)
         assert log_messages[-1] == (
@@ -438,7 +441,8 @@ def test_whoweare_command_marks_unassigned_with_blue_diamond(monkeypatch):
 
         assert len(channel.sent_messages) == 2
         category_message = channel.sent_messages[1]
-        assert ":small_blue_diamond: (currently unassigned)" in category_message.content
+        assert category_message.embed is not None
+        assert ":small_blue_diamond: (currently unassigned)" in category_message.embed.description
         assert category_message.content.rstrip().endswith(cluster_role_map.INVISIBLE_MARKER)
 
     asyncio.run(_run())

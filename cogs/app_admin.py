@@ -430,17 +430,36 @@ class AppAdmin(commands.Cog):
 
         jump_entries: list[cluster_role_map.IndexLink] = []
         for category in render.categories:
-            body = cluster_role_map.build_category_message(category)
-            if not body.strip():
-                continue
             try:
-                message = await target_channel.send(body)
+                embeds = cluster_role_map.build_category_embeds(category)
+                fallback_messages = []
+                if not embeds:
+                    fallback_messages = cluster_role_map.build_category_fallback_messages(category)
+                if not embeds and not fallback_messages:
+                    continue
+                if embeds:
+                    message = None
+                    for embed in embeds:
+                        sent = await target_channel.send(
+                            content=cluster_role_map.INVISIBLE_MARKER,
+                            embed=embed,
+                        )
+                        if message is None:
+                            message = sent
+                else:
+                    message = None
+                    for body in fallback_messages:
+                        sent = await target_channel.send(body)
+                        if message is None:
+                            message = sent
             except discord.HTTPException as exc:
                 reason = str(exc) or "category_send_failed"
                 await runtime_helpers.send_log_message(
                     f"📘 **Cluster role map** — cmd=whoweare • guild={guild_name} "
                     f"• status=error • step=category_send • category={category.name} • reason={reason}"
                 )
+                continue
+            if message is None:
                 continue
             jump_entries.append(
                 cluster_role_map.IndexLink(
