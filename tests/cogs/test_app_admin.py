@@ -241,13 +241,13 @@ def test_whoweare_command_cleans_old_map_messages(monkeypatch):
         now = dt.datetime.now(dt.timezone.utc)
         recent = FakeMessage(
             channel,
-            f"recent {cluster_role_map.ROLE_MAP_MARKER}",
+            f"recent {cluster_role_map.INVISIBLE_MARKER}",
             bot.user,
             created_at=now - dt.timedelta(days=1),
         )
         older = FakeMessage(
             channel,
-            f"older {cluster_role_map.ROLE_MAP_MARKER}",
+            f"older {cluster_role_map.INVISIBLE_MARKER}",
             bot.user,
             created_at=now - dt.timedelta(days=20),
         )
@@ -272,9 +272,11 @@ def test_whoweare_command_cleans_old_map_messages(monkeypatch):
         monkeypatch.setattr(cluster_role_map, "fetch_role_map_rows", fake_fetch)
 
         role_entry = cluster_role_map.RoleEntryRender(
+            role_id=101,
             display_name="Guardian",
             description="Keeps order",
             members=[],
+            usage="",
         )
         category = cluster_role_map.RoleMapCategoryRender(
             name="ClusterSupport",
@@ -333,9 +335,11 @@ def test_whoweare_command_posts_multi_message_map(monkeypatch):
         monkeypatch.setattr(cluster_role_map, "fetch_role_map_rows", fake_fetch)
 
         role_entry = cluster_role_map.RoleEntryRender(
+            role_id=100,
             display_name="Cluster Leader",
             description="Runs it",
             members=["<@100>"],
+            usage="",
         )
         category = cluster_role_map.RoleMapCategoryRender(
             name="ClusterLeadership",
@@ -371,11 +375,11 @@ def test_whoweare_command_posts_multi_message_map(monkeypatch):
             category_message.id,
         )
         assert f"🔥 [ClusterLeadership]({expected_link})" in index_message.content
-        assert "## 🔥 ClusterLeadership" in category_message.content
+        assert "**🔥 ClusterLeadership**" in category_message.content
         assert "Cluster Leader" in category_message.content
         assert ":small_blue_diamond: <@100>" in category_message.content
-        assert index_message.content.rstrip().endswith(cluster_role_map.MARKER_LINE)
-        assert category_message.content.rstrip().endswith(cluster_role_map.MARKER_LINE)
+        assert index_message.content.rstrip().endswith(cluster_role_map.INVISIBLE_MARKER)
+        assert category_message.content.rstrip().endswith(cluster_role_map.INVISIBLE_MARKER)
         assert log_messages[-1] == (
             "📘 **Cluster role map** — cmd=whoweare • guild=Guild • categories=1 "
             "• roles=1 • unassigned_roles=0 • category_messages=1 • target_channel=#Guild:321"
@@ -409,9 +413,11 @@ def test_whoweare_command_marks_unassigned_with_blue_diamond(monkeypatch):
         monkeypatch.setattr(cluster_role_map, "fetch_role_map_rows", fake_fetch)
 
         role_entry = cluster_role_map.RoleEntryRender(
+            role_id=200,
             display_name="Cluster Supporter",
             description="Helps out",
             members=[],
+            usage="",
         )
         category = cluster_role_map.RoleMapCategoryRender(
             name="ClusterSupport",
@@ -433,7 +439,7 @@ def test_whoweare_command_marks_unassigned_with_blue_diamond(monkeypatch):
         assert len(channel.sent_messages) == 2
         category_message = channel.sent_messages[1]
         assert ":small_blue_diamond: (currently unassigned)" in category_message.content
-        assert category_message.content.rstrip().endswith(cluster_role_map.MARKER_LINE)
+        assert category_message.content.rstrip().endswith(cluster_role_map.INVISIBLE_MARKER)
 
     asyncio.run(_run())
 
@@ -514,9 +520,11 @@ def test_whoweare_command_logs_channel_fallback(monkeypatch):
         monkeypatch.setattr(cluster_role_map, "fetch_role_map_rows", fake_fetch)
 
         role_entry = cluster_role_map.RoleEntryRender(
+            role_id=300,
             display_name="Lead",
             description="Keeps lights on",
             members=["<@200>"],
+            usage="",
         )
         category = cluster_role_map.RoleMapCategoryRender(
             name="ClusterLeadership",
@@ -581,9 +589,11 @@ def test_whoweare_command_falls_back_for_non_messageable_channel(monkeypatch):
         monkeypatch.setattr(cluster_role_map, "fetch_role_map_rows", fake_fetch)
 
         role_entry = cluster_role_map.RoleEntryRender(
+            role_id=400,
             display_name="Lead",
             description="Keeps lights on",
             members=["<@200>"],
+            usage="",
         )
         category = cluster_role_map.RoleMapCategoryRender(
             name="ClusterLeadership",
@@ -649,9 +659,11 @@ def test_whoweare_command_falls_back_for_foreign_channel(monkeypatch):
         monkeypatch.setattr(cluster_role_map, "fetch_role_map_rows", fake_fetch)
 
         role_entry = cluster_role_map.RoleEntryRender(
+            role_id=500,
             display_name="Lead",
             description="Keeps lights on",
             members=["<@200>"],
+            usage="",
         )
         category = cluster_role_map.RoleMapCategoryRender(
             name="ClusterLeadership",
