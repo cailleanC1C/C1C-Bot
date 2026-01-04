@@ -2902,7 +2902,7 @@ class CoreOpsCog(commands.Cog):
                 return "Other"
             if "THREAD" in key:
                 return "Threads"
-            if "CHANNEL" in key or key == "GUILD_IDS":
+            if "CHANNEL" in key or "DEST" in key or key == "GUILD_IDS":
                 return "Channels"
             return "Other"
 
@@ -2916,6 +2916,7 @@ class CoreOpsCog(commands.Cog):
             "RECRUITERS_CHANNEL_ID",
             "RECRUITERS_THREAD_ID",
             "REPORT_RECRUITERS_DEST_ID",
+            "ADMIN_AUDIT_DEST_ID",
             "PANEL_FIXED_THREAD_ID",
             "PANEL_THREAD_MODE",
             "ROLEMAP_CHANNEL_ID",
@@ -2941,7 +2942,7 @@ class CoreOpsCog(commands.Cog):
             for key in entries.keys()
             if key not in seen_channels
             and not _is_secret_key(key)
-            and any(token in key for token in ("CHANNEL", "THREAD", "GUILD"))
+            and any(token in key for token in ("CHANNEL", "THREAD", "GUILD", "DEST"))
         ]
         for key in sorted(dynamic_channels):
             bucket = _channel_bucket(key)
@@ -2963,6 +2964,7 @@ class CoreOpsCog(commands.Cog):
             "LEAD_ROLE_IDS",
             "RECRUITER_ROLE_IDS",
             "NOTIFY_PING_ROLE_ID",
+            "CLAN_LEAD_IDS",
         ]
         role_sections.extend(_format_group(ordered_roles))
 
@@ -3015,9 +3017,10 @@ class CoreOpsCog(commands.Cog):
                 for row_key, value, resolved in rows:
                     value_text = f"{value}"
                     label = resolved if resolved and resolved != "—" else "value"
-                    config_lines.extend(
+                    target_lines = tab_lines if row_key.endswith("_TAB") else config_lines
+                    target_lines.extend(
                         self._format_key_block(
-                            f"{label} override: {row_key}",
+                            row_key,
                             [(value_text, label)],
                         )
                     )
@@ -3082,11 +3085,21 @@ class CoreOpsCog(commands.Cog):
             meta=render_meta,
             title=sheets_title,
         )
+        toggles = get_feature_toggles()
+        toggle_lines: list[str] = []
+        if toggles:
+            for name in sorted(toggles):
+                value = "ON" if toggles[name] else "OFF"
+                toggle_lines.extend(self._format_key_block(name, [(value, "value")]))
+        else:
+            toggle_lines.append("—")
+
         sheets_embeds = self._render_env_sections_as_fields(
             sheets_base,
             [
                 ("Sheets", sheets_lines or ["—"]),
                 ("Tabs", tab_lines or ["—"]),
+                ("Feature Toggles", toggle_lines),
                 ("Config", config_lines or ["—"]),
                 ("Secrets (masked)", self._format_secrets(entries)),
             ],
@@ -3115,7 +3128,7 @@ class CoreOpsCog(commands.Cog):
                         return "Other"
                     if "THREAD" in key:
                         return "Threads"
-                    if "CHANNEL" in key or key == "GUILD_IDS":
+                    if "CHANNEL" in key or "DEST" in key or key == "GUILD_IDS":
                         return "Channels"
                     return "Other"
 
@@ -3129,6 +3142,7 @@ class CoreOpsCog(commands.Cog):
                     "RECRUITERS_CHANNEL_ID",
                     "RECRUITERS_THREAD_ID",
                     "REPORT_RECRUITERS_DEST_ID",
+                    "ADMIN_AUDIT_DEST_ID",
                     "PANEL_FIXED_THREAD_ID",
                     "PANEL_THREAD_MODE",
                     "ROLEMAP_CHANNEL_ID",
@@ -3147,7 +3161,7 @@ class CoreOpsCog(commands.Cog):
                     for key in entries.keys()
                     if key not in seen_channels
                     and not _is_secret_key(key)
-                    and any(token in key for token in ("CHANNEL", "THREAD", "GUILD"))
+                    and any(token in key for token in ("CHANNEL", "THREAD", "GUILD", "DEST"))
                 ]
                 for key in sorted(dynamic_channels):
                     bucket = _channel_bucket(key)
@@ -3166,6 +3180,7 @@ class CoreOpsCog(commands.Cog):
                 sheets_lines: list[str] = []
                 tab_lines: list[str] = []
                 config_lines: list[str] = []
+                toggle_lines: list[str] = []
 
                 for key, entry in entries.items():
                     if _is_secret_key(key):
@@ -3185,9 +3200,10 @@ class CoreOpsCog(commands.Cog):
                         for row_key, value, resolved in rows:
                             value_text = f"{value}"
                             label = resolved if resolved and resolved != "—" else "value"
-                            config_lines.extend(
+                            target_lines = tab_lines if row_key.endswith("_TAB") else config_lines
+                            target_lines.extend(
                                 self._format_key_block(
-                                    f"{label} override: {row_key}",
+                                    row_key,
                                     [(value_text, label)],
                                 )
                             )
@@ -3196,9 +3212,11 @@ class CoreOpsCog(commands.Cog):
                 if toggles:
                     for name in sorted(toggles):
                         value = "ON" if toggles[name] else "OFF"
-                        config_lines.extend(
+                        toggle_lines.extend(
                             self._format_key_block(name, [(value, "value")])
                         )
+                else:
+                    toggle_lines.append("—")
 
                 meta = _config_meta_from_app()
                 source = str(meta.get("source", "runtime"))
@@ -3215,6 +3233,7 @@ class CoreOpsCog(commands.Cog):
                 sections = [
                     ("Sheets", sheets_lines or ["—"]),
                     ("Tabs", tab_lines or ["—"]),
+                    ("Feature Toggles", toggle_lines),
                     ("Config", config_lines or ["—"]),
                     ("Secrets (masked)", self._format_secrets(entries)),
                 ]
@@ -3277,11 +3296,19 @@ class CoreOpsCog(commands.Cog):
             used_keys.update(
                 key
                 for key in entries.keys()
-                if any(token in key for token in ("CHANNEL", "THREAD", "GUILD"))
+                if any(token in key for token in ("CHANNEL", "THREAD", "GUILD", "DEST"))
                 or key in {"PANEL_THREAD_MODE"}
             )
             used_keys.update(
-                key for key in entries.keys() if "ROLE" in key and not _is_sheet_key(key)
+                key
+                for key in entries.keys()
+                if (
+                    "ROLE" in key
+                    or key.endswith("_ROLE_ID")
+                    or key.endswith("_ROLE_IDS")
+                    or key == "CLAN_LEAD_IDS"
+                )
+                and not _is_sheet_key(key)
             )
             used_keys.update(key for key in entries.keys() if _is_sheet_key(key))
 
@@ -4705,6 +4732,7 @@ class CoreOpsCog(commands.Cog):
             "PROMO_CHANNEL_ID",
             "RECRUITERS_THREAD_ID",
             "REPORT_RECRUITERS_DEST_ID",
+            "ADMIN_AUDIT_DEST_ID",
             "PANEL_FIXED_THREAD_ID",
             "PANEL_THREAD_MODE",
         ]
@@ -4719,7 +4747,7 @@ class CoreOpsCog(commands.Cog):
             for key in entries.keys()
             if key not in seen
             and not _is_secret_key(key)
-            and any(token in key for token in ("CHANNEL", "THREAD", "GUILD"))
+            and any(token in key for token in ("CHANNEL", "THREAD", "GUILD", "DEST"))
         ]
         for key in sorted(dynamic):
             seen.add(key)
@@ -4744,6 +4772,7 @@ class CoreOpsCog(commands.Cog):
             "LEAD_ROLE_IDS",
             "RECRUITER_ROLE_IDS",
             "NOTIFY_PING_ROLE_ID",
+            "CLAN_LEAD_IDS",
         ]
         lines: List[str] = []
         seen: Set[str] = set()
@@ -4756,7 +4785,12 @@ class CoreOpsCog(commands.Cog):
             for key in entries.keys()
             if key not in seen
             and not _is_secret_key(key)
-            and "ROLE" in key
+            and (
+                "ROLE" in key
+                or key.endswith("_ROLE_ID")
+                or key.endswith("_ROLE_IDS")
+                or key == "CLAN_LEAD_IDS"
+            )
             and not _is_sheet_key(key)
         ]
         for key in sorted(dynamic):
