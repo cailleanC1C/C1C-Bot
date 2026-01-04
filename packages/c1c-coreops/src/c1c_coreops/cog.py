@@ -123,6 +123,7 @@ _digest_section_errors_logged: Set[str] = set()
 _FIELD_CHAR_LIMIT = 1024
 _CODE_BLOCK_OVERHEAD = len("```\n\n```")
 _FIELD_CHUNK_SOFT_LIMIT = 1500
+_ENV_FIELD_CHUNK_LIMIT = 1000
 _EMBED_TOTAL_CHAR_LIMIT = 6000
 _EMBED_FIELD_LIMIT = 25
 _MAX_EMBED_LENGTH = 4500
@@ -601,6 +602,8 @@ def _clone_base_embed(embed: discord.Embed) -> discord.Embed:
             name=embed.author.name,
             icon_url=getattr(embed.author, "icon_url", discord.Embed.Empty),
         )
+    if embed.footer and embed.footer.text:
+        cloned.set_footer(text=embed.footer.text)
     return cloned
 
 
@@ -2577,6 +2580,43 @@ class CoreOpsCog(commands.Cog):
             ctx, [sanitize_embed(embed) for embed in embeds]
         )
 
+    async def _env_index_impl(self, ctx: commands.Context) -> None:
+        bot_name = get_bot_name()
+        env = get_env_name()
+        version = os.getenv("BOT_VERSION", "dev")
+        now = dt.datetime.now(UTC)
+        guild_name = getattr(ctx.guild, "name", None) or "unknown guild"
+        footer_parts = [
+            f"env: {env}",
+            f"guild: {guild_name}",
+            build_coreops_footer(bot_version=version),
+            "source: ENV + Sheet Config",
+        ]
+
+        embed = discord.Embed(
+            title=f"{bot_name} • env: {env}",
+            description="Environment overview for this bot.",
+            colour=discord.Colour.dark_teal(),
+        )
+        embed.add_field(
+            name="Subcommands",
+            value=(
+                "• `!env channels` — channel/thread/guild IDs\n"
+                "• `!env roles` — role IDs\n"
+                "• `!env sheets` — sheet IDs + sheet config\n"
+                "• `!env config` — runtime/config settings"
+            ),
+            inline=False,
+        )
+        embed.timestamp = now
+        embed.set_footer(text=" • ".join(part for part in footer_parts if part))
+
+        await ctx.reply(
+            embed=sanitize_embed(embed),
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
     async def _env_section_impl(self, ctx: commands.Context, section: str) -> None:
         bot_name = get_bot_name()
         env = get_env_name()
@@ -2646,31 +2686,44 @@ class CoreOpsCog(commands.Cog):
     @ops.group(
         name="env",
         invoke_without_command=True,
+        extras={"hide_in_help": True},
         help="Shows environment info for this bot.",
         brief="Shows environment info for this bot.",
     )
     @guild_only_denied_msg()
     @admin_only()
     async def ops_env(self, ctx: commands.Context) -> None:
-        await self._env_overview_impl(ctx)
+        await self._env_index_impl(ctx)
 
     @tier("admin")
     @help_metadata(function_group="operational", section="config_health", access_tier="admin")
-    @ops_env.command(name="channels", help="Shows channel-related environment settings.")
+    @ops_env.command(
+        name="channels",
+        help="Shows channel-related environment settings.",
+        extras={"hide_in_help": True},
+    )
     @admin_only()
     async def ops_env_channels(self, ctx: commands.Context) -> None:
         await self._env_section_impl(ctx, "channels")
 
     @tier("admin")
     @help_metadata(function_group="operational", section="config_health", access_tier="admin")
-    @ops_env.command(name="roles", help="Shows role-related environment settings.")
+    @ops_env.command(
+        name="roles",
+        help="Shows role-related environment settings.",
+        extras={"hide_in_help": True},
+    )
     @admin_only()
     async def ops_env_roles(self, ctx: commands.Context) -> None:
         await self._env_section_impl(ctx, "roles")
 
     @tier("admin")
     @help_metadata(function_group="operational", section="config_health", access_tier="admin")
-    @ops_env.command(name="sheets", help="Shows sheet-related environment settings.")
+    @ops_env.command(
+        name="sheets",
+        help="Shows sheet-related environment settings.",
+        extras={"hide_in_help": True},
+    )
     @admin_only()
     async def ops_env_sheets(self, ctx: commands.Context) -> None:
         await self._env_section_impl(ctx, "sheets")
@@ -2681,6 +2734,7 @@ class CoreOpsCog(commands.Cog):
         name="config",
         aliases=("runtime",),
         help="Shows runtime configuration settings.",
+        extras={"hide_in_help": True},
     )
     @admin_only()
     async def ops_env_config(self, ctx: commands.Context) -> None:
@@ -2692,12 +2746,25 @@ class CoreOpsCog(commands.Cog):
         name="env",
         invoke_without_command=True,
         hidden=True,
-        help="Shows environment info for this bot.",
-        brief="Shows environment info for this bot.",
+        help="Shows environment info for this bot (use subcommands for details).",
+        brief="Shows environment info for this bot (use subcommands for details).",
     )
     @guild_only_denied_msg()
     @admin_only()
     async def env(self, ctx: commands.Context) -> None:
+        await self._env_index_impl(ctx)
+
+    @tier("admin")
+    @help_metadata(function_group="operational", section="config_health", access_tier="admin")
+    @env.command(
+        name="overview",
+        hidden=True,
+        help="Shows environment info for this bot.",
+        brief="Shows environment info for this bot.",
+        extras={"hide_in_help": True},
+    )
+    @admin_only()
+    async def env_overview(self, ctx: commands.Context) -> None:
         await self._env_overview_impl(ctx)
 
     @tier("admin")
@@ -2738,7 +2805,6 @@ class CoreOpsCog(commands.Cog):
         *,
         meta: _EnvRenderMeta,
         title: str,
-        description: str | None = None,
     ) -> discord.Embed:
         cfg_meta = _config_meta_from_app()
         embed = build_env_embed(
@@ -2749,8 +2815,7 @@ class CoreOpsCog(commands.Cog):
         )
         embed.clear_fields()
         embed.title = title
-        if description is not None:
-            embed.description = description
+        embed.description = None
         embed.timestamp = meta.timestamp
         embed.set_footer(
             text=build_coreops_footer(
@@ -2759,38 +2824,33 @@ class CoreOpsCog(commands.Cog):
         )
         return embed
 
-    def render_env_embed(
+    def _render_env_sections_as_fields(
         self,
-        page_title: str,
+        base_embed: discord.Embed,
         sections: Sequence[tuple[str, Sequence[str]]],
-        footer_meta: _EnvRenderMeta,
-        *,
-        description: str | None = None,
     ) -> list[discord.Embed]:
         fields: list[tuple[str, str]] = []
-        body_limit = max(1, _FIELD_CHAR_LIMIT - _CODE_BLOCK_OVERHEAD)
+        body_limit = max(1, _ENV_FIELD_CHUNK_LIMIT)
         for name, lines in sections:
+            normalized_lines = list(lines) if lines else ["—"]
             for field_name, field_value in _chunk_field_values(
-                name, lines or ["—"], limit=body_limit
+                name, normalized_lines, limit=body_limit
             ):
                 fields.append((field_name, _wrap_code_block(field_value)))
 
-        base = self._build_env_base_embed(
-            meta=footer_meta,
-            title=page_title,
-            description=description,
-        )
-        embeds = _split_fields_into_embeds(base, fields)
-        if len(embeds) > 1:
-            total_pages = len(embeds)
-            for page, embed in enumerate(embeds, start=1):
-                embed.title = f"{page_title} · Page {page}/{total_pages}"
-                embed.set_footer(
-                    text=build_coreops_footer(
-                        bot_version=footer_meta.version,
-                        notes=" • source: ENV + Sheet Config",
-                    )
-                )
+        embeds = _split_fields_into_embeds(base_embed, fields)
+        if not embeds:
+            return []
+
+        total_pages = len(embeds)
+        for page, embed in enumerate(embeds, start=1):
+            if total_pages > 1:
+                embed.title = f"{base_embed.title} — Page {page}/{total_pages}"
+            else:
+                embed.title = base_embed.title
+            embed.timestamp = base_embed.timestamp
+            if base_embed.footer and base_embed.footer.text:
+                embed.set_footer(text=base_embed.footer.text)
         return embeds
 
     def _build_env_embeds(
@@ -2842,7 +2902,7 @@ class CoreOpsCog(commands.Cog):
                 return "Other"
             if "THREAD" in key:
                 return "Threads"
-            if "CHANNEL" in key or key == "GUILD_IDS":
+            if "CHANNEL" in key or "DEST" in key or key == "GUILD_IDS":
                 return "Channels"
             return "Other"
 
@@ -2856,6 +2916,7 @@ class CoreOpsCog(commands.Cog):
             "RECRUITERS_CHANNEL_ID",
             "RECRUITERS_THREAD_ID",
             "REPORT_RECRUITERS_DEST_ID",
+            "ADMIN_AUDIT_DEST_ID",
             "PANEL_FIXED_THREAD_ID",
             "PANEL_THREAD_MODE",
             "ROLEMAP_CHANNEL_ID",
@@ -2881,7 +2942,7 @@ class CoreOpsCog(commands.Cog):
             for key in entries.keys()
             if key not in seen_channels
             and not _is_secret_key(key)
-            and any(token in key for token in ("CHANNEL", "THREAD", "GUILD"))
+            and any(token in key for token in ("CHANNEL", "THREAD", "GUILD", "DEST"))
         ]
         for key in sorted(dynamic_channels):
             bucket = _channel_bucket(key)
@@ -2903,6 +2964,7 @@ class CoreOpsCog(commands.Cog):
             "LEAD_ROLE_IDS",
             "RECRUITER_ROLE_IDS",
             "NOTIFY_PING_ROLE_ID",
+            "CLAN_LEAD_IDS",
         ]
         role_sections.extend(_format_group(ordered_roles))
 
@@ -2955,9 +3017,10 @@ class CoreOpsCog(commands.Cog):
                 for row_key, value, resolved in rows:
                     value_text = f"{value}"
                     label = resolved if resolved and resolved != "—" else "value"
-                    config_lines.extend(
+                    target_lines = tab_lines if row_key.endswith("_TAB") else config_lines
+                    target_lines.extend(
                         self._format_key_block(
-                            f"{label} override: {row_key}",
+                            row_key,
                             [(value_text, label)],
                         )
                     )
@@ -2983,35 +3046,63 @@ class CoreOpsCog(commands.Cog):
                 )
             overview_sections.append(("Warnings", warning_lines))
 
-        overview_title = f"{render_meta.bot_name} · env: {render_meta.env} · Overview"
-        channels_title = f"{render_meta.bot_name} · env: {render_meta.env} · Channels"
-        roles_title = f"{render_meta.bot_name} · env: {render_meta.env} · Roles"
-        sheets_title = f"{render_meta.bot_name} · env: {render_meta.env} · Sheets & Config"
+        overview_title = f"{render_meta.bot_name} — env: {render_meta.env} — Overview"
+        channels_title = f"{render_meta.bot_name} — env: {render_meta.env} — Channels"
+        roles_title = f"{render_meta.bot_name} — env: {render_meta.env} — Roles"
+        sheets_title = f"{render_meta.bot_name} — env: {render_meta.env} — Sheets & Config"
 
-        overview_embeds = self.render_env_embed(
-            overview_title, overview_sections, render_meta
+        overview_base = self._build_env_base_embed(
+            meta=render_meta,
+            title=overview_title,
         )
-        channels_embeds = self.render_env_embed(
-            channels_title,
+        overview_embeds = self._render_env_sections_as_fields(
+            overview_base, overview_sections
+        )
+
+        channels_base = self._build_env_base_embed(
+            meta=render_meta,
+            title=channels_title,
+        )
+        channels_embeds = self._render_env_sections_as_fields(
+            channels_base,
             [
                 ("Channels", channel_sections["Channels"] or ["—"]),
                 ("Threads", channel_sections["Threads"] or ["—"]),
                 ("Other", channel_sections["Other"] or ["—"]),
             ],
-            render_meta,
         )
-        roles_embeds = self.render_env_embed(
-            roles_title, [("Roles", role_sections or ["—"])], render_meta
+
+        roles_base = self._build_env_base_embed(
+            meta=render_meta,
+            title=roles_title,
         )
-        sheets_embeds = self.render_env_embed(
-            sheets_title,
+        roles_embeds = self._render_env_sections_as_fields(
+            roles_base,
+            [("Roles", role_sections or ["—"])],
+        )
+
+        sheets_base = self._build_env_base_embed(
+            meta=render_meta,
+            title=sheets_title,
+        )
+        toggles = get_feature_toggles()
+        toggle_lines: list[str] = []
+        if toggles:
+            for name in sorted(toggles):
+                value = "ON" if toggles[name] else "OFF"
+                toggle_lines.extend(self._format_key_block(name, [(value, "value")]))
+        else:
+            toggle_lines.append("—")
+
+        sheets_embeds = self._render_env_sections_as_fields(
+            sheets_base,
             [
                 ("Sheets", sheets_lines or ["—"]),
                 ("Tabs", tab_lines or ["—"]),
+                ("Feature Toggles", toggle_lines),
                 ("Config", config_lines or ["—"]),
                 ("Secrets (masked)", self._format_secrets(entries)),
             ],
-            render_meta,
         )
 
         embeds = [*overview_embeds, *channels_embeds, *roles_embeds, *sheets_embeds]
@@ -3037,7 +3128,7 @@ class CoreOpsCog(commands.Cog):
                         return "Other"
                     if "THREAD" in key:
                         return "Threads"
-                    if "CHANNEL" in key or key == "GUILD_IDS":
+                    if "CHANNEL" in key or "DEST" in key or key == "GUILD_IDS":
                         return "Channels"
                     return "Other"
 
@@ -3051,6 +3142,7 @@ class CoreOpsCog(commands.Cog):
                     "RECRUITERS_CHANNEL_ID",
                     "RECRUITERS_THREAD_ID",
                     "REPORT_RECRUITERS_DEST_ID",
+                    "ADMIN_AUDIT_DEST_ID",
                     "PANEL_FIXED_THREAD_ID",
                     "PANEL_THREAD_MODE",
                     "ROLEMAP_CHANNEL_ID",
@@ -3069,7 +3161,7 @@ class CoreOpsCog(commands.Cog):
                     for key in entries.keys()
                     if key not in seen_channels
                     and not _is_secret_key(key)
-                    and any(token in key for token in ("CHANNEL", "THREAD", "GUILD"))
+                    and any(token in key for token in ("CHANNEL", "THREAD", "GUILD", "DEST"))
                 ]
                 for key in sorted(dynamic_channels):
                     bucket = _channel_bucket(key)
@@ -3088,6 +3180,7 @@ class CoreOpsCog(commands.Cog):
                 sheets_lines: list[str] = []
                 tab_lines: list[str] = []
                 config_lines: list[str] = []
+                toggle_lines: list[str] = []
 
                 for key, entry in entries.items():
                     if _is_secret_key(key):
@@ -3107,9 +3200,10 @@ class CoreOpsCog(commands.Cog):
                         for row_key, value, resolved in rows:
                             value_text = f"{value}"
                             label = resolved if resolved and resolved != "—" else "value"
-                            config_lines.extend(
+                            target_lines = tab_lines if row_key.endswith("_TAB") else config_lines
+                            target_lines.extend(
                                 self._format_key_block(
-                                    f"{label} override: {row_key}",
+                                    row_key,
                                     [(value_text, label)],
                                 )
                             )
@@ -3118,9 +3212,11 @@ class CoreOpsCog(commands.Cog):
                 if toggles:
                     for name in sorted(toggles):
                         value = "ON" if toggles[name] else "OFF"
-                        config_lines.extend(
+                        toggle_lines.extend(
                             self._format_key_block(name, [(value, "value")])
                         )
+                else:
+                    toggle_lines.append("—")
 
                 meta = _config_meta_from_app()
                 source = str(meta.get("source", "runtime"))
@@ -3137,15 +3233,16 @@ class CoreOpsCog(commands.Cog):
                 sections = [
                     ("Sheets", sheets_lines or ["—"]),
                     ("Tabs", tab_lines or ["—"]),
+                    ("Feature Toggles", toggle_lines),
                     ("Config", config_lines or ["—"]),
                     ("Secrets (masked)", self._format_secrets(entries)),
                 ]
 
-            return self.render_env_embed(
-                f"{render_meta.bot_name} · env: {render_meta.env} · {section_title}",
-                sections,
-                render_meta,
+            base_embed = self._build_env_base_embed(
+                meta=render_meta,
+                title=f"{render_meta.bot_name} — env: {render_meta.env} — {section_title}",
             )
+            return self._render_env_sections_as_fields(base_embed, sections)
 
         else:
             section_title = "Config"
@@ -3199,11 +3296,19 @@ class CoreOpsCog(commands.Cog):
             used_keys.update(
                 key
                 for key in entries.keys()
-                if any(token in key for token in ("CHANNEL", "THREAD", "GUILD"))
+                if any(token in key for token in ("CHANNEL", "THREAD", "GUILD", "DEST"))
                 or key in {"PANEL_THREAD_MODE"}
             )
             used_keys.update(
-                key for key in entries.keys() if "ROLE" in key and not _is_sheet_key(key)
+                key
+                for key in entries.keys()
+                if (
+                    "ROLE" in key
+                    or key.endswith("_ROLE_ID")
+                    or key.endswith("_ROLE_IDS")
+                    or key == "CLAN_LEAD_IDS"
+                )
+                and not _is_sheet_key(key)
             )
             used_keys.update(key for key in entries.keys() if _is_sheet_key(key))
 
@@ -3226,11 +3331,11 @@ class CoreOpsCog(commands.Cog):
                 ("Other", other_lines),
             ]
 
-        return self.render_env_embed(
-            f"{render_meta.bot_name} · env: {render_meta.env} · {section_title}",
-            sections,
-            render_meta,
+        base_embed = self._build_env_base_embed(
+            meta=render_meta,
+            title=f"{render_meta.bot_name} — env: {render_meta.env} — {section_title}",
         )
+        return self._render_env_sections_as_fields(base_embed, sections)
 
     @tier("user")
     @ops.command(
@@ -4568,12 +4673,13 @@ class CoreOpsCog(commands.Cog):
                 lines.append("  — (unset)")
                 continue
             if raw_label is None:
-                label = text
+                lines.append(f"  {text}")
+                continue
+            label = str(raw_label).strip() or text
+            if label in {"value", text}:
+                lines.append(f"  {text}")
             else:
-                label = str(raw_label).strip() or text
-                if label == "value":
-                    label = text
-            lines.append(f"  {text} → {label}")
+                lines.append(f"  {text} → {label}")
         return lines
 
     def _format_simple_line(self, key: str, entry: Optional[_EnvEntry]) -> List[str]:
@@ -4626,6 +4732,7 @@ class CoreOpsCog(commands.Cog):
             "PROMO_CHANNEL_ID",
             "RECRUITERS_THREAD_ID",
             "REPORT_RECRUITERS_DEST_ID",
+            "ADMIN_AUDIT_DEST_ID",
             "PANEL_FIXED_THREAD_ID",
             "PANEL_THREAD_MODE",
         ]
@@ -4640,7 +4747,7 @@ class CoreOpsCog(commands.Cog):
             for key in entries.keys()
             if key not in seen
             and not _is_secret_key(key)
-            and any(token in key for token in ("CHANNEL", "THREAD", "GUILD"))
+            and any(token in key for token in ("CHANNEL", "THREAD", "GUILD", "DEST"))
         ]
         for key in sorted(dynamic):
             seen.add(key)
@@ -4665,6 +4772,7 @@ class CoreOpsCog(commands.Cog):
             "LEAD_ROLE_IDS",
             "RECRUITER_ROLE_IDS",
             "NOTIFY_PING_ROLE_ID",
+            "CLAN_LEAD_IDS",
         ]
         lines: List[str] = []
         seen: Set[str] = set()
@@ -4677,7 +4785,12 @@ class CoreOpsCog(commands.Cog):
             for key in entries.keys()
             if key not in seen
             and not _is_secret_key(key)
-            and "ROLE" in key
+            and (
+                "ROLE" in key
+                or key.endswith("_ROLE_ID")
+                or key.endswith("_ROLE_IDS")
+                or key == "CLAN_LEAD_IDS"
+            )
             and not _is_sheet_key(key)
         ]
         for key in sorted(dynamic):

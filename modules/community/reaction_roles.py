@@ -288,7 +288,11 @@ class ReactionRolesCog(commands.Cog):
 
     @tier("admin")
     @help_metadata(function_group="operational", section="permissions", access_tier="admin")
-    @commands.command(name="reactrole")
+    @commands.command(
+        name="reactrole",
+        help="Manage reaction role mappings.",
+        brief="Manage reaction role mappings.",
+    )
     @commands.guild_only()
     @admin_only()
     async def reactrole_cmd(self, ctx: commands.Context, key: str) -> None:  # type: ignore[override]
