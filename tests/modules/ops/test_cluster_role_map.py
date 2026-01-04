@@ -47,18 +47,21 @@ def test_build_role_map_render_renders_categories_and_members():
             role_id=1,
             sheet_role_name="Lead", 
             role_description="Runs it",
+            role_usage="",
         ),
         cluster_role_map.RoleMapRow(
             category="ClusterSupport",
             role_id=2,
             sheet_role_name="Support", 
             role_description="",
+            role_usage="",
         ),
         cluster_role_map.RoleMapRow(
             category="ClusterSupport",
             role_id=99,
             sheet_role_name="Backup", 
             role_description="Keeps receipts",
+            role_usage="",
         ),
     ]
     guild = DummyGuild(
@@ -82,7 +85,31 @@ def test_build_role_map_render_renders_categories_and_members():
     assert leadership.roles[0].members == ["<@1>"]
     assert support.roles[0].description == "no description set"
     category_body = cluster_role_map.build_category_message(leadership)
-    assert "## 🔥 ClusterLeadership" in category_body
+    assert "**🔥 ClusterLeadership**" in category_body
     assert "**Leader**" in category_body
-    assert "*Runs it*" in category_body
+    assert "Runs it" in category_body
     assert "<@1>" in category_body
+
+
+def test_build_category_message_renders_usage_instruction():
+    role = cluster_role_map.RoleEntryRender(
+        role_id=42,
+        display_name="Ops Lead",
+        description="Keeps the lights on",
+        members=["<@123>"],
+        usage="incident\n coordination\t now",
+    )
+    category = cluster_role_map.RoleMapCategoryRender(
+        name="ClusterLeadership",
+        emoji="🔥",
+        roles=[role],
+    )
+
+    category_body = cluster_role_map.build_category_message(category)
+
+    assert "↳ Use <@&42> for incident coordination now" in category_body
+    assert "##" not in category_body
+
+    role.usage = ""
+    category_body = cluster_role_map.build_category_message(category)
+    assert "↳ Use <@&42> for" not in category_body

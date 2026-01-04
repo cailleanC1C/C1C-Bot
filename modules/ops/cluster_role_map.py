@@ -26,6 +26,7 @@ CATEGORY_EMOJIS: Dict[str, str] = {
 
 DEFAULT_DESCRIPTION = "no description set"
 MARKER_LINE = ":white_small_square::white_small_square::white_small_square:"
+INVISIBLE_MARKER = "\u2063\u2063\u2063\u2063\u2063"
 ROLE_MAP_MARKER = MARKER_LINE
 INDEX_HEADER_LINES = [
     "# WHO WE ARE — C1C Role Map",
@@ -43,6 +44,7 @@ class RoleMapRow:
     role_id: int
     sheet_role_name: str
     role_description: str
+    role_usage: str
 
 
 @dataclass(slots=True)
@@ -59,9 +61,11 @@ class RoleMapRender:
 class RoleEntryRender:
     """Display payload for a single Discord role entry."""
 
+    role_id: int
     display_name: str
     description: str
     members: List[str]
+    usage: str
 
 
 @dataclass(slots=True)
@@ -90,6 +94,10 @@ def _normalize_text(value: object) -> str:
     return str(value or "").strip()
 
 
+def _normalize_usage(value: object) -> str:
+    return " ".join(str(value or "").split())
+
+
 def _cell(row: Mapping[str, object], *names: str) -> str:
     wanted = {name.strip().lower() for name in names if name}
     for column, value in row.items():
@@ -114,12 +122,14 @@ def parse_role_map_records(rows: Sequence[Mapping[str, object]]) -> List[RoleMap
             continue
         sheet_role_name = _cell(row, "role_name", "role name")
         role_description = _cell(row, "role_description", "role description")
+        role_usage = _cell(row, "usage")
         entries.append(
             RoleMapRow(
                 category=category,
                 role_id=role_id,
                 sheet_role_name=sheet_role_name,
                 role_description=role_description,
+                role_usage=role_usage,
             )
         )
     return entries
@@ -188,6 +198,7 @@ def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleM
             if not display_name:
                 display_name = row.sheet_role_name or f"role {row.role_id}"
             description = row.role_description or DEFAULT_DESCRIPTION
+            usage = row.role_usage
             mentions: List[str] = []
             if members:
                 mentions = [
@@ -199,9 +210,11 @@ def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleM
                 unassigned_roles += 1
             role_rows.append(
                 RoleEntryRender(
+                    role_id=row.role_id,
                     display_name=display_name,
                     description=description,
                     members=mentions,
+                    usage=usage,
                 )
             )
         if role_rows:
@@ -220,18 +233,16 @@ def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleM
 def _mark_message(lines: Sequence[str]) -> str:
     body = "\n".join(lines).rstrip()
     if not body:
-        return MARKER_LINE
-    if body.endswith(MARKER_LINE):
+        return INVISIBLE_MARKER
+    if body.endswith(INVISIBLE_MARKER):
         return body
-    return f"{body}\n{MARKER_LINE}"
+    return f"{body}\n{INVISIBLE_MARKER}"
 
 
 def build_index_placeholder() -> str:
     lines = list(INDEX_HEADER_LINES)
     lines.append("")
     lines.append(INDEX_BUILDING_NOTICE)
-    lines.append("")
-    lines.append(MARKER_LINE)
     return _mark_message(lines)
 
 
@@ -245,27 +256,32 @@ def build_index_message(links: Sequence[IndexLink], *, empty_reason: str | None 
     else:
         lines.append(empty_reason or INDEX_EMPTY_NOTICE)
     lines.append("")
-    lines.append(MARKER_LINE)
+    lines.append(
+        "↳ Tag roles instead of individuals so no one carries things alone! "
+        "[Whispers to Leadership](https://discord.com/channels/689502814149672965/1345478723444539473) "
+        "is there when things don’t fit a channel."
+    )
     return _mark_message(lines)
 
 
 def build_category_message(category: RoleMapCategoryRender) -> str:
-    lines = [f"## {category.emoji} {category.name}", ""]
+    lines = [f"**{category.emoji} {category.name}**", ""]
     for role in category.roles:
+        usage = _normalize_usage(role.usage)
         lines.append(f"**{role.display_name}**")
         description = role.description or DEFAULT_DESCRIPTION
-        lines.append(f"*{description}*")
+        lines.append(f"{description}")
         if role.members:
             lines.append(
                 f":small_blue_diamond: {', '.join(role.members)}"
             )
         else:
             lines.append(":small_blue_diamond: (currently unassigned)")
+        if usage:
+            lines.append(f"↳ Use <@&{role.role_id}> for {usage}")
         lines.append("")
     if lines and lines[-1] == "":
         lines.pop()
-    lines.append("")
-    lines.append(MARKER_LINE)
     return _mark_message(lines)
 
 
@@ -295,7 +311,7 @@ async def cleanup_previous_role_map_messages(
             if getattr(author, "id", None) != bot_id:
                 continue
             content = getattr(message, "content", None) or ""
-            if MARKER_LINE not in content:
+            if INVISIBLE_MARKER not in content:
                 continue
             to_delete.append(message)
     except Exception:  # pragma: no cover - Discord history edge cases
@@ -356,4 +372,3 @@ __all__ = [
     "fetch_role_map_rows",
     "parse_role_map_records",
 ]
-
