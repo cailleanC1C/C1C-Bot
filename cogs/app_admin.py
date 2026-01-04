@@ -430,11 +430,14 @@ class AppAdmin(commands.Cog):
 
         jump_entries: list[cluster_role_map.IndexLink] = []
         for category in render.categories:
-            body = cluster_role_map.build_category_message(category)
-            if not body.strip():
+            embed = cluster_role_map.build_category_embed(category)
+            if not getattr(embed, "description", "") and not getattr(embed, "title", ""):
                 continue
             try:
-                message = await target_channel.send(body)
+                message = await target_channel.send(
+                    content=cluster_role_map.INVISIBLE_MARKER,
+                    embed=embed,
+                )
             except discord.HTTPException as exc:
                 reason = str(exc) or "category_send_failed"
                 await runtime_helpers.send_log_message(

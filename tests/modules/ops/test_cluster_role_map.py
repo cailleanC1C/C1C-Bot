@@ -81,17 +81,17 @@ def test_build_role_map_render_renders_categories_and_members():
     leadership = render.categories[0]
     support = render.categories[1]
     assert leadership.name == "ClusterLeadership"
-    assert leadership.roles[0].display_name == "Leader"
+    assert leadership.roles[0].display_name == "Lead"
     assert leadership.roles[0].members == ["<@1>"]
     assert support.roles[0].description == "no description set"
-    category_body = cluster_role_map.build_category_message(leadership)
-    assert "**🔥 ClusterLeadership**" in category_body
-    assert "**Leader**" in category_body
-    assert "Runs it" in category_body
-    assert "<@1>" in category_body
+    category_embed = cluster_role_map.build_category_embed(leadership)
+    assert category_embed.title == "🔥 ClusterLeadership"
+    assert "**Lead**" in category_embed.description
+    assert "Runs it" in category_embed.description
+    assert "<@1>" in category_embed.description
 
 
-def test_build_category_message_renders_usage_instruction():
+def test_build_category_embed_renders_usage_instruction():
     role = cluster_role_map.RoleEntryRender(
         role_id=42,
         display_name="Ops Lead",
@@ -105,11 +105,11 @@ def test_build_category_message_renders_usage_instruction():
         roles=[role],
     )
 
-    category_body = cluster_role_map.build_category_message(category)
+    category_body = cluster_role_map.build_category_embed(category).description
 
     assert "↳ Use <@&42> for incident coordination now" in category_body
     assert "##" not in category_body
 
     role.usage = ""
-    category_body = cluster_role_map.build_category_message(category)
+    category_body = cluster_role_map.build_category_embed(category).description
     assert "↳ Use <@&42> for" not in category_body

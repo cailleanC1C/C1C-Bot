@@ -189,14 +189,15 @@ def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleM
         for row in grouped.get(category, []):
             role_count += 1
             role = get_role(row.role_id) if callable(get_role) else None
-            display_name = ""
+            display_name = _normalize_text(row.sheet_role_name)
             if role is not None:
-                display_name = _normalize_text(getattr(role, "name", ""))
                 members = list(getattr(role, "members", []) or [])
             else:
                 members = []
             if not display_name:
-                display_name = row.sheet_role_name or f"role {row.role_id}"
+                display_name = _normalize_text(getattr(role, "name", "")) if role is not None else ""
+            if not display_name:
+                display_name = f"role {row.role_id}"
             description = row.role_description or DEFAULT_DESCRIPTION
             usage = row.role_usage
             mentions: List[str] = []
@@ -285,6 +286,27 @@ def build_category_message(category: RoleMapCategoryRender) -> str:
     return _mark_message(lines)
 
 
+def build_category_embed(category: RoleMapCategoryRender) -> discord.Embed:
+    embed = discord.Embed(title=f"{category.emoji} {category.name}")
+    lines: List[str] = []
+    for role in category.roles:
+        usage = _normalize_usage(role.usage)
+        lines.append(f"**{role.display_name}**")
+        description = role.description or DEFAULT_DESCRIPTION
+        lines.append(description)
+        if role.members:
+            lines.append(f":small_blue_diamond: {', '.join(role.members)}")
+        else:
+            lines.append(":small_blue_diamond: (currently unassigned)")
+        if usage:
+            lines.append(f"↳ Use <@&{role.role_id}> for {usage}")
+        lines.append("")
+    if lines and lines[-1] == "":
+        lines.pop()
+    embed.description = "\n".join(lines)
+    return embed
+
+
 def build_jump_url(guild_id: int, channel_id: int, message_id: int) -> str:
     return f"https://discord.com/channels/{int(guild_id)}/{int(channel_id)}/{int(message_id)}"
 
@@ -367,6 +389,7 @@ __all__ = [
     "build_index_placeholder",
     "build_index_message",
     "build_category_message",
+    "build_category_embed",
     "build_jump_url",
     "cleanup_previous_role_map_messages",
     "fetch_role_map_rows",
