@@ -3,6 +3,7 @@ from __future__ import annotations
 """Daily report listing currently open Welcome and Move Request tickets."""
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Iterable, Sequence
 
@@ -14,6 +15,7 @@ from modules.common.tickets import TicketThread, fetch_ticket_threads
 from modules.recruitment.reporting.destinations import resolve_report_destination
 
 log = logging.getLogger("c1c.recruitment.reporting.open_tickets")
+_CF_RAY_RE = re.compile(r"Cloudflare Ray ID:\s*<strong[^>]*>([^<]+)<", re.IGNORECASE)
 
 
 def _format_timestamp(value: datetime) -> str:
@@ -115,6 +117,21 @@ def _group_tickets(tickets: Iterable[TicketThread]) -> tuple[list[TicketThread],
     return welcome, move_requests
 
 
+def _summarize_http_error_text(raw_text: object, *, max_chars: int = 220) -> str:
+    text = str(raw_text or "").strip()
+    if not text:
+        return "-"
+
+    match = _CF_RAY_RE.search(text)
+    if match:
+        return f"cloudflare_challenge(ray_id={match.group(1)})"
+
+    compact = " ".join(text.split())
+    if len(compact) <= max_chars:
+        return compact
+    return f"{compact[:max_chars]}…"
+
+
 async def send_currently_open_tickets_report(bot: discord.Client) -> tuple[bool, str]:
     channel, error = await resolve_report_destination(bot)
     if channel is None:
@@ -133,10 +150,11 @@ async def send_currently_open_tickets_report(bot: discord.Client) -> tuple[bool,
         for embed in embeds:
             await channel.send(embeds=[embed])
     except HTTPException as exc:
+        text_summary = _summarize_http_error_text(getattr(exc, "text", None))
         log.warning(
-            "failed to send open tickets report (status=%s text=%r)",
+            "failed to send open tickets report (status=%s text=%s)",
             getattr(exc, "status", "?"),
-            getattr(exc, "text", None),
+            text_summary,
             exc_info=True,
         )
         return False, f"send:{type(exc).__name__}"

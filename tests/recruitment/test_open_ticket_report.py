@@ -39,3 +39,15 @@ def test_render_report_handles_empty_sections():
     embed = embeds[0]
     assert isinstance(embed, report.discord.Embed)
     assert any(field.name == "Welcome" for field in embed.fields)
+
+
+def test_summarize_http_error_text_cloudflare_html():
+    html = "<html><span>Cloudflare Ray ID: <strong>abc123</strong></span></html>"
+    assert report._summarize_http_error_text(html) == "cloudflare_challenge(ray_id=abc123)"
+
+
+def test_summarize_http_error_text_truncates_plain_text():
+    text = "x" * 300
+    summarized = report._summarize_http_error_text(text, max_chars=40)
+    assert summarized.endswith("…")
+    assert len(summarized) == 41
