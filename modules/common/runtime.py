@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import random
+import re
 import time
 from datetime import datetime, time as dt_time, timedelta, timezone
 from dataclasses import dataclass
@@ -56,6 +57,10 @@ log = logging.getLogger("c1c.runtime")
 _ACTIVE_RUNTIME: "Runtime | None" = None
 _PRELOAD_TASK: asyncio.Task[None] | None = None
 _web_app: web.Application | None = None
+_CF_RAY_RE = re.compile(r"Ray ID:\s*([A-Za-z0-9-]+)", re.IGNORECASE)
+
+_DISCORD_LOGIN_RETRY_INITIAL_SEC = 60
+_DISCORD_LOGIN_RETRY_CAP_SEC = 900
 
 
 async def create_app(*, runtime: "Runtime | None" = None) -> web.Application:
@@ -316,6 +321,44 @@ def monotonic_ms() -> int:
     """Return a monotonic millisecond timestamp for lightweight timing."""
 
     return int(time.monotonic() * 1000)
+
+
+def _extract_cloudflare_ray_id(raw_text: object) -> str | None:
+    text = str(raw_text or "")
+    if not text:
+        return None
+    match = _CF_RAY_RE.search(text)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _is_startup_rate_limited(exc: discord.HTTPException) -> tuple[bool, str]:
+    status = getattr(exc, "status", None)
+    text = str(getattr(exc, "text", "") or "")
+    text_lower = text.lower()
+
+    has_429 = status == 429 or "429" in text_lower or "too many requests" in text_lower
+    has_1015 = "1015" in text_lower or "temporarily banned" in text_lower
+    has_cloudflare = "cloudflare" in text_lower
+
+    if not (has_429 or has_1015):
+        return False, "-"
+
+    ray_id = _extract_cloudflare_ray_id(text)
+    if has_cloudflare or ray_id:
+        return True, f"cloudflare_rate_limited(ray_id={ray_id or 'unknown'})"
+    return True, "discord_rate_limited"
+
+
+async def _sleep_with_shutdown_poll(bot: commands.Bot, delay_sec: int) -> None:
+    remaining = max(0, int(delay_sec))
+    while remaining > 0:
+        if bot.is_closed():
+            return
+        step = min(5, remaining)
+        await asyncio.sleep(step)
+        remaining -= step
 
 
 def _parse_times(parts: Iterable[str]) -> list[dt_time]:
@@ -1360,7 +1403,28 @@ class Runtime:
             schedule_leagues_jobs(self)
         except Exception:  # pragma: no cover - defensive scheduler guard
             log.exception("failed to schedule leagues reminders")
-        await self.bot.start(token)
+
+        retry_delay_sec = _DISCORD_LOGIN_RETRY_INITIAL_SEC
+        while not self.bot.is_closed():
+            try:
+                await self.bot.start(token)
+                return
+            except asyncio.CancelledError:
+                raise
+            except discord.HTTPException as exc:
+                should_retry, detail = _is_startup_rate_limited(exc)
+                if not should_retry:
+                    raise
+                log.warning(
+                    "Discord login rate-limited; retrying in %ss (%s)",
+                    retry_delay_sec,
+                    detail,
+                )
+                await _sleep_with_shutdown_poll(self.bot, retry_delay_sec)
+                retry_delay_sec = min(
+                    _DISCORD_LOGIN_RETRY_CAP_SEC,
+                    retry_delay_sec * 2,
+                )
 
     async def close(self) -> None:
         await self.shutdown_webserver()
