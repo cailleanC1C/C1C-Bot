@@ -9,7 +9,12 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from shared.config import cfg, get_milestones_sheet_id
-from shared.sheets.async_core import afetch_records
+from shared.sheets.async_core import (
+    acall_with_backoff,
+    afetch_records,
+    afetch_values,
+    aget_worksheet,
+)
 from shared.sheets.cache_service import cache
 
 log = logging.getLogger("c1c.sheets.fusion")
@@ -120,6 +125,15 @@ def _parse_discord_id(value: object) -> int | None:
         return None
     return parsed
 
+def _column_label(index: int) -> str:
+    if index < 0:
+        raise ValueError("column index must be non-negative")
+    value = index + 1
+    label = ""
+    while value > 0:
+        value, remainder = divmod(value - 1, 26)
+        label = chr(65 + remainder) + label
+    return label or "A"
 
 def _parse_iso_utc(value: object) -> dt.datetime:
     raw = str(value or "").strip()
@@ -275,10 +289,90 @@ async def get_fusion_events(fusion_id: str) -> list[FusionEventRow]:
     return filtered
 
 
+async def get_publishable_fusion() -> FusionRow | None:
+    """Return the best fusion row for publish flow selection."""
+
+    fusion_bucket, _ = register_cache_buckets()
+    rows = [row for row in await _cached_rows(fusion_bucket) if isinstance(row, FusionRow)]
+    if not rows:
+        return None
+
+    for status in ("active", "published", "draft"):
+        matches = [row for row in rows if row.status.casefold() == status]
+        if matches:
+            matches.sort(key=lambda row: (row.start_at_utc, row.fusion_id), reverse=True)
+            return matches[0]
+
+    rows.sort(key=lambda row: (row.start_at_utc, row.fusion_id), reverse=True)
+    return rows[0]
+
+
+async def update_fusion_publication(
+    fusion_id: str,
+    *,
+    announcement_message_id: int,
+    published_at: dt.datetime,
+    set_published_status: bool,
+) -> None:
+    """Write publish metadata back to the fusion row in the configured sheet."""
+
+    tab_name = _resolve_tab_name("FUSION_TAB")
+    sheet_id = _sheet_id()
+    matrix = await afetch_values(sheet_id, tab_name)
+    if not matrix:
+        raise RuntimeError("Fusion sheet is empty")
+
+    header = [str(cell or "").strip().lower() for cell in matrix[0]]
+    row_idx: int | None = None
+    fusion_col = header.index("fusion_id") if "fusion_id" in header else -1
+    if fusion_col < 0:
+        raise RuntimeError("Fusion sheet missing fusion_id column")
+
+    for idx, row in enumerate(matrix[1:], start=2):
+        cell = str(row[fusion_col] if fusion_col < len(row) else "").strip()
+        if cell == fusion_id:
+            row_idx = idx
+            break
+
+    if row_idx is None:
+        raise RuntimeError(f"Fusion row not found for fusion_id={fusion_id}")
+
+    required_cols = ["announcement_message_id", "published_at"]
+    if set_published_status:
+        required_cols.append("status")
+
+    missing = [col for col in required_cols if col not in header]
+    if missing:
+        raise RuntimeError(f"Fusion sheet missing columns: {', '.join(missing)}")
+
+    worksheet = await aget_worksheet(sheet_id, tab_name)
+    updates = {
+        "announcement_message_id": str(announcement_message_id),
+        "published_at": published_at.astimezone(dt.timezone.utc).isoformat(),
+    }
+    if set_published_status:
+        updates["status"] = "published"
+
+    for col_name, value in updates.items():
+        col_index = header.index(col_name)
+        cell = f"{_column_label(col_index)}{row_idx}"
+        await acall_with_backoff(
+            worksheet.update,
+            cell,
+            [[value]],
+            value_input_option="RAW",
+        )
+
+    register_cache_buckets()
+    await cache.refresh_now(_FUSION_BUCKET, actor="fusion_publish")
+
+
 __all__ = [
     "FusionEventRow",
     "FusionRow",
     "get_active_fusion",
+    "get_publishable_fusion",
     "get_fusion_events",
+    "update_fusion_publication",
     "register_cache_buckets",
 ]
