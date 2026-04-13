@@ -38,6 +38,8 @@ STARTUP_BUCKETS: tuple[str, ...] = (
     "templates",
     "onboarding_questions",
     "reaction_roles",
+    "fusion",
+    "fusion_events",
 )
 
 

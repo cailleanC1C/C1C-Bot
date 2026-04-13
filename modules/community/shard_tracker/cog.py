@@ -1340,5 +1340,3 @@ class _PrimalDropChoiceView(discord.ui.View):
             legendary_mercy=self.legendary_mercy,
             mythical_mercy=self.mythical_mercy,
         )
-
-
