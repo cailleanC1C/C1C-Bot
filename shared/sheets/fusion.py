@@ -79,7 +79,9 @@ def _parse_int(value: object) -> int:
     if not text:
         return 0
     try:
-        return int(float(text))
+        if any(ch in text for ch in (".", "e", "E")):
+            return int(float(text))
+        return int(text)
     except ValueError:
         return 0
 
@@ -89,7 +91,9 @@ def _parse_int_optional(value: object) -> int | None:
     if not text:
         return None
     try:
-        return int(float(text))
+        if any(ch in text for ch in (".", "e", "E")):
+            return int(float(text))
+        return int(text)
     except ValueError:
         return None
 
@@ -120,8 +124,15 @@ def _parse_bool(value: object) -> bool:
 
 
 def _parse_discord_id(value: object) -> int | None:
-    parsed = _parse_int_optional(value)
-    if parsed is None or parsed <= 0:
+    # Discord snowflakes must never be parsed via float; float conversion can lose precision.
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = int(text)
+    except ValueError:
+        return None
+    if parsed <= 0:
         return None
     return parsed
 
