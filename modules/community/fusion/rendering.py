@@ -13,7 +13,6 @@ from shared.sheets.fusion import FusionEventRow, FusionRow
 _FUSION_EMBED_COLOR = discord.Color.blurple()
 _EMBED_FIELD_VALUE_LIMIT = 1024
 _EMBED_MAX_FIELDS = 25
-_INVISIBLE_FIELD_NAME = "\u200b"
 
 
 def _format_dt_utc(value) -> str:
@@ -81,10 +80,9 @@ def _build_overview_embed(fusion: FusionRow, events: list[FusionEventRow]) -> di
 
     summary_lines = [
         f"Type: {_humanize_type(fusion.fusion_type)}",
-        f"Runs from {_format_dt_utc(fusion.start_at_utc)} → {_format_dt_utc(fusion.end_at_utc)}",
+        f"Runs: {_format_dt_utc(fusion.start_at_utc)} → {_format_dt_utc(fusion.end_at_utc)}",
         f"Target: {fusion.needed:g} fragments needed / {fusion.available:g} available",
-        f"Schedule: {len(events)} events/tournaments"
-        + (" • includes bonus rewards" if has_bonus else ""),
+        f"Schedule: {len(events)} events" + (" • includes bonus rewards" if has_bonus else ""),
     ]
     if fusion.fusion_structure.strip():
         summary_lines.insert(1, fusion.fusion_structure.strip())
@@ -157,7 +155,8 @@ def _build_schedule_embed(events: list[FusionEventRow]) -> discord.Embed:
     for idx, chunk in enumerate(_build_schedule_field_chunks(sections, _EMBED_FIELD_VALUE_LIMIT)):
         if len(embed.fields) >= _EMBED_MAX_FIELDS:
             break
-        embed.add_field(name="Schedule" if idx == 0 else _INVISIBLE_FIELD_NAME, value=chunk, inline=False)
+        field_name = "Schedule" if idx == 0 else f"Schedule (Part {idx + 1})"
+        embed.add_field(name=field_name, value=chunk, inline=False)
     return embed
 
 
