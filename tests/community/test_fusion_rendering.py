@@ -1,6 +1,6 @@
 import datetime as dt
 
-from modules.community.fusion.rendering import build_fusion_announcement_embeds
+from modules.community.fusion.rendering import build_fusion_announcement_embed
 from shared.sheets.fusion import FusionEventRow, FusionRow
 
 
@@ -45,29 +45,30 @@ def _event(day: int, idx: int) -> FusionEventRow:
     )
 
 
-def test_build_fusion_embeds_target_and_schedule_field_chunks() -> None:
+def test_build_fusion_embed_target_and_schedule_field_chunks() -> None:
     events = []
     for day in range(8, 15):
         events.extend([_event(day, 1), _event(day, 2)])
 
-    overview, schedule = build_fusion_announcement_embeds(_fusion(), list(reversed(events)))
+    embed = build_fusion_announcement_embed(_fusion(), list(reversed(events)))
 
-    assert "Target: 400 fragments needed / 450 available" in (overview.description or "")
-    assert len(schedule.fields) >= 2
-    assert schedule.fields[0].name == "Schedule"
-    assert schedule.fields[1].name == "Schedule (Part 2)"
+    assert "Target: 400 fragments needed / 450 available" in (embed.description or "")
+    assert embed.fields[0].name == "Key Milestones"
+    assert len(embed.fields) >= 3
+    for field in embed.fields[1:]:
+        assert "Schedule (Part" not in field.name
 
     day_headers = []
-    for field in schedule.fields:
+    for field in embed.fields[1:]:
         for line in field.value.splitlines():
-            if line.startswith("**") and line.endswith("**"):
+            if line and not line.startswith("•"):
                 day_headers.append(line)
     assert day_headers == [
-        "**Wed, Apr 8**",
-        "**Thu, Apr 9**",
-        "**Fri, Apr 10**",
-        "**Sat, Apr 11**",
-        "**Sun, Apr 12**",
-        "**Mon, Apr 13**",
-        "**Tue, Apr 14**",
+        "Wed, Apr 8",
+        "Thu, Apr 9",
+        "Fri, Apr 10",
+        "Sat, Apr 11",
+        "Sun, Apr 12",
+        "Mon, Apr 13",
+        "Tue, Apr 14",
     ]
