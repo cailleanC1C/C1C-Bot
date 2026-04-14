@@ -12,7 +12,7 @@ from shared.sheets.fusion import FusionEventRow, FusionRow
 
 _FUSION_EMBED_COLOR = discord.Color.blurple()
 _EMBED_FIELD_VALUE_LIMIT = 1024
-_SCHEDULE_FIELD_TARGET = 700
+_SCHEDULE_FIELD_TARGET = 900
 _EMBED_MAX_FIELDS = 25
 
 
@@ -69,14 +69,26 @@ def _chunk_lines(lines: list[str], limit: int) -> list[str]:
     return chunks
 
 
-def _build_overview_embed(fusion: FusionRow, events: list[FusionEventRow]) -> discord.Embed:
+def _format_month_day(value: dt.date) -> str:
+    return f"{value.strftime('%b')} {value.day}"
+
+
+def _format_date_range(start: dt.date, end: dt.date) -> str:
+    if start == end:
+        return _format_month_day(start)
+    if start.year == end.year and start.month == end.month:
+        return f"{start.strftime('%b')} {start.day}–{end.day}"
+    return f"{_format_month_day(start)}–{_format_month_day(end)}"
+
+
+def _build_fusion_embed(fusion: FusionRow, events: list[FusionEventRow]) -> discord.Embed:
     has_bonus = any(event.bonus is not None and event.bonus > 0 for event in events)
     sorted_events = sorted(events, key=lambda row: (row.start_at_utc, row.sort_order, row.event_id))
     event_days = [event.start_at_utc.astimezone(dt.timezone.utc).date() for event in sorted_events]
 
     summary_lines = [
         f"Type: {_humanize_type(fusion.fusion_type)}",
-        f"Runs: {_format_dt_utc(fusion.start_at_utc)} → {_format_dt_utc(fusion.end_at_utc)}",
+        f"Runs: {_format_dt_utc(fusion.start_at_utc)} -> {_format_dt_utc(fusion.end_at_utc)}",
         f"Target: {fusion.needed:g} fragments needed / {fusion.available:g} available",
         f"Schedule: {len(events)} events" + (" • includes bonus rewards" if has_bonus else ""),
     ]
@@ -98,71 +110,60 @@ def _build_overview_embed(fusion: FusionRow, events: list[FusionEventRow]) -> di
         colour=_FUSION_EMBED_COLOR,
     )
     embed.add_field(name="Key Milestones", value="\n".join(milestones_lines), inline=False)
-    embed.set_footer(text=f"Fusion ID: {fusion.fusion_id}")
-    return embed
-
-
-def _build_schedule_field_chunks(grouped_sections: list[str], limit: int) -> list[str]:
-    chunks: list[str] = []
-    current: list[str] = []
-    current_len = 0
-    for section in grouped_sections:
-        section_len = len(section)
-        added_len = section_len if not current else section_len + 3
-        if current and current_len + added_len > limit:
-            chunks.append("\n\n\n".join(current))
-            current = [section]
-            current_len = section_len
-            continue
-        if section_len > limit:
-            if current:
-                chunks.append("\n\n\n".join(current))
-                current = []
-                current_len = 0
-            chunks.extend(_chunk_lines(section.split("\n"), limit))
-            continue
-        current.append(section)
-        current_len += added_len
-    if current:
-        chunks.append("\n\n\n".join(current))
-    return chunks
-
-
-def _build_schedule_embed(events: list[FusionEventRow]) -> discord.Embed:
     sorted_events = sorted(events, key=lambda row: (row.start_at_utc, row.sort_order, row.event_id))
     grouped_events: dict[dt.date, list[FusionEventRow]] = defaultdict(list)
     for event in sorted_events:
         grouped_events[event.start_at_utc.astimezone(dt.timezone.utc).date()].append(event)
 
-    embed = discord.Embed(title="Schedule", colour=_FUSION_EMBED_COLOR)
     if not sorted_events:
         embed.add_field(name="Schedule", value="No events available.", inline=False)
+        embed.set_footer(text=f"Fusion ID: {fusion.fusion_id}")
         return embed
 
-    sections = [
-        "\n".join(
-            chain(
-                [f"**{_format_day_label(day)}**"],
-                (_format_event_line(event) for event in grouped_events[day]),
-            )
-        )
-        for day in sorted(grouped_events)
-    ]
     field_limit = min(_SCHEDULE_FIELD_TARGET, _EMBED_FIELD_VALUE_LIMIT)
-    for idx, chunk in enumerate(_build_schedule_field_chunks(sections, field_limit)):
-        if len(embed.fields) >= _EMBED_MAX_FIELDS:
-            break
-        field_name = "Schedule" if idx == 0 else f"Schedule (Part {idx + 1})"
-        embed.add_field(name=field_name, value=chunk, inline=False)
+    current_days: list[dt.date] = []
+    current_sections: list[str] = []
+    current_len = 0
+
+    def flush_current() -> None:
+        nonlocal current_days, current_sections, current_len
+        if not current_days or len(embed.fields) >= _EMBED_MAX_FIELDS:
+            return
+        field_name = _format_date_range(current_days[0], current_days[-1])
+        embed.add_field(name=field_name, value="\n\n".join(current_sections), inline=False)
+        current_days = []
+        current_sections = []
+        current_len = 0
+
+    for day in sorted(grouped_events):
+        section = "\n".join(chain([_format_day_label(day)], (_format_event_line(event) for event in grouped_events[day])))
+        section_len = len(section)
+
+        if section_len > field_limit:
+            flush_current()
+            chunks = _chunk_lines(section.split("\n"), field_limit)
+            for chunk in chunks:
+                if len(embed.fields) >= _EMBED_MAX_FIELDS:
+                    break
+                embed.add_field(name=_format_date_range(day, day), value=chunk, inline=False)
+            continue
+
+        added_len = section_len if not current_sections else section_len + 2
+        if current_sections and current_len + added_len > field_limit:
+            flush_current()
+        current_days.append(day)
+        current_sections.append(section)
+        current_len += added_len if len(current_sections) > 1 else section_len
+
+    flush_current()
+    embed.set_footer(text=f"Fusion ID: {fusion.fusion_id}")
     return embed
 
 
-def build_fusion_announcement_embeds(
-    fusion: FusionRow, events: list[FusionEventRow]
-) -> tuple[discord.Embed, discord.Embed]:
-    """Build the Step 2 fusion publish announcement embeds."""
+def build_fusion_announcement_embed(fusion: FusionRow, events: list[FusionEventRow]) -> discord.Embed:
+    """Build the Step 2 fusion publish announcement embed."""
 
-    return (_build_overview_embed(fusion, events), _build_schedule_embed(events))
+    return _build_fusion_embed(fusion, events)
 
 
-__all__ = ["build_fusion_announcement_embeds"]
+__all__ = ["build_fusion_announcement_embed"]
