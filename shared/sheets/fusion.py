@@ -75,6 +75,15 @@ def _normalize(row: Mapping[str, object]) -> dict[str, object]:
     return out
 
 
+def _pick(row: Mapping[str, object], *keys: str) -> object:
+    for key in keys:
+        if key in row:
+            value = row[key]
+            if str(value or "").strip() != "":
+                return value
+    return ""
+
+
 def _parse_int(value: object) -> int:
     text = str(value or "").strip()
     if not text:
@@ -190,8 +199,8 @@ async def _load_fusions() -> tuple[FusionRow, ...]:
                     fusion_type=str(row.get("fusion_type") or "").strip(),
                     fusion_structure=str(row.get("fusion_structure") or "").strip(),
                     reward_type=str(row.get("reward_type") or "").strip(),
-                    needed=_parse_int(row.get("needed")),
-                    available=_parse_int(row.get("available")),
+                    needed=_parse_int(_pick(row, "fusion.needed", "needed")),
+                    available=_parse_int(_pick(row, "fusion.available", "available")),
                     start_at_utc=_parse_iso_utc(row.get("start_at_utc")),
                     end_at_utc=_parse_iso_utc(row.get("end_at_utc")),
                     announcement_channel_id=_parse_discord_id(

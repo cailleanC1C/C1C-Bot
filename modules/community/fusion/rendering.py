@@ -12,6 +12,7 @@ from shared.sheets.fusion import FusionEventRow, FusionRow
 
 _FUSION_EMBED_COLOR = discord.Color.blurple()
 _EMBED_FIELD_VALUE_LIMIT = 1024
+_SCHEDULE_FIELD_TARGET = 700
 _EMBED_MAX_FIELDS = 25
 
 
@@ -152,7 +153,8 @@ def _build_schedule_embed(events: list[FusionEventRow]) -> discord.Embed:
         )
         for day in sorted(grouped_events)
     ]
-    for idx, chunk in enumerate(_build_schedule_field_chunks(sections, _EMBED_FIELD_VALUE_LIMIT)):
+    field_limit = min(_SCHEDULE_FIELD_TARGET, _EMBED_FIELD_VALUE_LIMIT)
+    for idx, chunk in enumerate(_build_schedule_field_chunks(sections, field_limit)):
         if len(embed.fields) >= _EMBED_MAX_FIELDS:
             break
         field_name = "Schedule" if idx == 0 else f"Schedule (Part {idx + 1})"
