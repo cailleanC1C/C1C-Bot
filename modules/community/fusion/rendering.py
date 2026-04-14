@@ -34,14 +34,9 @@ def _humanize_type(value: str) -> str:
 
 def _format_event_line(event: FusionEventRow) -> str:
     has_bonus = event.bonus is not None and event.bonus > 0
-    points_text = (
-        f"{event.points_needed} points" if event.points_needed is not None else "points TBA"
-    )
+    points_text = f"{event.points_needed} pts" if event.points_needed is not None else "pts TBA"
     bonus_text = f" (+{event.bonus:g} bonus)" if has_bonus else ""
-    return (
-        f"• {event.event_name} — {points_text} for {event.reward_amount:g} fragments"
-        f"{bonus_text}"
-    )
+    return f"• {event.event_name} — {points_text} for {event.reward_amount:g} frags{bonus_text}"
 
 
 def _chunk_lines(lines: list[str], limit: int) -> list[str]:
@@ -113,15 +108,15 @@ def _build_schedule_field_chunks(grouped_sections: list[str], limit: int) -> lis
     current_len = 0
     for section in grouped_sections:
         section_len = len(section)
-        added_len = section_len if not current else section_len + 2
+        added_len = section_len if not current else section_len + 3
         if current and current_len + added_len > limit:
-            chunks.append("\n\n".join(current))
+            chunks.append("\n\n\n".join(current))
             current = [section]
             current_len = section_len
             continue
         if section_len > limit:
             if current:
-                chunks.append("\n\n".join(current))
+                chunks.append("\n\n\n".join(current))
                 current = []
                 current_len = 0
             chunks.extend(_chunk_lines(section.split("\n"), limit))
@@ -129,7 +124,7 @@ def _build_schedule_field_chunks(grouped_sections: list[str], limit: int) -> lis
         current.append(section)
         current_len += added_len
     if current:
-        chunks.append("\n\n".join(current))
+        chunks.append("\n\n\n".join(current))
     return chunks
 
 
@@ -139,7 +134,7 @@ def _build_schedule_embed(events: list[FusionEventRow]) -> discord.Embed:
     for event in sorted_events:
         grouped_events[event.start_at_utc.astimezone(dt.timezone.utc).date()].append(event)
 
-    embed = discord.Embed(colour=_FUSION_EMBED_COLOR)
+    embed = discord.Embed(title="Schedule", colour=_FUSION_EMBED_COLOR)
     if not sorted_events:
         embed.add_field(name="Schedule", value="No events available.", inline=False)
         return embed
