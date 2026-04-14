@@ -10,7 +10,7 @@ from discord.ext import commands
 
 from c1c_coreops.helpers import help_metadata, tier
 from c1c_coreops.rbac import admin_only
-from modules.community.fusion.rendering import build_fusion_announcement_embed
+from modules.community.fusion.rendering import build_fusion_announcement_embeds
 from shared.sheets import fusion as fusion_sheets
 
 log = logging.getLogger("c1c.community.fusion")
@@ -152,8 +152,8 @@ class FusionCog(commands.Cog):
 
         try:
             events = await fusion_sheets.get_fusion_events(target.fusion_id)
-            embed = build_fusion_announcement_embed(target, events)
-            announcement_message = await channel.send(embed=embed)
+            overview_embed, schedule_embed = build_fusion_announcement_embeds(target, events)
+            announcement_message = await channel.send(embeds=[overview_embed, schedule_embed])
         except Exception as exc:
             log.exception("fusion publish failed during announce send", extra={"fusion_id": target.fusion_id})
             await ctx.reply(f"Failed to publish announcement: {exc}", mention_author=False)
