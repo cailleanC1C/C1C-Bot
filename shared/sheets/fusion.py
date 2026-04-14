@@ -31,6 +31,7 @@ class FusionRow:
     fusion_name: str
     champion: str
     fusion_type: str
+    fusion_structure: str
     reward_type: str
     needed: int
     available: int
@@ -187,6 +188,7 @@ async def _load_fusions() -> tuple[FusionRow, ...]:
                     fusion_name=str(row.get("fusion_name") or "").strip(),
                     champion=str(row.get("champion") or "").strip(),
                     fusion_type=str(row.get("fusion_type") or "").strip(),
+                    fusion_structure=str(row.get("fusion_structure") or "").strip(),
                     reward_type=str(row.get("reward_type") or "").strip(),
                     needed=_parse_int(row.get("needed")),
                     available=_parse_int(row.get("available")),
