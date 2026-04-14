@@ -36,7 +36,7 @@ def _format_event_line(event: FusionEventRow) -> str:
     has_bonus = event.bonus is not None and event.bonus > 0
     points_text = f"{event.points_needed} pts" if event.points_needed is not None else "pts TBA"
     bonus_text = f" (+{event.bonus:g} bonus)" if has_bonus else ""
-    return f"• {event.event_name} — {points_text} for {event.reward_amount:g} frags{bonus_text}"
+    return f"{event.event_name} — {points_text} for {event.reward_amount:g} frags{bonus_text}"
 
 
 def _chunk_lines(lines: list[str], limit: int) -> list[str]:
@@ -120,42 +120,19 @@ def _build_fusion_embed(fusion: FusionRow, events: list[FusionEventRow]) -> disc
         embed.set_footer(text=f"Fusion ID: {fusion.fusion_id}")
         return embed
 
-    field_limit = min(_SCHEDULE_FIELD_TARGET, _EMBED_FIELD_VALUE_LIMIT)
-    current_days: list[dt.date] = []
-    current_sections: list[str] = []
-    current_len = 0
-
-    def flush_current() -> None:
-        nonlocal current_days, current_sections, current_len
-        if not current_days or len(embed.fields) >= _EMBED_MAX_FIELDS:
-            return
-        field_name = _format_date_range(current_days[0], current_days[-1])
-        embed.add_field(name=field_name, value="\n\n".join(current_sections), inline=False)
-        current_days = []
-        current_sections = []
-        current_len = 0
-
+    # --- SIMPLE STRUCTURE: ONE DAY = ONE FIELD ---
     for day in sorted(grouped_events):
-        section = "\n".join(chain([_format_day_label(day)], (_format_event_line(event) for event in grouped_events[day])))
-        section_len = len(section)
-
-        if section_len > field_limit:
-            flush_current()
-            chunks = _chunk_lines(section.split("\n"), field_limit)
-            for chunk in chunks:
-                if len(embed.fields) >= _EMBED_MAX_FIELDS:
-                    break
-                embed.add_field(name=_format_date_range(day, day), value=chunk, inline=False)
-            continue
-
-        added_len = section_len if not current_sections else section_len + 2
-        if current_sections and current_len + added_len > field_limit:
-            flush_current()
-        current_days.append(day)
-        current_sections.append(section)
-        current_len += added_len if len(current_sections) > 1 else section_len
-
-    flush_current()
+        if len(embed.fields) >= _EMBED_MAX_FIELDS:
+            break
+        lines = [
+            f"• {_format_event_line(event)}"
+            for event in grouped_events[day]
+        ]
+        embed.add_field(
+            name=_format_day_label(day),
+            value="\n".join(lines),
+            inline=False
+        )
     embed.set_footer(text=f"Fusion ID: {fusion.fusion_id}")
     return embed
 
