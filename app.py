@@ -64,7 +64,7 @@ bot = commands.Bot(
 )
 bot.remove_command("help")
 
-runtime = Runtime(bot)
+runtime: Runtime
 _shutdown_lock: asyncio.Lock | None = None
 _shutdown_started = False
 
@@ -452,6 +452,46 @@ async def on_command_error(ctx: commands.Context, error: Exception):
 
 BOT_VERSION = os.getenv("BOT_VERSION", "dev")
 _STARTED_MONO = time.monotonic()
+
+
+_RUNTIME_EVENT_NAMES = (
+    "on_ready",
+    "on_connect",
+    "on_resumed",
+    "on_error",
+    "on_socket_response",
+    "on_socket_raw_receive",
+    "on_disconnect",
+    "on_guild_join",
+    "on_message",
+    "on_command_error",
+)
+
+
+def _clone_bot_for_retry() -> commands.Bot:
+    cloned = commands.Bot(
+        command_prefix=commands.when_mentioned_or(BANG_PREFIX),
+        intents=INTENTS,
+    )
+    cloned.remove_command("help")
+    for event_name in _RUNTIME_EVENT_NAMES:
+        handler = getattr(bot, event_name, None)
+        if handler is None:
+            continue
+        setattr(cloned, event_name, handler)
+    return cloned
+
+
+def _set_active_bot_for_runtime(rebuilt_bot: commands.Bot) -> None:
+    global bot
+    bot = rebuilt_bot
+
+
+runtime = Runtime(
+    bot,
+    bot_factory=_clone_bot_for_retry,
+    bot_rebuild_hook=_set_active_bot_for_runtime,
+)
 
 
 def uptime_seconds() -> float:

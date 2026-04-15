@@ -13,13 +13,13 @@ class _RetryableLoginError(Exception):
 
 
 class _FakeBot:
-    def __init__(self, outcomes: list[object], *, session_closed: bool = False) -> None:
+    def __init__(self, outcomes: list[object], *, label: str) -> None:
         self._outcomes = list(outcomes)
         self._closed = False
         self.start_calls = 0
-        self.http = SimpleNamespace(
-            _HTTPClient__session=SimpleNamespace(closed=session_closed)
-        )
+        self.close_calls = 0
+        self.label = label
+        self.http = SimpleNamespace(_HTTPClient__session=None)
 
     def is_closed(self) -> bool:
         return self._closed
@@ -32,6 +32,10 @@ class _FakeBot:
         if isinstance(outcome, BaseException):
             raise outcome
         return None
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        self._closed = True
 
 
 def _patch_runtime_startup(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -75,38 +79,55 @@ def _patch_runtime_startup(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def test_runtime_startup_retry_keeps_live_client_for_retries(
+def test_runtime_startup_retry_rebuilds_bot_per_attempt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def runner() -> None:
         _patch_runtime_startup(monkeypatch)
         sleep_mock = AsyncMock(return_value=None)
-        monkeypatch.setattr(runtime, "_sleep_with_shutdown_poll", sleep_mock)
+        monkeypatch.setattr(runtime, "_sleep_startup_retry_backoff", sleep_mock)
 
-        bot = _FakeBot(outcomes=[_RetryableLoginError(), None], session_closed=False)
-        rt = runtime.Runtime(bot=bot)
+        bot_attempt_1 = _FakeBot([_RetryableLoginError()], label="attempt-1")
+        bot_attempt_2 = _FakeBot([_RetryableLoginError()], label="attempt-2")
+        bot_attempt_3 = _FakeBot([None], label="attempt-3")
+        built = [bot_attempt_2, bot_attempt_3]
+        rebuilt: list[_FakeBot] = []
+
+        rt = runtime.Runtime(
+            bot=bot_attempt_1,
+            bot_factory=lambda: built.pop(0),
+            bot_rebuild_hook=lambda new_bot: rebuilt.append(new_bot),  # type: ignore[arg-type]
+        )
 
         await rt.start("token")
 
-        assert bot.start_calls == 2
-        assert sleep_mock.await_count == 1
-        sleep_args = sleep_mock.await_args.args
-        assert sleep_args[0] is bot
-        assert sleep_args[1] == runtime._DISCORD_LOGIN_RETRY_INITIAL_SEC
+        assert bot_attempt_1.start_calls == 1
+        assert bot_attempt_2.start_calls == 1
+        assert bot_attempt_3.start_calls == 1
+        assert bot_attempt_1.close_calls == 1
+        assert bot_attempt_2.close_calls == 1
+        assert bot_attempt_3.close_calls == 0
+        assert rebuilt == [bot_attempt_2, bot_attempt_3]
+        assert rt.bot is bot_attempt_3
+        assert sleep_mock.await_count == 2
 
     asyncio.run(runner())
 
 
-def test_runtime_startup_retry_refuses_dead_client(
+def test_runtime_startup_retry_requires_factory_for_rebuild(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def runner() -> None:
         _patch_runtime_startup(monkeypatch)
-        bot = _FakeBot(outcomes=[None], session_closed=True)
+        monkeypatch.setattr(
+            runtime, "_sleep_startup_retry_backoff", AsyncMock(return_value=None)
+        )
+        bot = _FakeBot([_RetryableLoginError()], label="attempt-1")
         rt = runtime.Runtime(bot=bot)
 
-        with pytest.raises(RuntimeError, match="session is already closed"):
+        with pytest.raises(RuntimeError, match="no bot_factory is configured"):
             await rt.start("token")
-        assert bot.start_calls == 0
+        assert bot.start_calls == 1
+        assert bot.close_calls == 1
 
     asyncio.run(runner())
