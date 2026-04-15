@@ -48,8 +48,8 @@ class _DummyChannel:
     def __init__(self) -> None:
         self.sent = []
 
-    async def send(self, *, content=None, embed=None):
-        self.sent.append({"content": content, "embed": embed})
+    async def send(self, *, content=None, embed=None, view=None):
+        self.sent.append({"content": content, "embed": embed, "view": view})
 
 
 class _DummyAnnouncementMessage:
@@ -78,12 +78,14 @@ def test_start_reminder_fires_once_and_is_restart_safe(monkeypatch):
     monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", _get_sent_keys)
     monkeypatch.setattr(fusion_sheets, "mark_reminder_sent", _mark_sent)
     monkeypatch.setattr(reminders, "ensure_fusion_announcement", AsyncMock(return_value=announcement))
+    monkeypatch.setattr(reminders, "build_fusion_opt_in_view", lambda _target: None)
 
     asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now))
     asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now))
 
     assert len(channel.sent) == 1
     assert channel.sent[0]["content"] is None
+    assert channel.sent[0]["view"] is None
     assert channel.sent[0]["embed"].title == "⚠️ Event e-start is live"
     assert ("f-1", "e-start", "start") in persisted
 
@@ -108,12 +110,14 @@ def test_prestart_reminder_fires_once(monkeypatch):
     monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", _get_sent_keys)
     monkeypatch.setattr(fusion_sheets, "mark_reminder_sent", _mark_sent)
     monkeypatch.setattr(reminders, "ensure_fusion_announcement", AsyncMock(return_value=announcement))
+    monkeypatch.setattr(reminders, "build_fusion_opt_in_view", lambda _target: "view")
 
     asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now))
     asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now + dt.timedelta(minutes=1)))
 
     assert len(channel.sent) == 1
     assert channel.sent[0]["content"] == "<@&777>"
+    assert channel.sent[0]["view"] == "view"
     embed = channel.sent[0]["embed"]
     assert embed.title == "⏳ Event e-pre starts soon"
     assert embed.description == "Starts in 6h. Plan accordingly."
@@ -140,11 +144,13 @@ def test_invalid_events_skipped_and_no_role_mention_when_absent(monkeypatch):
     monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", AsyncMock(return_value=set()))
     monkeypatch.setattr(fusion_sheets, "mark_reminder_sent", AsyncMock())
     monkeypatch.setattr(reminders, "ensure_fusion_announcement", AsyncMock(return_value=announcement))
+    monkeypatch.setattr(reminders, "build_fusion_opt_in_view", lambda _target: None)
 
     asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now))
 
     assert len(channel.sent) == 1
     assert channel.sent[0]["content"] is None
+    assert channel.sent[0]["view"] is None
 
 
 def test_announcement_self_heals_before_sending(monkeypatch):

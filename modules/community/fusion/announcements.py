@@ -7,6 +7,7 @@ import datetime as dt
 import discord
 from discord.ext import commands
 
+from modules.community.fusion.opt_in_view import build_fusion_opt_in_view
 from modules.community.fusion.rendering import build_fusion_announcement_embed
 from shared.sheets import fusion as fusion_sheets
 
@@ -38,7 +39,8 @@ async def publish_fusion_announcement(
 
     events = await fusion_sheets.get_fusion_events(target.fusion_id)
     announcement_embed = build_fusion_announcement_embed(target, events)
-    announcement_message = await channel.send(embed=announcement_embed)
+    announcement_view = build_fusion_opt_in_view(target)
+    announcement_message = await channel.send(embed=announcement_embed, view=announcement_view)
 
     set_status_published = target.status.casefold() == "draft"
     await fusion_sheets.update_fusion_publication(
