@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 import discord
 
 from shared.sheets.fusion import FusionEventRow, FusionRow
+from shared.sheets import fusion as fusion_sheets
 
 _FUSION_EMBED_COLOR = discord.Color.blurple()
 _EMBED_FIELD_VALUE_LIMIT = 1024
@@ -33,11 +34,22 @@ def _humanize_type(value: str) -> str:
     return " ".join(token.capitalize() for token in normalized.split())
 
 
-def _format_event_line(event: FusionEventRow) -> str:
+def _status_icon(status: str) -> str:
+    if status == "live":
+        return "🔥"
+    if status == "ended":
+        return "✅"
+    return "⏳"
+
+
+def _format_event_line(event: FusionEventRow, *, status: str) -> str:
     has_bonus = event.bonus is not None and event.bonus > 0
     points_text = f"{event.points_needed} pts" if event.points_needed is not None else "pts TBA"
     bonus_text = f" (+{event.bonus:g} bonus)" if has_bonus else ""
-    return f"{event.event_name} — {points_text} for {event.reward_amount:g} frags{bonus_text}"
+    return (
+        f"{_status_icon(status)} {event.event_name} — "
+        f"{points_text} for {event.reward_amount:g} frags{bonus_text}"
+    )
 
 
 def _chunk_lines(lines: list[str], limit: int) -> list[str]:
@@ -94,7 +106,12 @@ def _normalize_image_url(value: str) -> str | None:
     return candidate
 
 
-def _build_fusion_embed(fusion: FusionRow, events: list[FusionEventRow]) -> discord.Embed:
+def _build_fusion_embed(
+    fusion: FusionRow,
+    events: list[FusionEventRow],
+    *,
+    now: dt.datetime | None = None,
+) -> discord.Embed:
     has_bonus = any(event.bonus is not None and event.bonus > 0 for event in events)
     sorted_events = sorted(events, key=lambda row: (row.start_at_utc, row.sort_order, row.event_id))
     event_days = [event.start_at_utc.astimezone(dt.timezone.utc).date() for event in sorted_events]
@@ -127,6 +144,28 @@ def _build_fusion_embed(fusion: FusionRow, events: list[FusionEventRow]) -> disc
         embed.set_image(url=champion_image_url)
     embed.add_field(name="Key Milestones", value="\n".join(milestones_lines), inline=False)
     sorted_events = sorted(events, key=lambda row: (row.start_at_utc, row.sort_order, row.event_id))
+    status_by_event_id: dict[str, str] = {}
+    for event in sorted_events:
+        timing = fusion_sheets.get_valid_event_timing(event, for_helper="fusion_embed")
+        if timing is None:
+            status = "upcoming"
+        else:
+            start_at, end_at = timing
+            status = fusion_sheets.derive_event_status(start_at_utc=start_at, end_at_utc=end_at, now=now)
+        status_by_event_id[event.event_id] = status
+
+    if sorted_events:
+        status_lines = [
+            f"- {_status_icon(status_by_event_id[event.event_id])} {event.event_name}"
+            for event in sorted_events
+        ]
+        status_chunks = _chunk_lines(status_lines, _EMBED_FIELD_VALUE_LIMIT)
+        for idx, chunk in enumerate(status_chunks, start=1):
+            name = "Event Status" if idx == 1 else f"Event Status (Part {idx})"
+            if len(embed.fields) >= _EMBED_MAX_FIELDS:
+                break
+            embed.add_field(name=name, value=chunk, inline=False)
+
     grouped_events: dict[dt.date, list[FusionEventRow]] = defaultdict(list)
     for event in sorted_events:
         grouped_events[event.start_at_utc.astimezone(dt.timezone.utc).date()].append(event)
@@ -141,7 +180,7 @@ def _build_fusion_embed(fusion: FusionRow, events: list[FusionEventRow]) -> disc
         if len(embed.fields) >= _EMBED_MAX_FIELDS:
             break
         lines = [
-            f"• {_format_event_line(event)}"
+            f"• {_format_event_line(event, status=status_by_event_id[event.event_id])}"
             for event in grouped_events[day]
         ]
         embed.add_field(
@@ -153,10 +192,15 @@ def _build_fusion_embed(fusion: FusionRow, events: list[FusionEventRow]) -> disc
     return embed
 
 
-def build_fusion_announcement_embed(fusion: FusionRow, events: list[FusionEventRow]) -> discord.Embed:
+def build_fusion_announcement_embed(
+    fusion: FusionRow,
+    events: list[FusionEventRow],
+    *,
+    now: dt.datetime | None = None,
+) -> discord.Embed:
     """Build the Step 2 fusion publish announcement embed."""
 
-    return _build_fusion_embed(fusion, events)
+    return _build_fusion_embed(fusion, events, now=now)
 
 
 __all__ = ["build_fusion_announcement_embed"]

@@ -47,6 +47,8 @@ class FusionRow:
     opt_in_role_id: int | None
     announcement_message_id: int | None
     published_at: dt.datetime | None
+    last_announcement_refresh_at: dt.datetime | None
+    last_announcement_status_hash: str
     status: str
 
 
@@ -240,6 +242,12 @@ async def _load_fusions() -> tuple[FusionRow, ...]:
                         row.get("announcement_message_id")
                     ),
                     published_at=_parse_iso_utc_optional(row.get("published_at")),
+                    last_announcement_refresh_at=_parse_iso_utc_optional(
+                        row.get("last_announcement_refresh_at")
+                    ),
+                    last_announcement_status_hash=str(
+                        row.get("last_announcement_status_hash") or ""
+                    ).strip(),
                     status=str(row.get("status") or "").strip().lower(),
                 )
             )
@@ -345,6 +353,19 @@ async def get_active_fusion() -> FusionRow | None:
         candidates.sort(key=lambda row: (row.start_at_utc, row.fusion_id), reverse=True)
         return candidates[0]
     return None
+
+
+async def get_published_fusions() -> list[FusionRow]:
+    """Return all fusions currently eligible for live announcement maintenance."""
+
+    fusion_bucket, _ = register_cache_buckets()
+    rows = [
+        row
+        for row in await _cached_rows(fusion_bucket)
+        if isinstance(row, FusionRow) and row.status.casefold() in {"active", "published"}
+    ]
+    rows.sort(key=lambda row: (row.start_at_utc, row.fusion_id), reverse=True)
+    return rows
 
 
 async def get_fusion_events(fusion_id: str) -> list[FusionEventRow]:
@@ -466,6 +487,22 @@ def get_valid_event_timing(
     """Validate and coerce fusion event timing into UTC-aware datetimes."""
 
     return _valid_event_timing(event, for_helper=for_helper)
+
+
+def derive_event_status(
+    *,
+    start_at_utc: dt.datetime,
+    end_at_utc: dt.datetime | None,
+    now: dt.datetime | None = None,
+) -> str:
+    """Return canonical event status from normalized UTC timestamps."""
+
+    reference = _coerce_utc_now(now)
+    if reference < start_at_utc:
+        return "upcoming"
+    if end_at_utc is None or reference < end_at_utc:
+        return "live"
+    return "ended"
 
 
 async def get_sent_reminder_keys(fusion_id: str) -> set[tuple[str, str]]:
@@ -673,12 +710,66 @@ async def update_fusion_publication(
     await cache.refresh_now(_FUSION_BUCKET, actor="fusion_publish")
 
 
+async def update_fusion_announcement_refresh_state(
+    fusion_id: str,
+    *,
+    refreshed_at: dt.datetime,
+    status_hash: str,
+) -> None:
+    """Persist announcement refresh metadata for scheduler dedupe/restart safety."""
+
+    tab_name = _resolve_tab_name("FUSION_TAB")
+    sheet_id = _sheet_id()
+    matrix = await afetch_values(sheet_id, tab_name)
+    if not matrix:
+        raise RuntimeError("Fusion sheet is empty")
+
+    header = [str(cell or "").strip().lower() for cell in matrix[0]]
+    row_idx: int | None = None
+    fusion_col = header.index("fusion_id") if "fusion_id" in header else -1
+    if fusion_col < 0:
+        raise RuntimeError("Fusion sheet missing fusion_id column")
+
+    for idx, row in enumerate(matrix[1:], start=2):
+        cell = str(row[fusion_col] if fusion_col < len(row) else "").strip()
+        if cell == fusion_id:
+            row_idx = idx
+            break
+    if row_idx is None:
+        raise RuntimeError(f"Fusion row not found for fusion_id={fusion_id}")
+
+    required_cols = ["last_announcement_refresh_at", "last_announcement_status_hash"]
+    missing = [col for col in required_cols if col not in header]
+    if missing:
+        raise RuntimeError(f"Fusion sheet missing columns: {', '.join(missing)}")
+
+    worksheet = await aget_worksheet(sheet_id, tab_name)
+    updates = {
+        "last_announcement_refresh_at": refreshed_at.astimezone(dt.timezone.utc).isoformat(),
+        "last_announcement_status_hash": str(status_hash or "").strip(),
+    }
+    for col_name, value in updates.items():
+        col_index = header.index(col_name)
+        cell = f"{_column_label(col_index)}{row_idx}"
+        await acall_with_backoff(
+            worksheet.update,
+            cell,
+            [[value]],
+            value_input_option="RAW",
+        )
+
+    register_cache_buckets()
+    await cache.refresh_now(_FUSION_BUCKET, actor="fusion_announcement_refresh")
+
+
 __all__ = [
     "FusionEventRow",
     "FusionRow",
     "get_active_fusion",
     "get_ended_fusions",
+    "get_published_fusions",
     "get_active_events",
+    "derive_event_status",
     "get_valid_event_timing",
     "get_publishable_fusion",
     "get_fusion_events",
@@ -686,5 +777,6 @@ __all__ = [
     "get_upcoming_events",
     "mark_reminder_sent",
     "update_fusion_publication",
+    "update_fusion_announcement_refresh_state",
     "register_cache_buckets",
 ]

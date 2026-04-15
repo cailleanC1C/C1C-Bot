@@ -31,6 +31,8 @@ def _fusion_row(
         opt_in_role_id=None,
         announcement_message_id=announcement_message_id,
         published_at=None,
+        last_announcement_refresh_at=None,
+        last_announcement_status_hash="",
         status=status,
     )
 
