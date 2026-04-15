@@ -166,3 +166,21 @@ def test_permission_failure_is_handled_cleanly(monkeypatch):
         )
 
     asyncio.run(_run())
+
+
+def test_build_view_keeps_opt_buttons_when_role_configured():
+    view = opt_in_view.build_fusion_opt_in_view(_fusion_row(opt_in_role_id=777))
+
+    custom_ids = [item.custom_id for item in view.children]
+    assert "fusion:opt_in" in custom_ids
+    assert "fusion:opt_out" in custom_ids
+    assert "fusion:my_progress" in custom_ids
+
+
+def test_build_view_keeps_progress_button_without_opt_role():
+    view = opt_in_view.build_fusion_opt_in_view(_fusion_row(opt_in_role_id=None))
+
+    custom_ids = [item.custom_id for item in view.children]
+    assert "fusion:opt_in" not in custom_ids
+    assert "fusion:opt_out" not in custom_ids
+    assert custom_ids == ["fusion:my_progress"]
