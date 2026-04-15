@@ -10,6 +10,7 @@ import discord
 from discord.ext import commands
 
 from modules.community.fusion.announcements import ensure_fusion_announcement
+from modules.community.fusion.opt_in_view import build_fusion_opt_in_view
 from shared.sheets import fusion as fusion_sheets
 
 log = logging.getLogger("c1c.community.fusion.reminders")
@@ -117,7 +118,8 @@ async def process_fusion_reminders(
                     jump_url=announcement_message.jump_url,
                 )
                 mention_content = f"<@&{target.opt_in_role_id}>" if target.opt_in_role_id else None
-                await announcement_message.channel.send(content=mention_content, embed=embed)
+                reminder_view = build_fusion_opt_in_view(target)
+                await announcement_message.channel.send(content=mention_content, embed=embed, view=reminder_view)
                 await fusion_sheets.mark_reminder_sent(
                     target.fusion_id,
                     event_id=event.event_id,

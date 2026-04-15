@@ -4,6 +4,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from modules.community.fusion.reminders import process_fusion_reminders
+from modules.community.fusion.role_cleanup import process_ended_fusion_role_cleanup
 
 if TYPE_CHECKING:
     from modules.common.runtime import Runtime
@@ -17,6 +18,7 @@ def schedule_fusion_jobs(runtime: "Runtime") -> None:
     async def _runner() -> None:
         try:
             await process_fusion_reminders(runtime.bot)
+            await process_ended_fusion_role_cleanup(runtime.bot)
         except Exception:
             log.exception("fusion reminder scheduler tick failed")
 

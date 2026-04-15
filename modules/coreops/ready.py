@@ -6,6 +6,7 @@ import logging
 
 from discord.ext import commands
 
+from modules.community.fusion.opt_in_view import register_persistent_fusion_views
 from modules.onboarding import watcher_promo, watcher_welcome
 from modules.onboarding.ui import panels
 
@@ -19,6 +20,7 @@ async def on_ready(bot: commands.Bot) -> None:
     # Existing startup wiring …
     # Register onboarding persistent views *after* the bot is ready to avoid race conditions.
     panels.register_views(bot)
+    register_persistent_fusion_views(bot)
 
     # Ensure both onboarding watchers are wired
     await watcher_welcome.setup(bot)

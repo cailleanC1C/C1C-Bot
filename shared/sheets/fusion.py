@@ -535,6 +535,23 @@ async def mark_reminder_sent(
     )
 
 
+
+
+async def get_ended_fusions(now: dt.datetime | None = None) -> list[FusionRow]:
+    """Return ended fusions that may still need post-end cleanup tasks."""
+
+    reference = _coerce_utc_now(now)
+    fusion_bucket, _ = register_cache_buckets()
+    rows = [row for row in await _cached_rows(fusion_bucket) if isinstance(row, FusionRow)]
+
+    ended = [
+        row
+        for row in rows
+        if row.status.casefold() in {"active", "published"} and row.end_at_utc <= reference
+    ]
+    ended.sort(key=lambda row: (row.end_at_utc, row.fusion_id), reverse=True)
+    return ended
+
 async def get_publishable_fusion() -> FusionRow | None:
     """Return the best fusion row for publish flow selection."""
 
@@ -622,6 +639,7 @@ __all__ = [
     "FusionEventRow",
     "FusionRow",
     "get_active_fusion",
+    "get_ended_fusions",
     "get_active_events",
     "get_valid_event_timing",
     "get_publishable_fusion",
