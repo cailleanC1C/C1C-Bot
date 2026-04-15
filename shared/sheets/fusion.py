@@ -333,6 +333,7 @@ async def update_fusion_publication(
     fusion_id: str,
     *,
     announcement_message_id: int,
+    announcement_channel_id: int | None,
     published_at: dt.datetime,
     set_published_status: bool,
 ) -> None:
@@ -360,6 +361,8 @@ async def update_fusion_publication(
         raise RuntimeError(f"Fusion row not found for fusion_id={fusion_id}")
 
     required_cols = ["announcement_message_id", "published_at"]
+    if announcement_channel_id is not None:
+        required_cols.append("announcement_channel_id")
     if set_published_status:
         required_cols.append("status")
 
@@ -372,6 +375,8 @@ async def update_fusion_publication(
         "announcement_message_id": str(announcement_message_id),
         "published_at": published_at.astimezone(dt.timezone.utc).isoformat(),
     }
+    if announcement_channel_id is not None:
+        updates["announcement_channel_id"] = str(announcement_channel_id)
     if set_published_status:
         updates["status"] = "published"
 
