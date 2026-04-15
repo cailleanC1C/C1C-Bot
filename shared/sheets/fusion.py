@@ -241,8 +241,28 @@ async def _load_fusion_events() -> tuple[FusionEventRow, ...]:
                     event_name=str(row.get("event_name") or "").strip(),
                     event_type=str(row.get("event_type") or "").strip(),
                     category=str(row.get("category") or "").strip(),
-                    start_at_utc=_parse_iso_utc(row.get("start_at_utc")),
-                    end_at_utc=_parse_iso_utc(row.get("end_at_utc")),
+                    start_at_utc=_parse_iso_utc(
+                        _pick(
+                            row,
+                            "start_at_utc",
+                            "event_start_at_utc",
+                            "start_time_utc",
+                            "event_start_time_utc",
+                            "start_at",
+                            "start_time",
+                        )
+                    ),
+                    end_at_utc=_parse_iso_utc(
+                        _pick(
+                            row,
+                            "end_at_utc",
+                            "event_end_at_utc",
+                            "end_time_utc",
+                            "event_end_time_utc",
+                            "end_at",
+                            "end_time",
+                        )
+                    ),
                     reward_amount=_parse_float(row.get("reward_amount")),
                     bonus=_parse_float_optional(row.get("bonus")),
                     reward_type=str(row.get("reward_type") or "").strip(),
@@ -309,6 +329,104 @@ async def get_fusion_events(fusion_id: str) -> list[FusionEventRow]:
     ]
     filtered.sort(key=lambda row: (row.start_at_utc, row.sort_order, row.event_id))
     return filtered
+
+
+def _coerce_utc_now(now: dt.datetime | None) -> dt.datetime:
+    if now is None:
+        return dt.datetime.now(dt.timezone.utc)
+    if now.tzinfo is None:
+        return now.replace(tzinfo=dt.timezone.utc)
+    return now.astimezone(dt.timezone.utc)
+
+
+def _valid_event_timing(
+    event: FusionEventRow,
+    *,
+    for_helper: str,
+) -> tuple[dt.datetime, dt.datetime | None] | None:
+    start_at = getattr(event, "start_at_utc", None)
+    end_at = getattr(event, "end_at_utc", None)
+
+    if not isinstance(start_at, dt.datetime):
+        log.warning(
+            "fusion event skipped due to invalid start_at_utc",
+            extra={
+                "helper": for_helper,
+                "fusion_id": getattr(event, "fusion_id", ""),
+                "event_id": getattr(event, "event_id", ""),
+                "event_name": getattr(event, "event_name", ""),
+                "start_at_utc": start_at,
+            },
+        )
+        return None
+
+    if start_at.tzinfo is None:
+        start_at = start_at.replace(tzinfo=dt.timezone.utc)
+    else:
+        start_at = start_at.astimezone(dt.timezone.utc)
+
+    if end_at is None:
+        return start_at, None
+
+    if not isinstance(end_at, dt.datetime):
+        log.warning(
+            "fusion event skipped due to invalid end_at_utc",
+            extra={
+                "helper": for_helper,
+                "fusion_id": getattr(event, "fusion_id", ""),
+                "event_id": getattr(event, "event_id", ""),
+                "event_name": getattr(event, "event_name", ""),
+                "end_at_utc": end_at,
+            },
+        )
+        return None
+
+    if end_at.tzinfo is None:
+        end_at = end_at.replace(tzinfo=dt.timezone.utc)
+    else:
+        end_at = end_at.astimezone(dt.timezone.utc)
+    return start_at, end_at
+
+
+async def get_upcoming_events(
+    fusion_id: str,
+    now: dt.datetime | None = None,
+) -> list[FusionEventRow]:
+    reference = _coerce_utc_now(now)
+    events = await get_fusion_events(fusion_id)
+
+    future: list[FusionEventRow] = []
+    for event in events:
+        timing = _valid_event_timing(event, for_helper="get_upcoming_events")
+        if timing is None:
+            continue
+        start_at, _ = timing
+        if start_at > reference:
+            future.append(event)
+
+    future.sort(key=lambda row: (row.start_at_utc, row.sort_order, row.event_id))
+    return future
+
+
+async def get_active_events(
+    fusion_id: str,
+    now: dt.datetime | None = None,
+) -> list[FusionEventRow]:
+    reference = _coerce_utc_now(now)
+    events = await get_fusion_events(fusion_id)
+
+    active: list[FusionEventRow] = []
+    for event in events:
+        timing = _valid_event_timing(event, for_helper="get_active_events")
+        if timing is None:
+            continue
+
+        start_at, end_at = timing
+        if start_at <= reference and (end_at is None or reference < end_at):
+            active.append(event)
+
+    active.sort(key=lambda row: (row.start_at_utc, row.sort_order, row.event_id))
+    return active
 
 
 async def get_publishable_fusion() -> FusionRow | None:
@@ -398,8 +516,10 @@ __all__ = [
     "FusionEventRow",
     "FusionRow",
     "get_active_fusion",
+    "get_active_events",
     "get_publishable_fusion",
     "get_fusion_events",
+    "get_upcoming_events",
     "update_fusion_publication",
     "register_cache_buckets",
 ]
