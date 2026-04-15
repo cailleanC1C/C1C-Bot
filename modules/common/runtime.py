@@ -361,11 +361,19 @@ async def _sleep_with_shutdown_poll(bot: commands.Bot, delay_sec: int) -> None:
         remaining -= step
 
 
-def _is_bot_http_session_closed(bot: commands.Bot) -> bool:
+async def _sleep_startup_retry_backoff(delay_sec: int) -> None:
+    await asyncio.sleep(max(0, int(delay_sec)))
+
+
+def _bot_http_session(bot: commands.Bot) -> Any | None:
     http = getattr(bot, "http", None)
     if http is None:
-        return False
-    session = getattr(http, "_HTTPClient__session", None)
+        return None
+    return getattr(http, "_HTTPClient__session", None)
+
+
+def _is_bot_http_session_closed(bot: commands.Bot) -> bool:
+    session = _bot_http_session(bot)
     return bool(getattr(session, "closed", False))
 
 
@@ -857,8 +865,16 @@ class Scheduler:
 class Runtime:
     """Container object that wires the bot, health server, and scheduler."""
 
-    def __init__(self, bot: commands.Bot) -> None:
+    def __init__(
+        self,
+        bot: commands.Bot,
+        *,
+        bot_factory: Callable[[], commands.Bot] | None = None,
+        bot_rebuild_hook: Callable[[commands.Bot], None] | None = None,
+    ) -> None:
         self.bot = bot
+        self._bot_factory = bot_factory
+        self._bot_rebuild_hook = bot_rebuild_hook
         self.scheduler = Scheduler()
         self._web_app: Optional[web.Application] = None
         self._web_runner: Optional[web.AppRunner] = None
@@ -866,6 +882,25 @@ class Runtime:
         self._watchdog_task: Optional[asyncio.Task] = None
         self._watchdog_params: Optional[tuple[int, int, int]] = None
         set_active_runtime(self)
+
+    def _build_bot_for_attempt(self, startup_attempt: int) -> commands.Bot:
+        if startup_attempt <= 1:
+            return self.bot
+        if self._bot_factory is None:
+            raise RuntimeError(
+                "startup retry requested a new bot/client but no bot_factory is configured"
+            )
+        new_bot = self._bot_factory()
+        self.bot = new_bot
+        if self._bot_rebuild_hook is not None:
+            self._bot_rebuild_hook(new_bot)
+        return new_bot
+
+    async def _dispose_bot_for_attempt(self, bot: commands.Bot) -> None:
+        try:
+            await bot.close()
+        except Exception:
+            log.exception("failed to dispose startup attempt bot/client")
 
     async def start_webserver(self, *, port: Optional[int] = None) -> None:
         if self._web_site is not None:
@@ -1436,15 +1471,17 @@ class Runtime:
 
         retry_delay_sec = _DISCORD_LOGIN_RETRY_INITIAL_SEC
         startup_attempt = 1
-        while not self.bot.is_closed():
+        attempt_bot = self._build_bot_for_attempt(startup_attempt)
+        log.info("startup attempt %s created new bot/client", startup_attempt)
+        while not attempt_bot.is_closed():
             log.info("startup attempt %s begin", startup_attempt)
-            if _is_bot_http_session_closed(self.bot):
+            if _is_bot_http_session_closed(attempt_bot):
                 raise RuntimeError(
                     "startup retry refused: bot HTTP session is already closed; "
                     "cannot retry on disposed client"
                 )
             try:
-                await self.bot.start(token)
+                await attempt_bot.start(token)
                 return
             except asyncio.CancelledError:
                 raise
@@ -1458,24 +1495,18 @@ class Runtime:
                     retry_delay_sec,
                     detail,
                 )
-                log.info(
-                    "startup attempt %s disposed: no-op (retaining active bot/client)",
-                    startup_attempt,
-                )
-                await _sleep_with_shutdown_poll(self.bot, retry_delay_sec)
-                if self.bot.is_closed():
-                    log.info(
-                        "startup attempt %s aborted: bot closed during backoff",
-                        startup_attempt,
-                    )
-                    return
+                log.info("startup attempt %s disposing failed bot/client", startup_attempt)
+                await self._dispose_bot_for_attempt(attempt_bot)
+                log.info("startup attempt %s disposed", startup_attempt)
+                await _sleep_startup_retry_backoff(retry_delay_sec)
                 retry_delay_sec = min(
                     _DISCORD_LOGIN_RETRY_CAP_SEC,
                     retry_delay_sec * 2,
                 )
                 startup_attempt += 1
+                attempt_bot = self._build_bot_for_attempt(startup_attempt)
                 log.info(
-                    "startup attempt %s rebuilding bot/client: skipped (existing client retained)",
+                    "startup attempt %s created new bot/client for retry",
                     startup_attempt,
                 )
 
