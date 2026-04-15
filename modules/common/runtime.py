@@ -773,6 +773,17 @@ class Scheduler:
 
     def spawn(self, coro: Awaitable, *, name: Optional[str] = None) -> asyncio.Task:
         if name is not None:
+            for existing in self._tasks:
+                if existing.done():
+                    continue
+                if existing.get_name() == name:
+                    try:
+                        coro.close()
+                    except Exception:
+                        pass
+                    log.debug("scheduler spawn skipped duplicate task", extra={"task_name": name})
+                    return existing
+        if name is not None:
             task = asyncio.create_task(coro, name=name)
         else:
             task = asyncio.create_task(coro)
@@ -795,6 +806,11 @@ class Scheduler:
         name: str | None = None,
         component: str | None = None,
     ) -> _RecurringJob:
+        if name is not None:
+            for existing in self._jobs:
+                if existing.name == name:
+                    log.debug("scheduler registration skipped duplicate job", extra={"job_name": name})
+                    return existing
         total_seconds = float(hours) * 3600.0 + float(minutes) * 60.0 + float(seconds)
         if total_seconds <= 0:
             total_seconds = 60.0
@@ -1426,6 +1442,10 @@ class Runtime:
                     retry_delay_sec,
                     detail,
                 )
+                try:
+                    await self.bot.http.close()
+                except Exception:
+                    log.debug("failed to close discord http client after login failure", exc_info=True)
                 await _sleep_with_shutdown_poll(self.bot, retry_delay_sec)
                 retry_delay_sec = min(
                     _DISCORD_LOGIN_RETRY_CAP_SEC,

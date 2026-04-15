@@ -203,6 +203,21 @@ def _resolve_reminder_sheet_schema() -> tuple[str, dict[str, str]]:
     return tab_name, column_by_field
 
 
+def _reminder_schema_debug() -> dict[str, str]:
+    keys = (
+        _FUSION_REMINDER_TAB_KEY,
+        _FUSION_REMINDER_FUSION_ID_COL_KEY,
+        _FUSION_REMINDER_EVENT_ID_COL_KEY,
+        _FUSION_REMINDER_TYPE_COL_KEY,
+        _FUSION_REMINDER_SENT_AT_COL_KEY,
+    )
+    debug: dict[str, str] = {}
+    for key in keys:
+        value = cfg.get(key)
+        debug[key] = str(value if value is not None else "").strip()
+    return debug
+
+
 def _resolve_progress_sheet_schema() -> tuple[str, dict[str, str]]:
     tab_name = _resolve_tab_name(_FUSION_PROGRESS_TAB_KEY)
     config_key_by_field = {
@@ -540,7 +555,14 @@ def derive_event_status(
 async def get_sent_reminder_keys(fusion_id: str) -> set[tuple[str, str]]:
     """Return durable reminder keys previously sent for ``fusion_id``."""
 
-    tab_name, columns = _resolve_reminder_sheet_schema()
+    try:
+        tab_name, columns = _resolve_reminder_sheet_schema()
+    except Exception as exc:
+        debug_config = _reminder_schema_debug()
+        raise RuntimeError(
+            "Fusion reminder durable dedupe config invalid "
+            f"(config={debug_config})"
+        ) from exc
     matrix = await afetch_values(_sheet_id(), tab_name)
     if not matrix:
         return set()
@@ -550,9 +572,11 @@ async def get_sent_reminder_keys(fusion_id: str) -> set[tuple[str, str]]:
     required_names = [columns[field] for field in required_fields]
     missing = [name for name in required_names if name.strip().lower() not in header]
     if missing:
+        available = [str(cell or "").strip() for cell in matrix[0]]
         raise RuntimeError(
             "Fusion reminder sheet missing configured columns for durable dedupe "
             f"(tab={tab_name}, missing={', '.join(missing)}, "
+            f"available={available}, "
             f"config_keys={_FUSION_REMINDER_FUSION_ID_COL_KEY},"
             f"{_FUSION_REMINDER_EVENT_ID_COL_KEY},{_FUSION_REMINDER_TYPE_COL_KEY})"
         )
@@ -583,7 +607,14 @@ async def mark_reminder_sent(
 ) -> None:
     """Persist a sent reminder marker with a durable fusion/event/type key."""
 
-    tab_name, columns = _resolve_reminder_sheet_schema()
+    try:
+        tab_name, columns = _resolve_reminder_sheet_schema()
+    except Exception as exc:
+        debug_config = _reminder_schema_debug()
+        raise RuntimeError(
+            "Fusion reminder durable dedupe config invalid for write "
+            f"(config={debug_config})"
+        ) from exc
     matrix = await afetch_values(_sheet_id(), tab_name)
     if not matrix:
         raise RuntimeError(
@@ -596,9 +627,11 @@ async def mark_reminder_sent(
     required_names = [columns[field] for field in required_fields]
     missing = [name for name in required_names if name.strip().lower() not in header]
     if missing:
+        available = [str(cell or "").strip() for cell in matrix[0]]
         raise RuntimeError(
             "Fusion reminder sheet missing configured columns for write "
             f"(tab={tab_name}, missing={', '.join(missing)}, "
+            f"available={available}, "
             f"config_keys={_FUSION_REMINDER_FUSION_ID_COL_KEY},"
             f"{_FUSION_REMINDER_EVENT_ID_COL_KEY},"
             f"{_FUSION_REMINDER_TYPE_COL_KEY},"

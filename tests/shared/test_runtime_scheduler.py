@@ -43,3 +43,33 @@ def test_scheduler_job_exception_does_not_cancel(
         assert any("recurring job error" in record.getMessage() for record in caplog.records)
 
     asyncio.run(runner())
+
+
+def test_scheduler_every_dedupes_by_job_name() -> None:
+    scheduler = runtime.Scheduler()
+    try:
+        first = scheduler.every(seconds=30, name="dupe_job", tag="test")
+        second = scheduler.every(seconds=45, name="dupe_job", tag="test")
+        assert first is second
+    finally:
+        asyncio.run(scheduler.shutdown())
+
+
+def test_scheduler_spawn_dedupes_active_named_task() -> None:
+    async def runner() -> None:
+        scheduler = runtime.Scheduler()
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def worker() -> None:
+            started.set()
+            await release.wait()
+
+        task1 = scheduler.spawn(worker(), name="dupe_task")
+        await started.wait()
+        task2 = scheduler.spawn(worker(), name="dupe_task")
+        assert task1 is task2
+        release.set()
+        await scheduler.shutdown()
+
+    asyncio.run(runner())
