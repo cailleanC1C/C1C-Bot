@@ -25,6 +25,8 @@ def _fusion_row(*, opt_in_role_id: int | None) -> fusion_sheets.FusionRow:
         opt_in_role_id=opt_in_role_id,
         announcement_message_id=None,
         published_at=None,
+        last_announcement_refresh_at=None,
+        last_announcement_status_hash="",
         status="draft",
     )
 

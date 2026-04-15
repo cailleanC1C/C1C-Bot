@@ -22,6 +22,8 @@ def _fusion() -> FusionRow:
         opt_in_role_id=None,
         announcement_message_id=None,
         published_at=None,
+        last_announcement_refresh_at=None,
+        last_announcement_status_hash="",
         status="draft",
     )
 
@@ -56,11 +58,12 @@ def test_build_fusion_embed_target_and_schedule_field_chunks() -> None:
 
     assert "Target: 400 fragments needed / 450 available" in (embed.description or "")
     assert embed.fields[0].name == "Key Milestones"
-    assert len(embed.fields) >= 3
-    for field in embed.fields[1:]:
+    assert embed.fields[1].name == "Event Status"
+    assert len(embed.fields) >= 4
+    for field in embed.fields[2:]:
         assert "Schedule (Part" not in field.name
 
-    day_headers = [field.name for field in embed.fields[1:]]
+    day_headers = [field.name for field in embed.fields if field.name.startswith(("Wed,", "Thu,", "Fri,", "Sat,", "Sun,", "Mon,", "Tue,"))]
     assert day_headers == [
         "Wed, Apr 8",
         "Thu, Apr 9",

@@ -24,6 +24,8 @@ def _fusion_row(*, opt_in_role_id: int | None = 777) -> fusion_sheets.FusionRow:
         opt_in_role_id=opt_in_role_id,
         announcement_message_id=456,
         published_at=dt.datetime(2026, 3, 31, tzinfo=dt.timezone.utc),
+        last_announcement_refresh_at=None,
+        last_announcement_status_hash="",
         status="published",
     )
 
