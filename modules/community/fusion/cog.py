@@ -33,7 +33,39 @@ class FusionCog(commands.Cog):
         help="Fusion reminder data commands.",
     )
     async def fusion(self, ctx: commands.Context) -> None:
-        await ctx.reply("Use `!fusion debug` or `!fusion publish`.", mention_author=False)
+        try:
+            target = await fusion_sheets.get_publishable_fusion()
+        except Exception as exc:
+            log.exception("fusion command failed to load fusion rows")
+            await ctx.reply(f"Could not load fusion data: {exc}", mention_author=False)
+            return
+
+        if target is None:
+            await ctx.reply("No fusion published yet.", mention_author=False)
+            return
+
+        announcement_message_id = target.announcement_message_id
+        announcement_channel_id = target.announcement_channel_id
+        if announcement_message_id is not None and announcement_channel_id is not None:
+            channel = self.bot.get_channel(announcement_channel_id)
+            if channel is None:
+                try:
+                    channel = await self.bot.fetch_channel(announcement_channel_id)
+                except Exception:
+                    channel = None
+
+            if isinstance(channel, discord.abc.Messageable):
+                try:
+                    announcement_message = await channel.fetch_message(announcement_message_id)
+                    await ctx.reply(announcement_message.jump_url, mention_author=False)
+                    return
+                except Exception:
+                    pass
+
+        await ctx.reply(
+            "Fusion is published but the announcement message is unavailable.",
+            mention_author=False,
+        )
 
     @tier("user")
     @help_metadata(
@@ -164,6 +196,7 @@ class FusionCog(commands.Cog):
             await fusion_sheets.update_fusion_publication(
                 target.fusion_id,
                 announcement_message_id=announcement_message.id,
+                announcement_channel_id=channel.id,
                 published_at=dt.datetime.now(dt.timezone.utc),
                 set_published_status=set_status_published,
             )

@@ -58,11 +58,7 @@ def test_build_fusion_embed_target_and_schedule_field_chunks() -> None:
     for field in embed.fields[1:]:
         assert "Schedule (Part" not in field.name
 
-    day_headers = []
-    for field in embed.fields[1:]:
-        for line in field.value.splitlines():
-            if line and not line.startswith("•"):
-                day_headers.append(line)
+    day_headers = [field.name for field in embed.fields[1:]]
     assert day_headers == [
         "Wed, Apr 8",
         "Thu, Apr 9",
