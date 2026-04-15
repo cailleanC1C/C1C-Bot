@@ -23,6 +23,7 @@ _CACHE_TTL = int(os.getenv("SHEETS_CACHE_TTL_SEC", "900"))
 
 _FUSION_BUCKET = "fusion"
 _FUSION_EVENTS_BUCKET = "fusion_events"
+_FUSION_REMINDERS_DEFAULT_TAB = "Fusion Reminders"
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +156,13 @@ def _column_label(index: int) -> str:
         value, remainder = divmod(value - 1, 26)
         label = chr(65 + remainder) + label
     return label or "A"
+
+
+def _resolve_tab_name_or_default(key: str, default: str) -> str:
+    value = cfg.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return default
 
 def _parse_iso_utc(value: object) -> dt.datetime:
     raw = str(value or "").strip()
@@ -395,17 +403,17 @@ async def get_upcoming_events(
     reference = _coerce_utc_now(now)
     events = await get_fusion_events(fusion_id)
 
-    future: list[FusionEventRow] = []
+    future: list[tuple[dt.datetime, FusionEventRow]] = []
     for event in events:
         timing = _valid_event_timing(event, for_helper="get_upcoming_events")
         if timing is None:
             continue
         start_at, _ = timing
         if start_at > reference:
-            future.append(event)
+            future.append((start_at, event))
 
-    future.sort(key=lambda row: (row.start_at_utc, row.sort_order, row.event_id))
-    return future
+    future.sort(key=lambda item: (item[0], item[1].sort_order, item[1].event_id))
+    return [item[1] for item in future]
 
 
 async def get_active_events(
@@ -415,7 +423,7 @@ async def get_active_events(
     reference = _coerce_utc_now(now)
     events = await get_fusion_events(fusion_id)
 
-    active: list[FusionEventRow] = []
+    active: list[tuple[dt.datetime, FusionEventRow]] = []
     for event in events:
         timing = _valid_event_timing(event, for_helper="get_active_events")
         if timing is None:
@@ -423,10 +431,108 @@ async def get_active_events(
 
         start_at, end_at = timing
         if start_at <= reference and (end_at is None or reference < end_at):
-            active.append(event)
+            active.append((start_at, event))
 
-    active.sort(key=lambda row: (row.start_at_utc, row.sort_order, row.event_id))
-    return active
+    active.sort(key=lambda item: (item[0], item[1].sort_order, item[1].event_id))
+    return [item[1] for item in active]
+
+
+def get_valid_event_timing(
+    event: FusionEventRow,
+    *,
+    for_helper: str,
+) -> tuple[dt.datetime, dt.datetime | None] | None:
+    """Validate and coerce fusion event timing into UTC-aware datetimes."""
+
+    return _valid_event_timing(event, for_helper=for_helper)
+
+
+async def get_sent_reminder_keys(fusion_id: str) -> set[tuple[str, str]]:
+    """Return durable reminder keys previously sent for ``fusion_id``."""
+
+    tab_name = _resolve_tab_name_or_default("FUSION_REMINDER_TAB", _FUSION_REMINDERS_DEFAULT_TAB)
+    matrix = await afetch_values(_sheet_id(), tab_name)
+    if not matrix:
+        return set()
+
+    header = [str(cell or "").strip().lower() for cell in matrix[0]]
+    required = ["fusion_id", "event_id", "reminder_type"]
+    missing = [col for col in required if col not in header]
+    if missing:
+        raise RuntimeError(f"Fusion reminder sheet missing columns: {', '.join(missing)}")
+
+    fusion_idx = header.index("fusion_id")
+    event_idx = header.index("event_id")
+    reminder_idx = header.index("reminder_type")
+    target = str(fusion_id or "").strip()
+
+    keys: set[tuple[str, str]] = set()
+    for row in matrix[1:]:
+        row_fusion = str(row[fusion_idx] if fusion_idx < len(row) else "").strip()
+        if row_fusion != target:
+            continue
+        event_id = str(row[event_idx] if event_idx < len(row) else "").strip()
+        reminder_type = str(row[reminder_idx] if reminder_idx < len(row) else "").strip()
+        if event_id and reminder_type:
+            keys.add((event_id, reminder_type))
+    return keys
+
+
+async def mark_reminder_sent(
+    fusion_id: str,
+    *,
+    event_id: str,
+    reminder_type: str,
+    sent_at: dt.datetime,
+) -> None:
+    """Persist a sent reminder marker with a durable fusion/event/type key."""
+
+    tab_name = _resolve_tab_name_or_default("FUSION_REMINDER_TAB", _FUSION_REMINDERS_DEFAULT_TAB)
+    matrix = await afetch_values(_sheet_id(), tab_name)
+    if not matrix:
+        raise RuntimeError("Fusion reminder sheet is empty")
+
+    header = [str(cell or "").strip().lower() for cell in matrix[0]]
+    required = ["fusion_id", "event_id", "reminder_type", "sent_at_utc"]
+    missing = [col for col in required if col not in header]
+    if missing:
+        raise RuntimeError(f"Fusion reminder sheet missing columns: {', '.join(missing)}")
+
+    fusion_idx = header.index("fusion_id")
+    event_idx = header.index("event_id")
+    reminder_idx = header.index("reminder_type")
+    sent_at_idx = header.index("sent_at_utc")
+    target_fusion = str(fusion_id or "").strip()
+    target_event = str(event_id or "").strip()
+    target_type = str(reminder_type or "").strip()
+    sent_token = sent_at.astimezone(dt.timezone.utc).isoformat()
+
+    worksheet = await aget_worksheet(_sheet_id(), tab_name)
+    for row_idx, row in enumerate(matrix[1:], start=2):
+        row_fusion = str(row[fusion_idx] if fusion_idx < len(row) else "").strip()
+        row_event = str(row[event_idx] if event_idx < len(row) else "").strip()
+        row_type = str(row[reminder_idx] if reminder_idx < len(row) else "").strip()
+        if (row_fusion, row_event, row_type) != (target_fusion, target_event, target_type):
+            continue
+        cell = f"{_column_label(sent_at_idx)}{row_idx}"
+        await acall_with_backoff(
+            worksheet.update,
+            cell,
+            [[sent_token]],
+            value_input_option="RAW",
+        )
+        return
+
+    row_values = [""] * len(header)
+    row_values[fusion_idx] = target_fusion
+    row_values[event_idx] = target_event
+    row_values[reminder_idx] = target_type
+    row_values[sent_at_idx] = sent_token
+    await acall_with_backoff(
+        worksheet.append_row,
+        row_values,
+        value_input_option="RAW",
+    )
 
 
 async def get_publishable_fusion() -> FusionRow | None:
@@ -517,9 +623,12 @@ __all__ = [
     "FusionRow",
     "get_active_fusion",
     "get_active_events",
+    "get_valid_event_timing",
     "get_publishable_fusion",
     "get_fusion_events",
+    "get_sent_reminder_keys",
     "get_upcoming_events",
+    "mark_reminder_sent",
     "update_fusion_publication",
     "register_cache_buckets",
 ]

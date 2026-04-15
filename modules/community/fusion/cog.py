@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime as dt
 import logging
 
 import discord
@@ -10,6 +9,7 @@ from discord.ext import commands
 
 from c1c_coreops.helpers import help_metadata, tier
 from c1c_coreops.rbac import admin_only
+from modules.community.fusion.announcements import ensure_fusion_announcement, publish_fusion_announcement, resolve_announcement_channel
 from modules.community.fusion.rendering import build_fusion_announcement_embed
 from shared.sheets import fusion as fusion_sheets
 
@@ -20,72 +20,11 @@ class FusionCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    async def _resolve_announcement_channel(
-        self, channel_id: int | None
-    ) -> discord.abc.Messageable | None:
-        if channel_id is None:
-            return None
-        channel = self.bot.get_channel(channel_id)
-        if channel is None:
-            try:
-                channel = await self.bot.fetch_channel(channel_id)
-            except Exception:
-                return None
-        if not isinstance(channel, discord.abc.Messageable):
-            return None
-        return channel
-
-    async def _post_fusion_announcement(
-        self,
-        target: fusion_sheets.FusionRow,
-        channel: discord.abc.Messageable,
-    ) -> discord.Message:
-        events = await fusion_sheets.get_fusion_events(target.fusion_id)
-        announcement_embed = build_fusion_announcement_embed(target, events)
-        return await channel.send(embed=announcement_embed)
-
-    async def _persist_fusion_publication(
-        self,
-        target: fusion_sheets.FusionRow,
-        channel_id: int,
-        message_id: int,
-    ) -> None:
-        set_status_published = target.status.casefold() == "draft"
-        await fusion_sheets.update_fusion_publication(
-            target.fusion_id,
-            announcement_message_id=message_id,
-            announcement_channel_id=channel_id,
-            published_at=dt.datetime.now(dt.timezone.utc),
-            set_published_status=set_status_published,
-        )
-
-    async def _publish_fusion_announcement(
-        self,
-        target: fusion_sheets.FusionRow,
-    ) -> discord.Message | None:
-        channel = await self._resolve_announcement_channel(target.announcement_channel_id)
-        if channel is None:
-            return None
-
-        announcement_message = await self._post_fusion_announcement(target, channel)
-        await self._persist_fusion_publication(target, channel.id, announcement_message.id)
-        return announcement_message
-
     async def _ensure_fusion_announcement(
         self,
         target: fusion_sheets.FusionRow,
     ) -> discord.Message | None:
-        channel = await self._resolve_announcement_channel(target.announcement_channel_id)
-        if channel is None:
-            return None
-
-        if target.announcement_message_id is not None:
-            try:
-                return await channel.fetch_message(target.announcement_message_id)
-            except Exception:
-                pass
-
-        return await self._publish_fusion_announcement(target)
+        return await ensure_fusion_announcement(self.bot, target)
 
     @tier("user")
     @help_metadata(
@@ -223,7 +162,7 @@ class FusionCog(commands.Cog):
             )
             return
 
-        channel = await self._resolve_announcement_channel(target.announcement_channel_id)
+        channel = await resolve_announcement_channel(self.bot, target.announcement_channel_id)
         if channel is None:
             await ctx.reply("Configured announcement channel is not messageable.", mention_author=False)
             return
@@ -240,7 +179,7 @@ class FusionCog(commands.Cog):
                 pass
 
         try:
-            announcement_message = await self._publish_fusion_announcement(target)
+            announcement_message = await publish_fusion_announcement(self.bot, target)
             if announcement_message is None:
                 await ctx.reply("Configured announcement channel is not messageable.", mention_author=False)
                 return
