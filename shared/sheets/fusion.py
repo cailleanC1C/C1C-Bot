@@ -28,6 +28,13 @@ _FUSION_REMINDER_FUSION_ID_COL_KEY = "FUSION_REMINDER_COL_FUSION_ID"
 _FUSION_REMINDER_EVENT_ID_COL_KEY = "FUSION_REMINDER_COL_EVENT_ID"
 _FUSION_REMINDER_TYPE_COL_KEY = "FUSION_REMINDER_COL_REMINDER_TYPE"
 _FUSION_REMINDER_SENT_AT_COL_KEY = "FUSION_REMINDER_COL_SENT_AT_UTC"
+_FUSION_PROGRESS_TAB_KEY = "FUSION_USER_EVENT_PROGRESS_TAB"
+_FUSION_PROGRESS_FUSION_ID_COL_KEY = "FUSION_USER_EVENT_PROGRESS_COL_FUSION_ID"
+_FUSION_PROGRESS_USER_ID_COL_KEY = "FUSION_USER_EVENT_PROGRESS_COL_USER_ID"
+_FUSION_PROGRESS_EVENT_ID_COL_KEY = "FUSION_USER_EVENT_PROGRESS_COL_EVENT_ID"
+_FUSION_PROGRESS_STATUS_COL_KEY = "FUSION_USER_EVENT_PROGRESS_COL_STATUS"
+_FUSION_PROGRESS_UPDATED_AT_COL_KEY = "FUSION_USER_EVENT_PROGRESS_COL_UPDATED_AT_UTC"
+_PROGRESS_ALLOWED_STATUSES = {"not_started", "in_progress", "done", "skipped"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +74,15 @@ class FusionEventRow:
     points_needed: int | None
     is_estimated: bool
     sort_order: int
+
+
+@dataclass(frozen=True, slots=True)
+class FusionUserEventProgressRow:
+    fusion_id: str
+    user_id: str
+    event_id: str
+    status: str
+    updated_at: dt.datetime
 
 
 def _resolve_tab_name(key: str) -> str:
@@ -179,6 +195,22 @@ def _resolve_reminder_sheet_schema() -> tuple[str, dict[str, str]]:
         "event_id": _FUSION_REMINDER_EVENT_ID_COL_KEY,
         "reminder_type": _FUSION_REMINDER_TYPE_COL_KEY,
         "sent_at_utc": _FUSION_REMINDER_SENT_AT_COL_KEY,
+    }
+    column_by_field = {
+        field: _require_config_name(config_key)
+        for field, config_key in config_key_by_field.items()
+    }
+    return tab_name, column_by_field
+
+
+def _resolve_progress_sheet_schema() -> tuple[str, dict[str, str]]:
+    tab_name = _resolve_tab_name(_FUSION_PROGRESS_TAB_KEY)
+    config_key_by_field = {
+        "fusion_id": _FUSION_PROGRESS_FUSION_ID_COL_KEY,
+        "user_id": _FUSION_PROGRESS_USER_ID_COL_KEY,
+        "event_id": _FUSION_PROGRESS_EVENT_ID_COL_KEY,
+        "status": _FUSION_PROGRESS_STATUS_COL_KEY,
+        "updated_at_utc": _FUSION_PROGRESS_UPDATED_AT_COL_KEY,
     }
     column_by_field = {
         field: _require_config_name(config_key)
@@ -610,6 +642,133 @@ async def mark_reminder_sent(
     )
 
 
+def _normalize_progress_status(value: object) -> str:
+    status = str(value or "").strip().lower()
+    if status in _PROGRESS_ALLOWED_STATUSES:
+        return status
+    return "not_started"
+
+
+async def get_user_event_progress(fusion_id: str, user_id: str) -> dict[str, str]:
+    """Return per-event progress status for a fusion/user tuple."""
+
+    tab_name, columns = _resolve_progress_sheet_schema()
+    matrix = await afetch_values(_sheet_id(), tab_name)
+    if not matrix:
+        return {}
+
+    header = [str(cell or "").strip().lower() for cell in matrix[0]]
+    required_fields = ("fusion_id", "user_id", "event_id", "status")
+    required_names = [columns[field] for field in required_fields]
+    missing = [name for name in required_names if name.strip().lower() not in header]
+    if missing:
+        raise RuntimeError(
+            "Fusion user progress sheet missing configured columns "
+            f"(tab={tab_name}, missing={', '.join(missing)}, "
+            f"config_keys={_FUSION_PROGRESS_FUSION_ID_COL_KEY},"
+            f"{_FUSION_PROGRESS_USER_ID_COL_KEY},"
+            f"{_FUSION_PROGRESS_EVENT_ID_COL_KEY},"
+            f"{_FUSION_PROGRESS_STATUS_COL_KEY})"
+        )
+
+    fusion_idx = header.index(columns["fusion_id"].strip().lower())
+    user_idx = header.index(columns["user_id"].strip().lower())
+    event_idx = header.index(columns["event_id"].strip().lower())
+    status_idx = header.index(columns["status"].strip().lower())
+    target_fusion = str(fusion_id or "").strip()
+    target_user = str(user_id or "").strip()
+
+    rows: dict[str, str] = {}
+    for row in matrix[1:]:
+        row_fusion = str(row[fusion_idx] if fusion_idx < len(row) else "").strip()
+        row_user = str(row[user_idx] if user_idx < len(row) else "").strip()
+        if row_fusion != target_fusion or row_user != target_user:
+            continue
+        event_id = str(row[event_idx] if event_idx < len(row) else "").strip()
+        if not event_id:
+            continue
+        status = _normalize_progress_status(row[status_idx] if status_idx < len(row) else "")
+        rows[event_id] = status
+    return rows
+
+
+async def upsert_user_event_progress(
+    fusion_id: str,
+    user_id: str,
+    event_id: str,
+    status: str,
+    updated_at: dt.datetime,
+) -> None:
+    """Write user progress status for one fusion/user/event tuple."""
+
+    normalized_status = _normalize_progress_status(status)
+    tab_name, columns = _resolve_progress_sheet_schema()
+    matrix = await afetch_values(_sheet_id(), tab_name)
+    if not matrix:
+        raise RuntimeError(
+            "Fusion user progress sheet is empty "
+            f"(tab={tab_name}, key={_FUSION_PROGRESS_TAB_KEY})"
+        )
+
+    header = [str(cell or "").strip().lower() for cell in matrix[0]]
+    required_fields = ("fusion_id", "user_id", "event_id", "status", "updated_at_utc")
+    required_names = [columns[field] for field in required_fields]
+    missing = [name for name in required_names if name.strip().lower() not in header]
+    if missing:
+        raise RuntimeError(
+            "Fusion user progress sheet missing configured columns for write "
+            f"(tab={tab_name}, missing={', '.join(missing)}, "
+            f"config_keys={_FUSION_PROGRESS_FUSION_ID_COL_KEY},"
+            f"{_FUSION_PROGRESS_USER_ID_COL_KEY},"
+            f"{_FUSION_PROGRESS_EVENT_ID_COL_KEY},"
+            f"{_FUSION_PROGRESS_STATUS_COL_KEY},"
+            f"{_FUSION_PROGRESS_UPDATED_AT_COL_KEY})"
+        )
+
+    fusion_idx = header.index(columns["fusion_id"].strip().lower())
+    user_idx = header.index(columns["user_id"].strip().lower())
+    event_idx = header.index(columns["event_id"].strip().lower())
+    status_idx = header.index(columns["status"].strip().lower())
+    updated_idx = header.index(columns["updated_at_utc"].strip().lower())
+    target_fusion = str(fusion_id or "").strip()
+    target_user = str(user_id or "").strip()
+    target_event = str(event_id or "").strip()
+    timestamp = updated_at.astimezone(dt.timezone.utc).isoformat()
+
+    worksheet = await aget_worksheet(_sheet_id(), tab_name)
+    for row_idx, row in enumerate(matrix[1:], start=2):
+        row_fusion = str(row[fusion_idx] if fusion_idx < len(row) else "").strip()
+        row_user = str(row[user_idx] if user_idx < len(row) else "").strip()
+        row_event = str(row[event_idx] if event_idx < len(row) else "").strip()
+        if (row_fusion, row_user, row_event) != (target_fusion, target_user, target_event):
+            continue
+        await acall_with_backoff(
+            worksheet.update,
+            f"{_column_label(status_idx)}{row_idx}",
+            [[normalized_status]],
+            value_input_option="RAW",
+        )
+        await acall_with_backoff(
+            worksheet.update,
+            f"{_column_label(updated_idx)}{row_idx}",
+            [[timestamp]],
+            value_input_option="RAW",
+        )
+        return
+
+    row_values = [""] * len(header)
+    row_values[fusion_idx] = target_fusion
+    row_values[user_idx] = target_user
+    row_values[event_idx] = target_event
+    row_values[status_idx] = normalized_status
+    row_values[updated_idx] = timestamp
+    await acall_with_backoff(
+        worksheet.append_row,
+        row_values,
+        value_input_option="RAW",
+    )
+
+
 
 
 async def get_ended_fusions(now: dt.datetime | None = None) -> list[FusionRow]:
@@ -765,6 +924,7 @@ async def update_fusion_announcement_refresh_state(
 __all__ = [
     "FusionEventRow",
     "FusionRow",
+    "FusionUserEventProgressRow",
     "get_active_fusion",
     "get_ended_fusions",
     "get_published_fusions",
@@ -774,8 +934,10 @@ __all__ = [
     "get_publishable_fusion",
     "get_fusion_events",
     "get_sent_reminder_keys",
+    "get_user_event_progress",
     "get_upcoming_events",
     "mark_reminder_sent",
+    "upsert_user_event_progress",
     "update_fusion_publication",
     "update_fusion_announcement_refresh_state",
     "register_cache_buckets",
