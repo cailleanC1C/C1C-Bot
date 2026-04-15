@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from collections import defaultdict
 from itertools import chain
+from urllib.parse import urlparse
 
 import discord
 
@@ -81,6 +82,18 @@ def _format_date_range(start: dt.date, end: dt.date) -> str:
     return f"{_format_month_day(start)}–{_format_month_day(end)}"
 
 
+def _normalize_image_url(value: str) -> str | None:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return None
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if not parsed.netloc:
+        return None
+    return candidate
+
+
 def _build_fusion_embed(fusion: FusionRow, events: list[FusionEventRow]) -> discord.Embed:
     has_bonus = any(event.bonus is not None and event.bonus > 0 for event in events)
     sorted_events = sorted(events, key=lambda row: (row.start_at_utc, row.sort_order, row.event_id))
@@ -109,6 +122,9 @@ def _build_fusion_embed(fusion: FusionRow, events: list[FusionEventRow]) -> disc
         description="\n".join(summary_lines),
         colour=_FUSION_EMBED_COLOR,
     )
+    champion_image_url = _normalize_image_url(fusion.champion_image_url)
+    if champion_image_url:
+        embed.set_image(url=champion_image_url)
     embed.add_field(name="Key Milestones", value="\n".join(milestones_lines), inline=False)
     sorted_events = sorted(events, key=lambda row: (row.start_at_utc, row.sort_order, row.event_id))
     grouped_events: dict[dt.date, list[FusionEventRow]] = defaultdict(list)
