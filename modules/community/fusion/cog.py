@@ -20,6 +20,73 @@ class FusionCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
+    async def _resolve_announcement_channel(
+        self, channel_id: int | None
+    ) -> discord.abc.Messageable | None:
+        if channel_id is None:
+            return None
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(channel_id)
+            except Exception:
+                return None
+        if not isinstance(channel, discord.abc.Messageable):
+            return None
+        return channel
+
+    async def _post_fusion_announcement(
+        self,
+        target: fusion_sheets.FusionRow,
+        channel: discord.abc.Messageable,
+    ) -> discord.Message:
+        events = await fusion_sheets.get_fusion_events(target.fusion_id)
+        announcement_embed = build_fusion_announcement_embed(target, events)
+        return await channel.send(embed=announcement_embed)
+
+    async def _persist_fusion_publication(
+        self,
+        target: fusion_sheets.FusionRow,
+        channel_id: int,
+        message_id: int,
+    ) -> None:
+        set_status_published = target.status.casefold() == "draft"
+        await fusion_sheets.update_fusion_publication(
+            target.fusion_id,
+            announcement_message_id=message_id,
+            announcement_channel_id=channel_id,
+            published_at=dt.datetime.now(dt.timezone.utc),
+            set_published_status=set_status_published,
+        )
+
+    async def _publish_fusion_announcement(
+        self,
+        target: fusion_sheets.FusionRow,
+    ) -> discord.Message | None:
+        channel = await self._resolve_announcement_channel(target.announcement_channel_id)
+        if channel is None:
+            return None
+
+        announcement_message = await self._post_fusion_announcement(target, channel)
+        await self._persist_fusion_publication(target, channel.id, announcement_message.id)
+        return announcement_message
+
+    async def _ensure_fusion_announcement(
+        self,
+        target: fusion_sheets.FusionRow,
+    ) -> discord.Message | None:
+        channel = await self._resolve_announcement_channel(target.announcement_channel_id)
+        if channel is None:
+            return None
+
+        if target.announcement_message_id is not None:
+            try:
+                return await channel.fetch_message(target.announcement_message_id)
+            except Exception:
+                pass
+
+        return await self._publish_fusion_announcement(target)
+
     @tier("user")
     @help_metadata(
         function_group="milestones",
@@ -35,37 +102,37 @@ class FusionCog(commands.Cog):
     async def fusion(self, ctx: commands.Context) -> None:
         try:
             target = await fusion_sheets.get_publishable_fusion()
-        except Exception as exc:
+        except Exception:
             log.exception("fusion command failed to load fusion rows")
-            await ctx.reply(f"Could not load fusion data: {exc}", mention_author=False)
+            await ctx.reply("Couldn’t check the fusion right now. Try again in a moment.", mention_author=False)
             return
 
         if target is None:
-            await ctx.reply("No fusion published yet.", mention_author=False)
+            await ctx.reply("No fusion running. Enjoy the peace while it lasts.", mention_author=False)
             return
 
-        announcement_message_id = target.announcement_message_id
-        announcement_channel_id = target.announcement_channel_id
-        if announcement_message_id is not None and announcement_channel_id is not None:
-            channel = self.bot.get_channel(announcement_channel_id)
-            if channel is None:
-                try:
-                    channel = await self.bot.fetch_channel(announcement_channel_id)
-                except Exception:
-                    channel = None
+        try:
+            announcement_message = await self._ensure_fusion_announcement(target)
+        except Exception:
+            log.exception("fusion command failed to resolve announcement", extra={"fusion_id": target.fusion_id})
+            announcement_message = None
 
-            if isinstance(channel, discord.abc.Messageable):
-                try:
-                    announcement_message = await channel.fetch_message(announcement_message_id)
-                    await ctx.reply(announcement_message.jump_url, mention_author=False)
-                    return
-                except Exception:
-                    pass
+        if announcement_message is not None:
+            await ctx.reply(
+                f"🔗 Fusion’s up. Don’t get lost:\n{announcement_message.jump_url}",
+                mention_author=False,
+            )
+            return
 
-        await ctx.reply(
-            "Fusion is published but the announcement message is unavailable.",
-            mention_author=False,
-        )
+        try:
+            events = await fusion_sheets.get_fusion_events(target.fusion_id)
+            emergency_embed = build_fusion_announcement_embed(target, events)
+            await ctx.reply(embed=emergency_embed, mention_author=False)
+            return
+        except Exception:
+            log.exception("fusion command emergency embed fallback failed", extra={"fusion_id": target.fusion_id})
+            await ctx.reply("Couldn’t check the fusion right now. Try again in a moment.", mention_author=False)
+            return
 
     @tier("user")
     @help_metadata(
@@ -156,56 +223,30 @@ class FusionCog(commands.Cog):
             )
             return
 
-        if target.announcement_message_id is not None:
-            await ctx.reply(
-                "This fusion already has an announcement post. Clear the message id or use a future republish flow.",
-                mention_author=False,
-            )
-            return
-
-        channel = self.bot.get_channel(target.announcement_channel_id)
+        channel = await self._resolve_announcement_channel(target.announcement_channel_id)
         if channel is None:
-            try:
-                channel = await self.bot.fetch_channel(target.announcement_channel_id)
-            except Exception as exc:
-                log.exception(
-                    "fusion publish failed to resolve channel",
-                    extra={"channel_id": target.announcement_channel_id, "fusion_id": target.fusion_id},
-                )
-                await ctx.reply(
-                    f"Configured announcement_channel_id ({target.announcement_channel_id}) could not be resolved: {exc}",
-                    mention_author=False,
-                )
-                return
-
-        if not isinstance(channel, discord.abc.Messageable):
             await ctx.reply("Configured announcement channel is not messageable.", mention_author=False)
             return
 
+        if target.announcement_message_id is not None:
+            try:
+                await channel.fetch_message(target.announcement_message_id)
+                await ctx.reply(
+                    "This fusion already has an announcement post. Clear the message id or use a future republish flow.",
+                    mention_author=False,
+                )
+                return
+            except Exception:
+                pass
+
         try:
-            events = await fusion_sheets.get_fusion_events(target.fusion_id)
-            announcement_embed = build_fusion_announcement_embed(target, events)
-            announcement_message = await channel.send(embed=announcement_embed)
+            announcement_message = await self._publish_fusion_announcement(target)
+            if announcement_message is None:
+                await ctx.reply("Configured announcement channel is not messageable.", mention_author=False)
+                return
         except Exception as exc:
             log.exception("fusion publish failed during announce send", extra={"fusion_id": target.fusion_id})
             await ctx.reply(f"Failed to publish announcement: {exc}", mention_author=False)
-            return
-
-        set_status_published = target.status.casefold() == "draft"
-        try:
-            await fusion_sheets.update_fusion_publication(
-                target.fusion_id,
-                announcement_message_id=announcement_message.id,
-                announcement_channel_id=channel.id,
-                published_at=dt.datetime.now(dt.timezone.utc),
-                set_published_status=set_status_published,
-            )
-        except Exception as exc:
-            log.exception("fusion publish metadata write-back failed", extra={"fusion_id": target.fusion_id})
-            await ctx.reply(
-                f"Announcement posted but sheet write-back failed: {exc}. Please update publication columns manually.",
-                mention_author=False,
-            )
             return
 
         destination = channel.mention if isinstance(channel, discord.abc.GuildChannel) else "configured channel"
