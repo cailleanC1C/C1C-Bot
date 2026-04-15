@@ -35,6 +35,7 @@ class FusionRow:
     fusion_id: str
     fusion_name: str
     champion: str
+    champion_image_url: str
     fusion_type: str
     fusion_structure: str
     reward_type: str
@@ -223,6 +224,7 @@ async def _load_fusions() -> tuple[FusionRow, ...]:
                     fusion_id=str(row.get("fusion_id") or "").strip(),
                     fusion_name=str(row.get("fusion_name") or "").strip(),
                     champion=str(row.get("champion") or "").strip(),
+                    champion_image_url=str(row.get("champion_image_url") or "").strip(),
                     fusion_type=str(row.get("fusion_type") or "").strip(),
                     fusion_structure=str(row.get("fusion_structure") or "").strip(),
                     reward_type=str(row.get("reward_type") or "").strip(),

@@ -12,6 +12,7 @@ def _fusion_row(*, opt_in_role_id: int | None = 777) -> fusion_sheets.FusionRow:
         fusion_id="f-ended",
         fusion_name="Old Fusion",
         champion="Mavara",
+        champion_image_url="",
         fusion_type="traditional",
         fusion_structure="",
         reward_type="fragments",

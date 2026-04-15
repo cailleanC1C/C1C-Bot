@@ -19,6 +19,7 @@ def _fusion_row(
         fusion_id="f-1",
         fusion_name="Mavara",
         champion="Mavara",
+        champion_image_url="",
         fusion_type="traditional",
         fusion_structure="",
         reward_type="fragments",

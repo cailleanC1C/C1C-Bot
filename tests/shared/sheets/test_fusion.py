@@ -15,6 +15,7 @@ def test_load_fusions_reads_fusion_prefixed_needed(monkeypatch: pytest.MonkeyPat
                 "fusion_id": "f-1",
                 "fusion_name": "Mavara",
                 "champion": "Mavara",
+                "champion_image_url": "https://cdn.discordapp.com/champion.png",
                 "fusion_type": "traditional",
                 "fusion_structure": "",
                 "reward_type": "fragments",
@@ -35,6 +36,7 @@ def test_load_fusions_reads_fusion_prefixed_needed(monkeypatch: pytest.MonkeyPat
     assert len(rows) == 1
     assert rows[0].needed == 400
     assert rows[0].available == 450
+    assert rows[0].champion_image_url == "https://cdn.discordapp.com/champion.png"
     assert rows[0].start_at_utc == dt.datetime(2026, 4, 8, tzinfo=dt.timezone.utc)
 
 

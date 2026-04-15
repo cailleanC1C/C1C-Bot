@@ -1,4 +1,5 @@
 import datetime as dt
+from dataclasses import replace
 
 from modules.community.fusion.rendering import build_fusion_announcement_embed
 from shared.sheets.fusion import FusionEventRow, FusionRow
@@ -9,6 +10,7 @@ def _fusion() -> FusionRow:
         fusion_id="f-1",
         fusion_name="Mavara",
         champion="Mavara",
+        champion_image_url="",
         fusion_type="traditional",
         fusion_structure="",
         reward_type="fragments",
@@ -68,3 +70,19 @@ def test_build_fusion_embed_target_and_schedule_field_chunks() -> None:
         "Mon, Apr 13",
         "Tue, Apr 14",
     ]
+
+
+def test_build_fusion_embed_sets_champion_image_when_url_present() -> None:
+    fusion = replace(_fusion(), champion_image_url="https://cdn.discordapp.com/champion.png")
+
+    embed = build_fusion_announcement_embed(fusion, [])
+
+    assert str(embed.image.url) == "https://cdn.discordapp.com/champion.png"
+
+
+def test_build_fusion_embed_skips_invalid_champion_image_url() -> None:
+    fusion = replace(_fusion(), champion_image_url="notaurl")
+
+    embed = build_fusion_announcement_embed(fusion, [])
+
+    assert not str(embed.image.url or "").strip()
