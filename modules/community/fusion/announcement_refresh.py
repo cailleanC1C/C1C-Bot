@@ -76,6 +76,13 @@ async def process_fusion_announcement_refreshes(
     *,
     now: dt.datetime | None = None,
 ) -> None:
+    is_closed = getattr(bot, "is_closed", None)
+    is_ready = getattr(bot, "is_ready", None)
+    if callable(is_closed) and is_closed():
+        return
+    if callable(is_ready) and not is_ready():
+        return
+
     reference = _utc_now(now)
     try:
         targets = await fusion_sheets.get_published_fusions()
