@@ -1272,6 +1272,7 @@ class Runtime:
         from modules.housekeeping import mirralith_overview as housekeeping_mirralith
         from modules.ops import server_map as server_map_module
         from modules.community.leagues import schedule_leagues_jobs
+        from modules.community.fusion.scheduler import schedule_fusion_jobs
 
         ensure_cache_registration()
         await preload_on_startup()
@@ -1403,6 +1404,11 @@ class Runtime:
             schedule_leagues_jobs(self)
         except Exception:  # pragma: no cover - defensive scheduler guard
             log.exception("failed to schedule leagues reminders")
+
+        try:
+            schedule_fusion_jobs(self)
+        except Exception:  # pragma: no cover - defensive scheduler guard
+            log.exception("failed to schedule fusion reminders")
 
         retry_delay_sec = _DISCORD_LOGIN_RETRY_INITIAL_SEC
         while not self.bot.is_closed():

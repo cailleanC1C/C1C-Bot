@@ -209,3 +209,26 @@ def test_event_helpers_skip_invalid_timestamps_without_failing(
     assert [row.event_id for row in active] == ["valid-active"]
     assert "invalid start_at_utc" in caplog.text
     assert "invalid end_at_utc" in caplog.text
+
+
+def test_get_upcoming_events_uses_validated_timestamps_for_sorting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = dt.datetime(2026, 4, 10, 12, 0, tzinfo=dt.timezone.utc)
+    events = [
+        _event(
+            event_id="aware",
+            start_at_utc=dt.datetime(2026, 4, 10, 13, 0, tzinfo=dt.timezone.utc),
+            end_at_utc=dt.datetime(2026, 4, 10, 15, 0, tzinfo=dt.timezone.utc),
+        ),
+        _event(
+            event_id="naive-earlier",
+            start_at_utc=dt.datetime(2026, 4, 10, 12, 30),
+            end_at_utc=dt.datetime(2026, 4, 10, 14, 0),
+        ),
+    ]
+    monkeypatch.setattr(fusion, "get_fusion_events", AsyncMock(return_value=events))
+
+    result = asyncio.run(fusion.get_upcoming_events("f-1", now=now))
+
+    assert [row.event_id for row in result] == ["naive-earlier", "aware"]
