@@ -361,6 +361,14 @@ async def _sleep_with_shutdown_poll(bot: commands.Bot, delay_sec: int) -> None:
         remaining -= step
 
 
+def _is_bot_http_session_closed(bot: commands.Bot) -> bool:
+    http = getattr(bot, "http", None)
+    if http is None:
+        return False
+    session = getattr(http, "_HTTPClient__session", None)
+    return bool(getattr(session, "closed", False))
+
+
 def _parse_times(parts: Iterable[str]) -> list[dt_time]:
     times: list[dt_time] = []
     for raw in parts:
@@ -1427,7 +1435,14 @@ class Runtime:
             log.exception("failed to schedule fusion reminders")
 
         retry_delay_sec = _DISCORD_LOGIN_RETRY_INITIAL_SEC
+        startup_attempt = 1
         while not self.bot.is_closed():
+            log.info("startup attempt %s begin", startup_attempt)
+            if _is_bot_http_session_closed(self.bot):
+                raise RuntimeError(
+                    "startup retry refused: bot HTTP session is already closed; "
+                    "cannot retry on disposed client"
+                )
             try:
                 await self.bot.start(token)
                 return
@@ -1438,18 +1453,30 @@ class Runtime:
                 if not should_retry:
                     raise
                 log.warning(
-                    "Discord login rate-limited; retrying in %ss (%s)",
+                    "startup attempt %s rate-limited, backing off %ss (%s)",
+                    startup_attempt,
                     retry_delay_sec,
                     detail,
                 )
-                try:
-                    await self.bot.http.close()
-                except Exception:
-                    log.debug("failed to close discord http client after login failure", exc_info=True)
+                log.info(
+                    "startup attempt %s disposed: no-op (retaining active bot/client)",
+                    startup_attempt,
+                )
                 await _sleep_with_shutdown_poll(self.bot, retry_delay_sec)
+                if self.bot.is_closed():
+                    log.info(
+                        "startup attempt %s aborted: bot closed during backoff",
+                        startup_attempt,
+                    )
+                    return
                 retry_delay_sec = min(
                     _DISCORD_LOGIN_RETRY_CAP_SEC,
                     retry_delay_sec * 2,
+                )
+                startup_attempt += 1
+                log.info(
+                    "startup attempt %s rebuilding bot/client: skipped (existing client retained)",
+                    startup_attempt,
                 )
 
     async def close(self) -> None:
