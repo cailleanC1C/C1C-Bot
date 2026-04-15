@@ -23,7 +23,11 @@ _CACHE_TTL = int(os.getenv("SHEETS_CACHE_TTL_SEC", "900"))
 
 _FUSION_BUCKET = "fusion"
 _FUSION_EVENTS_BUCKET = "fusion_events"
-_FUSION_REMINDERS_DEFAULT_TAB = "Fusion Reminders"
+_FUSION_REMINDER_TAB_KEY = "FUSION_REMINDER_TAB"
+_FUSION_REMINDER_FUSION_ID_COL_KEY = "FUSION_REMINDER_COL_FUSION_ID"
+_FUSION_REMINDER_EVENT_ID_COL_KEY = "FUSION_REMINDER_COL_EVENT_ID"
+_FUSION_REMINDER_TYPE_COL_KEY = "FUSION_REMINDER_COL_REMINDER_TYPE"
+_FUSION_REMINDER_SENT_AT_COL_KEY = "FUSION_REMINDER_COL_SENT_AT_UTC"
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,11 +162,26 @@ def _column_label(index: int) -> str:
     return label or "A"
 
 
-def _resolve_tab_name_or_default(key: str, default: str) -> str:
+def _require_config_name(key: str) -> str:
     value = cfg.get(key)
     if isinstance(value, str) and value.strip():
         return value.strip()
-    return default
+    raise RuntimeError(f"{key} missing in milestones Config tab")
+
+
+def _resolve_reminder_sheet_schema() -> tuple[str, dict[str, str]]:
+    tab_name = _resolve_tab_name(_FUSION_REMINDER_TAB_KEY)
+    config_key_by_field = {
+        "fusion_id": _FUSION_REMINDER_FUSION_ID_COL_KEY,
+        "event_id": _FUSION_REMINDER_EVENT_ID_COL_KEY,
+        "reminder_type": _FUSION_REMINDER_TYPE_COL_KEY,
+        "sent_at_utc": _FUSION_REMINDER_SENT_AT_COL_KEY,
+    }
+    column_by_field = {
+        field: _require_config_name(config_key)
+        for field, config_key in config_key_by_field.items()
+    }
+    return tab_name, column_by_field
 
 def _parse_iso_utc(value: object) -> dt.datetime:
     raw = str(value or "").strip()
@@ -450,20 +469,26 @@ def get_valid_event_timing(
 async def get_sent_reminder_keys(fusion_id: str) -> set[tuple[str, str]]:
     """Return durable reminder keys previously sent for ``fusion_id``."""
 
-    tab_name = _resolve_tab_name_or_default("FUSION_REMINDER_TAB", _FUSION_REMINDERS_DEFAULT_TAB)
+    tab_name, columns = _resolve_reminder_sheet_schema()
     matrix = await afetch_values(_sheet_id(), tab_name)
     if not matrix:
         return set()
 
     header = [str(cell or "").strip().lower() for cell in matrix[0]]
-    required = ["fusion_id", "event_id", "reminder_type"]
-    missing = [col for col in required if col not in header]
+    required_fields = ("fusion_id", "event_id", "reminder_type")
+    required_names = [columns[field] for field in required_fields]
+    missing = [name for name in required_names if name.strip().lower() not in header]
     if missing:
-        raise RuntimeError(f"Fusion reminder sheet missing columns: {', '.join(missing)}")
+        raise RuntimeError(
+            "Fusion reminder sheet missing configured columns for durable dedupe "
+            f"(tab={tab_name}, missing={', '.join(missing)}, "
+            f"config_keys={_FUSION_REMINDER_FUSION_ID_COL_KEY},"
+            f"{_FUSION_REMINDER_EVENT_ID_COL_KEY},{_FUSION_REMINDER_TYPE_COL_KEY})"
+        )
 
-    fusion_idx = header.index("fusion_id")
-    event_idx = header.index("event_id")
-    reminder_idx = header.index("reminder_type")
+    fusion_idx = header.index(columns["fusion_id"].strip().lower())
+    event_idx = header.index(columns["event_id"].strip().lower())
+    reminder_idx = header.index(columns["reminder_type"].strip().lower())
     target = str(fusion_id or "").strip()
 
     keys: set[tuple[str, str]] = set()
@@ -487,21 +512,32 @@ async def mark_reminder_sent(
 ) -> None:
     """Persist a sent reminder marker with a durable fusion/event/type key."""
 
-    tab_name = _resolve_tab_name_or_default("FUSION_REMINDER_TAB", _FUSION_REMINDERS_DEFAULT_TAB)
+    tab_name, columns = _resolve_reminder_sheet_schema()
     matrix = await afetch_values(_sheet_id(), tab_name)
     if not matrix:
-        raise RuntimeError("Fusion reminder sheet is empty")
+        raise RuntimeError(
+            "Fusion reminder sheet is empty "
+            f"(tab={tab_name}, key={_FUSION_REMINDER_TAB_KEY})"
+        )
 
     header = [str(cell or "").strip().lower() for cell in matrix[0]]
-    required = ["fusion_id", "event_id", "reminder_type", "sent_at_utc"]
-    missing = [col for col in required if col not in header]
+    required_fields = ("fusion_id", "event_id", "reminder_type", "sent_at_utc")
+    required_names = [columns[field] for field in required_fields]
+    missing = [name for name in required_names if name.strip().lower() not in header]
     if missing:
-        raise RuntimeError(f"Fusion reminder sheet missing columns: {', '.join(missing)}")
+        raise RuntimeError(
+            "Fusion reminder sheet missing configured columns for write "
+            f"(tab={tab_name}, missing={', '.join(missing)}, "
+            f"config_keys={_FUSION_REMINDER_FUSION_ID_COL_KEY},"
+            f"{_FUSION_REMINDER_EVENT_ID_COL_KEY},"
+            f"{_FUSION_REMINDER_TYPE_COL_KEY},"
+            f"{_FUSION_REMINDER_SENT_AT_COL_KEY})"
+        )
 
-    fusion_idx = header.index("fusion_id")
-    event_idx = header.index("event_id")
-    reminder_idx = header.index("reminder_type")
-    sent_at_idx = header.index("sent_at_utc")
+    fusion_idx = header.index(columns["fusion_id"].strip().lower())
+    event_idx = header.index(columns["event_id"].strip().lower())
+    reminder_idx = header.index(columns["reminder_type"].strip().lower())
+    sent_at_idx = header.index(columns["sent_at_utc"].strip().lower())
     target_fusion = str(fusion_id or "").strip()
     target_event = str(event_id or "").strip()
     target_type = str(reminder_type or "").strip()

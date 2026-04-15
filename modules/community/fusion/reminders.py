@@ -75,8 +75,13 @@ async def process_fusion_reminders(
     try:
         sent_keys = await fusion_sheets.get_sent_reminder_keys(target.fusion_id)
     except Exception:
-        log.exception("fusion reminder failed to load durable dedupe state", extra={"fusion_id": target.fusion_id})
-        return
+        log.exception(
+            "fusion reminder failed to load durable dedupe state; continuing fail-open "
+            "(config keys: FUSION_REMINDER_TAB, FUSION_REMINDER_COL_FUSION_ID, "
+            "FUSION_REMINDER_COL_EVENT_ID, FUSION_REMINDER_COL_REMINDER_TYPE)",
+            extra={"fusion_id": target.fusion_id},
+        )
+        sent_keys = set()
 
     try:
         events = await fusion_sheets.get_fusion_events(target.fusion_id)
