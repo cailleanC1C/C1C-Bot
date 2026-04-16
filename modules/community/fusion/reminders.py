@@ -38,9 +38,14 @@ def _build_reminder_embed(
     start_at: dt.datetime,
     jump_url: str,
 ) -> discord.Embed:
+    jump_link = f"[Open Fusion Overview]({jump_url})"
     if reminder_type == "start":
-        title = f"⚠️ {event_name} is live"
-        description = "Move."
+        title = "Fusion Reminder"
+        description = (
+            f"⚠️ **{event_name} is live**\n"
+            "Time to put in some work — fragments won’t collect themselves.\n\n"
+            f"🔗 {jump_link}"
+        )
     else:
         title = f"⏳ {event_name} starts soon"
         description = f"Starts in {_PRESTART_HOURS}h. Plan accordingly."
@@ -51,7 +56,8 @@ def _build_reminder_embed(
         color=discord.Color.blurple(),
         timestamp=start_at,
     )
-    embed.add_field(name="Fusion", value=jump_url, inline=False)
+    if reminder_type != "start":
+        embed.add_field(name="Fusion", value=jump_link, inline=False)
     return embed
 
 
