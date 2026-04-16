@@ -29,10 +29,6 @@ def test_get_sent_reminder_keys_uses_configured_tab_and_columns(monkeypatch: pyt
         monkeypatch,
         {
             "FUSION_REMINDER_TAB": "Reminder Ledger",
-            "FUSION_REMINDER_COL_FUSION_ID": "FusionKey",
-            "FUSION_REMINDER_COL_EVENT_ID": "EventKey",
-            "FUSION_REMINDER_COL_REMINDER_TYPE": "ReminderKey",
-            "FUSION_REMINDER_COL_SENT_AT_UTC": "SentAt",
         },
     )
     monkeypatch.setattr(fusion_sheets, "_sheet_id", lambda: "sheet-1")
@@ -40,7 +36,7 @@ def test_get_sent_reminder_keys_uses_configured_tab_and_columns(monkeypatch: pyt
         assert sheet_id == "sheet-1"
         assert tab_name == "Reminder Ledger"
         return [
-            ["FusionKey", "EventKey", "ReminderKey", "SentAt"],
+            ["fusion_id", "event_id", "reminder_type", "sent_at_utc"],
             ["f-1", "e-1", "start", "2026-01-01T00:00:00+00:00"],
             ["f-2", "e-2", "start", "2026-01-01T00:00:00+00:00"],
         ]
@@ -57,10 +53,6 @@ def test_mark_reminder_sent_updates_existing_row_with_configured_columns(monkeyp
         monkeypatch,
         {
             "FUSION_REMINDER_TAB": "Reminder Ledger",
-            "FUSION_REMINDER_COL_FUSION_ID": "FusionKey",
-            "FUSION_REMINDER_COL_EVENT_ID": "EventKey",
-            "FUSION_REMINDER_COL_REMINDER_TYPE": "ReminderKey",
-            "FUSION_REMINDER_COL_SENT_AT_UTC": "SentAt",
         },
     )
     worksheet = _Worksheet()
@@ -69,7 +61,7 @@ def test_mark_reminder_sent_updates_existing_row_with_configured_columns(monkeyp
         assert sheet_id == "sheet-1"
         assert tab_name == "Reminder Ledger"
         return [
-            ["FusionKey", "EventKey", "ReminderKey", "SentAt"],
+            ["fusion_id", "event_id", "reminder_type", "sent_at_utc"],
             ["f-1", "e-1", "start", ""],
         ]
 
@@ -97,40 +89,32 @@ def test_mark_reminder_sent_updates_existing_row_with_configured_columns(monkeyp
     assert worksheet.updated[0][0] == "D2"
 
 
-def test_get_sent_reminder_keys_requires_configured_column_keys(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delitem(
-        config_module._CONFIG,
-        "FUSION_REMINDER_COL_FUSION_ID",
-        raising=False,
-    )
+def test_get_sent_reminder_keys_requires_required_headers(monkeypatch: pytest.MonkeyPatch):
     _install_config(
         monkeypatch,
         {
             "FUSION_REMINDER_TAB": "Reminder Ledger",
-            "FUSION_REMINDER_COL_EVENT_ID": "EventKey",
-            "FUSION_REMINDER_COL_REMINDER_TYPE": "ReminderKey",
-            "FUSION_REMINDER_COL_SENT_AT_UTC": "SentAt",
         },
     )
+    monkeypatch.setattr(fusion_sheets, "_sheet_id", lambda: "sheet-1")
 
-    with pytest.raises(RuntimeError, match="FUSION_REMINDER_COL_FUSION_ID"):
+    async def _afetch_values(sheet_id: str, tab_name: str):
+        assert sheet_id == "sheet-1"
+        assert tab_name == "Reminder Ledger"
+        return [["event_id", "reminder_type", "sent_at_utc"], ["e-1", "start", ""]]
+
+    monkeypatch.setattr(fusion_sheets, "afetch_values", _afetch_values)
+
+    with pytest.raises(RuntimeError, match="missing required header"):
         asyncio.run(fusion_sheets.get_sent_reminder_keys("f-1"))
 
 
-def test_get_sent_reminder_keys_does_not_require_sent_at_column_key(monkeypatch: pytest.MonkeyPatch):
+def test_get_sent_reminder_keys_does_not_require_sent_at_header(monkeypatch: pytest.MonkeyPatch):
     _install_config(
         monkeypatch,
         {
             "FUSION_REMINDER_TAB": "Reminder Ledger",
-            "FUSION_REMINDER_COL_FUSION_ID": "FusionKey",
-            "FUSION_REMINDER_COL_EVENT_ID": "EventKey",
-            "FUSION_REMINDER_COL_REMINDER_TYPE": "ReminderKey",
         },
-    )
-    monkeypatch.delitem(
-        config_module._CONFIG,
-        "FUSION_REMINDER_COL_SENT_AT_UTC",
-        raising=False,
     )
     monkeypatch.setattr(fusion_sheets, "_sheet_id", lambda: "sheet-1")
 
@@ -138,7 +122,7 @@ def test_get_sent_reminder_keys_does_not_require_sent_at_column_key(monkeypatch:
         assert sheet_id == "sheet-1"
         assert tab_name == "Reminder Ledger"
         return [
-            ["FusionKey", "EventKey", "ReminderKey"],
+            ["fusion_id", "event_id", "reminder_type"],
             ["f-1", "e-1", "start"],
         ]
 

@@ -24,10 +24,6 @@ _CACHE_TTL = int(os.getenv("SHEETS_CACHE_TTL_SEC", "900"))
 _FUSION_BUCKET = "fusion"
 _FUSION_EVENTS_BUCKET = "fusion_events"
 _FUSION_REMINDER_TAB_KEY = "FUSION_REMINDER_TAB"
-_FUSION_REMINDER_FUSION_ID_COL_KEY = "FUSION_REMINDER_COL_FUSION_ID"
-_FUSION_REMINDER_EVENT_ID_COL_KEY = "FUSION_REMINDER_COL_EVENT_ID"
-_FUSION_REMINDER_TYPE_COL_KEY = "FUSION_REMINDER_COL_REMINDER_TYPE"
-_FUSION_REMINDER_SENT_AT_COL_KEY = "FUSION_REMINDER_COL_SENT_AT_UTC"
 _FUSION_PROGRESS_TAB_KEY = "FUSION_USER_EVENT_PROGRESS_TAB"
 _FUSION_PROGRESS_FUSION_ID_COL_KEY = "FUSION_USER_EVENT_PROGRESS_COL_FUSION_ID"
 _FUSION_PROGRESS_USER_ID_COL_KEY = "FUSION_USER_EVENT_PROGRESS_COL_USER_ID"
@@ -35,6 +31,12 @@ _FUSION_PROGRESS_EVENT_ID_COL_KEY = "FUSION_USER_EVENT_PROGRESS_COL_EVENT_ID"
 _FUSION_PROGRESS_STATUS_COL_KEY = "FUSION_USER_EVENT_PROGRESS_COL_STATUS"
 _FUSION_PROGRESS_UPDATED_AT_COL_KEY = "FUSION_USER_EVENT_PROGRESS_COL_UPDATED_AT_UTC"
 _PROGRESS_ALLOWED_STATUSES = {"not_started", "in_progress", "done", "skipped"}
+_FUSION_REMINDER_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    "fusion_id": ("fusion_id",),
+    "event_id": ("event_id",),
+    "reminder_type": ("reminder_type",),
+    "sent_at_utc": ("sent_at_utc",),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,30 +193,16 @@ def _require_config_name(key: str) -> str:
 def _resolve_reminder_sheet_schema(
     *,
     include_sent_at: bool,
-) -> tuple[str, dict[str, str]]:
+) -> tuple[str, tuple[str, ...]]:
     tab_name = _resolve_tab_name(_FUSION_REMINDER_TAB_KEY)
-    config_key_by_field = {
-        "fusion_id": _FUSION_REMINDER_FUSION_ID_COL_KEY,
-        "event_id": _FUSION_REMINDER_EVENT_ID_COL_KEY,
-        "reminder_type": _FUSION_REMINDER_TYPE_COL_KEY,
-    }
+    required_fields: list[str] = ["fusion_id", "event_id", "reminder_type"]
     if include_sent_at:
-        config_key_by_field["sent_at_utc"] = _FUSION_REMINDER_SENT_AT_COL_KEY
-    column_by_field = {
-        field: _require_config_name(config_key)
-        for field, config_key in config_key_by_field.items()
-    }
-    return tab_name, column_by_field
+        required_fields.append("sent_at_utc")
+    return tab_name, tuple(required_fields)
 
 
 def _reminder_schema_debug() -> dict[str, str]:
-    keys = (
-        _FUSION_REMINDER_TAB_KEY,
-        _FUSION_REMINDER_FUSION_ID_COL_KEY,
-        _FUSION_REMINDER_EVENT_ID_COL_KEY,
-        _FUSION_REMINDER_TYPE_COL_KEY,
-        _FUSION_REMINDER_SENT_AT_COL_KEY,
-    )
+    keys = (_FUSION_REMINDER_TAB_KEY,)
     debug: dict[str, str] = {}
     for key in keys:
         value = cfg.get(key)
@@ -263,6 +251,70 @@ def _sheet_id() -> str:
     if not sheet_id:
         raise RuntimeError("MILESTONES_SHEET_ID not set")
     return sheet_id
+
+
+def _resolve_header_index(
+    *,
+    tab_name: str,
+    header: list[str],
+    field: str,
+    aliases_by_field: Mapping[str, tuple[str, ...]] | None = None,
+) -> int:
+    alias_source = aliases_by_field or _FUSION_REMINDER_COLUMN_ALIASES
+    aliases = alias_source.get(field, (field,))
+    normalized_aliases = [alias.strip().lower() for alias in aliases if alias.strip()]
+    for alias in normalized_aliases:
+        if alias in header:
+            return header.index(alias)
+
+    available = [cell.strip() for cell in header]
+    log.error(
+        "fusion reminder schema mismatch; missing required header",
+        extra={
+            "tab": tab_name,
+            "field": field,
+            "expected_headers": list(aliases),
+            "available_headers": available,
+        },
+    )
+    raise RuntimeError(
+        "Fusion reminder sheet missing required header "
+        f"(tab={tab_name}, field={field}, "
+        f"expected={list(aliases)}, available={available})"
+    )
+
+
+async def _load_fusion_sheet_matrix(tab_name: str) -> tuple[str, list[list[object]], list[str]]:
+    sheet_id = _sheet_id()
+    matrix = await afetch_values(sheet_id, tab_name)
+    if not matrix:
+        raise RuntimeError(f"Fusion sheet is empty (tab={tab_name})")
+    header = [str(cell or "").strip().lower() for cell in matrix[0]]
+    return sheet_id, matrix, header
+
+
+def _resolve_fusion_row_index(*, fusion_id: str, header: list[str], matrix: list[list[object]], tab_name: str) -> int:
+    if "fusion_id" not in header:
+        log.error("fusion sheet schema mismatch; missing fusion_id header", extra={"tab": tab_name})
+        raise RuntimeError("Fusion sheet missing fusion_id column")
+
+    fusion_col = header.index("fusion_id")
+    for idx, row in enumerate(matrix[1:], start=2):
+        cell = str(row[fusion_col] if fusion_col < len(row) else "").strip()
+        if cell == fusion_id:
+            return idx
+
+    raise RuntimeError(f"Fusion row not found for fusion_id={fusion_id}")
+
+
+def _require_fusion_headers(*, tab_name: str, header: list[str], required: tuple[str, ...]) -> None:
+    missing = [col for col in required if col not in header]
+    if missing:
+        log.error(
+            "fusion sheet schema mismatch; missing required headers",
+            extra={"tab": tab_name, "missing_headers": missing, "available_headers": header},
+        )
+        raise RuntimeError(f"Fusion sheet missing columns: {', '.join(missing)}")
 
 
 async def _load_fusions() -> tuple[FusionRow, ...]:
@@ -560,7 +612,7 @@ async def get_sent_reminder_keys(fusion_id: str) -> set[tuple[str, str]]:
     """Return durable reminder keys previously sent for ``fusion_id``."""
 
     try:
-        tab_name, columns = _resolve_reminder_sheet_schema(include_sent_at=False)
+        tab_name, required_fields = _resolve_reminder_sheet_schema(include_sent_at=False)
     except Exception as exc:
         debug_config = _reminder_schema_debug()
         raise RuntimeError(
@@ -572,22 +624,13 @@ async def get_sent_reminder_keys(fusion_id: str) -> set[tuple[str, str]]:
         return set()
 
     header = [str(cell or "").strip().lower() for cell in matrix[0]]
-    required_fields = ("fusion_id", "event_id", "reminder_type")
-    required_names = [columns[field] for field in required_fields]
-    missing = [name for name in required_names if name.strip().lower() not in header]
-    if missing:
-        available = [str(cell or "").strip() for cell in matrix[0]]
-        raise RuntimeError(
-            "Fusion reminder sheet missing configured columns for durable dedupe "
-            f"(tab={tab_name}, missing={', '.join(missing)}, "
-            f"available={available}, "
-            f"config_keys={_FUSION_REMINDER_FUSION_ID_COL_KEY},"
-            f"{_FUSION_REMINDER_EVENT_ID_COL_KEY},{_FUSION_REMINDER_TYPE_COL_KEY})"
-        )
-
-    fusion_idx = header.index(columns["fusion_id"].strip().lower())
-    event_idx = header.index(columns["event_id"].strip().lower())
-    reminder_idx = header.index(columns["reminder_type"].strip().lower())
+    index_by_field = {
+        field: _resolve_header_index(tab_name=tab_name, header=header, field=field)
+        for field in required_fields
+    }
+    fusion_idx = index_by_field["fusion_id"]
+    event_idx = index_by_field["event_id"]
+    reminder_idx = index_by_field["reminder_type"]
     target = str(fusion_id or "").strip()
 
     keys: set[tuple[str, str]] = set()
@@ -612,7 +655,7 @@ async def mark_reminder_sent(
     """Persist a sent reminder marker with a durable fusion/event/type key."""
 
     try:
-        tab_name, columns = _resolve_reminder_sheet_schema(include_sent_at=True)
+        tab_name, required_fields = _resolve_reminder_sheet_schema(include_sent_at=True)
     except Exception as exc:
         debug_config = _reminder_schema_debug()
         raise RuntimeError(
@@ -627,25 +670,14 @@ async def mark_reminder_sent(
         )
 
     header = [str(cell or "").strip().lower() for cell in matrix[0]]
-    required_fields = ("fusion_id", "event_id", "reminder_type", "sent_at_utc")
-    required_names = [columns[field] for field in required_fields]
-    missing = [name for name in required_names if name.strip().lower() not in header]
-    if missing:
-        available = [str(cell or "").strip() for cell in matrix[0]]
-        raise RuntimeError(
-            "Fusion reminder sheet missing configured columns for write "
-            f"(tab={tab_name}, missing={', '.join(missing)}, "
-            f"available={available}, "
-            f"config_keys={_FUSION_REMINDER_FUSION_ID_COL_KEY},"
-            f"{_FUSION_REMINDER_EVENT_ID_COL_KEY},"
-            f"{_FUSION_REMINDER_TYPE_COL_KEY},"
-            f"{_FUSION_REMINDER_SENT_AT_COL_KEY})"
-        )
-
-    fusion_idx = header.index(columns["fusion_id"].strip().lower())
-    event_idx = header.index(columns["event_id"].strip().lower())
-    reminder_idx = header.index(columns["reminder_type"].strip().lower())
-    sent_at_idx = header.index(columns["sent_at_utc"].strip().lower())
+    index_by_field = {
+        field: _resolve_header_index(tab_name=tab_name, header=header, field=field)
+        for field in required_fields
+    }
+    fusion_idx = index_by_field["fusion_id"]
+    event_idx = index_by_field["event_id"]
+    reminder_idx = index_by_field["reminder_type"]
+    sent_at_idx = index_by_field["sent_at_utc"]
     target_fusion = str(fusion_id or "").strip()
     target_event = str(event_id or "").strip()
     target_type = str(reminder_type or "").strip()
@@ -852,25 +884,13 @@ async def update_fusion_publication(
     """Write publish metadata back to the fusion row in the configured sheet."""
 
     tab_name = _resolve_tab_name("FUSION_TAB")
-    sheet_id = _sheet_id()
-    matrix = await afetch_values(sheet_id, tab_name)
-    if not matrix:
-        raise RuntimeError("Fusion sheet is empty")
-
-    header = [str(cell or "").strip().lower() for cell in matrix[0]]
-    row_idx: int | None = None
-    fusion_col = header.index("fusion_id") if "fusion_id" in header else -1
-    if fusion_col < 0:
-        raise RuntimeError("Fusion sheet missing fusion_id column")
-
-    for idx, row in enumerate(matrix[1:], start=2):
-        cell = str(row[fusion_col] if fusion_col < len(row) else "").strip()
-        if cell == fusion_id:
-            row_idx = idx
-            break
-
-    if row_idx is None:
-        raise RuntimeError(f"Fusion row not found for fusion_id={fusion_id}")
+    sheet_id, matrix, header = await _load_fusion_sheet_matrix(tab_name)
+    row_idx = _resolve_fusion_row_index(
+        fusion_id=fusion_id,
+        header=header,
+        matrix=matrix,
+        tab_name=tab_name,
+    )
 
     required_cols = ["announcement_message_id", "published_at"]
     if announcement_channel_id is not None:
@@ -878,9 +898,7 @@ async def update_fusion_publication(
     if set_published_status:
         required_cols.append("status")
 
-    missing = [col for col in required_cols if col not in header]
-    if missing:
-        raise RuntimeError(f"Fusion sheet missing columns: {', '.join(missing)}")
+    _require_fusion_headers(tab_name=tab_name, header=header, required=tuple(required_cols))
 
     worksheet = await aget_worksheet(sheet_id, tab_name)
     updates = {
@@ -915,29 +933,18 @@ async def update_fusion_announcement_refresh_state(
     """Persist announcement refresh metadata for scheduler dedupe/restart safety."""
 
     tab_name = _resolve_tab_name("FUSION_TAB")
-    sheet_id = _sheet_id()
-    matrix = await afetch_values(sheet_id, tab_name)
-    if not matrix:
-        raise RuntimeError("Fusion sheet is empty")
-
-    header = [str(cell or "").strip().lower() for cell in matrix[0]]
-    row_idx: int | None = None
-    fusion_col = header.index("fusion_id") if "fusion_id" in header else -1
-    if fusion_col < 0:
-        raise RuntimeError("Fusion sheet missing fusion_id column")
-
-    for idx, row in enumerate(matrix[1:], start=2):
-        cell = str(row[fusion_col] if fusion_col < len(row) else "").strip()
-        if cell == fusion_id:
-            row_idx = idx
-            break
-    if row_idx is None:
-        raise RuntimeError(f"Fusion row not found for fusion_id={fusion_id}")
-
-    required_cols = ["last_announcement_refresh_at", "last_announcement_status_hash"]
-    missing = [col for col in required_cols if col not in header]
-    if missing:
-        raise RuntimeError(f"Fusion sheet missing columns: {', '.join(missing)}")
+    sheet_id, matrix, header = await _load_fusion_sheet_matrix(tab_name)
+    row_idx = _resolve_fusion_row_index(
+        fusion_id=fusion_id,
+        header=header,
+        matrix=matrix,
+        tab_name=tab_name,
+    )
+    _require_fusion_headers(
+        tab_name=tab_name,
+        header=header,
+        required=("last_announcement_refresh_at", "last_announcement_status_hash"),
+    )
 
     worksheet = await aget_worksheet(sheet_id, tab_name)
     updates = {
