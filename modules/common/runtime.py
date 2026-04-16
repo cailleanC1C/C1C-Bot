@@ -61,6 +61,18 @@ _CF_RAY_RE = re.compile(r"Ray ID:\s*([A-Za-z0-9-]+)", re.IGNORECASE)
 
 _DISCORD_LOGIN_RETRY_INITIAL_SEC = 60
 _DISCORD_LOGIN_RETRY_CAP_SEC = 900
+_DISCORD_LOGIN_RETRY_MAX_ATTEMPTS = 5
+_DISCORD_LOGIN_RETRY_MAX_WINDOW_SEC = 1800
+_DISCORD_LOGIN_RETRY_JITTER_RATIO = 0.2
+
+
+class StartupPhaseError(RuntimeError):
+    """Raised when a non-discord startup phase fails."""
+
+    def __init__(self, phase: str, cause: BaseException) -> None:
+        super().__init__(f"startup phase failed: {phase}: {cause}")
+        self.phase = phase
+        self.__cause__ = cause
 
 
 async def create_app(*, runtime: "Runtime | None" = None) -> web.Application:
@@ -363,6 +375,38 @@ async def _sleep_with_shutdown_poll(bot: commands.Bot, delay_sec: int) -> None:
 
 async def _sleep_startup_retry_backoff(delay_sec: int) -> None:
     await asyncio.sleep(max(0, int(delay_sec)))
+
+
+def _startup_phase_log(phase: str, status: str, **extra: object) -> None:
+    payload = {"phase": phase, "status": status}
+    if extra:
+        payload.update(extra)
+    if status == "fail":
+        log.error("startup phase %s %s", phase, status, extra=payload)
+    else:
+        log.info("startup phase %s %s", phase, status, extra=payload)
+
+
+def _is_retryable_discord_start_failure(exc: BaseException) -> tuple[bool, str]:
+    if isinstance(exc, discord.LoginFailure):
+        return False, "login_failure"
+    if isinstance(exc, asyncio.TimeoutError):
+        return True, "timeout"
+    if isinstance(exc, OSError):
+        return True, "os_error"
+    if isinstance(exc, discord.HTTPException):
+        should_retry, detail = _is_startup_rate_limited(exc)
+        if should_retry:
+            return True, detail
+        status = getattr(exc, "status", None)
+        if status is not None and int(status) >= 500:
+            return True, f"http_{status}"
+        return False, f"http_{status or 'unknown'}"
+    if isinstance(exc, discord.ConnectionClosed):
+        return True, "connection_closed"
+    if isinstance(exc, discord.GatewayNotFound):
+        return True, "gateway_not_found"
+    return False, exc.__class__.__name__
 
 
 def _bot_http_session(bot: commands.Bot) -> Any | None:
@@ -881,6 +925,8 @@ class Runtime:
         self._web_site: Optional[web.TCPSite] = None
         self._watchdog_task: Optional[asyncio.Task] = None
         self._watchdog_params: Optional[tuple[int, int, int]] = None
+        self._startup_scheduler_registered = False
+        self._startup_scheduler_lock = asyncio.Lock()
         set_active_runtime(self)
 
     def _build_bot_for_attempt(self, startup_attempt: int) -> commands.Bot:
@@ -1157,7 +1203,7 @@ class Runtime:
                     )
                 except Exception:
                     pass
-                return
+                raise
 
             setup = getattr(module, "setup", None)
             if setup is None:
@@ -1194,7 +1240,7 @@ class Runtime:
                     )
                 except Exception:
                     pass
-                return
+                raise
 
             extra_info = {
                 "feature_module": module_path,
@@ -1273,12 +1319,13 @@ class Runtime:
                 await self.bot.load_extension(ext)
             except Exception as exc:
                 human_log.human(
-                    "warn",
+                    "error",
                     "feature module load failed",
                     feature_module=ext,
                     feature_key="always_on",
                     error=str(exc),
                 )
+                raise
             else:
                 human_log.human(
                     "info",
@@ -1298,6 +1345,7 @@ class Runtime:
                     feature_key="community",
                     error=str(exc),
                 )
+                continue
             else:
                 human_log.human(
                     "info",
@@ -1310,16 +1358,129 @@ class Runtime:
 
     async def start(self, token: str) -> None:
         await self.start_webserver()
-        await self.load_extensions()
-        rehydrate_tiers(self.bot)
-        audit_tiers(self.bot, log)
-        toggles = shared_config.features
         try:
+            await self._run_startup_setup()
+        except StartupPhaseError:
+            raise
+
+        retry_started = time.monotonic()
+        retry_delay_sec = _DISCORD_LOGIN_RETRY_INITIAL_SEC
+        startup_attempt = 1
+        root_failure_logged = False
+        attempt_bot = self._build_bot_for_attempt(startup_attempt)
+        log.info("startup attempt %s created new bot/client", startup_attempt)
+        await asyncio.sleep(3)
+        while not attempt_bot.is_closed():
+            if attempt_bot.is_closed():
+                raise RuntimeError("startup aborted: bot closed during retry loop")
+            if startup_attempt > _DISCORD_LOGIN_RETRY_MAX_ATTEMPTS:
+                raise RuntimeError("discord login retry exhausted")
+            elapsed = time.monotonic() - retry_started
+            if elapsed > _DISCORD_LOGIN_RETRY_MAX_WINDOW_SEC:
+                raise RuntimeError("discord login retry exhausted")
+            log.info("startup attempt %s begin", startup_attempt)
+            if _is_bot_http_session_closed(attempt_bot):
+                raise RuntimeError(
+                    "startup retry refused: bot HTTP session is already closed; "
+                    "cannot retry on disposed client"
+                )
+            try:
+                _startup_phase_log("discord login", "start", attempt=startup_attempt)
+                await attempt_bot.start(token)
+                _startup_phase_log("discord login", "ok", attempt=startup_attempt)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                should_retry, detail = _is_retryable_discord_start_failure(exc)
+                if not should_retry:
+                    _startup_phase_log(
+                        "discord login",
+                        "fail",
+                        attempt=startup_attempt,
+                        reason=detail,
+                    )
+                    raise
+                _startup_phase_log(
+                    "discord login",
+                    "fail",
+                    attempt=startup_attempt,
+                    reason=detail,
+                    retry="yes",
+                )
+                if not root_failure_logged:
+                    log.exception("startup root failure before retry", exc_info=exc)
+                    root_failure_logged = True
+                log.warning(
+                    "startup attempt %s failed, backing off %ss (%s)",
+                    startup_attempt,
+                    retry_delay_sec,
+                    detail,
+                )
+                log.info("startup attempt %s disposing failed bot/client", startup_attempt)
+                await self._dispose_bot_for_attempt(attempt_bot)
+                log.info("startup attempt %s disposed", startup_attempt)
+                jitter = int(retry_delay_sec * _DISCORD_LOGIN_RETRY_JITTER_RATIO)
+                retry_sleep = retry_delay_sec + (random.randint(0, jitter) if jitter else 0)
+                await _sleep_startup_retry_backoff(retry_sleep)
+                retry_delay_sec = min(
+                    _DISCORD_LOGIN_RETRY_CAP_SEC,
+                    retry_delay_sec * 2,
+                )
+                startup_attempt += 1
+                attempt_bot = self._build_bot_for_attempt(startup_attempt)
+                log.info(
+                    "startup attempt %s created new bot/client for retry",
+                    startup_attempt,
+                )
+
+    async def _run_startup_setup(self) -> None:
+        _startup_phase_log("config validation", "start")
+        try:
+            rehydrate_tiers(self.bot)
+            audit_tiers(self.bot, log)
             merged = shared_config.merge_onboarding_config_early()
-        except Exception as exc:  # pragma: no cover - defensive logging
-            human_log.human("warn", "Config preload failed", error=repr(exc))
-        else:
             log.debug("runtime: onboarding config preload merged %d keys", merged)
+        except Exception as exc:
+            _startup_phase_log("config validation", "fail", error=repr(exc))
+            raise StartupPhaseError("config validation", exc) from exc
+        _startup_phase_log("config validation", "ok")
+
+        _startup_phase_log("extension load", "start")
+        try:
+            await self.load_extensions()
+        except Exception as exc:
+            _startup_phase_log("extension load", "fail", error=repr(exc))
+            raise StartupPhaseError("extension load", exc) from exc
+        _startup_phase_log("extension load", "ok")
+
+        _startup_phase_log("persistent view registration", "start")
+        try:
+            from modules.onboarding.ui import panels as onboarding_panels
+
+            registration = onboarding_panels.register_persistent_views(self.bot)
+            if not bool(registration.get("registered")):
+                error = registration.get("error") or "unknown"
+                raise RuntimeError(f"persistent view registration failed: {error}")
+        except Exception as exc:
+            _startup_phase_log("persistent view registration", "fail", error=repr(exc))
+            raise StartupPhaseError("persistent view registration", exc) from exc
+        _startup_phase_log("persistent view registration", "ok")
+
+    async def register_ready_schedulers(self) -> None:
+        async with self._startup_scheduler_lock:
+            if self._startup_scheduler_registered:
+                return
+            _startup_phase_log("scheduler registration", "start")
+            try:
+                await self._register_ready_schedulers_inner()
+            except Exception as exc:
+                _startup_phase_log("scheduler registration", "fail", error=repr(exc))
+                raise StartupPhaseError("scheduler registration", exc) from exc
+            self._startup_scheduler_registered = True
+            _startup_phase_log("scheduler registration", "ok")
+
+    async def _register_ready_schedulers_inner(self) -> None:
         from shared.sheets.cache_scheduler import (
             emit_schedule_log,
             ensure_cache_registration,
@@ -1333,6 +1494,7 @@ class Runtime:
         from modules.community.leagues import schedule_leagues_jobs
         from modules.community.fusion.scheduler import schedule_fusion_jobs
 
+        toggles = shared_config.features
         ensure_cache_registration()
         await preload_on_startup()
         cache_specs = (
@@ -1344,171 +1506,85 @@ class Runtime:
         successes: list[tuple[Any, Any]] = []
         failure: tuple[str, BaseException] | None = None
         for bucket, interval, cadence in cache_specs:
-            try:
-                spec, job = register_refresh_job(
-                    self,
-                    bucket=bucket,
-                    interval=interval,
-                    cadence_label=cadence,
-                )
-            except Exception as exc:  # pragma: no cover - defensive guard
-                log.exception("failed to schedule cache refresh", extra={"bucket": bucket})
-                if failure is None:
-                    failure = (bucket, exc)
-                continue
+            spec, job = register_refresh_job(
+                self,
+                bucket=bucket,
+                interval=interval,
+                cadence_label=cadence,
+            )
             successes.append((spec, job))
 
-        cleanup_spec_entry: tuple[Any, Any] | None = None
         if toggles.housekeeping_enabled:
-            try:
-                cleanup_interval = housekeeping_cleanup.get_cleanup_interval_hours()
-                cleanup_logger = logging.getLogger("c1c.housekeeping.cleanup")
-                cleanup_job = self.scheduler.every(
-                    hours=float(cleanup_interval),
-                    tag="cleanup",
-                    name="cleanup_watcher",
-                )
+            cleanup_interval = housekeeping_cleanup.get_cleanup_interval_hours()
+            cleanup_logger = logging.getLogger("c1c.housekeeping.cleanup")
+            cleanup_job = self.scheduler.every(
+                hours=float(cleanup_interval),
+                tag="cleanup",
+                name="cleanup_watcher",
+            )
 
-                async def cleanup_runner() -> None:
-                    await housekeeping_cleanup.run_cleanup(self.bot, cleanup_logger)
+            async def cleanup_runner() -> None:
+                await housekeeping_cleanup.run_cleanup(self.bot, cleanup_logger)
 
-                cleanup_job.do(cleanup_runner)
-                cleanup_spec_entry = (
-                    SimpleNamespace(bucket="cleanup", cadence_label=f"{cleanup_interval}h"),
-                    cleanup_job,
-                )
-            except Exception as exc:  # pragma: no cover - defensive guard
-                log.exception("failed to schedule cleanup watcher")
-                if failure is None:
-                    failure = ("cleanup", exc)
+            cleanup_job.do(cleanup_runner)
+            successes.append(
+                (SimpleNamespace(bucket="cleanup", cadence_label=f"{cleanup_interval}h"), cleanup_job)
+            )
         else:
             log.info("housekeeping cleanup disabled via feature toggle")
 
-        if cleanup_spec_entry is not None:
-            successes.append(cleanup_spec_entry)
-
-        mirralith_spec_entry: tuple[Any, Any] | None = None
         mirralith_cron = os.getenv("MIRRALITH_POST_CRON", "").strip()
         if mirralith_cron and toggles.mirralith_overview_enabled:
-            try:
-                mirralith_job = self.scheduler.cron(
-                    mirralith_cron,
-                    tag="mirralith_overview",
-                    name="mirralith_overview",
+            mirralith_job = self.scheduler.cron(
+                mirralith_cron,
+                tag="mirralith_overview",
+                name="mirralith_overview",
+            )
+
+            async def mirralith_runner() -> None:
+                await housekeeping_mirralith.run_mirralith_overview_job(
+                    self.bot, trigger="scheduled"
                 )
 
-                async def mirralith_runner() -> None:
-                    await housekeeping_mirralith.run_mirralith_overview_job(
-                        self.bot, trigger="scheduled"
-                    )
-
-                mirralith_job.do(mirralith_runner)
-                mirralith_spec_entry = (
-                    SimpleNamespace(
-                        bucket="mirralith_overview", cadence_label=mirralith_cron
-                    ),
+            mirralith_job.do(mirralith_runner)
+            successes.append(
+                (
+                    SimpleNamespace(bucket="mirralith_overview", cadence_label=mirralith_cron),
                     mirralith_job,
                 )
-            except Exception as exc:  # pragma: no cover - defensive guard
-                log.exception("failed to schedule mirralith overview job")
-                if failure is None:
-                    failure = ("mirralith_overview", exc)
+            )
         elif mirralith_cron:
             log.info("Mirralith overview disabled via feature toggle; skipping schedule")
         else:
             log.info("Mirralith overview job disabled; MIRRALITH_POST_CRON is not set.")
 
-        if mirralith_spec_entry is not None:
-            successes.append(mirralith_spec_entry)
-
-        keepalive_spec_entry: tuple[Any, Any] | None = None
         if toggles.housekeeping_enabled:
-            try:
-                keepalive_logger = logging.getLogger("c1c.housekeeping.keepalive")
-                keepalive_job = self.scheduler.every(
-                    hours=24.0,
-                    tag="keepalive",
-                    name="housekeeping_keepalive",
+            keepalive_logger = logging.getLogger("c1c.housekeeping.keepalive")
+            keepalive_job = self.scheduler.every(
+                hours=24.0,
+                tag="keepalive",
+                name="housekeeping_keepalive",
+            )
+
+            async def keepalive_runner() -> None:
+                await housekeeping_keepalive.run_keepalive(
+                    self.bot, keepalive_logger
                 )
 
-                async def keepalive_runner() -> None:
-                    await housekeeping_keepalive.run_keepalive(
-                        self.bot, keepalive_logger
-                    )
-
-                keepalive_job.do(keepalive_runner)
-                keepalive_spec_entry = (
-                    SimpleNamespace(bucket="housekeeping_keepalive", cadence_label="24h"),
-                    keepalive_job,
-                )
-            except Exception as exc:  # pragma: no cover - defensive guard
-                log.exception("failed to schedule keepalive job")
-                if failure is None:
-                    failure = ("keepalive", exc)
+            keepalive_job.do(keepalive_runner)
+            successes.append(
+                (SimpleNamespace(bucket="housekeeping_keepalive", cadence_label="24h"), keepalive_job)
+            )
         else:
             log.info("housekeeping keepalive disabled via feature toggle")
-
-        if keepalive_spec_entry is not None:
-            successes.append(keepalive_spec_entry)
 
         self.scheduler.spawn(
             emit_schedule_log(self, successes, failure),
             name="cache_refresh_schedule_log",
         )
-        try:
-            server_map_module.schedule_server_map_job(self)
-        except Exception:  # pragma: no cover - defensive scheduler guard
-            log.exception("failed to schedule server map refresh job")
-        try:
-            schedule_leagues_jobs(self)
-        except Exception:  # pragma: no cover - defensive scheduler guard
-            log.exception("failed to schedule leagues reminders")
-
-        try:
-            schedule_fusion_jobs(self)
-        except Exception:  # pragma: no cover - defensive scheduler guard
-            log.exception("failed to schedule fusion reminders")
-
-        retry_delay_sec = _DISCORD_LOGIN_RETRY_INITIAL_SEC
-        startup_attempt = 1
-        attempt_bot = self._build_bot_for_attempt(startup_attempt)
-        log.info("startup attempt %s created new bot/client", startup_attempt)
-        while not attempt_bot.is_closed():
-            log.info("startup attempt %s begin", startup_attempt)
-            if _is_bot_http_session_closed(attempt_bot):
-                raise RuntimeError(
-                    "startup retry refused: bot HTTP session is already closed; "
-                    "cannot retry on disposed client"
-                )
-            try:
-                await attempt_bot.start(token)
-                return
-            except asyncio.CancelledError:
-                raise
-            except discord.HTTPException as exc:
-                should_retry, detail = _is_startup_rate_limited(exc)
-                if not should_retry:
-                    raise
-                log.warning(
-                    "startup attempt %s rate-limited, backing off %ss (%s)",
-                    startup_attempt,
-                    retry_delay_sec,
-                    detail,
-                )
-                log.info("startup attempt %s disposing failed bot/client", startup_attempt)
-                await self._dispose_bot_for_attempt(attempt_bot)
-                log.info("startup attempt %s disposed", startup_attempt)
-                await _sleep_startup_retry_backoff(retry_delay_sec)
-                retry_delay_sec = min(
-                    _DISCORD_LOGIN_RETRY_CAP_SEC,
-                    retry_delay_sec * 2,
-                )
-                startup_attempt += 1
-                attempt_bot = self._build_bot_for_attempt(startup_attempt)
-                log.info(
-                    "startup attempt %s created new bot/client for retry",
-                    startup_attempt,
-                )
+        server_map_module.schedule_server_map_job(self)
+        schedule_leagues_jobs(self)
+        schedule_fusion_jobs(self)
 
     async def close(self) -> None:
         await self.shutdown_webserver()
