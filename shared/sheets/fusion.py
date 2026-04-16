@@ -188,14 +188,18 @@ def _require_config_name(key: str) -> str:
     raise RuntimeError(f"{key} missing in milestones Config tab")
 
 
-def _resolve_reminder_sheet_schema() -> tuple[str, dict[str, str]]:
+def _resolve_reminder_sheet_schema(
+    *,
+    include_sent_at: bool,
+) -> tuple[str, dict[str, str]]:
     tab_name = _resolve_tab_name(_FUSION_REMINDER_TAB_KEY)
     config_key_by_field = {
         "fusion_id": _FUSION_REMINDER_FUSION_ID_COL_KEY,
         "event_id": _FUSION_REMINDER_EVENT_ID_COL_KEY,
         "reminder_type": _FUSION_REMINDER_TYPE_COL_KEY,
-        "sent_at_utc": _FUSION_REMINDER_SENT_AT_COL_KEY,
     }
+    if include_sent_at:
+        config_key_by_field["sent_at_utc"] = _FUSION_REMINDER_SENT_AT_COL_KEY
     column_by_field = {
         field: _require_config_name(config_key)
         for field, config_key in config_key_by_field.items()
@@ -556,7 +560,7 @@ async def get_sent_reminder_keys(fusion_id: str) -> set[tuple[str, str]]:
     """Return durable reminder keys previously sent for ``fusion_id``."""
 
     try:
-        tab_name, columns = _resolve_reminder_sheet_schema()
+        tab_name, columns = _resolve_reminder_sheet_schema(include_sent_at=False)
     except Exception as exc:
         debug_config = _reminder_schema_debug()
         raise RuntimeError(
@@ -608,7 +612,7 @@ async def mark_reminder_sent(
     """Persist a sent reminder marker with a durable fusion/event/type key."""
 
     try:
-        tab_name, columns = _resolve_reminder_sheet_schema()
+        tab_name, columns = _resolve_reminder_sheet_schema(include_sent_at=True)
     except Exception as exc:
         debug_config = _reminder_schema_debug()
         raise RuntimeError(
