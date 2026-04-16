@@ -3280,8 +3280,18 @@ class WelcomeTicketWatcher(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
-    await bot.add_cog(WelcomeWatcher(bot))
-    await bot.add_cog(WelcomeTicketWatcher(bot))
+    existing_welcome_watcher = bot.get_cog("WelcomeWatcher")
+    if existing_welcome_watcher is None:
+        await bot.add_cog(WelcomeWatcher(bot))
+    elif not isinstance(existing_welcome_watcher, WelcomeWatcher):
+        raise RuntimeError("cog name collision for WelcomeWatcher")
+
+    existing_ticket_watcher = bot.get_cog("WelcomeTicketWatcher")
+    if existing_ticket_watcher is None:
+        await bot.add_cog(WelcomeTicketWatcher(bot))
+    elif not isinstance(existing_ticket_watcher, WelcomeTicketWatcher):
+        raise RuntimeError("cog name collision for WelcomeTicketWatcher")
+
     _ensure_reminder_job(bot)
     from modules.onboarding.idle_watcher import ensure_idle_watcher
 

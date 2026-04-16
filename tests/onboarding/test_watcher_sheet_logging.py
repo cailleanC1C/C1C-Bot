@@ -6,7 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 from modules.onboarding import watcher_promo
 from modules.onboarding import watcher_welcome
 from modules.onboarding.watcher_promo import PromoTicketWatcher
-from modules.onboarding.watcher_welcome import TicketContext, WelcomeTicketWatcher
+from modules.onboarding.watcher_welcome import (
+    TicketContext,
+    WelcomeTicketWatcher,
+    WelcomeWatcher,
+)
 
 
 def test_welcome_ticket_logs_sheets(monkeypatch):
@@ -216,6 +220,34 @@ def test_welcome_reminder_sheet_touch_logs(monkeypatch, caplog):
         "sheet_update=ok" in record.message and "phase=reminder_24h" in record.message
         for record in caplog.records
     )
+
+
+def test_setup_is_idempotent_when_watchers_already_registered(monkeypatch):
+    class DummyBot:
+        def __init__(self):
+            self._cogs = {}
+            self.added = []
+
+        def get_cog(self, name):
+            return self._cogs.get(name)
+
+        async def add_cog(self, cog):
+            name = cog.__class__.__name__
+            self._cogs[name] = cog
+            self.added.append(name)
+
+    bot = DummyBot()
+    bot._cogs["WelcomeWatcher"] = WelcomeWatcher(bot)
+    bot._cogs["WelcomeTicketWatcher"] = WelcomeTicketWatcher(bot)
+
+    monkeypatch.setattr(watcher_welcome, "_ensure_reminder_job", lambda _bot: None)
+    ensure_idle = AsyncMock()
+    monkeypatch.setattr("modules.onboarding.idle_watcher.ensure_idle_watcher", ensure_idle)
+
+    asyncio.run(watcher_welcome.setup(bot))
+
+    assert bot.added == []
+    ensure_idle.assert_awaited_once_with(bot)
 
 
 def test_welcome_reminder_sheet_touch_logs_failure(monkeypatch, caplog):
