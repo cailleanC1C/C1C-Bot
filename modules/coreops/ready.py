@@ -51,5 +51,4 @@ async def on_ready(bot: commands.Bot) -> None:
             logger = log
         logger.info("on_ready: onboarding views registered (post-ready)")
     except Exception:
-        log.exception("CORE_READY FAILURE: logger.info")
-        return
+        pass
