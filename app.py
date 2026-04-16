@@ -21,7 +21,7 @@ from shared.logfmt import LogTemplates, guild_label, user_label, human_reason
 from shared.redaction import sanitize_text
 from shared import health as healthmod
 from shared import socket_heartbeat as hb
-from modules.common.runtime import Runtime
+from modules.common.runtime import Runtime, StartupPhaseError
 from modules.common import keepalive
 from modules.coreops import ready as core_ready
 from c1c_coreops.config import (
@@ -239,6 +239,7 @@ async def _enforce_guild_allow_list(
 async def on_ready():
     hb.note_ready()
     healthmod.set_component("discord", True)
+    log.info("startup phase ready reached ok")
     log.info(
         'Bot ready as %s | env=%s | prefixes=["%s", "@mention"]',
         bot.user,
@@ -255,46 +256,53 @@ async def on_ready():
     if not await _enforce_guild_allow_list(log_when_empty=True):
         return
 
-    started, interval, stall, grace = runtime.watchdog(delay_sec=5.0)
-    if started:
-        async def announce() -> None:
-            await asyncio.sleep(5.0)
-            await runtime.send_log_message(
-                LogTemplates.watchdog(
-                    interval_s=interval,
-                    stall_s=stall,
-                    disconnect_grace_s=grace,
+    try:
+        await core_ready.on_ready(bot)
+        await runtime.register_ready_schedulers()
+        await ensure_scheduler_started(bot)
+    except Exception:
+        log.exception("ready lifecycle failed; requesting shutdown")
+        await _shutdown("ready_lifecycle_failure")
+        return
+
+    try:
+        started, interval, stall, grace = runtime.watchdog(delay_sec=5.0)
+        if started:
+            async def announce() -> None:
+                await asyncio.sleep(5.0)
+                await runtime.send_log_message(
+                    LogTemplates.watchdog(
+                        interval_s=interval,
+                        stall_s=stall,
+                        disconnect_grace_s=grace,
+                    )
                 )
-            )
 
-        runtime.scheduler.spawn(announce(), name="watchdog_announce")
+            runtime.scheduler.spawn(announce(), name="watchdog_announce")
 
-    if not hasattr(bot, "_cron_summary_task"):
-        async def _daily_summary_loop() -> None:
-            while True:
-                now = dt.datetime.now(dt.timezone.utc)
-                target = now.replace(hour=0, minute=5, second=0, microsecond=0)
-                if now >= target:
-                    target = target + dt.timedelta(days=1)
-                await asyncio.sleep((target - now).total_seconds())
-                try:
-                    await emit_daily_summary(CRON_JOB_NAMES)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    log.warning("[cron] summary_failed", exc_info=True)
+        if not hasattr(bot, "_cron_summary_task"):
+            async def _daily_summary_loop() -> None:
+                while True:
+                    now = dt.datetime.now(dt.timezone.utc)
+                    target = now.replace(hour=0, minute=5, second=0, microsecond=0)
+                    if now >= target:
+                        target = target + dt.timedelta(days=1)
+                    await asyncio.sleep((target - now).total_seconds())
+                    try:
+                        await emit_daily_summary(CRON_JOB_NAMES)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        log.warning("[cron] summary_failed", exc_info=True)
 
-        runtime.scheduler.spawn(_daily_summary_loop(), name="cron_daily_summary")
-        bot._cron_summary_task = True
-        log.info("[cron] summary scheduler started (00:05Z)")
+            runtime.scheduler.spawn(_daily_summary_loop(), name="cron_daily_summary")
+            bot._cron_summary_task = True
+            log.info("[cron] summary scheduler started (00:05Z)")
 
-    await keepalive.ensure_started(bot)
-
-    runtime.schedule_startup_preload()
-
-    await ensure_scheduler_started(bot)
-
-    await core_ready.on_ready(bot)
+        await keepalive.ensure_started(bot)
+        runtime.schedule_startup_preload()
+    except Exception:
+        log.warning("non-critical ready task failed", exc_info=True)
 
 
 @bot.event
@@ -529,7 +537,11 @@ async def main() -> None:
                 )
             except NotImplementedError:
                 log.warning("Signal handlers not supported", extra={"signal": sig.name})
-        await runtime.start(token)
+        try:
+            await runtime.start(token)
+        except StartupPhaseError:
+            log.exception("startup app/setup phase failed — exiting without retry")
+            return
     finally:
         await _shutdown("runtime_exit")
 
