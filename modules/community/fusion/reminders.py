@@ -84,9 +84,8 @@ async def process_fusion_reminders(
     except Exception as exc:
         log.exception(
             "fusion reminder failed to load durable dedupe state; continuing fail-open "
-            "(config keys: FUSION_REMINDER_TAB, FUSION_REMINDER_COL_FUSION_ID, "
-            "FUSION_REMINDER_COL_EVENT_ID, FUSION_REMINDER_COL_REMINDER_TYPE, "
-            "details=%s)",
+            "(requires tab from FUSION_REMINDER_TAB with headers fusion_id, event_id, "
+            "reminder_type; details=%s)",
             exc,
             extra={"fusion_id": target.fusion_id},
         )
