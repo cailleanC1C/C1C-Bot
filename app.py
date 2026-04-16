@@ -258,12 +258,20 @@ async def on_ready():
 
     try:
         await core_ready.on_ready(bot)
+    except Exception:
+        log.exception("READY FAILURE: core_ready.on_ready")
+        await _shutdown("ready_lifecycle_failure:core_ready")
+        return
+
+    try:
         await runtime.register_ready_schedulers()
+    except Exception:
+        log.exception("READY FAILURE: runtime.register_ready_schedulers")
+
+    try:
         await ensure_scheduler_started(bot)
     except Exception:
-        log.exception("ready lifecycle failed; requesting shutdown")
-        await _shutdown("ready_lifecycle_failure")
-        return
+        log.exception("READY FAILURE: ensure_scheduler_started")
 
     try:
         started, interval, stall, grace = runtime.watchdog(delay_sec=5.0)
