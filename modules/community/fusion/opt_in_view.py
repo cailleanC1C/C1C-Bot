@@ -20,12 +20,20 @@ _FUSION_MY_PROGRESS_CUSTOM_ID = "fusion:my_progress"
 _FUSION_PROGRESS_EVENT_CUSTOM_ID = "fusion:progress:event"
 _FUSION_PROGRESS_STATUS_CUSTOM_ID = "fusion:progress:status"
 
-_STATUS_ORDER = ("done", "in_progress", "skipped", "not_started")
+_DISPLAY_STATUS_ORDER = ("done", "in_progress", "skipped", "missed", "not_started")
 _STATUS_LABELS = {
     "not_started": "Not Started",
     "in_progress": "In Progress",
     "done": "Done",
     "skipped": "Skipped",
+    "missed": "Missed",
+}
+_STATUS_ICONS = {
+    "done": "✅",
+    "in_progress": "🟡",
+    "skipped": "⏭️",
+    "missed": "⚠️",
+    "not_started": "⬜",
 }
 
 
@@ -137,12 +145,29 @@ def _build_progress_summary_embed(
     selected_event_id: str | None = None,
     last_update: tuple[str, str] | None = None,
 ) -> discord.Embed:
-    counts = {status: 0 for status in _STATUS_ORDER}
+    now = dt.datetime.now(dt.timezone.utc)
+    counts = {status: 0 for status in _DISPLAY_STATUS_ORDER}
+    display_status_by_event: dict[str, str] = {}
+    fragments_done = 0.0
     for event in events:
+        has_saved_status = event.event_id in progress_by_event
         status = progress_by_event.get(event.event_id, "not_started")
+        if not has_saved_status and status == "not_started":
+            timing = fusion_sheets.get_valid_event_timing(event, for_helper="fusion_my_progress")
+            if timing is not None:
+                start_at, end_at = timing
+                if fusion_sheets.derive_event_status(
+                    start_at_utc=start_at,
+                    end_at_utc=end_at,
+                    now=now,
+                ) == "ended":
+                    status = "missed"
         if status not in counts:
             status = "not_started"
+        display_status_by_event[event.event_id] = status
         counts[status] += 1
+        if status == "done":
+            fragments_done += event.reward_amount
 
     embed = discord.Embed(
         title=f"My Progress — {target.fusion_name}",
@@ -152,16 +177,19 @@ def _build_progress_summary_embed(
     embed.add_field(name="Done", value=str(counts["done"]), inline=True)
     embed.add_field(name="In Progress", value=str(counts["in_progress"]), inline=True)
     embed.add_field(name="Skipped", value=str(counts["skipped"]), inline=True)
+    embed.add_field(name="Missed ⚠️", value=str(counts["missed"]), inline=True)
     embed.add_field(name="Not Started", value=str(counts["not_started"]), inline=True)
     embed.add_field(name="Total Events", value=str(len(events)), inline=True)
+    embed.add_field(name="Fragments", value=f"{fragments_done:g} / {target.available:g}", inline=True)
 
     if selected_event_id:
         selected = next((event for event in events if event.event_id == selected_event_id), None)
         if selected is not None:
-            current = progress_by_event.get(selected.event_id, "not_started")
+            current = display_status_by_event.get(selected.event_id, "not_started")
+            icon = _STATUS_ICONS.get(current, _STATUS_ICONS["not_started"])
             embed.add_field(
                 name="Selected Event",
-                value=f"{selected.event_name} — {_STATUS_LABELS.get(current, 'Not Started')}",
+                value=f"{icon} {selected.event_name} — {_STATUS_LABELS.get(current, 'Not Started')}",
                 inline=False,
             )
 
