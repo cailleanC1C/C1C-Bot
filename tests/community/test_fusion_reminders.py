@@ -89,7 +89,14 @@ def test_start_reminder_fires_once_and_is_restart_safe(monkeypatch):
     assert len(channel.sent) == 1
     assert channel.sent[0]["content"] is None
     assert channel.sent[0]["view"] is None
-    assert channel.sent[0]["embed"].title == "⚠️ Event e-start is live"
+    embed = channel.sent[0]["embed"]
+    assert embed.title == "Fusion Reminder"
+    assert (
+        embed.description == "⚠️ **Event e-start is live**\n"
+        "Time to put in some work — fragments won’t collect themselves.\n\n"
+        "🔗 [Open Fusion Overview](https://discord.test/jump)"
+    )
+    assert not embed.fields
     assert ("f-1", "e-start", "start") in persisted
 
 
@@ -125,7 +132,7 @@ def test_prestart_reminder_fires_once(monkeypatch):
     assert embed.title == "⏳ Event e-pre starts soon"
     assert embed.description == "Starts in 6h. Plan accordingly."
     assert embed.fields[0].name == "Fusion"
-    assert embed.fields[0].value == "https://discord.test/jump"
+    assert embed.fields[0].value == "[Open Fusion Overview](https://discord.test/jump)"
     assert ("e-pre", "prestart_6h") in sent
 
 
