@@ -9,7 +9,7 @@ import logging
 import discord
 from discord.ext import commands
 
-from modules.community.fusion.announcements import ensure_fusion_announcement, resolve_announcement_channel
+from modules.community.fusion.announcements import resolve_announcement_channel
 from modules.community.fusion.opt_in_view import build_fusion_opt_in_view
 from modules.community.fusion.rendering import build_fusion_announcement_embed
 from shared.sheets import fusion as fusion_sheets
@@ -68,6 +68,14 @@ async def _fetch_existing_announcement(
     try:
         return await channel.fetch_message(target.announcement_message_id)
     except Exception:
+        log.exception(
+            "fusion announcement refresh failed to fetch existing announcement message",
+            extra={
+                "fusion_id": target.fusion_id,
+                "announcement_channel_id": target.announcement_channel_id,
+                "announcement_message_id": target.announcement_message_id,
+            },
+        )
         return None
 
 
@@ -92,30 +100,57 @@ async def process_fusion_announcement_refreshes(
 
     for target in targets:
         try:
-            events = await fusion_sheets.get_fusion_events(target.fusion_id)
+            try:
+                events = await fusion_sheets.get_fusion_events(target.fusion_id)
+            except Exception:
+                log.exception(
+                    "fusion announcement refresh failed to load events",
+                    extra={"fusion_id": target.fusion_id},
+                )
+                continue
             status_hash = _compute_status_hash(events, now=reference)
             if not _needs_refresh(target, now=reference, status_hash=status_hash):
                 continue
 
             existing_message = await _fetch_existing_announcement(bot, target)
             if existing_message is None:
-                announcement_message = await ensure_fusion_announcement(bot, target)
-                if announcement_message is None:
-                    log.warning(
-                        "fusion announcement refresh skipped; announcement unavailable",
-                        extra={"fusion_id": target.fusion_id},
-                    )
-                    continue
-            else:
+                log.warning(
+                    "fusion announcement refresh skipped; existing announcement missing",
+                    extra={
+                        "fusion_id": target.fusion_id,
+                        "announcement_channel_id": target.announcement_channel_id,
+                        "announcement_message_id": target.announcement_message_id,
+                    },
+                )
+                continue
+
+            try:
                 announcement_embed = build_fusion_announcement_embed(target, events, now=reference)
                 announcement_view = build_fusion_opt_in_view(target)
                 await existing_message.edit(embed=announcement_embed, view=announcement_view)
+            except Exception:
+                log.exception(
+                    "fusion announcement refresh failed to edit existing announcement",
+                    extra={
+                        "fusion_id": target.fusion_id,
+                        "announcement_channel_id": target.announcement_channel_id,
+                        "announcement_message_id": target.announcement_message_id,
+                    },
+                )
+                continue
 
-            await fusion_sheets.update_fusion_announcement_refresh_state(
-                target.fusion_id,
-                refreshed_at=reference,
-                status_hash=status_hash,
-            )
+            try:
+                await fusion_sheets.update_fusion_announcement_refresh_state(
+                    target.fusion_id,
+                    refreshed_at=reference,
+                    status_hash=status_hash,
+                )
+            except Exception:
+                log.exception(
+                    "fusion announcement refresh failed to persist refresh state",
+                    extra={"fusion_id": target.fusion_id, "status_hash": status_hash},
+                )
+                continue
         except Exception:
             log.exception(
                 "fusion announcement refresh failed",

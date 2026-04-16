@@ -115,3 +115,35 @@ def test_get_sent_reminder_keys_requires_configured_column_keys(monkeypatch: pyt
 
     with pytest.raises(RuntimeError, match="FUSION_REMINDER_COL_FUSION_ID"):
         asyncio.run(fusion_sheets.get_sent_reminder_keys("f-1"))
+
+
+def test_get_sent_reminder_keys_does_not_require_sent_at_column_key(monkeypatch: pytest.MonkeyPatch):
+    _install_config(
+        monkeypatch,
+        {
+            "FUSION_REMINDER_TAB": "Reminder Ledger",
+            "FUSION_REMINDER_COL_FUSION_ID": "FusionKey",
+            "FUSION_REMINDER_COL_EVENT_ID": "EventKey",
+            "FUSION_REMINDER_COL_REMINDER_TYPE": "ReminderKey",
+        },
+    )
+    monkeypatch.delitem(
+        config_module._CONFIG,
+        "FUSION_REMINDER_COL_SENT_AT_UTC",
+        raising=False,
+    )
+    monkeypatch.setattr(fusion_sheets, "_sheet_id", lambda: "sheet-1")
+
+    async def _afetch_values(sheet_id: str, tab_name: str):
+        assert sheet_id == "sheet-1"
+        assert tab_name == "Reminder Ledger"
+        return [
+            ["FusionKey", "EventKey", "ReminderKey"],
+            ["f-1", "e-1", "start"],
+        ]
+
+    monkeypatch.setattr(fusion_sheets, "afetch_values", _afetch_values)
+
+    sent = asyncio.run(fusion_sheets.get_sent_reminder_keys("f-1"))
+
+    assert sent == {("e-1", "start")}
