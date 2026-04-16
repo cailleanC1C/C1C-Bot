@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import datetime as dt
 from collections import defaultdict
-from itertools import chain
 from urllib.parse import urlparse
 
 import discord
@@ -38,7 +37,7 @@ def _status_icon(status: str) -> str:
     if status == "live":
         return "🔥"
     if status == "ended":
-        return "✅"
+        return "🏁"
     return "⏳"
 
 
@@ -119,6 +118,7 @@ def _build_fusion_embed(
     summary_lines = [
         f"Type: {_humanize_type(fusion.fusion_type)}",
         f"Runs: {_format_dt_utc(fusion.start_at_utc)} -> {_format_dt_utc(fusion.end_at_utc)}",
+        "",
         f"Target: {fusion.needed:g} fragments needed / {fusion.available:g} available",
         f"Schedule: {len(events)} events" + (" • includes bonus rewards" if has_bonus else ""),
     ]
@@ -154,17 +154,15 @@ def _build_fusion_embed(
             status = fusion_sheets.derive_event_status(start_at_utc=start_at, end_at_utc=end_at, now=now)
         status_by_event_id[event.event_id] = status
 
-    if sorted_events:
-        status_lines = [
-            f"- {_status_icon(status_by_event_id[event.event_id])} {event.event_name}"
-            for event in sorted_events
-        ]
-        status_chunks = _chunk_lines(status_lines, _EMBED_FIELD_VALUE_LIMIT)
-        for idx, chunk in enumerate(status_chunks, start=1):
-            name = "Event Status" if idx == 1 else f"Event Status (Part {idx})"
-            if len(embed.fields) >= _EMBED_MAX_FIELDS:
-                break
-            embed.add_field(name=name, value=chunk, inline=False)
+    if sorted_events and len(embed.fields) < _EMBED_MAX_FIELDS:
+        completed = sum(1 for status in status_by_event_id.values() if status == "ended")
+        active = sum(1 for status in status_by_event_id.values() if status == "live")
+        remaining = len(sorted_events) - completed - active
+        embed.add_field(
+            name="Schedule Status",
+            value=f"{completed} ended • {active} live • {remaining} upcoming",
+            inline=False,
+        )
 
     grouped_events: dict[dt.date, list[FusionEventRow]] = defaultdict(list)
     for event in sorted_events:
@@ -174,6 +172,13 @@ def _build_fusion_embed(
         embed.add_field(name="Schedule", value="No events available.", inline=False)
         embed.set_footer(text=f"Fusion ID: {fusion.fusion_id}")
         return embed
+
+    if len(embed.fields) < _EMBED_MAX_FIELDS:
+        embed.add_field(
+            name="Legend",
+            value="⏳ Upcoming • 🔥 Live • 🏁 Ended",
+            inline=False,
+        )
 
     # --- SIMPLE STRUCTURE: ONE DAY = ONE FIELD ---
     for day in sorted(grouped_events):
