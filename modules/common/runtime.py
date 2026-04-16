@@ -397,6 +397,8 @@ def _is_retryable_discord_start_failure(exc: BaseException) -> tuple[bool, str]:
     if isinstance(exc, discord.HTTPException):
         should_retry, detail = _is_startup_rate_limited(exc)
         if should_retry:
+            if detail.startswith("cloudflare_rate_limited"):
+                return False, detail
             return True, detail
         status = getattr(exc, "status", None)
         if status is not None and int(status) >= 500:
