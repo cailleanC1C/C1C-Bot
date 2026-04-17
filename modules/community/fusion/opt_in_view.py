@@ -171,16 +171,25 @@ def _build_progress_summary_embed(
 
     embed = discord.Embed(
         title=f"My Progress — {target.fusion_name}",
-        description="Private tracker for your fusion events.",
+        description="Private tracker for your fusion progress.",
         color=discord.Color.blurple(),
     )
-    embed.add_field(name="Done", value=str(counts["done"]), inline=True)
-    embed.add_field(name="In Progress", value=str(counts["in_progress"]), inline=True)
-    embed.add_field(name="Skipped", value=str(counts["skipped"]), inline=True)
-    embed.add_field(name="Missed ⚠️", value=str(counts["missed"]), inline=True)
-    embed.add_field(name="Not Started", value=str(counts["not_started"]), inline=True)
-    embed.add_field(name="Total Events", value=str(len(events)), inline=True)
-    embed.add_field(name="Fragments", value=f"{fragments_done:g} / {target.available:g}", inline=True)
+    embed.add_field(
+        name="Summary",
+        value=(
+            f"✅ Done: {counts['done']}\n"
+            f"🟡 In Progress: {counts['in_progress']}\n"
+            f"⏭️ Skipped: {counts['skipped']}\n"
+            f"⚠️ Missed: {counts['missed']}\n"
+            f"⬜ Not Started: {counts['not_started']}"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Fragments",
+        value=f"{fragments_done:g} / {target.available:g} fragments earned",
+        inline=False,
+    )
 
     if selected_event_id:
         selected = next((event for event in events if event.event_id == selected_event_id), None)
@@ -189,17 +198,15 @@ def _build_progress_summary_embed(
             icon = _STATUS_ICONS.get(current, _STATUS_ICONS["not_started"])
             embed.add_field(
                 name="Selected Event",
-                value=f"{icon} {selected.event_name} — {_STATUS_LABELS.get(current, 'Not Started')}",
+                value=f"{icon} {selected.event_name}\n{selected.reward_amount:g} frags",
                 inline=False,
             )
 
+    last_update_value = "No changes yet."
     if last_update is not None:
         event_name, status = last_update
-        embed.add_field(
-            name="Last Update",
-            value=f"{event_name} → {_STATUS_LABELS.get(status, 'Not Started')}",
-            inline=False,
-        )
+        last_update_value = f"{event_name} → {_STATUS_LABELS.get(status, 'Not Started')}"
+    embed.add_field(name="Last Update", value=last_update_value, inline=False)
 
     return embed
 
@@ -216,7 +223,7 @@ class _FusionProgressEventSelect(discord.ui.Select):
                 )
             )
         super().__init__(
-            placeholder="Select an event",
+            placeholder="Choose event",
             min_values=1,
             max_values=1,
             options=options,
