@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from modules.community.fusion import announcement_refresh
+from modules.community.fusion.announcements import AnnouncementResolution
 from modules.community.fusion.rendering import build_fusion_announcement_embed
 from shared.sheets import fusion as fusion_sheets
 
@@ -103,11 +104,13 @@ def test_refresh_edits_existing_announcement_and_updates_metadata(monkeypatch) -
         events = [_event(event_id="live", start_at=now - dt.timedelta(hours=1), end_at=now + dt.timedelta(hours=1))]
         fusion = _fusion_row(last_refresh=now - dt.timedelta(days=1), last_hash="")
         message = SimpleNamespace(edit=AsyncMock())
-        channel = SimpleNamespace(fetch_message=AsyncMock(return_value=message))
-
         monkeypatch.setattr(fusion_sheets, "get_published_fusions", AsyncMock(return_value=[fusion]))
         monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=events))
-        monkeypatch.setattr(announcement_refresh, "resolve_announcement_channel", AsyncMock(return_value=channel))
+        monkeypatch.setattr(
+            announcement_refresh,
+            "resolve_stored_announcement",
+            AsyncMock(return_value=AnnouncementResolution(message=message, had_reference=True, is_stale=False)),
+        )
         monkeypatch.setattr(fusion_sheets, "update_fusion_announcement_refresh_state", AsyncMock())
 
         await announcement_refresh.process_fusion_announcement_refreshes(bot=object(), now=now)
@@ -123,11 +126,13 @@ def test_refresh_skips_when_existing_announcement_is_missing(monkeypatch) -> Non
         now = dt.datetime(2026, 4, 10, 12, tzinfo=dt.timezone.utc)
         events = [_event(event_id="live", start_at=now - dt.timedelta(hours=1), end_at=now + dt.timedelta(hours=1))]
         fusion = _fusion_row(last_refresh=now - dt.timedelta(days=1), last_hash="")
-        channel = SimpleNamespace(fetch_message=AsyncMock(side_effect=RuntimeError("missing")))
-
         monkeypatch.setattr(fusion_sheets, "get_published_fusions", AsyncMock(return_value=[fusion]))
         monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=events))
-        monkeypatch.setattr(announcement_refresh, "resolve_announcement_channel", AsyncMock(return_value=channel))
+        monkeypatch.setattr(
+            announcement_refresh,
+            "resolve_stored_announcement",
+            AsyncMock(return_value=AnnouncementResolution(message=None, had_reference=True, is_stale=True)),
+        )
         monkeypatch.setattr(fusion_sheets, "update_fusion_announcement_refresh_state", AsyncMock())
 
         await announcement_refresh.process_fusion_announcement_refreshes(bot=object(), now=now)
