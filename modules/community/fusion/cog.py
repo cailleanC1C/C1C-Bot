@@ -9,7 +9,12 @@ from discord.ext import commands
 
 from c1c_coreops.helpers import help_metadata, tier
 from c1c_coreops.rbac import admin_only
-from modules.community.fusion.announcements import ensure_fusion_announcement, publish_fusion_announcement, resolve_announcement_channel
+from modules.community.fusion.announcements import (
+    ensure_fusion_announcement,
+    publish_fusion_announcement,
+    resolve_announcement_channel,
+    resolve_stored_announcement,
+)
 from modules.community.fusion.rendering import build_fusion_announcement_embed
 from shared.sheets import fusion as fusion_sheets
 
@@ -167,16 +172,23 @@ class FusionCog(commands.Cog):
             await ctx.reply("Configured announcement channel is not messageable.", mention_author=False)
             return
 
-        if target.announcement_message_id is not None:
-            try:
-                await channel.fetch_message(target.announcement_message_id)
-                await ctx.reply(
-                    "This fusion already has an announcement post. Clear the message id or use a future republish flow.",
-                    mention_author=False,
-                )
-                return
-            except Exception:
-                pass
+        resolution = await resolve_stored_announcement(self.bot, target)
+        if resolution.message is not None:
+            await ctx.reply(
+                "This fusion already has an announcement post. Clear the message id or use a future republish flow.",
+                mention_author=False,
+            )
+            return
+        if resolution.had_reference and resolution.is_stale:
+            log.info(
+                "fusion publish allowed despite stale announcement metadata",
+                extra={
+                    "fusion_id": target.fusion_id,
+                    "status": target.status,
+                    "announcement_channel_id": target.announcement_channel_id,
+                    "announcement_message_id": target.announcement_message_id,
+                },
+            )
 
         try:
             announcement_message = await publish_fusion_announcement(self.bot, target)

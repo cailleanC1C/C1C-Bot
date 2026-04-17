@@ -9,7 +9,7 @@ import logging
 import discord
 from discord.ext import commands
 
-from modules.community.fusion.announcements import resolve_announcement_channel
+from modules.community.fusion.announcements import resolve_stored_announcement
 from modules.community.fusion.opt_in_view import build_fusion_opt_in_view
 from modules.community.fusion.rendering import build_fusion_announcement_embed
 from shared.sheets import fusion as fusion_sheets
@@ -60,23 +60,8 @@ async def _fetch_existing_announcement(
     bot: commands.Bot,
     target: fusion_sheets.FusionRow,
 ) -> discord.Message | None:
-    if target.announcement_channel_id is None or target.announcement_message_id is None:
-        return None
-    channel = await resolve_announcement_channel(bot, target.announcement_channel_id)
-    if channel is None:
-        return None
-    try:
-        return await channel.fetch_message(target.announcement_message_id)
-    except Exception:
-        log.exception(
-            "fusion announcement refresh failed to fetch existing announcement message",
-            extra={
-                "fusion_id": target.fusion_id,
-                "announcement_channel_id": target.announcement_channel_id,
-                "announcement_message_id": target.announcement_message_id,
-            },
-        )
-        return None
+    resolution = await resolve_stored_announcement(bot, target)
+    return resolution.message
 
 
 async def process_fusion_announcement_refreshes(
