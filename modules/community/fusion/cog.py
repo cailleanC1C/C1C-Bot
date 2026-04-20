@@ -9,6 +9,7 @@ from discord.ext import commands
 
 from c1c_coreops.helpers import help_metadata, tier
 from c1c_coreops.rbac import admin_only
+from modules.community.fusion import logs as fusion_logs
 from modules.community.fusion.announcements import (
     ensure_fusion_announcement,
     publish_fusion_announcement,
@@ -91,7 +92,13 @@ class FusionCog(commands.Cog):
             active = await fusion_sheets.get_publishable_fusion()
         except Exception as exc:
             log.exception("fusion debug failed to load fusion")
-            await ctx.reply(f"Fusion config error: {exc}", mention_author=False)
+            await fusion_logs.send_ops_alert(
+                component="command_debug",
+                summary="load_fusion_failed",
+                dedupe_key="fusion:command:debug:load_fusion",
+                error=exc,
+            )
+            await ctx.reply("Fusion debug is temporarily unavailable.", mention_author=False)
             return
 
         if active is None:
@@ -102,7 +109,14 @@ class FusionCog(commands.Cog):
             events = await fusion_sheets.get_fusion_events(active.fusion_id)
         except Exception as exc:
             log.exception("fusion debug failed to load events", extra={"fusion_id": active.fusion_id})
-            await ctx.reply(f"Fusion event load failed: {exc}", mention_author=False)
+            await fusion_logs.send_ops_alert(
+                component="command_debug",
+                summary="load_events_failed",
+                dedupe_key=f"fusion:command:debug:events:{active.fusion_id}",
+                error=exc,
+                fields={"fusion_id": active.fusion_id},
+            )
+            await ctx.reply("Fusion events are temporarily unavailable.", mention_author=False)
             return
 
         lines = [
@@ -141,7 +155,13 @@ class FusionCog(commands.Cog):
             target = await fusion_sheets.get_publishable_fusion()
         except Exception as exc:
             log.exception("fusion publish failed to load fusion rows")
-            await ctx.reply(f"Could not load fusion data: {exc}", mention_author=False)
+            await fusion_logs.send_ops_alert(
+                component="command_publish",
+                summary="load_fusion_failed",
+                dedupe_key="fusion:command:publish:load_fusion",
+                error=exc,
+            )
+            await ctx.reply("Could not load fusion data right now.", mention_author=False)
             return
 
         if target is None:
@@ -197,7 +217,14 @@ class FusionCog(commands.Cog):
                 return
         except Exception as exc:
             log.exception("fusion publish failed during announce send", extra={"fusion_id": target.fusion_id})
-            await ctx.reply(f"Failed to publish announcement: {exc}", mention_author=False)
+            await fusion_logs.send_ops_alert(
+                component="command_publish",
+                summary="announce_send_failed",
+                dedupe_key=f"fusion:command:publish:send:{target.fusion_id}",
+                error=exc,
+                fields={"fusion_id": target.fusion_id},
+            )
+            await ctx.reply("Failed to publish announcement right now.", mention_author=False)
             return
 
         destination = channel.mention if isinstance(channel, discord.abc.GuildChannel) else "configured channel"

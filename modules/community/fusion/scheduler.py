@@ -5,6 +5,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from modules.community.fusion.announcement_refresh import process_fusion_announcement_refreshes
+from modules.community.fusion import logs as fusion_logs
 from modules.community.fusion.reminders import process_fusion_reminders
 from modules.community.fusion.role_cleanup import process_ended_fusion_role_cleanup
 
@@ -40,11 +41,23 @@ def schedule_fusion_jobs(runtime: "Runtime") -> None:
             if _should_log_not_ready(now):
                 log.info("fusion scheduler paused; bot not ready")
             return
-        try:
-            await process_fusion_reminders(runtime.bot)
-            await process_fusion_announcement_refreshes(runtime.bot)
-            await process_ended_fusion_role_cleanup(runtime.bot)
-        except Exception:
-            log.exception("fusion reminder scheduler tick failed")
+        jobs = (
+            ("reminders", process_fusion_reminders),
+            ("announcement_refresh", process_fusion_announcement_refreshes),
+            ("role_cleanup", process_ended_fusion_role_cleanup),
+        )
+        for job_name, job_fn in jobs:
+            try:
+                await job_fn(runtime.bot)
+            except Exception as exc:
+                context = {"job_name": job_name}
+                log.exception("fusion scheduler task failed", extra=context)
+                await fusion_logs.send_ops_alert(
+                    component="scheduler",
+                    summary="fusion_scheduler_task_failed",
+                    dedupe_key=f"fusion:scheduler:{job_name}",
+                    error=exc,
+                    fields=context,
+                )
 
     job.do(_runner)

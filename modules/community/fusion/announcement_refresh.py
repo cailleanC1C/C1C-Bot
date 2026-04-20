@@ -10,6 +10,7 @@ import discord
 from discord.ext import commands
 
 from modules.community.fusion.announcements import resolve_stored_announcement
+from modules.community.fusion import logs as fusion_logs
 from modules.community.fusion.opt_in_view import build_fusion_opt_in_view
 from modules.community.fusion.rendering import build_fusion_announcement_embed
 from shared.sheets import fusion as fusion_sheets
@@ -79,18 +80,32 @@ async def process_fusion_announcement_refreshes(
     reference = _utc_now(now)
     try:
         targets = await fusion_sheets.get_published_fusions()
-    except Exception:
+    except Exception as exc:
         log.exception("fusion announcement refresh failed to load published fusions")
+        await fusion_logs.send_ops_alert(
+            component="announcement_refresh",
+            summary="load_published_fusions_failed",
+            dedupe_key="fusion:announcement_refresh:load_targets",
+            error=exc,
+        )
         return
 
     for target in targets:
         try:
             try:
                 events = await fusion_sheets.get_fusion_events(target.fusion_id)
-            except Exception:
+            except Exception as exc:
+                context = {"fusion_id": target.fusion_id}
                 log.exception(
                     "fusion announcement refresh failed to load events",
-                    extra={"fusion_id": target.fusion_id},
+                    extra=context,
+                )
+                await fusion_logs.send_ops_alert(
+                    component="announcement_refresh",
+                    summary="load_events_failed",
+                    dedupe_key=f"fusion:announcement_refresh:events:{target.fusion_id}",
+                    error=exc,
+                    fields=context,
                 )
                 continue
             status_hash = _compute_status_hash(events, now=reference)
@@ -113,14 +128,22 @@ async def process_fusion_announcement_refreshes(
                 announcement_embed = build_fusion_announcement_embed(target, events, now=reference)
                 announcement_view = build_fusion_opt_in_view(target)
                 await existing_message.edit(embed=announcement_embed, view=announcement_view)
-            except Exception:
+            except Exception as exc:
+                context = {
+                    "fusion_id": target.fusion_id,
+                    "announcement_channel_id": target.announcement_channel_id,
+                    "announcement_message_id": target.announcement_message_id,
+                }
                 log.exception(
                     "fusion announcement refresh failed to edit existing announcement",
-                    extra={
-                        "fusion_id": target.fusion_id,
-                        "announcement_channel_id": target.announcement_channel_id,
-                        "announcement_message_id": target.announcement_message_id,
-                    },
+                    extra=context,
+                )
+                await fusion_logs.send_ops_alert(
+                    component="announcement_refresh",
+                    summary="edit_existing_announcement_failed",
+                    dedupe_key=f"fusion:announcement_refresh:edit:{target.fusion_id}",
+                    error=exc,
+                    fields=context,
                 )
                 continue
 
@@ -130,16 +153,32 @@ async def process_fusion_announcement_refreshes(
                     refreshed_at=reference,
                     status_hash=status_hash,
                 )
-            except Exception:
+            except Exception as exc:
+                context = {"fusion_id": target.fusion_id, "status_hash": status_hash}
                 log.exception(
                     "fusion announcement refresh failed to persist refresh state",
-                    extra={"fusion_id": target.fusion_id, "status_hash": status_hash},
+                    extra=context,
+                )
+                await fusion_logs.send_ops_alert(
+                    component="announcement_refresh",
+                    summary="persist_refresh_state_failed",
+                    dedupe_key=f"fusion:announcement_refresh:persist:{target.fusion_id}",
+                    error=exc,
+                    fields=context,
                 )
                 continue
-        except Exception:
+        except Exception as exc:
+            context = {"fusion_id": target.fusion_id}
             log.exception(
                 "fusion announcement refresh failed",
-                extra={"fusion_id": target.fusion_id},
+                extra=context,
+            )
+            await fusion_logs.send_ops_alert(
+                component="announcement_refresh",
+                summary="iteration_failed",
+                dedupe_key=f"fusion:announcement_refresh:iteration:{target.fusion_id}",
+                error=exc,
+                fields=context,
             )
 
 
