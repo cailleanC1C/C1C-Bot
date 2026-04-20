@@ -25,17 +25,19 @@ _FUSION_BUCKET = "fusion"
 _FUSION_EVENTS_BUCKET = "fusion_events"
 _FUSION_REMINDER_TAB_KEY = "FUSION_REMINDER_TAB"
 _FUSION_PROGRESS_TAB_KEY = "FUSION_USER_EVENT_PROGRESS_TAB"
-_FUSION_PROGRESS_FUSION_ID_COL_KEY = "FUSION_USER_EVENT_PROGRESS_COL_FUSION_ID"
-_FUSION_PROGRESS_USER_ID_COL_KEY = "FUSION_USER_EVENT_PROGRESS_COL_USER_ID"
-_FUSION_PROGRESS_EVENT_ID_COL_KEY = "FUSION_USER_EVENT_PROGRESS_COL_EVENT_ID"
-_FUSION_PROGRESS_STATUS_COL_KEY = "FUSION_USER_EVENT_PROGRESS_COL_STATUS"
-_FUSION_PROGRESS_UPDATED_AT_COL_KEY = "FUSION_USER_EVENT_PROGRESS_COL_UPDATED_AT_UTC"
 _PROGRESS_ALLOWED_STATUSES = {"not_started", "in_progress", "done", "skipped"}
 _FUSION_REMINDER_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "fusion_id": ("fusion_id",),
     "event_id": ("event_id",),
     "reminder_type": ("reminder_type",),
     "sent_at_utc": ("sent_at_utc",),
+}
+_FUSION_PROGRESS_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    "fusion_id": ("fusion_id", "fusion key", "fusionkey"),
+    "user_id": ("user_id", "user key", "userkey"),
+    "event_id": ("event_id", "event key", "eventkey"),
+    "status": ("status",),
+    "updated_at_utc": ("updated_at_utc", "updated at utc", "updatedat", "updated_at"),
 }
 
 
@@ -183,13 +185,6 @@ def _column_label(index: int) -> str:
     return label or "A"
 
 
-def _require_config_name(key: str) -> str:
-    value = cfg.get(key)
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    raise RuntimeError(f"{key} missing in milestones Config tab")
-
-
 def _resolve_reminder_sheet_schema(
     *,
     include_sent_at: bool,
@@ -212,18 +207,27 @@ def _reminder_schema_debug() -> dict[str, str]:
 
 def _resolve_progress_sheet_schema() -> tuple[str, dict[str, str]]:
     tab_name = _resolve_tab_name(_FUSION_PROGRESS_TAB_KEY)
-    config_key_by_field = {
-        "fusion_id": _FUSION_PROGRESS_FUSION_ID_COL_KEY,
-        "user_id": _FUSION_PROGRESS_USER_ID_COL_KEY,
-        "event_id": _FUSION_PROGRESS_EVENT_ID_COL_KEY,
-        "status": _FUSION_PROGRESS_STATUS_COL_KEY,
-        "updated_at_utc": _FUSION_PROGRESS_UPDATED_AT_COL_KEY,
+    return tab_name, dict(_FUSION_PROGRESS_COLUMN_ALIASES)
+
+
+def _resolve_progress_header_indices(
+    *,
+    tab_name: str,
+    header: list[str],
+    include_updated_at: bool,
+) -> dict[str, int]:
+    required_fields = ["fusion_id", "user_id", "event_id", "status"]
+    if include_updated_at:
+        required_fields.append("updated_at_utc")
+    return {
+        field: _resolve_header_index(
+            tab_name=tab_name,
+            header=header,
+            field=field,
+            aliases_by_field=_FUSION_PROGRESS_COLUMN_ALIASES,
+        )
+        for field in required_fields
     }
-    column_by_field = {
-        field: _require_config_name(config_key)
-        for field, config_key in config_key_by_field.items()
-    }
-    return tab_name, column_by_field
 
 def _parse_iso_utc(value: object) -> dt.datetime:
     raw = str(value or "").strip()
@@ -721,29 +725,21 @@ def _normalize_progress_status(value: object) -> str:
 async def get_user_event_progress(fusion_id: str, user_id: str) -> dict[str, str]:
     """Return per-event progress status for a fusion/user tuple."""
 
-    tab_name, columns = _resolve_progress_sheet_schema()
+    tab_name, _progress_aliases = _resolve_progress_sheet_schema()
     matrix = await afetch_values(_sheet_id(), tab_name)
     if not matrix:
         return {}
 
     header = [str(cell or "").strip().lower() for cell in matrix[0]]
-    required_fields = ("fusion_id", "user_id", "event_id", "status")
-    required_names = [columns[field] for field in required_fields]
-    missing = [name for name in required_names if name.strip().lower() not in header]
-    if missing:
-        raise RuntimeError(
-            "Fusion user progress sheet missing configured columns "
-            f"(tab={tab_name}, missing={', '.join(missing)}, "
-            f"config_keys={_FUSION_PROGRESS_FUSION_ID_COL_KEY},"
-            f"{_FUSION_PROGRESS_USER_ID_COL_KEY},"
-            f"{_FUSION_PROGRESS_EVENT_ID_COL_KEY},"
-            f"{_FUSION_PROGRESS_STATUS_COL_KEY})"
-        )
-
-    fusion_idx = header.index(columns["fusion_id"].strip().lower())
-    user_idx = header.index(columns["user_id"].strip().lower())
-    event_idx = header.index(columns["event_id"].strip().lower())
-    status_idx = header.index(columns["status"].strip().lower())
+    index_by_field = _resolve_progress_header_indices(
+        tab_name=tab_name,
+        header=header,
+        include_updated_at=False,
+    )
+    fusion_idx = index_by_field["fusion_id"]
+    user_idx = index_by_field["user_id"]
+    event_idx = index_by_field["event_id"]
+    status_idx = index_by_field["status"]
     target_fusion = str(fusion_id or "").strip()
     target_user = str(user_id or "").strip()
 
@@ -770,8 +766,13 @@ async def upsert_user_event_progress(
 ) -> None:
     """Write user progress status for one fusion/user/event tuple."""
 
-    normalized_status = _normalize_progress_status(status)
-    tab_name, columns = _resolve_progress_sheet_schema()
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status not in _PROGRESS_ALLOWED_STATUSES:
+        raise ValueError(
+            "Invalid fusion progress status; expected one of "
+            f"{sorted(_PROGRESS_ALLOWED_STATUSES)}, got={status!r}"
+        )
+    tab_name, _progress_aliases = _resolve_progress_sheet_schema()
     matrix = await afetch_values(_sheet_id(), tab_name)
     if not matrix:
         raise RuntimeError(
@@ -780,25 +781,16 @@ async def upsert_user_event_progress(
         )
 
     header = [str(cell or "").strip().lower() for cell in matrix[0]]
-    required_fields = ("fusion_id", "user_id", "event_id", "status", "updated_at_utc")
-    required_names = [columns[field] for field in required_fields]
-    missing = [name for name in required_names if name.strip().lower() not in header]
-    if missing:
-        raise RuntimeError(
-            "Fusion user progress sheet missing configured columns for write "
-            f"(tab={tab_name}, missing={', '.join(missing)}, "
-            f"config_keys={_FUSION_PROGRESS_FUSION_ID_COL_KEY},"
-            f"{_FUSION_PROGRESS_USER_ID_COL_KEY},"
-            f"{_FUSION_PROGRESS_EVENT_ID_COL_KEY},"
-            f"{_FUSION_PROGRESS_STATUS_COL_KEY},"
-            f"{_FUSION_PROGRESS_UPDATED_AT_COL_KEY})"
-        )
-
-    fusion_idx = header.index(columns["fusion_id"].strip().lower())
-    user_idx = header.index(columns["user_id"].strip().lower())
-    event_idx = header.index(columns["event_id"].strip().lower())
-    status_idx = header.index(columns["status"].strip().lower())
-    updated_idx = header.index(columns["updated_at_utc"].strip().lower())
+    index_by_field = _resolve_progress_header_indices(
+        tab_name=tab_name,
+        header=header,
+        include_updated_at=True,
+    )
+    fusion_idx = index_by_field["fusion_id"]
+    user_idx = index_by_field["user_id"]
+    event_idx = index_by_field["event_id"]
+    status_idx = index_by_field["status"]
+    updated_idx = index_by_field["updated_at_utc"]
     target_fusion = str(fusion_id or "").strip()
     target_user = str(user_id or "").strip()
     target_event = str(event_id or "").strip()
