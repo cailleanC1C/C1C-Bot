@@ -929,10 +929,32 @@ class Runtime:
         self._watchdog_params: Optional[tuple[int, int, int]] = None
         self._startup_scheduler_registered = False
         self._startup_scheduler_lock = asyncio.Lock()
+        self._startup_diag: dict[str, Any] = {}
         set_active_runtime(self)
+
+    def _reset_startup_diag(self, *, attempt: int) -> None:
+        self._startup_diag = {
+            "attempt": attempt,
+            "phase": "init",
+            "client_created": False,
+            "startup_setup_ok": False,
+            "login_reached": False,
+            "ready_reached": False,
+            "persistent_views_registered": False,
+            "scheduler_start_reached": False,
+            "feature_init_started": False,
+            "cleanup_ok": None,
+        }
+
+    def startup_diag_mark(self, **fields: object) -> None:
+        self._startup_diag.update(fields)
+
+    def startup_diag_snapshot(self) -> dict[str, Any]:
+        return dict(self._startup_diag)
 
     def _build_bot_for_attempt(self, startup_attempt: int) -> commands.Bot:
         if startup_attempt <= 1:
+            self.startup_diag_mark(client_created=True)
             return self.bot
         if self._bot_factory is None:
             raise RuntimeError(
@@ -942,12 +964,15 @@ class Runtime:
         self.bot = new_bot
         if self._bot_rebuild_hook is not None:
             self._bot_rebuild_hook(new_bot)
+        self.startup_diag_mark(client_created=True)
         return new_bot
 
     async def _dispose_bot_for_attempt(self, bot: commands.Bot) -> None:
         try:
             await bot.close()
+            self.startup_diag_mark(cleanup_ok=True)
         except Exception:
+            self.startup_diag_mark(cleanup_ok=False)
             log.exception("failed to dispose startup attempt bot/client")
 
     async def start_webserver(self, *, port: Optional[int] = None) -> None:
@@ -1360,13 +1385,10 @@ class Runtime:
 
     async def start(self, token: str) -> None:
         await self.start_webserver()
-        try:
-            await self._run_startup_setup()
-        except StartupPhaseError:
-            raise
-
         retry_started = time.monotonic()
         startup_attempt = 1
+        root_failure_logged = False
+        self._reset_startup_diag(attempt=startup_attempt)
         attempt_bot = self._build_bot_for_attempt(startup_attempt)
         log.info("startup attempt %s created new bot/client", startup_attempt)
         await asyncio.sleep(3)
@@ -1379,12 +1401,18 @@ class Runtime:
             if elapsed > _DISCORD_LOGIN_RETRY_MAX_WINDOW_SEC:
                 raise RuntimeError("discord login retry exhausted")
             log.info("startup attempt %s begin", startup_attempt)
+            self.startup_diag_mark(attempt=startup_attempt, phase="startup_setup")
+            try:
+                await self._run_startup_setup()
+            except StartupPhaseError:
+                raise
             if _is_bot_http_session_closed(attempt_bot):
                 raise RuntimeError(
                     "startup retry refused: bot HTTP session is already closed; "
                     "cannot retry on disposed client"
                 )
             try:
+                self.startup_diag_mark(phase="discord_login")
                 _startup_phase_log("discord login", "start", attempt=startup_attempt)
                 await attempt_bot.start(token)
                 _startup_phase_log("discord login", "ok", attempt=startup_attempt)
@@ -1392,7 +1420,12 @@ class Runtime:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                self.startup_diag_mark(login_reached=bool(getattr(attempt_bot, "user", None)))
                 should_retry, detail = _is_retryable_discord_start_failure(exc)
+                if self._startup_diag.get("login_reached"):
+                    # When login was reached, repeated retries can churn logins/rate limits.
+                    should_retry = False
+                    detail = f"post_login_failure:{detail}"
                 if not should_retry:
                     _startup_phase_log(
                         "discord login",
@@ -1401,13 +1434,43 @@ class Runtime:
                         reason=detail,
                     )
                     log.error(
-                        "startup failed (no retry)",
+                        "startup attempt %s failed without retry",
+                        startup_attempt,
                         extra={"startup_diag": self.startup_diag_snapshot()},
                     )
                     raise
-                log.error(
-                    "startup retry disabled in dev mode — failing fast",
-                    extra={"startup_diag": self.startup_diag_snapshot()},
+                _startup_phase_log(
+                    "discord login",
+                    "fail",
+                    attempt=startup_attempt,
+                    reason=detail,
+                    retry="yes",
+                )
+                if not root_failure_logged:
+                    log.exception("startup root failure before retry", exc_info=exc)
+                    root_failure_logged = True
+                log.warning(
+                    "startup attempt %s failed, backing off %ss (%s)",
+                    startup_attempt,
+                    retry_delay_sec,
+                    detail,
+                )
+                log.info("startup attempt %s disposing failed bot/client", startup_attempt)
+                await self._dispose_bot_for_attempt(attempt_bot)
+                log.info("startup attempt %s disposed", startup_attempt)
+                jitter = int(retry_delay_sec * _DISCORD_LOGIN_RETRY_JITTER_RATIO)
+                retry_sleep = retry_delay_sec + (random.randint(0, jitter) if jitter else 0)
+                await _sleep_startup_retry_backoff(retry_sleep)
+                retry_delay_sec = min(
+                    _DISCORD_LOGIN_RETRY_CAP_SEC,
+                    retry_delay_sec * 2,
+                )
+                startup_attempt += 1
+                self._reset_startup_diag(attempt=startup_attempt)
+                attempt_bot = self._build_bot_for_attempt(startup_attempt)
+                log.info(
+                    "startup attempt %s created new bot/client for retry",
+                    startup_attempt,
                 )
                 raise
 
@@ -1422,6 +1485,7 @@ class Runtime:
             _startup_phase_log("config validation", "fail", error=repr(exc))
             raise StartupPhaseError("config validation", exc) from exc
         _startup_phase_log("config validation", "ok")
+        self.startup_diag_mark(phase="extension_load")
 
         _startup_phase_log("extension load", "start")
         try:
@@ -1430,6 +1494,7 @@ class Runtime:
             _startup_phase_log("extension load", "fail", error=repr(exc))
             raise StartupPhaseError("extension load", exc) from exc
         _startup_phase_log("extension load", "ok")
+        self.startup_diag_mark(phase="persistent_view_registration")
 
         _startup_phase_log("persistent view registration", "start")
         try:
@@ -1439,10 +1504,12 @@ class Runtime:
             if not bool(registration.get("registered")):
                 error = registration.get("error") or "unknown"
                 raise RuntimeError(f"persistent view registration failed: {error}")
+            self.startup_diag_mark(persistent_views_registered=True)
         except Exception as exc:
             _startup_phase_log("persistent view registration", "fail", error=repr(exc))
             raise StartupPhaseError("persistent view registration", exc) from exc
         _startup_phase_log("persistent view registration", "ok")
+        self.startup_diag_mark(startup_setup_ok=True)
 
     async def register_ready_schedulers(self) -> None:
         async with self._startup_scheduler_lock:
