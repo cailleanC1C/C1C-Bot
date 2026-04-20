@@ -1386,7 +1386,6 @@ class Runtime:
     async def start(self, token: str) -> None:
         await self.start_webserver()
         retry_started = time.monotonic()
-        retry_delay_sec = _DISCORD_LOGIN_RETRY_INITIAL_SEC
         startup_attempt = 1
         root_failure_logged = False
         self._reset_startup_diag(attempt=startup_attempt)
@@ -1473,6 +1472,7 @@ class Runtime:
                     "startup attempt %s created new bot/client for retry",
                     startup_attempt,
                 )
+                raise
 
     async def _run_startup_setup(self) -> None:
         _startup_phase_log("config validation", "start")
