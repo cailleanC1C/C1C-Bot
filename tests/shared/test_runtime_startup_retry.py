@@ -7,9 +7,8 @@ import pytest
 from modules.common import runtime
 
 
-class _RetryableLoginError(Exception):
-    status = 429
-    text = "cloudflare 1015"
+class _RetryableLoginError(asyncio.TimeoutError):
+    pass
 
 
 class _FakeBot:
@@ -19,6 +18,7 @@ class _FakeBot:
         self.start_calls = 0
         self.close_calls = 0
         self.label = label
+        self.user = None
         self.http = SimpleNamespace(_HTTPClient__session=None)
 
     def is_closed(self) -> bool:
@@ -39,14 +39,7 @@ class _FakeBot:
 
 
 def _patch_runtime_startup(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(runtime.discord, "HTTPException", _RetryableLoginError)
-    monkeypatch.setattr(
-        runtime,
-        "_is_startup_rate_limited",
-        lambda _exc: (True, "cloudflare_rate_limited(ray_id=test)"),
-    )
     monkeypatch.setattr(runtime.Runtime, "start_webserver", AsyncMock())
-    monkeypatch.setattr(runtime.Runtime, "load_extensions", AsyncMock())
     monkeypatch.setattr(runtime, "rehydrate_tiers", lambda _bot: None)
     monkeypatch.setattr(runtime, "audit_tiers", lambda _bot, _logger: None)
     monkeypatch.setattr(
@@ -87,6 +80,10 @@ def test_runtime_startup_retry_rebuilds_bot_per_attempt(
         sleep_mock = AsyncMock(return_value=None)
         monkeypatch.setattr(runtime, "_sleep_startup_retry_backoff", sleep_mock)
 
+        setup_calls: list[str] = []
+        setup_mock = AsyncMock(side_effect=lambda: setup_calls.append("ok"))
+        monkeypatch.setattr(runtime.Runtime, "_run_startup_setup", setup_mock)
+
         bot_attempt_1 = _FakeBot([_RetryableLoginError()], label="attempt-1")
         bot_attempt_2 = _FakeBot([_RetryableLoginError()], label="attempt-2")
         bot_attempt_3 = _FakeBot([None], label="attempt-3")
@@ -110,6 +107,7 @@ def test_runtime_startup_retry_rebuilds_bot_per_attempt(
         assert rebuilt == [bot_attempt_2, bot_attempt_3]
         assert rt.bot is bot_attempt_3
         assert sleep_mock.await_count == 2
+        assert setup_mock.await_count == 3
 
     asyncio.run(runner())
 
@@ -122,6 +120,7 @@ def test_runtime_startup_retry_requires_factory_for_rebuild(
         monkeypatch.setattr(
             runtime, "_sleep_startup_retry_backoff", AsyncMock(return_value=None)
         )
+        monkeypatch.setattr(runtime.Runtime, "_run_startup_setup", AsyncMock(return_value=None))
         bot = _FakeBot([_RetryableLoginError()], label="attempt-1")
         rt = runtime.Runtime(bot=bot)
 
@@ -129,5 +128,38 @@ def test_runtime_startup_retry_requires_factory_for_rebuild(
             await rt.start("token")
         assert bot.start_calls == 1
         assert bot.close_calls == 1
+
+    asyncio.run(runner())
+
+
+def test_runtime_startup_post_login_failure_does_not_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def runner() -> None:
+        _patch_runtime_startup(monkeypatch)
+        monkeypatch.setattr(
+            runtime, "_sleep_startup_retry_backoff", AsyncMock(return_value=None)
+        )
+        setup_mock = AsyncMock(return_value=None)
+        monkeypatch.setattr(runtime.Runtime, "_run_startup_setup", setup_mock)
+
+        class _PostLoginFailure(RuntimeError):
+            pass
+
+        bot = _FakeBot([None], label="attempt-1")
+
+        async def _start(_token: str) -> None:
+            bot.start_calls += 1
+            bot.user = object()
+            raise _PostLoginFailure("after login")
+
+        bot.start = _start  # type: ignore[assignment]
+        rt = runtime.Runtime(bot=bot, bot_factory=lambda: _FakeBot([], label="never"))
+
+        with pytest.raises(_PostLoginFailure):
+            await rt.start("token")
+        assert bot.start_calls == 1
+        assert setup_mock.await_count == 1
+        assert bot.close_calls == 0
 
     asyncio.run(runner())
