@@ -1366,9 +1366,7 @@ class Runtime:
             raise
 
         retry_started = time.monotonic()
-        retry_delay_sec = _DISCORD_LOGIN_RETRY_INITIAL_SEC
         startup_attempt = 1
-        root_failure_logged = False
         attempt_bot = self._build_bot_for_attempt(startup_attempt)
         log.info("startup attempt %s created new bot/client", startup_attempt)
         await asyncio.sleep(3)
@@ -1402,39 +1400,16 @@ class Runtime:
                         attempt=startup_attempt,
                         reason=detail,
                     )
+                    log.error(
+                        "startup failed (no retry)",
+                        extra={"startup_diag": self.startup_diag_snapshot()},
+                    )
                     raise
-                _startup_phase_log(
-                    "discord login",
-                    "fail",
-                    attempt=startup_attempt,
-                    reason=detail,
-                    retry="yes",
+                log.error(
+                    "startup retry disabled in dev mode — failing fast",
+                    extra={"startup_diag": self.startup_diag_snapshot()},
                 )
-                if not root_failure_logged:
-                    log.exception("startup root failure before retry", exc_info=exc)
-                    root_failure_logged = True
-                log.warning(
-                    "startup attempt %s failed, backing off %ss (%s)",
-                    startup_attempt,
-                    retry_delay_sec,
-                    detail,
-                )
-                log.info("startup attempt %s disposing failed bot/client", startup_attempt)
-                await self._dispose_bot_for_attempt(attempt_bot)
-                log.info("startup attempt %s disposed", startup_attempt)
-                jitter = int(retry_delay_sec * _DISCORD_LOGIN_RETRY_JITTER_RATIO)
-                retry_sleep = retry_delay_sec + (random.randint(0, jitter) if jitter else 0)
-                await _sleep_startup_retry_backoff(retry_sleep)
-                retry_delay_sec = min(
-                    _DISCORD_LOGIN_RETRY_CAP_SEC,
-                    retry_delay_sec * 2,
-                )
-                startup_attempt += 1
-                attempt_bot = self._build_bot_for_attempt(startup_attempt)
-                log.info(
-                    "startup attempt %s created new bot/client for retry",
-                    startup_attempt,
-                )
+                raise
 
     async def _run_startup_setup(self) -> None:
         _startup_phase_log("config validation", "start")
