@@ -238,6 +238,7 @@ async def _enforce_guild_allow_list(
 @bot.event
 async def on_ready():
     hb.note_ready()
+    runtime.startup_diag_mark(ready_reached=True)
     healthmod.set_component("discord", True)
     log.info("startup phase ready reached ok")
     log.info(
@@ -257,6 +258,7 @@ async def on_ready():
         return
 
     try:
+        runtime.startup_diag_mark(feature_init_started=True)
         await core_ready.on_ready(bot)
     except Exception:
         log.exception("READY FAILURE: core_ready.on_ready")
@@ -264,6 +266,7 @@ async def on_ready():
         return
 
     try:
+        runtime.startup_diag_mark(scheduler_start_reached=True)
         await runtime.register_ready_schedulers()
     except Exception:
         log.exception("READY FAILURE: runtime.register_ready_schedulers")
@@ -316,11 +319,13 @@ async def on_ready():
 @bot.event
 async def on_connect():
     hb.note_connected()
+    runtime.startup_diag_mark(login_reached=True)
 
 
 @bot.event
 async def on_resumed():
     hb.note_connected()
+    runtime.startup_diag_mark(login_reached=True)
 
 
 @bot.event
