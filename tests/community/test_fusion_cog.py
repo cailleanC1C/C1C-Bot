@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import discord
 import modules.community.fusion.cog as fusion_cog_module
+from modules.community.fusion import logs as fusion_logs
 from modules.community.fusion.cog import FusionCog
 from shared.sheets import fusion as fusion_sheets
 
@@ -373,5 +374,74 @@ def test_fusion_command_recreates_when_status_is_draft_even_with_existing_messag
             "🔗 Fusion’s up. Don’t get lost:\nhttps://discord.com/channels/1/123/1003",
             mention_author=False,
         )
+
+    asyncio.run(_run())
+
+
+def test_fusion_publish_load_failure_still_replies_when_internal_log_delivery_fails(monkeypatch):
+    async def _run() -> None:
+        bot = SimpleNamespace(get_channel=lambda _channel_id: None, fetch_channel=AsyncMock())
+        cog = FusionCog(bot)
+        ctx = SimpleNamespace(reply=AsyncMock())
+
+        async def _fake_get_publishable():
+            raise RuntimeError("sheet unavailable")
+
+        async def _boom(*_args, **_kwargs):
+            raise RuntimeError("log channel missing")
+
+        monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", _fake_get_publishable)
+        monkeypatch.setattr(fusion_logs.rt, "send_log_message", _boom)
+
+        await cog.fusion_publish.callback(cog, ctx)
+
+        ctx.reply.assert_awaited_once_with("Could not load fusion data right now.", mention_author=False)
+
+    asyncio.run(_run())
+
+
+def test_fusion_publish_announce_failure_still_replies_when_internal_log_delivery_fails(monkeypatch):
+    async def _run() -> None:
+        channel = FakeMessageable(123)
+        bot = SimpleNamespace(get_channel=lambda _channel_id: channel, fetch_channel=AsyncMock())
+        cog = FusionCog(bot)
+        ctx = SimpleNamespace(reply=AsyncMock())
+
+        async def _fake_get_publishable():
+            return _fusion_row(announcement_channel_id=123, announcement_message_id=None, status="draft")
+
+        async def _boom(*_args, **_kwargs):
+            raise RuntimeError("log channel missing")
+
+        monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", _fake_get_publishable)
+        monkeypatch.setattr(fusion_cog_module, "publish_fusion_announcement", AsyncMock(side_effect=RuntimeError("discord outage")))
+        monkeypatch.setattr(fusion_logs.rt, "send_log_message", _boom)
+
+        await cog.fusion_publish.callback(cog, ctx)
+
+        ctx.reply.assert_awaited_once_with("Failed to publish announcement right now.", mention_author=False)
+
+    asyncio.run(_run())
+
+
+def test_fusion_debug_event_failure_still_replies_when_internal_log_delivery_fails(monkeypatch):
+    async def _run() -> None:
+        bot = SimpleNamespace(get_channel=lambda _channel_id: None, fetch_channel=AsyncMock())
+        cog = FusionCog(bot)
+        ctx = SimpleNamespace(reply=AsyncMock())
+
+        async def _fake_get_publishable():
+            return _fusion_row()
+
+        async def _boom(*_args, **_kwargs):
+            raise RuntimeError("log channel missing")
+
+        monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", _fake_get_publishable)
+        monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(side_effect=RuntimeError("sheets outage")))
+        monkeypatch.setattr(fusion_logs.rt, "send_log_message", _boom)
+
+        await cog.fusion_debug.callback(cog, ctx)
+
+        ctx.reply.assert_awaited_once_with("Fusion events are temporarily unavailable.", mention_author=False)
 
     asyncio.run(_run())
