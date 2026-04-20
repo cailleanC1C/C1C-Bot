@@ -184,3 +184,44 @@ def test_build_view_keeps_progress_button_without_opt_role():
     assert "fusion:opt_in" not in custom_ids
     assert "fusion:opt_out" not in custom_ids
     assert custom_ids == ["fusion:my_progress"]
+
+
+def test_my_progress_accepts_nested_progress_payload(monkeypatch):
+    async def _run() -> None:
+        now = dt.datetime(2026, 4, 10, 12, 0, tzinfo=dt.timezone.utc)
+        target = _fusion_row(opt_in_role_id=777)
+        event = fusion_sheets.FusionEventRow(
+            fusion_id=target.fusion_id,
+            event_id="e-1",
+            event_name="Event 1",
+            event_type="tournament",
+            category="arena",
+            start_at_utc=now - dt.timedelta(hours=1),
+            end_at_utc=now + dt.timedelta(hours=1),
+            reward_amount=100.0,
+            bonus=None,
+            reward_type="fragments",
+            points_needed=1000,
+            is_estimated=False,
+            sort_order=1,
+        )
+        member = _Member(role=None)
+        guild = _Guild(role=SimpleNamespace(id=777), member=member)
+        interaction = _interaction(guild, member)
+
+        monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=target))
+        monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=[event]))
+        monkeypatch.setattr(
+            fusion_sheets,
+            "get_user_event_progress",
+            AsyncMock(return_value={"progress": {"e-1": "done"}}),
+        )
+
+        await opt_in_view._handle_my_progress(interaction)
+
+        interaction.response.send_message.assert_awaited_once()
+        kwargs = interaction.response.send_message.await_args.kwargs
+        assert kwargs["ephemeral"] is True
+        assert kwargs["embed"].title.startswith("My Progress")
+
+    asyncio.run(_run())

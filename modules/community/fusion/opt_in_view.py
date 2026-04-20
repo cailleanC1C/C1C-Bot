@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Literal
 
 import discord
 from discord.ext import commands
 
+from modules.community.fusion import logs as fusion_logs
 from shared.sheets import fusion as fusion_sheets
 
 log = logging.getLogger("c1c.community.fusion.opt_in")
@@ -35,6 +36,27 @@ _STATUS_ICONS = {
     "missed": "⚠️",
     "not_started": "⬜",
 }
+
+
+def _normalize_progress_payload(payload: object) -> tuple[dict[str, str], bool]:
+    if isinstance(payload, Mapping) and "progress" in payload and isinstance(payload.get("progress"), Mapping):
+        candidate = payload.get("progress")
+    else:
+        candidate = payload
+
+    if not isinstance(candidate, Mapping):
+        return {}, True
+
+    normalized: dict[str, str] = {}
+    for key, value in candidate.items():
+        event_id = str(key or "").strip()
+        if not event_id:
+            continue
+        status = str(value or "").strip().lower()
+        if status not in {"not_started", "in_progress", "done", "skipped", "missed"}:
+            status = "not_started"
+        normalized[event_id] = status
+    return normalized, False
 
 
 async def _send_ephemeral(interaction: discord.Interaction, message: str) -> None:
@@ -94,8 +116,16 @@ async def _resolve_opt_in_role(interaction: discord.Interaction) -> tuple[discor
 async def _handle_opt_action(interaction: discord.Interaction, *, action: Literal["in", "out"]) -> None:
     try:
         member, role = await _resolve_opt_in_role(interaction)
-    except Exception:
-        log.exception("fusion opt button failed to resolve role")
+    except Exception as exc:
+        context = fusion_logs.interaction_context(interaction, custom_id=f"fusion:opt_{action}")
+        log.exception("fusion opt button failed to resolve role", extra=context)
+        await fusion_logs.send_ops_alert(
+            component="opt_button",
+            summary="resolve_opt_in_role_failed",
+            dedupe_key=f"fusion:opt_role:{action}",
+            error=exc,
+            fields=context,
+        )
         await _send_ephemeral(interaction, "Temporary issue. Try again shortly.")
         return
 
@@ -110,10 +140,15 @@ async def _handle_opt_action(interaction: discord.Interaction, *, action: Litera
             return
         try:
             await member.add_roles(role, reason="Fusion role opt-in button")
-        except Exception:
-            log.exception(
-                "fusion opt-in add role failed",
-                extra={"guild_id": member.guild.id, "user_id": member.id, "role_id": role.id},
+        except Exception as exc:
+            context = {"guild_id": member.guild.id, "user_id": member.id, "role_id": role.id, "custom_id": _FUSION_OPT_IN_CUSTOM_ID}
+            log.exception("fusion opt-in add role failed", extra=context)
+            await fusion_logs.send_ops_alert(
+                component="opt_button",
+                summary="add_role_failed",
+                dedupe_key=f"fusion:opt_in:add_role:{member.guild.id}:{role.id}",
+                error=exc,
+                fields=context,
             )
             await _send_ephemeral(interaction, "Couldn’t update your fusion role right now.")
             return
@@ -126,10 +161,15 @@ async def _handle_opt_action(interaction: discord.Interaction, *, action: Litera
 
     try:
         await member.remove_roles(role, reason="Fusion role opt-out button")
-    except Exception:
-        log.exception(
-            "fusion opt-out remove role failed",
-            extra={"guild_id": member.guild.id, "user_id": member.id, "role_id": role.id},
+    except Exception as exc:
+        context = {"guild_id": member.guild.id, "user_id": member.id, "role_id": role.id, "custom_id": _FUSION_OPT_OUT_CUSTOM_ID}
+        log.exception("fusion opt-out remove role failed", extra=context)
+        await fusion_logs.send_ops_alert(
+            component="opt_button",
+            summary="remove_role_failed",
+            dedupe_key=f"fusion:opt_out:remove_role:{member.guild.id}:{role.id}",
+            error=exc,
+            fields=context,
         )
         await _send_ephemeral(interaction, "Couldn’t update your fusion role right now.")
         return
@@ -291,10 +331,20 @@ class _FusionProgressStatusSelect(discord.ui.Select):
                 status,
                 now,
             )
-        except Exception:
-            log.exception(
-                "fusion progress status update failed",
-                extra={"fusion_id": view.fusion_id, "event_id": event.event_id, "user_id": view.user_id},
+        except Exception as exc:
+            context = {
+                "fusion_id": view.fusion_id,
+                "event_id": event.event_id,
+                "user_id": view.user_id,
+                "custom_id": _FUSION_PROGRESS_STATUS_CUSTOM_ID,
+            }
+            log.exception("fusion progress status update failed", extra=context)
+            await fusion_logs.send_ops_alert(
+                component="my_progress",
+                summary="status_update_failed",
+                dedupe_key=f"fusion:progress:update:{view.fusion_id}:{event.event_id}",
+                error=exc,
+                fields=context,
             )
             await _send_ephemeral(interaction, "Couldn’t save progress right now. Try again in a moment.")
             return
@@ -354,8 +404,16 @@ class FusionProgressPanelView(discord.ui.View):
 async def _handle_my_progress(interaction: discord.Interaction) -> None:
     try:
         target = await fusion_sheets.get_publishable_fusion()
-    except Exception:
-        log.exception("fusion my-progress failed to resolve active fusion")
+    except Exception as exc:
+        context = fusion_logs.interaction_context(interaction, custom_id=_FUSION_MY_PROGRESS_CUSTOM_ID)
+        log.exception("fusion my-progress failed to resolve active fusion", extra=context)
+        await fusion_logs.send_ops_alert(
+            component="my_progress",
+            summary="resolve_active_fusion_failed",
+            dedupe_key="fusion:my_progress:active",
+            error=exc,
+            fields=context,
+        )
         await _send_ephemeral(interaction, "Couldn’t load fusion progress right now. Try again shortly.")
         return
 
@@ -365,8 +423,17 @@ async def _handle_my_progress(interaction: discord.Interaction) -> None:
 
     try:
         events = await fusion_sheets.get_fusion_events(target.fusion_id)
-    except Exception:
-        log.exception("fusion my-progress failed to load events", extra={"fusion_id": target.fusion_id})
+    except Exception as exc:
+        context = fusion_logs.interaction_context(interaction, custom_id=_FUSION_MY_PROGRESS_CUSTOM_ID)
+        context.update({"fusion_id": target.fusion_id})
+        log.exception("fusion my-progress failed to load events", extra=context)
+        await fusion_logs.send_ops_alert(
+            component="my_progress",
+            summary="load_events_failed",
+            dedupe_key=f"fusion:my_progress:events:{target.fusion_id}",
+            error=exc,
+            fields=context,
+        )
         await _send_ephemeral(interaction, "Couldn’t load events right now. Try again shortly.")
         return
 
@@ -379,13 +446,30 @@ async def _handle_my_progress(interaction: discord.Interaction) -> None:
             target.fusion_id,
             str(interaction.user.id),
         )
-    except Exception:
-        log.exception(
-            "fusion my-progress failed to load user progress",
-            extra={"fusion_id": target.fusion_id, "user_id": interaction.user.id},
+    except Exception as exc:
+        context = fusion_logs.interaction_context(interaction, custom_id=_FUSION_MY_PROGRESS_CUSTOM_ID)
+        context.update({"fusion_id": target.fusion_id})
+        log.exception("fusion my-progress failed to load user progress", extra=context)
+        await fusion_logs.send_ops_alert(
+            component="my_progress",
+            summary="load_user_progress_failed",
+            dedupe_key=f"fusion:my_progress:user:{target.fusion_id}",
+            error=exc,
+            fields=context,
         )
         await _send_ephemeral(interaction, "Couldn’t load your saved progress right now.")
         return
+
+    progress_by_event, malformed_payload = _normalize_progress_payload(progress_by_event)
+    if malformed_payload:
+        context = {"fusion_id": target.fusion_id, "user_id": interaction.user.id}
+        log.warning("fusion my-progress payload malformed; continuing with empty state", extra=context)
+        await fusion_logs.send_ops_alert(
+            component="my_progress",
+            summary="progress_payload_malformed",
+            dedupe_key=f"fusion:my_progress:malformed:{target.fusion_id}",
+            fields=context,
+        )
 
     view = FusionProgressPanelView(
         user_id=interaction.user.id,
@@ -435,6 +519,18 @@ class FusionOptInView(discord.ui.View):
     )
     async def my_progress_button(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
         await _handle_my_progress(interaction)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        context = fusion_logs.interaction_context(interaction, custom_id=getattr(item, "custom_id", None))
+        log.exception("fusion opt-in view interaction failed", extra=context)
+        await fusion_logs.send_ops_alert(
+            component="interaction",
+            summary="view_handler_failed",
+            dedupe_key=f"fusion:view_error:{context.get('custom_id')}",
+            error=error,
+            fields=context,
+        )
+        await _send_ephemeral(interaction, "Temporary issue. Try again shortly.")
 
 
 def build_fusion_opt_in_view(target: fusion_sheets.FusionRow) -> discord.ui.View:

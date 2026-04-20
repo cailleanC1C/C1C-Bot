@@ -9,6 +9,7 @@ import discord
 from discord.ext import commands
 
 from modules.community.fusion.announcements import resolve_announcement_channel
+from modules.community.fusion import logs as fusion_logs
 from shared.sheets import fusion as fusion_sheets
 
 log = logging.getLogger("c1c.community.fusion.role_cleanup")
@@ -48,8 +49,14 @@ async def process_ended_fusion_role_cleanup(
 
     try:
         ended_fusions = await fusion_sheets.get_ended_fusions(now=reference)
-    except Exception:
+    except Exception as exc:
         log.exception("fusion role cleanup failed to load ended fusions")
+        await fusion_logs.send_ops_alert(
+            component="role_cleanup",
+            summary="load_ended_fusions_failed",
+            dedupe_key="fusion:role_cleanup:load_ended",
+            error=exc,
+        )
         return
 
     for target in ended_fusions:
@@ -58,10 +65,18 @@ async def process_ended_fusion_role_cleanup(
 
         try:
             sent_keys = await fusion_sheets.get_sent_reminder_keys(target.fusion_id)
-        except Exception:
+        except Exception as exc:
+            context = {"fusion_id": target.fusion_id}
             log.exception(
                 "fusion role cleanup failed to load dedupe state",
-                extra={"fusion_id": target.fusion_id},
+                extra=context,
+            )
+            await fusion_logs.send_ops_alert(
+                component="role_cleanup",
+                summary="load_dedupe_state_failed",
+                dedupe_key=f"fusion:role_cleanup:dedupe:{target.fusion_id}",
+                error=exc,
+                fields=context,
             )
             continue
 
@@ -105,10 +120,18 @@ async def process_ended_fusion_role_cleanup(
                 reminder_type=_ROLE_CLEANUP_TYPE,
                 sent_at=reference,
             )
-        except Exception:
+        except Exception as exc:
+            context = {"fusion_id": target.fusion_id, "role_id": target.opt_in_role_id}
             log.exception(
                 "fusion role cleanup iteration failed",
-                extra={"fusion_id": target.fusion_id, "role_id": target.opt_in_role_id},
+                extra=context,
+            )
+            await fusion_logs.send_ops_alert(
+                component="role_cleanup",
+                summary="iteration_failed",
+                dedupe_key=f"fusion:role_cleanup:iteration:{target.fusion_id}",
+                error=exc,
+                fields=context,
             )
 
 

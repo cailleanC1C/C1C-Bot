@@ -10,6 +10,7 @@ import discord
 from discord.ext import commands
 
 from modules.community.fusion.announcements import ensure_fusion_announcement
+from modules.community.fusion import logs as fusion_logs
 from modules.community.fusion.opt_in_view import build_fusion_opt_in_view
 from shared.sheets import fusion as fusion_sheets
 
@@ -78,8 +79,14 @@ async def process_fusion_reminders(
 
     try:
         target = await fusion_sheets.get_publishable_fusion()
-    except Exception:
+    except Exception as exc:
         log.exception("fusion reminder failed to load target fusion")
+        await fusion_logs.send_ops_alert(
+            component="reminders",
+            summary="load_target_fusion_failed",
+            dedupe_key="fusion:reminders:load_target",
+            error=exc,
+        )
         return
 
     if target is None:
@@ -95,12 +102,27 @@ async def process_fusion_reminders(
             exc,
             extra={"fusion_id": target.fusion_id},
         )
+        await fusion_logs.send_ops_alert(
+            component="reminders",
+            summary="durable_dedupe_unavailable_fail_open",
+            dedupe_key=f"fusion:reminders:dedupe:{target.fusion_id}",
+            error=exc,
+            fields={"fusion_id": target.fusion_id},
+        )
         sent_keys = set()
 
     try:
         events = await fusion_sheets.get_fusion_events(target.fusion_id)
-    except Exception:
-        log.exception("fusion reminder failed to load events", extra={"fusion_id": target.fusion_id})
+    except Exception as exc:
+        context = {"fusion_id": target.fusion_id}
+        log.exception("fusion reminder failed to load events", extra=context)
+        await fusion_logs.send_ops_alert(
+            component="reminders",
+            summary="load_events_failed",
+            dedupe_key=f"fusion:reminders:events:{target.fusion_id}",
+            error=exc,
+            fields=context,
+        )
         return
 
     for event in events:
@@ -124,9 +146,14 @@ async def process_fusion_reminders(
             try:
                 announcement_message = await ensure_fusion_announcement(bot, target)
                 if announcement_message is None:
+                    context = {
+                        "fusion_id": target.fusion_id,
+                        "event_id": event.event_id,
+                        "reminder_type": reminder_type,
+                    }
                     log.warning(
                         "fusion reminder skipped; announcement unavailable",
-                        extra={"fusion_id": target.fusion_id, "event_id": event.event_id, "reminder_type": reminder_type},
+                        extra=context,
                     )
                     continue
 
@@ -146,10 +173,24 @@ async def process_fusion_reminders(
                     sent_at=reference,
                 )
                 sent_keys.add(key)
-            except Exception:
+            except Exception as exc:
+                context = {
+                    "fusion_id": target.fusion_id,
+                    "event_id": event.event_id,
+                    "reminder_type": reminder_type,
+                }
                 log.exception(
                     "fusion reminder send failed",
-                    extra={"fusion_id": target.fusion_id, "event_id": event.event_id, "reminder_type": reminder_type},
+                    extra=context,
+                )
+                await fusion_logs.send_ops_alert(
+                    component="reminders",
+                    summary="send_failed",
+                    dedupe_key=(
+                        f"fusion:reminders:send:{target.fusion_id}:{event.event_id}:{reminder_type}"
+                    ),
+                    error=exc,
+                    fields=context,
                 )
 
 
