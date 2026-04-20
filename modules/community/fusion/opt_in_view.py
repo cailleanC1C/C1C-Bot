@@ -36,6 +36,7 @@ _STATUS_ICONS = {
     "missed": "⚠️",
     "not_started": "⬜",
 }
+_ALLOWED_PROGRESS_STATES = frozenset({"not_started", "in_progress", "done", "skipped"})
 
 
 def _normalize_progress_payload(payload: object) -> tuple[dict[str, str], bool]:
@@ -442,7 +443,7 @@ async def _handle_my_progress(interaction: discord.Interaction) -> None:
         return
 
     try:
-        progress_by_event = await fusion_sheets.get_user_event_progress(
+        raw_progress = await fusion_sheets.get_user_event_progress(
             target.fusion_id,
             str(interaction.user.id),
         )
@@ -457,8 +458,9 @@ async def _handle_my_progress(interaction: discord.Interaction) -> None:
             error=exc,
             fields=context,
         )
-        await _send_ephemeral(interaction, "Couldn’t load your saved progress right now.")
-        return
+        raw_progress = {}
+
+    progress_by_event = _normalize_saved_progress(raw_progress=raw_progress, events=events)
 
     progress_by_event, malformed_payload = _normalize_progress_payload(progress_by_event)
     if malformed_payload:
@@ -482,6 +484,34 @@ async def _handle_my_progress(interaction: discord.Interaction) -> None:
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         return
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+def _normalize_saved_progress(
+    *,
+    raw_progress: object,
+    events: Sequence[fusion_sheets.FusionEventRow],
+) -> dict[str, str]:
+    """Normalize saved payloads into per-event statuses with safe defaults."""
+
+    normalized: dict[str, str] = {}
+    known_event_ids = {event.event_id for event in events}
+    progress_payload: object = raw_progress
+    if isinstance(raw_progress, dict) and "progress" in raw_progress:
+        nested = raw_progress.get("progress")
+        if isinstance(nested, dict):
+            progress_payload = nested
+        else:
+            progress_payload = {}
+
+    if isinstance(progress_payload, dict):
+        for event_id, status in progress_payload.items():
+            event_token = str(event_id or "").strip()
+            if event_token not in known_event_ids:
+                continue
+            status_token = str(status or "").strip().lower()
+            normalized[event_token] = status_token if status_token in _ALLOWED_PROGRESS_STATES else "not_started"
+
+    return normalized
 
 
 class FusionOptInView(discord.ui.View):
