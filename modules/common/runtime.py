@@ -315,7 +315,10 @@ async def send_log_message(message: str) -> None:
     runtime = get_active_runtime()
     if runtime is None:
         return
-    await runtime.send_log_message(message)
+    try:
+        await runtime.send_log_message(message)
+    except Exception:
+        log.warning("failed to send log message (non-fatal)", exc_info=True)
 
 
 async def recreate_http_app() -> None:
@@ -1047,24 +1050,20 @@ class Runtime:
         await self.shutdown_webserver()
 
     async def send_log_message(self, message: str) -> None:
-        channel_id = get_log_channel_id()
-        if not channel_id:
-            return
-        content = _trim_message(str(message))
-        if not content:
-            return
-        await self.bot.wait_until_ready()
-        channel = self.bot.get_channel(channel_id)
-        if channel is None:
-            try:
-                channel = await self.bot.fetch_channel(channel_id)
-            except Exception:
-                log.exception("failed to fetch log channel", extra={"channel_id": channel_id})
-                return
         try:
+            channel_id = get_log_channel_id()
+            if not channel_id:
+                return
+            content = _trim_message(str(message))
+            if not content:
+                return
+            await self.bot.wait_until_ready()
+            channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                channel = await self.bot.fetch_channel(channel_id)
             await channel.send(content)
         except Exception:
-            log.exception("failed to send log message", extra={"channel_id": channel_id})
+            log.warning("failed to send log message (non-fatal)", exc_info=True)
 
     def schedule_startup_preload(self) -> None:
         schedule_startup_preload(self.bot)

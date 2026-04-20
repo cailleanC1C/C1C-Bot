@@ -163,3 +163,36 @@ def test_runtime_startup_post_login_failure_does_not_retry(
         assert bot.close_calls == 0
 
     asyncio.run(runner())
+
+
+def test_runtime_send_log_message_is_non_fatal_when_channel_send_fails() -> None:
+    async def runner() -> None:
+        channel = SimpleNamespace(send=AsyncMock(side_effect=RuntimeError("channel missing")))
+        bot = SimpleNamespace(
+            wait_until_ready=AsyncMock(return_value=None),
+            get_channel=lambda _channel_id: channel,
+            fetch_channel=AsyncMock(return_value=channel),
+        )
+        rt = runtime.Runtime(bot=bot)  # type: ignore[arg-type]
+
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(runtime, "get_log_channel_id", lambda: 123)
+            await rt.send_log_message("hello")
+
+        bot.wait_until_ready.assert_awaited_once()
+        channel.send.assert_awaited_once_with("hello")
+
+    asyncio.run(runner())
+
+
+def test_runtime_helper_send_log_message_is_non_fatal_when_runtime_raises() -> None:
+    async def runner() -> None:
+        active = SimpleNamespace(send_log_message=AsyncMock(side_effect=RuntimeError("boom")))
+
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(runtime, "get_active_runtime", lambda: active)
+            await runtime.send_log_message("hello")
+
+        active.send_log_message.assert_awaited_once_with("hello")
+
+    asyncio.run(runner())
