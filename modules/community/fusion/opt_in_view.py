@@ -37,6 +37,19 @@ _STATUS_ICONS = {
     "not_started": "⬜",
 }
 _ALLOWED_PROGRESS_STATES = frozenset({"not_started", "in_progress", "done", "skipped"})
+_STATUS_INDEX_TO_CANONICAL = {
+    "0": "not_started",
+    "1": "in_progress",
+    "2": "done",
+    "3": "skipped",
+}
+
+
+def _coerce_status_for_save(raw_status: object) -> str | None:
+    token = str(raw_status or "").strip().lower()
+    if token in _ALLOWED_PROGRESS_STATES:
+        return token
+    return _STATUS_INDEX_TO_CANONICAL.get(token)
 
 
 def _normalize_progress_payload(payload: object) -> tuple[dict[str, str], bool]:
@@ -317,13 +330,34 @@ class _FusionProgressStatusSelect(discord.ui.Select):
             await _send_ephemeral(interaction, "Choose an event first.")
             return
 
-        status = self.values[0] if self.values else "not_started"
+        selected_status = self.values[0] if self.values else "not_started"
+        status = _coerce_status_for_save(selected_status)
+        if status is None:
+            context = {
+                "fusion_id": view.fusion_id,
+                "event_id": view.selected_event_id,
+                "user_id": view.user_id,
+                "status": str(selected_status),
+                "custom_id": _FUSION_PROGRESS_STATUS_CUSTOM_ID,
+            }
+            log.error("fusion progress status invalid; aborting save", extra=context)
+            await _send_ephemeral(interaction, "Couldn’t save progress right now. Please choose a valid status.")
+            return
         event = view.events_by_id.get(view.selected_event_id)
         if event is None:
             await _send_ephemeral(interaction, "That event is no longer available. Reopen My Progress.")
             return
 
         now = dt.datetime.now(dt.timezone.utc)
+        log.info(
+            "fusion progress status save requested",
+            extra={
+                "fusion_id": view.fusion_id,
+                "event_id": event.event_id,
+                "user_id": view.user_id,
+                "status": status,
+            },
+        )
         try:
             await fusion_sheets.upsert_user_event_progress(
                 view.fusion_id,

@@ -29,11 +29,6 @@ def _install_progress_config(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch,
         {
             "FUSION_USER_EVENT_PROGRESS_TAB": "Progress Ledger",
-            "FUSION_USER_EVENT_PROGRESS_COL_FUSION_ID": "FusionKey",
-            "FUSION_USER_EVENT_PROGRESS_COL_USER_ID": "UserKey",
-            "FUSION_USER_EVENT_PROGRESS_COL_EVENT_ID": "EventKey",
-            "FUSION_USER_EVENT_PROGRESS_COL_STATUS": "Status",
-            "FUSION_USER_EVENT_PROGRESS_COL_UPDATED_AT_UTC": "UpdatedAt",
         },
     )
 
@@ -132,22 +127,32 @@ def test_upsert_user_event_progress_appends_when_missing(monkeypatch: pytest.Mon
     assert worksheet.appended[0][0:4] == ["f-1", "42", "e-2", "in_progress"]
 
 
-def test_get_user_event_progress_requires_configured_column_keys(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delitem(
-        config_module._CONFIG,
-        "FUSION_USER_EVENT_PROGRESS_COL_FUSION_ID",
-        raising=False,
-    )
-    _install_config(
-        monkeypatch,
-        {
-            "FUSION_USER_EVENT_PROGRESS_TAB": "Progress Ledger",
-            "FUSION_USER_EVENT_PROGRESS_COL_USER_ID": "UserKey",
-            "FUSION_USER_EVENT_PROGRESS_COL_EVENT_ID": "EventKey",
-            "FUSION_USER_EVENT_PROGRESS_COL_STATUS": "Status",
-            "FUSION_USER_EVENT_PROGRESS_COL_UPDATED_AT_UTC": "UpdatedAt",
-        },
-    )
+def test_get_user_event_progress_requires_expected_headers(monkeypatch: pytest.MonkeyPatch):
+    _install_progress_config(monkeypatch)
+    monkeypatch.setattr(fusion_sheets, "_sheet_id", lambda: "sheet-1")
 
-    with pytest.raises(RuntimeError, match="FUSION_USER_EVENT_PROGRESS_COL_FUSION_ID"):
+    async def _afetch_values(_sheet_id: str, _tab_name: str):
+        return [
+            ["BadFusion", "UserKey", "EventKey", "Status", "UpdatedAt"],
+            ["f-1", "42", "e-1", "done", "2026-01-01T00:00:00+00:00"],
+        ]
+
+    monkeypatch.setattr(fusion_sheets, "afetch_values", _afetch_values)
+
+    with pytest.raises(RuntimeError, match="missing required header"):
         asyncio.run(fusion_sheets.get_user_event_progress("f-1", "42"))
+
+
+def test_upsert_user_event_progress_rejects_non_canonical_status(monkeypatch: pytest.MonkeyPatch):
+    _install_progress_config(monkeypatch)
+
+    with pytest.raises(ValueError, match="Invalid fusion progress status"):
+        asyncio.run(
+            fusion_sheets.upsert_user_event_progress(
+                "f-1",
+                "42",
+                "e-1",
+                "3",
+                dt.datetime(2026, 1, 1, 12, 0, tzinfo=dt.timezone.utc),
+            )
+        )

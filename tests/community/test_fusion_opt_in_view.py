@@ -269,3 +269,11 @@ def test_my_progress_load_failure_still_opens_panel(monkeypatch):
         assert view.progress_by_event == {}
 
     asyncio.run(_run())
+
+
+def test_coerce_status_for_save_accepts_canonical_and_index_values():
+    assert opt_in_view._coerce_status_for_save("not_started") == "not_started"
+    assert opt_in_view._coerce_status_for_save("in_progress") == "in_progress"
+    assert opt_in_view._coerce_status_for_save("2") == "done"
+    assert opt_in_view._coerce_status_for_save(3) == "skipped"
+    assert opt_in_view._coerce_status_for_save("999") is None
