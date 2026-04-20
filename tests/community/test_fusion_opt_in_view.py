@@ -33,9 +33,10 @@ def _fusion_row(*, opt_in_role_id: int | None) -> fusion_sheets.FusionRow:
 class _Response:
     def __init__(self) -> None:
         self.send_message = AsyncMock()
+        self._is_done = False
 
     def is_done(self) -> bool:
-        return False
+        return self._is_done
 
 
 class _Member:
@@ -73,6 +74,24 @@ def _interaction(guild, member):
         user=member,
         response=_Response(),
         followup=SimpleNamespace(send=AsyncMock()),
+    )
+
+
+def _event_row(event_id: str) -> fusion_sheets.FusionEventRow:
+    return fusion_sheets.FusionEventRow(
+        fusion_id="f-1",
+        event_id=event_id,
+        event_name=f"Event {event_id}",
+        event_type="dungeon",
+        category="Tournaments",
+        start_at_utc=dt.datetime(2026, 4, 8, tzinfo=dt.timezone.utc),
+        end_at_utc=dt.datetime(2026, 4, 9, tzinfo=dt.timezone.utc),
+        reward_amount=5.0,
+        bonus=None,
+        reward_type="fragments",
+        points_needed=None,
+        is_estimated=False,
+        sort_order=1,
     )
 
 
@@ -184,3 +203,69 @@ def test_build_view_keeps_progress_button_without_opt_role():
     assert "fusion:opt_in" not in custom_ids
     assert "fusion:opt_out" not in custom_ids
     assert custom_ids == ["fusion:my_progress"]
+
+
+def test_my_progress_first_time_user_opens_panel(monkeypatch):
+    async def _run() -> None:
+        member = _Member(role=None)
+        guild = _Guild(role=None, member=member)
+        interaction = _interaction(guild, member)
+        events = [_event_row("e1"), _event_row("e2")]
+        monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row(opt_in_role_id=777)))
+        monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=events))
+        monkeypatch.setattr(fusion_sheets, "get_user_event_progress", AsyncMock(return_value={}))
+
+        await opt_in_view._handle_my_progress(interaction)
+
+        interaction.response.send_message.assert_awaited_once()
+        sent_kwargs = interaction.response.send_message.await_args.kwargs
+        view = sent_kwargs["view"]
+        assert isinstance(view, opt_in_view.FusionProgressPanelView)
+        assert view.progress_by_event == {}
+
+    asyncio.run(_run())
+
+
+def test_my_progress_prefills_saved_event_states(monkeypatch):
+    async def _run() -> None:
+        member = _Member(role=None)
+        guild = _Guild(role=None, member=member)
+        interaction = _interaction(guild, member)
+        events = [_event_row("e1"), _event_row("e2")]
+        monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row(opt_in_role_id=777)))
+        monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=events))
+        monkeypatch.setattr(
+            fusion_sheets,
+            "get_user_event_progress",
+            AsyncMock(return_value={"progress": {"e1": "done", "e2": "in_progress", "missing": "done"}}),
+        )
+
+        await opt_in_view._handle_my_progress(interaction)
+
+        sent_kwargs = interaction.response.send_message.await_args.kwargs
+        view = sent_kwargs["view"]
+        assert isinstance(view, opt_in_view.FusionProgressPanelView)
+        assert view.progress_by_event == {"e1": "done", "e2": "in_progress"}
+
+    asyncio.run(_run())
+
+
+def test_my_progress_load_failure_still_opens_panel(monkeypatch):
+    async def _run() -> None:
+        member = _Member(role=None)
+        guild = _Guild(role=None, member=member)
+        interaction = _interaction(guild, member)
+        events = [_event_row("e1")]
+        monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row(opt_in_role_id=777)))
+        monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=events))
+        monkeypatch.setattr(fusion_sheets, "get_user_event_progress", AsyncMock(side_effect=RuntimeError("boom")))
+
+        await opt_in_view._handle_my_progress(interaction)
+
+        interaction.response.send_message.assert_awaited_once()
+        sent_kwargs = interaction.response.send_message.await_args.kwargs
+        view = sent_kwargs["view"]
+        assert isinstance(view, opt_in_view.FusionProgressPanelView)
+        assert view.progress_by_event == {}
+
+    asyncio.run(_run())
