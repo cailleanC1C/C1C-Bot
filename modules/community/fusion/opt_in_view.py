@@ -295,6 +295,7 @@ class _FusionProgressEventSelect(discord.ui.Select):
 
         selected_event_id = self.values[0] if self.values else ""
         view.selected_event_id = selected_event_id or None
+        view.refresh_items()
         await interaction.response.edit_message(
             embed=view.build_embed(),
             view=view,
@@ -326,7 +327,8 @@ class _FusionProgressStatusSelect(discord.ui.Select):
         if interaction.user.id != view.user_id:
             await _send_ephemeral(interaction, "This progress panel belongs to a different user.")
             return
-        if not view.selected_event_id:
+        selected_event_id = view.selected_event_id
+        if not selected_event_id:
             await _send_ephemeral(interaction, "Choose an event first.")
             return
 
@@ -335,7 +337,7 @@ class _FusionProgressStatusSelect(discord.ui.Select):
         if status is None:
             context = {
                 "fusion_id": view.fusion_id,
-                "event_id": view.selected_event_id,
+                "event_id": selected_event_id,
                 "user_id": view.user_id,
                 "status": str(selected_status),
                 "custom_id": _FUSION_PROGRESS_STATUS_CUSTOM_ID,
@@ -343,7 +345,7 @@ class _FusionProgressStatusSelect(discord.ui.Select):
             log.error("fusion progress status invalid; aborting save", extra=context)
             await _send_ephemeral(interaction, "Couldn’t save progress right now. Please choose a valid status.")
             return
-        event = view.events_by_id.get(view.selected_event_id)
+        event = view.events_by_id.get(selected_event_id)
         if event is None:
             await _send_ephemeral(interaction, "That event is no longer available. Reopen My Progress.")
             return
@@ -385,6 +387,7 @@ class _FusionProgressStatusSelect(discord.ui.Select):
             return
 
         view.progress_by_event[event.event_id] = status
+        view.selected_event_id = event.event_id
         view.last_update = (event.event_name, status)
         view.refresh_items()
         await interaction.response.edit_message(
@@ -415,11 +418,20 @@ class FusionProgressPanelView(discord.ui.View):
         self.last_update: tuple[str, str] | None = None
         self.refresh_items()
 
+    def _coerce_selected_event_id(self) -> None:
+        if not self.events:
+            self.selected_event_id = None
+            return
+        if self.selected_event_id in self.events_by_id:
+            return
+        self.selected_event_id = self.events[0].event_id
+
     def refresh_items(self) -> None:
         self.clear_items()
         if not self.events:
             return
 
+        self._coerce_selected_event_id()
         self.add_item(_FusionProgressEventSelect(self.events, self.selected_event_id))
         selected_status = None
         if self.selected_event_id:

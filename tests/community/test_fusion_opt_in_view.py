@@ -33,6 +33,7 @@ def _fusion_row(*, opt_in_role_id: int | None) -> fusion_sheets.FusionRow:
 class _Response:
     def __init__(self) -> None:
         self.send_message = AsyncMock()
+        self.edit_message = AsyncMock()
         self._is_done = False
 
     def is_done(self) -> bool:
@@ -277,3 +278,54 @@ def test_coerce_status_for_save_accepts_canonical_and_index_values():
     assert opt_in_view._coerce_status_for_save("2") == "done"
     assert opt_in_view._coerce_status_for_save(3) == "skipped"
     assert opt_in_view._coerce_status_for_save("999") is None
+
+
+def test_my_progress_panel_keeps_selected_event_in_sync_across_second_save(monkeypatch):
+    async def _run() -> None:
+        events = [_event_row("e1"), _event_row("e2")]
+        view = opt_in_view.FusionProgressPanelView(
+            user_id=10,
+            target=_fusion_row(opt_in_role_id=777),
+            events=events,
+            progress_by_event={},
+        )
+        upsert_mock = AsyncMock()
+        monkeypatch.setattr(fusion_sheets, "upsert_user_event_progress", upsert_mock)
+
+        interaction = _interaction(guild=None, member=SimpleNamespace(id=10))
+
+        event_select = next(item for item in view.children if item.custom_id == "fusion:progress:event")
+        assert event_select.options[0].default is True
+        assert event_select.options[1].default is False
+
+        event_select._values = ["e1"]
+        await event_select.callback(interaction)
+        status_select = next(item for item in view.children if item.custom_id == "fusion:progress:status")
+        status_select._values = ["done"]
+        await status_select.callback(interaction)
+
+        event_select = next(item for item in view.children if item.custom_id == "fusion:progress:event")
+        event_select._values = ["e2"]
+        await event_select.callback(interaction)
+
+        assert view.selected_event_id == "e2"
+        event_select = next(item for item in view.children if item.custom_id == "fusion:progress:event")
+        defaults = {option.value: option.default for option in event_select.options}
+        assert defaults == {"e1": False, "e2": True}
+
+        status_select = next(item for item in view.children if item.custom_id == "fusion:progress:status")
+        status_select._values = ["in_progress"]
+        await status_select.callback(interaction)
+
+        assert upsert_mock.await_count == 2
+        first_call = upsert_mock.await_args_list[0].args
+        second_call = upsert_mock.await_args_list[1].args
+        assert first_call[2] == "e1"
+        assert second_call[2] == "e2"
+
+        embed = view.build_embed()
+        selected_field = next(field for field in embed.fields if field.name == "Selected Event")
+        assert "Event e2" in selected_field.value
+        assert view.progress_by_event["e2"] == "in_progress"
+
+    asyncio.run(_run())
