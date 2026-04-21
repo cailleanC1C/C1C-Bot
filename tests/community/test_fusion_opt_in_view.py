@@ -1,5 +1,6 @@
 import asyncio
 import datetime as dt
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -283,7 +284,8 @@ def test_coerce_status_for_save_accepts_canonical_and_index_values():
     assert opt_in_view._coerce_status_for_save("not_started") == "not_started"
     assert opt_in_view._coerce_status_for_save("in_progress") == "in_progress"
     assert opt_in_view._coerce_status_for_save("2") == "done"
-    assert opt_in_view._coerce_status_for_save(3) == "skipped"
+    assert opt_in_view._coerce_status_for_save("3") == "done_bonus"
+    assert opt_in_view._coerce_status_for_save(4) == "skipped"
     assert opt_in_view._coerce_status_for_save("999") is None
 
 
@@ -398,3 +400,60 @@ def test_event_dropdown_keeps_selected_event_after_sorting_rebuild():
     defaults = {option.value: option.default for option in event_select.options}
     assert defaults["e_missed"] is True
     assert view.selected_event_id == "e_missed"
+
+
+def test_fragments_done_counts_done_bonus_with_bonus_and_done_without_bonus():
+    events = [
+        _event_row("e_done", event_name="Base Done"),
+        _event_row("e_done_bonus", event_name="Bonus Done"),
+    ]
+    events[1] = replace(events[1], reward_amount=25.0, bonus=50.0)
+    progress_by_event = {"e_done": "done", "e_done_bonus": "done_bonus"}
+
+    embed = opt_in_view._build_progress_summary_embed(
+        target=_fusion_row(opt_in_role_id=777),
+        events=events,
+        progress_by_event=progress_by_event,
+        selected_event_id="e_done_bonus",
+    )
+
+    fragments_field = next(field for field in embed.fields if field.name == "Fragments")
+    summary_field = next(field for field in embed.fields if field.name == "Summary")
+    selected_field = next(field for field in embed.fields if field.name == "Selected Event")
+    assert fragments_field.value == "80 / 450 fragments earned"
+    assert "✅ Done: 2" in summary_field.value
+    assert "25 + 50 bonus frags" in selected_field.value
+
+
+def test_done_on_bonus_event_counts_base_only():
+    event = replace(_event_row("e_bonus"), reward_amount=25.0, bonus=50.0)
+    embed = opt_in_view._build_progress_summary_embed(
+        target=_fusion_row(opt_in_role_id=777),
+        events=[event],
+        progress_by_event={"e_bonus": "done"},
+        selected_event_id="e_bonus",
+    )
+    fragments_field = next(field for field in embed.fields if field.name == "Fragments")
+    assert fragments_field.value == "25 / 450 fragments earned"
+
+
+def test_status_options_include_done_bonus_only_when_event_has_bonus():
+    bonus_event = replace(_event_row("e_bonus"), bonus=10.0)
+    plain_event = _event_row("e_plain")
+
+    bonus_select = opt_in_view._FusionProgressStatusSelect("done_bonus", selected_event=bonus_event)
+    plain_select = opt_in_view._FusionProgressStatusSelect("done", selected_event=plain_event)
+
+    assert [option.value for option in bonus_select.options] == [
+        "not_started",
+        "in_progress",
+        "done",
+        "done_bonus",
+        "skipped",
+    ]
+    assert [option.value for option in plain_select.options] == [
+        "not_started",
+        "in_progress",
+        "done",
+        "skipped",
+    ]

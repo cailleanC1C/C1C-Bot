@@ -43,7 +43,8 @@ def test_get_user_event_progress_uses_configured_tab_and_columns(monkeypatch: py
         return [
             ["FusionKey", "UserKey", "EventKey", "Status", "UpdatedAt"],
             ["f-1", "42", "e-1", "done", "2026-01-01T00:00:00+00:00"],
-            ["f-1", "42", "e-2", "unknown", "2026-01-01T00:00:00+00:00"],
+            ["f-1", "42", "e-2", "done_bonus", "2026-01-01T00:00:00+00:00"],
+            ["f-1", "42", "e-3", "unknown", "2026-01-01T00:00:00+00:00"],
             ["f-2", "42", "e-9", "done", "2026-01-01T00:00:00+00:00"],
         ]
 
@@ -51,7 +52,7 @@ def test_get_user_event_progress_uses_configured_tab_and_columns(monkeypatch: py
 
     progress = asyncio.run(fusion_sheets.get_user_event_progress("f-1", "42"))
 
-    assert progress == {"e-1": "done", "e-2": "not_started"}
+    assert progress == {"e-1": "done", "e-2": "done_bonus", "e-3": "not_started"}
 
 
 def test_upsert_user_event_progress_updates_existing_row(monkeypatch: pytest.MonkeyPatch):
@@ -117,14 +118,14 @@ def test_upsert_user_event_progress_appends_when_missing(monkeypatch: pytest.Mon
             "f-1",
             "42",
             "e-2",
-            "in_progress",
+            "done_bonus",
             dt.datetime(2026, 1, 1, 12, 0, tzinfo=dt.timezone.utc),
         )
     )
 
     assert not worksheet.updated
     assert worksheet.appended
-    assert worksheet.appended[0][0:4] == ["f-1", "42", "e-2", "in_progress"]
+    assert worksheet.appended[0][0:4] == ["f-1", "42", "e-2", "done_bonus"]
 
 
 def test_get_user_event_progress_requires_expected_headers(monkeypatch: pytest.MonkeyPatch):

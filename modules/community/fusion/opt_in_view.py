@@ -22,27 +22,30 @@ _FUSION_PROGRESS_EVENT_CUSTOM_ID = "fusion:progress:event"
 _FUSION_PROGRESS_STATUS_CUSTOM_ID = "fusion:progress:status"
 
 _DISPLAY_STATUS_ORDER = ("done", "in_progress", "skipped", "missed", "not_started")
-_EVENT_DROPDOWN_STATUS_ORDER = ("not_started", "in_progress", "missed", "skipped", "done")
+_EVENT_DROPDOWN_STATUS_ORDER = ("not_started", "in_progress", "missed", "skipped", "done", "done_bonus")
 _STATUS_LABELS = {
     "not_started": "Not Started",
     "in_progress": "In Progress",
     "done": "Done",
+    "done_bonus": "Done + Bonus",
     "skipped": "Skipped",
     "missed": "Missed",
 }
 _STATUS_ICONS = {
     "done": "✅",
+    "done_bonus": "✅",
     "in_progress": "🟡",
     "skipped": "⏭️",
     "missed": "⚠️",
     "not_started": "⬜",
 }
-_ALLOWED_PROGRESS_STATES = frozenset({"not_started", "in_progress", "done", "skipped"})
+_ALLOWED_PROGRESS_STATES = frozenset({"not_started", "in_progress", "done", "done_bonus", "skipped"})
 _STATUS_INDEX_TO_CANONICAL = {
     "0": "not_started",
     "1": "in_progress",
     "2": "done",
-    "3": "skipped",
+    "3": "done_bonus",
+    "4": "skipped",
 }
 _EVENT_DROPDOWN_STATUS_RANK = {status: idx for idx, status in enumerate(_EVENT_DROPDOWN_STATUS_ORDER)}
 
@@ -56,7 +59,7 @@ def _effective_display_status(
     status = progress_by_event.get(event.event_id, "not_started")
     if status not in _ALLOWED_PROGRESS_STATES:
         status = "not_started"
-    if status == "done":
+    if status in {"done", "done_bonus"}:
         return status
 
     if now is None:
@@ -92,10 +95,25 @@ def _normalize_progress_payload(payload: object) -> tuple[dict[str, str], bool]:
         if not event_id:
             continue
         status = str(value or "").strip().lower()
-        if status not in {"not_started", "in_progress", "done", "skipped", "missed"}:
+        if status not in {"not_started", "in_progress", "done", "done_bonus", "skipped", "missed"}:
             status = "not_started"
         normalized[event_id] = status
     return normalized, False
+
+
+def _event_bonus_amount(event: fusion_sheets.FusionEventRow) -> float:
+    return event.bonus if event.bonus is not None else 0.0
+
+
+def _event_has_bonus(event: fusion_sheets.FusionEventRow) -> bool:
+    return _event_bonus_amount(event) > 0
+
+
+def _event_fragments_label(event: fusion_sheets.FusionEventRow) -> str:
+    bonus = _event_bonus_amount(event)
+    if bonus > 0:
+        return f"{event.reward_amount:g} + {bonus:g} bonus frags"
+    return f"{event.reward_amount:g} frags"
 
 
 async def _send_ephemeral(interaction: discord.Interaction, message: str) -> None:
@@ -230,6 +248,11 @@ def _build_progress_summary_embed(
     fragments_done = 0.0
     for event in events:
         status = _effective_display_status(event=event, progress_by_event=progress_by_event, now=now)
+        if status == "done_bonus":
+            display_status_by_event[event.event_id] = status
+            counts["done"] += 1
+            fragments_done += event.reward_amount + _event_bonus_amount(event)
+            continue
         if status not in counts:
             status = "not_started"
         display_status_by_event[event.event_id] = status
@@ -266,7 +289,7 @@ def _build_progress_summary_embed(
             icon = _STATUS_ICONS.get(current, _STATUS_ICONS["not_started"])
             embed.add_field(
                 name="Selected Event",
-                value=f"{icon} {selected.event_name}\n{selected.reward_amount:g} frags",
+                value=f"{icon} {selected.event_name}\n{_event_fragments_label(selected)}",
                 inline=False,
             )
 
@@ -336,13 +359,15 @@ class _FusionProgressEventSelect(discord.ui.Select):
 
 
 class _FusionProgressStatusSelect(discord.ui.Select):
-    def __init__(self, selected_status: str | None) -> None:
+    def __init__(self, selected_status: str | None, *, selected_event: fusion_sheets.FusionEventRow | None) -> None:
         options = [
             discord.SelectOption(label="Not Started", value="not_started", default=selected_status == "not_started"),
             discord.SelectOption(label="In Progress", value="in_progress", default=selected_status == "in_progress"),
             discord.SelectOption(label="Done", value="done", default=selected_status == "done"),
-            discord.SelectOption(label="Skipped", value="skipped", default=selected_status == "skipped"),
         ]
+        if selected_event is not None and _event_has_bonus(selected_event):
+            options.append(discord.SelectOption(label="Done + Bonus", value="done_bonus", default=selected_status == "done_bonus"))
+        options.append(discord.SelectOption(label="Skipped", value="skipped", default=selected_status == "skipped"))
         super().__init__(
             placeholder="Set status",
             min_values=1,
@@ -467,9 +492,13 @@ class FusionProgressPanelView(discord.ui.View):
         self._coerce_selected_event_id()
         self.add_item(_FusionProgressEventSelect(self.events, self.selected_event_id, self.progress_by_event))
         selected_status = None
+        selected_event = None
         if self.selected_event_id:
             selected_status = self.progress_by_event.get(self.selected_event_id, "not_started")
-        self.add_item(_FusionProgressStatusSelect(selected_status))
+            selected_event = self.events_by_id.get(self.selected_event_id)
+            if selected_status == "done_bonus" and selected_event is not None and not _event_has_bonus(selected_event):
+                selected_status = "done"
+        self.add_item(_FusionProgressStatusSelect(selected_status, selected_event=selected_event))
 
     def build_embed(self) -> discord.Embed:
         return _build_progress_summary_embed(

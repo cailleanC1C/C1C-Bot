@@ -25,7 +25,7 @@ _FUSION_BUCKET = "fusion"
 _FUSION_EVENTS_BUCKET = "fusion_events"
 _FUSION_REMINDER_TAB_KEY = "FUSION_REMINDER_TAB"
 _FUSION_PROGRESS_TAB_KEY = "FUSION_USER_EVENT_PROGRESS_TAB"
-_PROGRESS_ALLOWED_STATUSES = {"not_started", "in_progress", "done", "skipped"}
+_PROGRESS_ALLOWED_STATUSES = {"not_started", "in_progress", "done", "done_bonus", "skipped"}
 _FUSION_REMINDER_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "fusion_id": ("fusion_id",),
     "event_id": ("event_id",),
