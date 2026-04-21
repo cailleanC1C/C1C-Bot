@@ -78,21 +78,28 @@ def _interaction(guild, member):
     )
 
 
-def _event_row(event_id: str) -> fusion_sheets.FusionEventRow:
+def _event_row(
+    event_id: str,
+    *,
+    event_name: str | None = None,
+    start_at_utc: dt.datetime | None = None,
+    end_at_utc: dt.datetime | None = None,
+    sort_order: int = 1,
+) -> fusion_sheets.FusionEventRow:
     return fusion_sheets.FusionEventRow(
         fusion_id="f-1",
         event_id=event_id,
-        event_name=f"Event {event_id}",
+        event_name=event_name or f"Event {event_id}",
         event_type="dungeon",
         category="Tournaments",
-        start_at_utc=dt.datetime(2026, 4, 8, tzinfo=dt.timezone.utc),
-        end_at_utc=dt.datetime(2026, 4, 9, tzinfo=dt.timezone.utc),
+        start_at_utc=start_at_utc or dt.datetime(2026, 4, 8, tzinfo=dt.timezone.utc),
+        end_at_utc=end_at_utc or dt.datetime(2026, 4, 9, tzinfo=dt.timezone.utc),
         reward_amount=5.0,
         bonus=None,
         reward_type="fragments",
         points_needed=None,
         is_estimated=False,
-        sort_order=1,
+        sort_order=sort_order,
     )
 
 
@@ -329,3 +336,65 @@ def test_my_progress_panel_keeps_selected_event_in_sync_across_second_save(monke
         assert view.progress_by_event["e2"] == "in_progress"
 
     asyncio.run(_run())
+
+
+def test_event_dropdown_uses_effective_status_icons_and_sort_order():
+    now = dt.datetime(2026, 4, 21, tzinfo=dt.timezone.utc)
+    future_start = dt.datetime(2026, 4, 25, tzinfo=dt.timezone.utc)
+    future_end = dt.datetime(2026, 4, 26, tzinfo=dt.timezone.utc)
+    past_start = dt.datetime(2026, 4, 1, tzinfo=dt.timezone.utc)
+    past_end = dt.datetime(2026, 4, 2, tzinfo=dt.timezone.utc)
+    events = [
+        _event_row("e_done_ended", event_name="Done Ended", start_at_utc=past_start, end_at_utc=past_end),
+        _event_row("e_not_started", event_name="Not Started", start_at_utc=future_start, end_at_utc=future_end),
+        _event_row("e_in_progress", event_name="In Progress", start_at_utc=future_start, end_at_utc=future_end),
+        _event_row("e_missed", event_name="Missed", start_at_utc=past_start, end_at_utc=past_end),
+        _event_row("e_skipped", event_name="Skipped", start_at_utc=future_start, end_at_utc=future_end),
+    ]
+    progress_by_event = {
+        "e_done_ended": "done",
+        "e_in_progress": "in_progress",
+        "e_skipped": "skipped",
+    }
+
+    select = opt_in_view._FusionProgressEventSelect(events, selected_event_id=None, progress_by_event=progress_by_event)
+    labels = [option.label for option in select.options]
+    assert labels == [
+        "⬜ Not Started",
+        "🟡 In Progress",
+        "⚠️ Missed",
+        "⏭️ Skipped",
+        "✅ Done Ended",
+    ]
+
+    assert (
+        opt_in_view._effective_display_status(event=events[3], progress_by_event=progress_by_event, now=now) == "missed"
+    )
+    assert (
+        opt_in_view._effective_display_status(event=events[0], progress_by_event=progress_by_event, now=now) == "done"
+    )
+
+
+def test_event_dropdown_keeps_selected_event_after_sorting_rebuild():
+    past_start = dt.datetime(2026, 4, 1, tzinfo=dt.timezone.utc)
+    past_end = dt.datetime(2026, 4, 2, tzinfo=dt.timezone.utc)
+    future_start = dt.datetime(2026, 4, 25, tzinfo=dt.timezone.utc)
+    future_end = dt.datetime(2026, 4, 26, tzinfo=dt.timezone.utc)
+    events = [
+        _event_row("e_done", event_name="Done", start_at_utc=past_start, end_at_utc=past_end),
+        _event_row("e_missed", event_name="Missed", start_at_utc=past_start, end_at_utc=past_end),
+        _event_row("e_not_started", event_name="Not Started", start_at_utc=future_start, end_at_utc=future_end),
+    ]
+    view = opt_in_view.FusionProgressPanelView(
+        user_id=10,
+        target=_fusion_row(opt_in_role_id=777),
+        events=events,
+        progress_by_event={"e_done": "done"},
+    )
+    view.selected_event_id = "e_missed"
+    view.refresh_items()
+
+    event_select = next(item for item in view.children if item.custom_id == "fusion:progress:event")
+    defaults = {option.value: option.default for option in event_select.options}
+    assert defaults["e_missed"] is True
+    assert view.selected_event_id == "e_missed"

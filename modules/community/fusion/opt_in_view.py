@@ -22,6 +22,7 @@ _FUSION_PROGRESS_EVENT_CUSTOM_ID = "fusion:progress:event"
 _FUSION_PROGRESS_STATUS_CUSTOM_ID = "fusion:progress:status"
 
 _DISPLAY_STATUS_ORDER = ("done", "in_progress", "skipped", "missed", "not_started")
+_EVENT_DROPDOWN_STATUS_ORDER = ("not_started", "in_progress", "missed", "skipped", "done")
 _STATUS_LABELS = {
     "not_started": "Not Started",
     "in_progress": "In Progress",
@@ -43,6 +44,30 @@ _STATUS_INDEX_TO_CANONICAL = {
     "2": "done",
     "3": "skipped",
 }
+_EVENT_DROPDOWN_STATUS_RANK = {status: idx for idx, status in enumerate(_EVENT_DROPDOWN_STATUS_ORDER)}
+
+
+def _effective_display_status(
+    *,
+    event: fusion_sheets.FusionEventRow,
+    progress_by_event: Mapping[str, str],
+    now: dt.datetime | None = None,
+) -> str:
+    status = progress_by_event.get(event.event_id, "not_started")
+    if status not in _ALLOWED_PROGRESS_STATES:
+        status = "not_started"
+    if status == "done":
+        return status
+
+    if now is None:
+        now = dt.datetime.now(dt.timezone.utc)
+    timing = fusion_sheets.get_valid_event_timing(event, for_helper="fusion_my_progress")
+    if timing is None:
+        return status
+    start_at, end_at = timing
+    if fusion_sheets.derive_event_status(start_at_utc=start_at, end_at_utc=end_at, now=now) == "ended":
+        return "missed"
+    return status
 
 
 def _coerce_status_for_save(raw_status: object) -> str | None:
@@ -204,18 +229,7 @@ def _build_progress_summary_embed(
     display_status_by_event: dict[str, str] = {}
     fragments_done = 0.0
     for event in events:
-        has_saved_status = event.event_id in progress_by_event
-        status = progress_by_event.get(event.event_id, "not_started")
-        if not has_saved_status and status == "not_started":
-            timing = fusion_sheets.get_valid_event_timing(event, for_helper="fusion_my_progress")
-            if timing is not None:
-                start_at, end_at = timing
-                if fusion_sheets.derive_event_status(
-                    start_at_utc=start_at,
-                    end_at_utc=end_at,
-                    now=now,
-                ) == "ended":
-                    status = "missed"
+        status = _effective_display_status(event=event, progress_by_event=progress_by_event, now=now)
         if status not in counts:
             status = "not_started"
         display_status_by_event[event.event_id] = status
@@ -266,12 +280,31 @@ def _build_progress_summary_embed(
 
 
 class _FusionProgressEventSelect(discord.ui.Select):
-    def __init__(self, events: Sequence[fusion_sheets.FusionEventRow], selected_event_id: str | None) -> None:
+    def __init__(
+        self,
+        events: Sequence[fusion_sheets.FusionEventRow],
+        selected_event_id: str | None,
+        progress_by_event: Mapping[str, str],
+    ) -> None:
+        now = dt.datetime.now(dt.timezone.utc)
+        event_rows = list(enumerate(events))
+        ordered_events = sorted(
+            event_rows,
+            key=lambda item: (
+                _EVENT_DROPDOWN_STATUS_RANK.get(
+                    _effective_display_status(event=item[1], progress_by_event=progress_by_event, now=now),
+                    len(_EVENT_DROPDOWN_STATUS_RANK),
+                ),
+                item[0],
+            ),
+        )
         options: list[discord.SelectOption] = []
-        for event in events[:25]:
+        for _, event in ordered_events[:25]:
+            status = _effective_display_status(event=event, progress_by_event=progress_by_event, now=now)
+            icon = _STATUS_ICONS.get(status, _STATUS_ICONS["not_started"])
             options.append(
                 discord.SelectOption(
-                    label=event.event_name[:100] or event.event_id[:100],
+                    label=f"{icon} {event.event_name or event.event_id}"[:100],
                     value=event.event_id,
                     default=event.event_id == selected_event_id,
                 )
@@ -432,7 +465,7 @@ class FusionProgressPanelView(discord.ui.View):
             return
 
         self._coerce_selected_event_id()
-        self.add_item(_FusionProgressEventSelect(self.events, self.selected_event_id))
+        self.add_item(_FusionProgressEventSelect(self.events, self.selected_event_id, self.progress_by_event))
         selected_status = None
         if self.selected_event_id:
             selected_status = self.progress_by_event.get(self.selected_event_id, "not_started")
