@@ -257,3 +257,25 @@ def test_promo_watcher_respects_feature_flags(monkeypatch: pytest.MonkeyPatch):
         await watcher.on_thread_create(thread)
 
     asyncio.run(runner())
+
+
+def test_setup_is_idempotent_for_existing_promo_watcher() -> None:
+    class DummyBot:
+        def __init__(self) -> None:
+            self._cogs = {}
+            self.add_calls = 0
+
+        def get_cog(self, name: str):
+            return self._cogs.get(name)
+
+        async def add_cog(self, cog) -> None:
+            self.add_calls += 1
+            self._cogs[type(cog).__name__] = cog
+
+    async def _run() -> None:
+        bot = DummyBot()
+        await watcher_promo.setup(bot)
+        await watcher_promo.setup(bot)
+        assert bot.add_calls == 1
+
+    asyncio.run(_run())

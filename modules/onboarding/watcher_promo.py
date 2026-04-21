@@ -1023,4 +1023,8 @@ class PromoTicketWatcher(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
-    await bot.add_cog(PromoTicketWatcher(bot))
+    existing = bot.get_cog("PromoTicketWatcher")
+    if existing is None:
+        await bot.add_cog(PromoTicketWatcher(bot))
+    elif not isinstance(existing, PromoTicketWatcher):
+        raise RuntimeError("cog name collision for PromoTicketWatcher")

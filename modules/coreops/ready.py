@@ -40,8 +40,12 @@ async def on_ready(bot: commands.Bot) -> None:
 
         try:
             await watcher_promo.setup(bot)
-        except Exception:
-            log.exception("CORE_READY FAILURE: watcher_promo.setup")
+        except Exception as exc:
+            log.exception(
+                "CORE_READY FAILURE: watcher_promo.setup (%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
             return
 
         # Guard against bots without a .logger attribute; fall back to module logger.
