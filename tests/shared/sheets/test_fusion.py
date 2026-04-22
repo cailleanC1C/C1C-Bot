@@ -234,3 +234,55 @@ def test_get_upcoming_events_uses_validated_timestamps_for_sorting(
     result = asyncio.run(fusion.get_upcoming_events("f-1", now=now))
 
     assert [row.event_id for row in result] == ["naive-earlier", "aware"]
+
+
+def test_transition_fusion_to_ended_updates_status_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    worksheet = AsyncMock()
+
+    async def _afetch_values(_sheet_id: str, _tab_name: str):
+        return [
+            ["fusion_id", "status"],
+            ["f-1", "published"],
+        ]
+
+    async def _acall_with_backoff(fn, *args, **kwargs):
+        return await fn(*args, **kwargs)
+
+    monkeypatch.setattr(fusion, "_resolve_tab_name", lambda _key: "Fusion")
+    monkeypatch.setattr(fusion, "_sheet_id", lambda: "sheet-id")
+    monkeypatch.setattr(fusion, "afetch_values", _afetch_values)
+    monkeypatch.setattr(fusion, "aget_worksheet", AsyncMock(return_value=worksheet))
+    monkeypatch.setattr(fusion, "acall_with_backoff", _acall_with_backoff)
+    monkeypatch.setattr(fusion, "register_cache_buckets", lambda: ("fusion", "fusion_events"))
+    monkeypatch.setattr(fusion.cache, "refresh_now", AsyncMock())
+
+    changed = asyncio.run(fusion.transition_fusion_to_ended("f-1"))
+
+    assert changed is True
+    worksheet.update.assert_awaited_once_with("B2", [["ended"]], value_input_option="RAW")
+    fusion.cache.refresh_now.assert_awaited_once_with("fusion", actor="fusion_status_ended")
+
+
+def test_transition_fusion_to_ended_is_noop_when_already_ended(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worksheet = AsyncMock()
+
+    async def _afetch_values(_sheet_id: str, _tab_name: str):
+        return [
+            ["fusion_id", "status"],
+            ["f-1", "ended"],
+        ]
+
+    monkeypatch.setattr(fusion, "_resolve_tab_name", lambda _key: "Fusion")
+    monkeypatch.setattr(fusion, "_sheet_id", lambda: "sheet-id")
+    monkeypatch.setattr(fusion, "afetch_values", _afetch_values)
+    monkeypatch.setattr(fusion, "aget_worksheet", AsyncMock(return_value=worksheet))
+    monkeypatch.setattr(fusion, "register_cache_buckets", lambda: ("fusion", "fusion_events"))
+    monkeypatch.setattr(fusion.cache, "refresh_now", AsyncMock())
+
+    changed = asyncio.run(fusion.transition_fusion_to_ended("f-1"))
+
+    assert changed is False
+    worksheet.update.assert_not_awaited()
+    fusion.cache.refresh_now.assert_not_awaited()

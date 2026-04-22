@@ -65,6 +65,7 @@ def test_ended_fusion_triggers_role_cleanup(monkeypatch):
         bot = SimpleNamespace(guilds=[guild])
 
         monkeypatch.setattr(fusion_sheets, "get_ended_fusions", AsyncMock(return_value=[_fusion_row()]))
+        monkeypatch.setattr(fusion_sheets, "transition_fusion_to_ended", AsyncMock(return_value=True))
         monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", AsyncMock(return_value=set()))
         monkeypatch.setattr(fusion_sheets, "mark_reminder_sent", AsyncMock())
         monkeypatch.setattr(role_cleanup, "resolve_announcement_channel", AsyncMock(return_value=channel))
@@ -74,6 +75,7 @@ def test_ended_fusion_triggers_role_cleanup(monkeypatch):
 
         for member in members:
             member.remove_roles.assert_awaited_once_with(role, reason="Fusion ended: f-ended")
+        fusion_sheets.transition_fusion_to_ended.assert_awaited_once_with("f-ended")
         fusion_sheets.mark_reminder_sent.assert_awaited_once()
 
     asyncio.run(_run())
@@ -88,6 +90,7 @@ def test_cleanup_is_one_shot_via_dedupe(monkeypatch):
         bot = SimpleNamespace(guilds=[guild])
 
         monkeypatch.setattr(fusion_sheets, "get_ended_fusions", AsyncMock(return_value=[_fusion_row()]))
+        monkeypatch.setattr(fusion_sheets, "transition_fusion_to_ended", AsyncMock(return_value=False))
         monkeypatch.setattr(
             fusion_sheets,
             "get_sent_reminder_keys",
@@ -99,6 +102,7 @@ def test_cleanup_is_one_shot_via_dedupe(monkeypatch):
         await role_cleanup.process_ended_fusion_role_cleanup(bot)
 
         member.remove_roles.assert_not_awaited()
+        fusion_sheets.transition_fusion_to_ended.assert_awaited_once_with("f-ended")
         fusion_sheets.mark_reminder_sent.assert_not_awaited()
 
     asyncio.run(_run())
@@ -111,6 +115,7 @@ def test_missing_role_is_handled_safely(monkeypatch):
         bot = SimpleNamespace(guilds=[guild])
 
         monkeypatch.setattr(fusion_sheets, "get_ended_fusions", AsyncMock(return_value=[_fusion_row()]))
+        monkeypatch.setattr(fusion_sheets, "transition_fusion_to_ended", AsyncMock(return_value=True))
         monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", AsyncMock(return_value=set()))
         monkeypatch.setattr(fusion_sheets, "mark_reminder_sent", AsyncMock())
         monkeypatch.setattr(role_cleanup, "resolve_announcement_channel", AsyncMock(return_value=channel))
@@ -132,6 +137,7 @@ def test_partial_member_failure_does_not_abort(monkeypatch):
         bot = SimpleNamespace(guilds=[guild])
 
         monkeypatch.setattr(fusion_sheets, "get_ended_fusions", AsyncMock(return_value=[_fusion_row()]))
+        monkeypatch.setattr(fusion_sheets, "transition_fusion_to_ended", AsyncMock(return_value=True))
         monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", AsyncMock(return_value=set()))
         monkeypatch.setattr(fusion_sheets, "mark_reminder_sent", AsyncMock())
         monkeypatch.setattr(role_cleanup, "resolve_announcement_channel", AsyncMock(return_value=channel))
