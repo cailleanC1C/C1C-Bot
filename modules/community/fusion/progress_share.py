@@ -102,12 +102,10 @@ def _build_overall_progress_line(
     target: fusion_sheets.FusionRow,
     snapshot: ProgressShareSnapshot,
 ) -> str:
-    reward_type = str(target.reward_type or "").strip().casefold()
-    if reward_type == "fragments":
-        return f"Progress: {snapshot.completed_reward_total:g} / {target.available:g} fragments"
+    reward_type = str(target.reward_type or "").strip()
     if reward_type:
         return f"Progress: {snapshot.completed_reward_total:g} / {target.available:g} {reward_type}"
-    return f"Progress: {snapshot.completed_reward_total:g} / {target.available:g}"
+    return f"Progress: {snapshot.completed_reward_total:g} / {target.available:g} rewards"
 
 
 def _build_summary_block(*, snapshot: ProgressShareSnapshot, overall_progress_line: str) -> str:

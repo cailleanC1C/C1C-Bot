@@ -404,7 +404,7 @@ def test_event_dropdown_keeps_selected_event_after_sorting_rebuild():
     assert view.selected_event_id == "e_missed"
 
 
-def test_fragments_done_counts_done_bonus_with_bonus_and_done_without_bonus():
+def test_reward_totals_and_selected_event_labels_are_data_driven():
     events = [
         _event_row("e_done", event_name="Base Done"),
         _event_row("e_done_bonus", event_name="Bonus Done"),
@@ -424,7 +424,7 @@ def test_fragments_done_counts_done_bonus_with_bonus_and_done_without_bonus():
     selected_field = next(field for field in embed.fields if field.name == "Selected Event")
     assert fragments_field.value == "80 / 450 fragments earned"
     assert "✅ Done: 2" in summary_field.value
-    assert "25 + 50 bonus frags" in selected_field.value
+    assert "25 + 50 bonus fragments" in selected_field.value
 
 
 def test_done_on_bonus_event_counts_base_only():
@@ -437,6 +437,22 @@ def test_done_on_bonus_event_counts_base_only():
     )
     fragments_field = next(field for field in embed.fields if field.name == "Fragments")
     assert fragments_field.value == "25 / 450 fragments earned"
+
+
+def test_my_progress_uses_tracker_reward_type_for_titan():
+    event = replace(_event_row("e_points"), reward_amount=25.0, bonus=50.0, reward_type="points")
+    titan = replace(_fusion_row(opt_in_role_id=777), reward_type="points", available=1750, fusion_type="titan")
+    embed = opt_in_view._build_progress_summary_embed(
+        target=titan,
+        events=[event],
+        progress_by_event={"e_points": "done_bonus"},
+        selected_event_id="e_points",
+    )
+
+    points_field = next(field for field in embed.fields if field.name == "Points")
+    selected_field = next(field for field in embed.fields if field.name == "Selected Event")
+    assert points_field.value == "75 / 1750 points earned"
+    assert "25 + 50 bonus points" in selected_field.value
 
 
 def test_status_options_include_done_bonus_only_when_event_has_bonus():

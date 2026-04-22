@@ -38,13 +38,14 @@ def _build_reminder_embed(
     reminder_type: str,
     start_at: dt.datetime,
     jump_url: str,
+    reward_unit: str,
 ) -> discord.Embed:
     jump_link = f"[Open Fusion Overview]({jump_url})"
     if reminder_type == "start":
         title = "Fusion Reminder"
         description = (
             f"⚠️ **{event_name} is live**\n"
-            "Time to put in some work — fragments won’t collect themselves.\n\n"
+            f"Time to put in some work — {reward_unit} won’t collect themselves.\n\n"
             f"🔗 {jump_link}"
         )
     else:
@@ -162,6 +163,7 @@ async def process_fusion_reminders(
                     reminder_type=reminder_type,
                     start_at=start_at,
                     jump_url=announcement_message.jump_url,
+                    reward_unit=(str(target.reward_type or "").strip() or "rewards"),
                 )
                 mention_content = f"<@&{target.opt_in_role_id}>" if target.opt_in_role_id else None
                 reminder_view = build_fusion_opt_in_view(target)

@@ -32,6 +32,47 @@ class FusionCog(commands.Cog):
     ) -> discord.Message | None:
         return await ensure_fusion_announcement(self.bot, target)
 
+    async def _tracker_entrypoint(
+        self,
+        ctx: commands.Context,
+        *,
+        tracker_kind: str,
+        tracker_label: str,
+    ) -> None:
+        try:
+            target = await fusion_sheets.get_publishable_fusion(tracker_kind=tracker_kind)
+        except Exception:
+            log.exception("%s command failed to load rows", tracker_label)
+            await ctx.reply(f"Couldn’t check the {tracker_label} right now. Try again in a moment.", mention_author=False)
+            return
+
+        if target is None:
+            await ctx.reply(f"No {tracker_label} running. Enjoy the peace while it lasts.", mention_author=False)
+            return
+
+        try:
+            announcement_message = await self._ensure_fusion_announcement(target)
+        except Exception:
+            log.exception("%s command failed to resolve announcement", tracker_label, extra={"fusion_id": target.fusion_id})
+            announcement_message = None
+
+        if announcement_message is not None:
+            await ctx.reply(
+                f"🔗 {tracker_label.title()}’s up. Don’t get lost:\n{announcement_message.jump_url}",
+                mention_author=False,
+            )
+            return
+
+        try:
+            events = await fusion_sheets.get_fusion_events(target.fusion_id)
+            emergency_embed = build_fusion_announcement_embed(target, events)
+            await ctx.reply(embed=emergency_embed, mention_author=False)
+            return
+        except Exception:
+            log.exception("%s command emergency embed fallback failed", tracker_label, extra={"fusion_id": target.fusion_id})
+            await ctx.reply(f"Couldn’t check the {tracker_label} right now. Try again in a moment.", mention_author=False)
+            return
+
     @tier("user")
     @help_metadata(
         function_group="milestones",
@@ -45,39 +86,18 @@ class FusionCog(commands.Cog):
         help="Fusion reminder data commands.",
     )
     async def fusion(self, ctx: commands.Context) -> None:
-        try:
-            target = await fusion_sheets.get_publishable_fusion()
-        except Exception:
-            log.exception("fusion command failed to load fusion rows")
-            await ctx.reply("Couldn’t check the fusion right now. Try again in a moment.", mention_author=False)
-            return
+        await self._tracker_entrypoint(ctx, tracker_kind="fusion", tracker_label="fusion")
 
-        if target is None:
-            await ctx.reply("No fusion running. Enjoy the peace while it lasts.", mention_author=False)
-            return
-
-        try:
-            announcement_message = await self._ensure_fusion_announcement(target)
-        except Exception:
-            log.exception("fusion command failed to resolve announcement", extra={"fusion_id": target.fusion_id})
-            announcement_message = None
-
-        if announcement_message is not None:
-            await ctx.reply(
-                f"🔗 Fusion’s up. Don’t get lost:\n{announcement_message.jump_url}",
-                mention_author=False,
-            )
-            return
-
-        try:
-            events = await fusion_sheets.get_fusion_events(target.fusion_id)
-            emergency_embed = build_fusion_announcement_embed(target, events)
-            await ctx.reply(embed=emergency_embed, mention_author=False)
-            return
-        except Exception:
-            log.exception("fusion command emergency embed fallback failed", extra={"fusion_id": target.fusion_id})
-            await ctx.reply("Couldn’t check the fusion right now. Try again in a moment.", mention_author=False)
-            return
+    @tier("user")
+    @help_metadata(
+        function_group="milestones",
+        section="community",
+        access_tier="user",
+        usage="!titan",
+    )
+    @commands.command(name="titan", help="Titan reminder data commands.")
+    async def titan(self, ctx: commands.Context) -> None:
+        await self._tracker_entrypoint(ctx, tracker_kind="titan", tracker_label="titan")
 
     @tier("user")
     @help_metadata(
@@ -89,7 +109,7 @@ class FusionCog(commands.Cog):
     @fusion.command(name="debug", help="Debug active fusion + first events from sheets cache.")
     async def fusion_debug(self, ctx: commands.Context) -> None:
         try:
-            active = await fusion_sheets.get_publishable_fusion()
+            active = await fusion_sheets.get_publishable_fusion(include_draft=True)
         except Exception as exc:
             log.exception("fusion debug failed to load fusion")
             await fusion_logs.send_ops_alert(
@@ -152,7 +172,11 @@ class FusionCog(commands.Cog):
     @admin_only()
     async def fusion_publish(self, ctx: commands.Context) -> None:
         try:
-            target = await fusion_sheets.get_publishable_fusion()
+            target = await fusion_sheets.get_publishable_fusion(
+                include_draft=True,
+                tracker_kind="fusion",
+                prefer_draft=True,
+            )
         except Exception as exc:
             log.exception("fusion publish failed to load fusion rows")
             await fusion_logs.send_ops_alert(

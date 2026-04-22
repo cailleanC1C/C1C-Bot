@@ -114,11 +114,12 @@ def _event_has_bonus(event: fusion_sheets.FusionEventRow) -> bool:
     return _event_bonus_amount(event) > 0
 
 
-def _event_fragments_label(event: fusion_sheets.FusionEventRow) -> str:
+def _event_reward_label(event: fusion_sheets.FusionEventRow) -> str:
+    reward_unit = str(event.reward_type or "").strip() or "rewards"
     bonus = _event_bonus_amount(event)
     if bonus > 0:
-        return f"{event.reward_amount:g} + {bonus:g} bonus frags"
-    return f"{event.reward_amount:g} frags"
+        return f"{event.reward_amount:g} + {bonus:g} bonus {reward_unit}"
+    return f"{event.reward_amount:g} {reward_unit}"
 
 
 async def _send_ephemeral(interaction: discord.Interaction, message: str) -> None:
@@ -248,6 +249,7 @@ def _build_progress_summary_embed(
     last_update: tuple[str, str] | None = None,
 ) -> discord.Embed:
     snapshot = build_share_snapshot(events=events, progress_by_event=progress_by_event)
+    reward_unit = str(target.reward_type or "").strip() or "rewards"
 
     embed = discord.Embed(
         title=f"My Progress — {target.fusion_name}",
@@ -266,8 +268,8 @@ def _build_progress_summary_embed(
         inline=False,
     )
     embed.add_field(
-        name="Fragments",
-        value=f"{snapshot.completed_reward_total:g} / {target.available:g} fragments earned",
+        name=reward_unit.title(),
+        value=f"{snapshot.completed_reward_total:g} / {target.available:g} {reward_unit} earned",
         inline=False,
     )
 
@@ -278,7 +280,7 @@ def _build_progress_summary_embed(
             icon = _STATUS_ICONS.get(current, _STATUS_ICONS["not_started"])
             embed.add_field(
                 name="Selected Event",
-                value=f"{icon} {selected.event_name}\n{_event_fragments_label(selected)}",
+                value=f"{icon} {selected.event_name}\n{_event_reward_label(selected)}",
                 inline=False,
             )
 

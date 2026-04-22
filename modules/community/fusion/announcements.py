@@ -153,6 +153,11 @@ async def ensure_fusion_announcement(
     if resolution.message is not None:
         return resolution.message
 
+    status = str(target.status or "").strip().casefold()
+    was_published = target.published_at is not None
+    if status not in _VALID_PUBLISHED_STATUSES or not was_published:
+        return None
+
     return await publish_fusion_announcement(bot, target)
 
 

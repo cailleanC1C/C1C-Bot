@@ -1,4 +1,5 @@
 import datetime as dt
+from dataclasses import replace
 
 from modules.community.fusion import progress_share
 from shared.sheets import fusion as fusion_sheets
@@ -72,3 +73,18 @@ def test_build_progress_share_embed_detailed_mode_adds_event_breakdown():
     detail_field = next(field for field in embed.fields if field.name == "Event Breakdown")
     assert "Dungeon Dash: Done" in detail_field.value
     assert "Arena Rush: In Progress" in detail_field.value
+
+
+def test_build_progress_share_embed_uses_dynamic_reward_unit():
+    titan = replace(_fusion_row(), reward_type="points", available=1750, fusion_type="titan")
+    event = replace(_event_row("e1", "Dungeon Dash"), reward_amount=25.0, reward_type="points")
+    embed = progress_share.build_progress_share_embed(
+        target=titan,
+        events=[event],
+        progress_by_event={"e1": "done"},
+        user_display_name="Tester",
+        mode="summary",
+    )
+
+    summary_field = next(field for field in embed.fields if field.name == "Summary")
+    assert "Progress: 25 / 1750 points" in summary_field.value

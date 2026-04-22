@@ -234,3 +234,62 @@ def test_get_upcoming_events_uses_validated_timestamps_for_sorting(
     result = asyncio.run(fusion.get_upcoming_events("f-1", now=now))
 
     assert [row.event_id for row in result] == ["naive-earlier", "aware"]
+
+
+def _fusion_row(*, fusion_id: str, status: str, fusion_type: str, start_day: int) -> fusion.FusionRow:
+    return fusion.FusionRow(
+        fusion_id=fusion_id,
+        fusion_name=fusion_id,
+        champion="Champion",
+        champion_image_url="",
+        fusion_type=fusion_type,
+        fusion_structure="",
+        reward_type="fragments",
+        needed=400,
+        available=450,
+        start_at_utc=dt.datetime(2026, 4, start_day, tzinfo=dt.timezone.utc),
+        end_at_utc=dt.datetime(2026, 4, start_day + 10, tzinfo=dt.timezone.utc),
+        announcement_channel_id=123,
+        opt_in_role_id=None,
+        announcement_message_id=None,
+        published_at=None,
+        last_announcement_refresh_at=None,
+        last_announcement_status_hash="",
+        status=status,
+    )
+
+
+def test_get_publishable_fusion_excludes_drafts_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = [_fusion_row(fusion_id="draft-1", status="draft", fusion_type="traditional", start_day=8)]
+    monkeypatch.setattr(fusion, "_cached_rows", AsyncMock(return_value=tuple(rows)))
+
+    result = asyncio.run(fusion.get_publishable_fusion())
+
+    assert result is None
+
+
+def test_get_publishable_fusion_filters_by_tracker_kind(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = [
+        _fusion_row(fusion_id="fusion-1", status="published", fusion_type="traditional", start_day=8),
+        _fusion_row(fusion_id="titan-1", status="published", fusion_type="titan", start_day=9),
+    ]
+    monkeypatch.setattr(fusion, "_cached_rows", AsyncMock(return_value=tuple(rows)))
+
+    titan = asyncio.run(fusion.get_publishable_fusion(tracker_kind="titan"))
+    standard = asyncio.run(fusion.get_publishable_fusion(tracker_kind="fusion"))
+
+    assert titan is not None and titan.fusion_id == "titan-1"
+    assert standard is not None and standard.fusion_id == "fusion-1"
+
+
+def test_get_publishable_fusion_publish_flow_prefers_draft(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = [
+        _fusion_row(fusion_id="published-1", status="published", fusion_type="traditional", start_day=9),
+        _fusion_row(fusion_id="draft-1", status="draft", fusion_type="traditional", start_day=8),
+    ]
+    monkeypatch.setattr(fusion, "_cached_rows", AsyncMock(return_value=tuple(rows)))
+
+    result = asyncio.run(fusion.get_publishable_fusion(include_draft=True, prefer_draft=True))
+
+    assert result is not None
+    assert result.fusion_id == "draft-1"

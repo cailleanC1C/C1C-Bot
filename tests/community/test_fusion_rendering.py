@@ -58,7 +58,7 @@ def test_build_fusion_embed_target_and_schedule_field_chunks() -> None:
 
     assert "Target: 400 fragments needed / 450 available" in (embed.description or "")
     assert embed.fields[0].name == "Key Milestones"
-    assert embed.fields[1].name == "Event Status"
+    assert embed.fields[1].name == "Schedule Status"
     assert len(embed.fields) >= 4
     for field in embed.fields[2:]:
         assert "Schedule (Part" not in field.name
@@ -89,3 +89,13 @@ def test_build_fusion_embed_skips_invalid_champion_image_url() -> None:
     embed = build_fusion_announcement_embed(fusion, [])
 
     assert not str(embed.image.url or "").strip()
+
+
+def test_build_fusion_embed_uses_dynamic_reward_labels_for_titan() -> None:
+    titan = replace(_fusion(), fusion_type="titan", reward_type="points", needed=1750, available=2000)
+    event = replace(_event(8, 1), reward_type="points", reward_amount=25, bonus=50)
+
+    embed = build_fusion_announcement_embed(titan, [event])
+
+    assert "Target: 1750 points needed / 2000 available" in (embed.description or "")
+    assert "for 25 points (+50 bonus points)" in embed.fields[-1].value
