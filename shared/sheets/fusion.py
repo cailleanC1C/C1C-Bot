@@ -957,6 +957,37 @@ async def update_fusion_announcement_refresh_state(
     await cache.refresh_now(_FUSION_BUCKET, actor="fusion_announcement_refresh")
 
 
+async def transition_fusion_to_ended(fusion_id: str) -> bool:
+    """Set the configured Fusion row status to ended, if not already ended."""
+
+    tab_name = _resolve_tab_name("FUSION_TAB")
+    sheet_id, matrix, header = await _load_fusion_sheet_matrix(tab_name)
+    row_idx = _resolve_fusion_row_index(
+        fusion_id=fusion_id,
+        header=header,
+        matrix=matrix,
+        tab_name=tab_name,
+    )
+    _require_fusion_headers(tab_name=tab_name, header=header, required=("status",))
+
+    status_idx = header.index("status")
+    matrix_row = matrix[row_idx - 1] if row_idx - 1 < len(matrix) else []
+    current_status = str(matrix_row[status_idx] if status_idx < len(matrix_row) else "").strip().lower()
+    if current_status == "ended":
+        return False
+
+    worksheet = await aget_worksheet(sheet_id, tab_name)
+    await acall_with_backoff(
+        worksheet.update,
+        f"{_column_label(status_idx)}{row_idx}",
+        [["ended"]],
+        value_input_option="RAW",
+    )
+    register_cache_buckets()
+    await cache.refresh_now(_FUSION_BUCKET, actor="fusion_status_ended")
+    return True
+
+
 __all__ = [
     "FusionEventRow",
     "FusionRow",
@@ -976,5 +1007,6 @@ __all__ = [
     "upsert_user_event_progress",
     "update_fusion_publication",
     "update_fusion_announcement_refresh_state",
+    "transition_fusion_to_ended",
     "register_cache_buckets",
 ]
