@@ -10,7 +10,9 @@ from typing import Literal
 import discord
 from discord.ext import commands
 
+from modules.community.fusion import announcements as fusion_announcements
 from modules.community.fusion import logs as fusion_logs
+from modules.community.fusion.progress_share import build_progress_share_embed, build_share_snapshot
 from shared.sheets import fusion as fusion_sheets
 
 log = logging.getLogger("c1c.community.fusion.opt_in")
@@ -20,6 +22,8 @@ _FUSION_OPT_OUT_CUSTOM_ID = "fusion:opt_out"
 _FUSION_MY_PROGRESS_CUSTOM_ID = "fusion:my_progress"
 _FUSION_PROGRESS_EVENT_CUSTOM_ID = "fusion:progress:event"
 _FUSION_PROGRESS_STATUS_CUSTOM_ID = "fusion:progress:status"
+_FUSION_PROGRESS_SHARE_SUMMARY_CUSTOM_ID = "fusion:progress:share:summary"
+_FUSION_PROGRESS_SHARE_DETAILED_CUSTOM_ID = "fusion:progress:share:detailed"
 
 _DISPLAY_STATUS_ORDER = ("done", "in_progress", "skipped", "missed", "not_started")
 _EVENT_DROPDOWN_STATUS_ORDER = ("not_started", "in_progress", "missed", "skipped", "done", "done_bonus")
@@ -39,6 +43,7 @@ _STATUS_ICONS = {
     "missed": "⚠️",
     "not_started": "⬜",
 }
+_SHARE_MODE_LABELS = {"summary": "Summary", "detailed": "Detailed"}
 _ALLOWED_PROGRESS_STATES = frozenset({"not_started", "in_progress", "done", "done_bonus", "skipped"})
 _STATUS_INDEX_TO_CANONICAL = {
     "0": "not_started",
@@ -242,23 +247,7 @@ def _build_progress_summary_embed(
     selected_event_id: str | None = None,
     last_update: tuple[str, str] | None = None,
 ) -> discord.Embed:
-    now = dt.datetime.now(dt.timezone.utc)
-    counts = {status: 0 for status in _DISPLAY_STATUS_ORDER}
-    display_status_by_event: dict[str, str] = {}
-    fragments_done = 0.0
-    for event in events:
-        status = _effective_display_status(event=event, progress_by_event=progress_by_event, now=now)
-        if status == "done_bonus":
-            display_status_by_event[event.event_id] = status
-            counts["done"] += 1
-            fragments_done += event.reward_amount + _event_bonus_amount(event)
-            continue
-        if status not in counts:
-            status = "not_started"
-        display_status_by_event[event.event_id] = status
-        counts[status] += 1
-        if status == "done":
-            fragments_done += event.reward_amount
+    snapshot = build_share_snapshot(events=events, progress_by_event=progress_by_event)
 
     embed = discord.Embed(
         title=f"My Progress — {target.fusion_name}",
@@ -268,24 +257,24 @@ def _build_progress_summary_embed(
     embed.add_field(
         name="Summary",
         value=(
-            f"✅ Done: {counts['done']}\n"
-            f"🟡 In Progress: {counts['in_progress']}\n"
-            f"⏭️ Skipped: {counts['skipped']}\n"
-            f"⚠️ Missed: {counts['missed']}\n"
-            f"⬜ Not Started: {counts['not_started']}"
+            f"✅ Done: {snapshot.counts['done']}\n"
+            f"🟡 In Progress: {snapshot.counts['in_progress']}\n"
+            f"⏭️ Skipped: {snapshot.counts['skipped']}\n"
+            f"⚠️ Missed: {snapshot.counts['missed']}\n"
+            f"⬜ Not Started: {snapshot.counts['not_started']}"
         ),
         inline=False,
     )
     embed.add_field(
         name="Fragments",
-        value=f"{fragments_done:g} / {target.available:g} fragments earned",
+        value=f"{snapshot.completed_reward_total:g} / {target.available:g} fragments earned",
         inline=False,
     )
 
     if selected_event_id:
         selected = next((event for event in events if event.event_id == selected_event_id), None)
         if selected is not None:
-            current = display_status_by_event.get(selected.event_id, "not_started")
+            current = snapshot.display_status_by_event.get(selected.event_id, "not_started")
             icon = _STATUS_ICONS.get(current, _STATUS_ICONS["not_started"])
             embed.add_field(
                 name="Selected Event",
@@ -454,6 +443,117 @@ class _FusionProgressStatusSelect(discord.ui.Select):
         )
 
 
+class FusionProgressShareModeView(discord.ui.View):
+    """Ephemeral controls used to publish a manual progress share."""
+
+    def __init__(
+        self,
+        *,
+        user_id: int,
+        target: fusion_sheets.FusionRow,
+        events: Sequence[fusion_sheets.FusionEventRow],
+        progress_by_event: Mapping[str, str],
+    ) -> None:
+        super().__init__(timeout=300)
+        self.user_id = int(user_id)
+        self.target = target
+        self.events = list(events)
+        self.progress_by_event = dict(progress_by_event)
+
+    async def _handle_share(self, interaction: discord.Interaction, *, mode: Literal["summary", "detailed"]) -> None:
+        if interaction.user.id != self.user_id:
+            await _send_ephemeral(interaction, "This share panel belongs to a different user.")
+            return
+
+        client = getattr(interaction, "client", None)
+        channel = None
+        if client is not None:
+            channel = await fusion_announcements.resolve_announcement_channel(client, self.target.announcement_channel_id)
+        if channel is None:
+            await _send_ephemeral(interaction, "Couldn’t find the fusion share channel right now.")
+            return
+
+        share_embed = build_progress_share_embed(
+            target=self.target,
+            events=self.events,
+            progress_by_event=self.progress_by_event,
+            user_display_name=interaction.user.display_name,
+            mode=mode,
+        )
+        try:
+            await channel.send(embed=share_embed)
+        except Exception as exc:
+            context = {
+                "fusion_id": self.target.fusion_id,
+                "channel_id": self.target.announcement_channel_id,
+                "user_id": self.user_id,
+                "mode": mode,
+            }
+            log.exception("fusion progress share failed to send", extra=context)
+            await fusion_logs.send_ops_alert(
+                component="my_progress_share",
+                summary="share_send_failed",
+                dedupe_key=f"fusion:progress:share:{self.target.fusion_id}:{mode}",
+                error=exc,
+                fields=context,
+            )
+            await _send_ephemeral(interaction, "Couldn’t share progress right now. Try again shortly.")
+            return
+
+        await _send_ephemeral(interaction, f"Shared publicly ({_SHARE_MODE_LABELS[mode]}).")
+
+    @discord.ui.button(
+        label="Summary",
+        style=discord.ButtonStyle.primary,
+        custom_id=_FUSION_PROGRESS_SHARE_SUMMARY_CUSTOM_ID,
+        row=0,
+    )
+    async def share_summary_button(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        await self._handle_share(interaction, mode="summary")
+
+    @discord.ui.button(
+        label="Detailed",
+        style=discord.ButtonStyle.secondary,
+        custom_id=_FUSION_PROGRESS_SHARE_DETAILED_CUSTOM_ID,
+        row=0,
+    )
+    async def share_detailed_button(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        await self._handle_share(interaction, mode="detailed")
+
+
+class _FusionProgressShareButton(discord.ui.Button):
+    def __init__(self) -> None:
+        super().__init__(
+            label="Share",
+            style=discord.ButtonStyle.secondary,
+            custom_id="fusion:progress:share",
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, FusionProgressPanelView):
+            return
+        share_view = FusionProgressShareModeView(
+            user_id=view.user_id,
+            target=view.target,
+            events=view.events,
+            progress_by_event=view.progress_by_event,
+        )
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                "Choose a share mode to post your current progress publicly.",
+                view=share_view,
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            "Choose a share mode to post your current progress publicly.",
+            view=share_view,
+            ephemeral=True,
+        )
+
+
 class FusionProgressPanelView(discord.ui.View):
     """Ephemeral progress panel for one user and one fusion."""
 
@@ -499,6 +599,13 @@ class FusionProgressPanelView(discord.ui.View):
             if selected_status == "done_bonus" and selected_event is not None and not _event_has_bonus(selected_event):
                 selected_status = "done"
         self.add_item(_FusionProgressStatusSelect(selected_status, selected_event=selected_event))
+        self.add_item(_FusionProgressShareButton())
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await _send_ephemeral(interaction, "This progress panel belongs to a different user.")
+            return False
+        return True
 
     def build_embed(self) -> discord.Embed:
         return _build_progress_summary_embed(

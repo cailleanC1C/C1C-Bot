@@ -44,6 +44,7 @@ class _Response:
 class _Member:
     def __init__(self, role):
         self.id = 10
+        self.display_name = "Test User"
         self.guild = SimpleNamespace(id=1)
         self.roles = [] if role is None else [role]
         self.add_roles = AsyncMock(side_effect=self._add)
@@ -74,6 +75,7 @@ def _interaction(guild, member):
     return SimpleNamespace(
         guild=guild,
         user=member,
+        client=SimpleNamespace(),
         response=_Response(),
         followup=SimpleNamespace(send=AsyncMock()),
     )
@@ -457,3 +459,52 @@ def test_status_options_include_done_bonus_only_when_event_has_bonus():
         "done",
         "skipped",
     ]
+
+
+def test_my_progress_share_button_opens_share_mode_panel():
+    async def _run() -> None:
+        events = [_event_row("e1")]
+        view = opt_in_view.FusionProgressPanelView(
+            user_id=10,
+            target=_fusion_row(opt_in_role_id=777),
+            events=events,
+            progress_by_event={},
+        )
+        interaction = _interaction(guild=None, member=SimpleNamespace(id=10, display_name="Tester"))
+        share_button = next(item for item in view.children if item.custom_id == "fusion:progress:share")
+
+        await share_button.callback(interaction)
+
+        interaction.response.send_message.assert_awaited_once()
+        kwargs = interaction.response.send_message.await_args.kwargs
+        assert isinstance(kwargs["view"], opt_in_view.FusionProgressShareModeView)
+        assert kwargs["ephemeral"] is True
+
+    asyncio.run(_run())
+
+
+def test_share_mode_summary_posts_to_fusion_announcement_channel(monkeypatch):
+    async def _run() -> None:
+        events = [_event_row("e1", event_name="Dungeon Dash")]
+        channel = SimpleNamespace(send=AsyncMock())
+        member = SimpleNamespace(id=10, display_name="Tester")
+        interaction = _interaction(guild=None, member=member)
+
+        view = opt_in_view.FusionProgressShareModeView(
+            user_id=10,
+            target=_fusion_row(opt_in_role_id=777),
+            events=events,
+            progress_by_event={"e1": "done"},
+        )
+        monkeypatch.setattr(opt_in_view.fusion_announcements, "resolve_announcement_channel", AsyncMock(return_value=channel))
+        summary_button = next(item for item in view.children if item.custom_id == "fusion:progress:share:summary")
+
+        await summary_button.callback(interaction)
+
+        channel.send.assert_awaited_once()
+        embed = channel.send.await_args.kwargs["embed"]
+        assert embed.title == "Progress Share — Mavara"
+        summary_field = next(field for field in embed.fields if field.name == "Summary")
+        assert "✅ Done: 1" in summary_field.value
+
+    asyncio.run(_run())
