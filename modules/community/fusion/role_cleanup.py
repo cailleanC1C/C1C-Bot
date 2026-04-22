@@ -60,6 +60,19 @@ async def process_ended_fusion_role_cleanup(
         return
 
     for target in ended_fusions:
+        try:
+            await fusion_sheets.transition_fusion_to_ended(target.fusion_id)
+        except Exception as exc:
+            context = {"fusion_id": target.fusion_id}
+            log.exception("fusion status transition to ended failed", extra=context)
+            await fusion_logs.send_ops_alert(
+                component="role_cleanup",
+                summary="status_transition_failed",
+                dedupe_key=f"fusion:role_cleanup:status:{target.fusion_id}",
+                error=exc,
+                fields=context,
+            )
+
         if target.opt_in_role_id is None:
             continue
 
