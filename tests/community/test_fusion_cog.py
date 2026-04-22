@@ -31,7 +31,7 @@ def _fusion_row(
         announcement_channel_id=announcement_channel_id,
         opt_in_role_id=None,
         announcement_message_id=announcement_message_id,
-        published_at=None,
+        published_at=dt.datetime(2026, 4, 7, tzinfo=dt.timezone.utc) if status in {"published", "active"} else None,
         last_announcement_refresh_at=None,
         last_announcement_status_hash="",
         status=status,
@@ -61,7 +61,7 @@ def test_fusion_command_returns_jump_url(monkeypatch):
         cog = FusionCog(bot)
         ctx = SimpleNamespace(reply=AsyncMock())
 
-        async def _fake_get_publishable():
+        async def _fake_get_publishable(**_kwargs):
             return _fusion_row()
 
         monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", _fake_get_publishable)
@@ -84,7 +84,7 @@ def test_fusion_command_handles_no_fusion(monkeypatch):
         cog = FusionCog(bot)
         ctx = SimpleNamespace(reply=AsyncMock())
 
-        async def _fake_get_publishable():
+        async def _fake_get_publishable(**_kwargs):
             return None
 
         monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", _fake_get_publishable)
@@ -112,7 +112,7 @@ def test_fusion_command_recreates_missing_announcement(monkeypatch):
         cog = FusionCog(bot)
         ctx = SimpleNamespace(reply=AsyncMock())
 
-        async def _fake_get_publishable():
+        async def _fake_get_publishable(**_kwargs):
             return _fusion_row()
 
         update = AsyncMock()
@@ -148,7 +148,7 @@ def test_fusion_command_recreates_when_message_metadata_is_incomplete(monkeypatc
         cog = FusionCog(bot)
         ctx = SimpleNamespace(reply=AsyncMock())
 
-        async def _fake_get_publishable():
+        async def _fake_get_publishable(**_kwargs):
             return _fusion_row(announcement_channel_id=123, announcement_message_id=None)
 
         update = AsyncMock()
@@ -182,7 +182,7 @@ def test_fusion_command_does_not_recreate_existing_announcement(monkeypatch):
         cog = FusionCog(bot)
         ctx = SimpleNamespace(reply=AsyncMock())
 
-        async def _fake_get_publishable():
+        async def _fake_get_publishable(**_kwargs):
             return _fusion_row()
 
         monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", _fake_get_publishable)
@@ -202,7 +202,7 @@ def test_fusion_command_uses_generic_message_when_data_load_fails(monkeypatch):
         cog = FusionCog(bot)
         ctx = SimpleNamespace(reply=AsyncMock())
 
-        async def _fake_get_publishable():
+        async def _fake_get_publishable(**_kwargs):
             raise RuntimeError("sheets offline")
 
         monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", _fake_get_publishable)
@@ -224,7 +224,7 @@ def test_fusion_command_falls_back_to_emergency_embed_when_announcement_unavaila
         cog = FusionCog(bot)
         ctx = SimpleNamespace(reply=AsyncMock())
 
-        async def _fake_get_publishable():
+        async def _fake_get_publishable(**_kwargs):
             return _fusion_row()
 
         ensure = AsyncMock(side_effect=RuntimeError("discord outage"))
@@ -249,7 +249,7 @@ def test_fusion_command_uses_generic_message_when_emergency_embed_fails(monkeypa
         cog = FusionCog(bot)
         ctx = SimpleNamespace(reply=AsyncMock())
 
-        async def _fake_get_publishable():
+        async def _fake_get_publishable(**_kwargs):
             return _fusion_row()
 
         monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", _fake_get_publishable)
@@ -274,7 +274,7 @@ def test_fusion_publish_persists_announcement_channel_id(monkeypatch):
         cog = FusionCog(bot)
         ctx = SimpleNamespace(reply=AsyncMock())
 
-        async def _fake_get_publishable():
+        async def _fake_get_publishable(**_kwargs):
             return _fusion_row(announcement_channel_id=123, announcement_message_id=None, status="draft")
 
         update = AsyncMock()
@@ -301,7 +301,7 @@ def test_fusion_publish_blocks_duplicate_when_existing_message_resolves(monkeypa
         cog = FusionCog(bot)
         ctx = SimpleNamespace(reply=AsyncMock())
 
-        async def _fake_get_publishable():
+        async def _fake_get_publishable(**_kwargs):
             return _fusion_row(announcement_channel_id=123, announcement_message_id=456, status="published")
 
         monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", _fake_get_publishable)
@@ -326,7 +326,7 @@ def test_fusion_publish_recreates_when_existing_metadata_is_stale(monkeypatch):
         cog = FusionCog(bot)
         ctx = SimpleNamespace(reply=AsyncMock())
 
-        async def _fake_get_publishable():
+        async def _fake_get_publishable(**_kwargs):
             return _fusion_row(announcement_channel_id=123, announcement_message_id=456, status="published")
 
         monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", _fake_get_publishable)
@@ -345,33 +345,45 @@ def test_fusion_publish_recreates_when_existing_metadata_is_stale(monkeypatch):
     asyncio.run(_run())
 
 
-def test_fusion_command_recreates_when_status_is_draft_even_with_existing_message(monkeypatch):
+def test_fusion_command_does_not_publish_or_surface_draft_tracker(monkeypatch):
     async def _run() -> None:
-        channel = FakeMessageable(123)
-        channel.fetch_message = AsyncMock(return_value=SimpleNamespace(id=456, jump_url="https://discord.com/channels/1/123/456"))
-        channel.send = AsyncMock(return_value=SimpleNamespace(id=1003, jump_url="https://discord.com/channels/1/123/1003"))
-        bot = SimpleNamespace(
-            get_channel=lambda _channel_id: channel,
-            fetch_channel=AsyncMock(return_value=channel),
-        )
+        bot = SimpleNamespace(get_channel=lambda _channel_id: None, fetch_channel=AsyncMock())
         cog = FusionCog(bot)
         ctx = SimpleNamespace(reply=AsyncMock())
 
-        async def _fake_get_publishable():
-            return _fusion_row(announcement_channel_id=123, announcement_message_id=456, status="draft")
+        async def _fake_get_publishable(**_kwargs):
+            return None
 
-        update = AsyncMock()
         monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", _fake_get_publishable)
-        monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=[]))
-        monkeypatch.setattr(fusion_cog_module, "build_fusion_announcement_embed", lambda *_args: object())
-        monkeypatch.setattr(fusion_sheets, "update_fusion_publication", update)
 
         await cog.fusion.callback(cog, ctx)
 
-        channel.send.assert_awaited_once()
-        assert update.await_count == 1
         ctx.reply.assert_awaited_once_with(
-            "🔗 Fusion’s up. Don’t get lost:\nhttps://discord.com/channels/1/123/1003",
+            "No fusion running. Enjoy the peace while it lasts.",
+            mention_author=False,
+        )
+
+    asyncio.run(_run())
+
+
+def test_titan_command_returns_jump_url(monkeypatch):
+    async def _run() -> None:
+        message = SimpleNamespace(jump_url="https://discord.com/channels/1/123/456")
+        channel = FakeMessageable(123)
+        channel.fetch_message = AsyncMock(return_value=message)
+        bot = SimpleNamespace(get_channel=lambda _channel_id: channel, fetch_channel=AsyncMock(return_value=channel))
+        cog = FusionCog(bot)
+        ctx = SimpleNamespace(reply=AsyncMock())
+
+        async def _fake_get_publishable(**_kwargs):
+            return _fusion_row(status="published")
+
+        monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", _fake_get_publishable)
+
+        await cog.titan.callback(cog, ctx)
+
+        ctx.reply.assert_awaited_once_with(
+            "🔗 Titan’s up. Don’t get lost:\nhttps://discord.com/channels/1/123/456",
             mention_author=False,
         )
 
@@ -384,7 +396,7 @@ def test_fusion_publish_load_failure_still_replies_when_internal_log_delivery_fa
         cog = FusionCog(bot)
         ctx = SimpleNamespace(reply=AsyncMock())
 
-        async def _fake_get_publishable():
+        async def _fake_get_publishable(**_kwargs):
             raise RuntimeError("sheet unavailable")
 
         async def _boom(*_args, **_kwargs):
@@ -407,7 +419,7 @@ def test_fusion_publish_announce_failure_still_replies_when_internal_log_deliver
         cog = FusionCog(bot)
         ctx = SimpleNamespace(reply=AsyncMock())
 
-        async def _fake_get_publishable():
+        async def _fake_get_publishable(**_kwargs):
             return _fusion_row(announcement_channel_id=123, announcement_message_id=None, status="draft")
 
         async def _boom(*_args, **_kwargs):
@@ -430,7 +442,7 @@ def test_fusion_debug_event_failure_still_replies_when_internal_log_delivery_fai
         cog = FusionCog(bot)
         ctx = SimpleNamespace(reply=AsyncMock())
 
-        async def _fake_get_publishable():
+        async def _fake_get_publishable(**_kwargs):
             return _fusion_row()
 
         async def _boom(*_args, **_kwargs):

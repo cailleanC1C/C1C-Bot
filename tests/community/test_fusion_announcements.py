@@ -104,3 +104,19 @@ def test_publish_announcement_retries_without_image_on_http_exception(monkeypatc
         assert not str(second_call.image.url or "").strip()
 
     asyncio.run(_run())
+
+
+def test_ensure_announcement_does_not_self_heal_draft(monkeypatch):
+    async def _run() -> None:
+        target = _fusion_row(opt_in_role_id=777)
+        monkeypatch.setattr(announcements, "resolve_announcement_channel", AsyncMock(return_value=SimpleNamespace()))
+        monkeypatch.setattr(announcements, "resolve_stored_announcement", AsyncMock(return_value=announcements.AnnouncementResolution(message=None, had_reference=True, is_stale=True)))
+        publish_mock = AsyncMock()
+        monkeypatch.setattr(announcements, "publish_fusion_announcement", publish_mock)
+
+        result = await announcements.ensure_fusion_announcement(SimpleNamespace(), target)
+
+        assert result is None
+        publish_mock.assert_not_awaited()
+
+    asyncio.run(_run())

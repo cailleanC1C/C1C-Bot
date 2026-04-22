@@ -44,10 +44,11 @@ def _status_icon(status: str) -> str:
 def _format_event_line(event: FusionEventRow, *, status: str) -> str:
     has_bonus = event.bonus is not None and event.bonus > 0
     points_text = f"{event.points_needed} pts" if event.points_needed is not None else "pts TBA"
-    bonus_text = f" (+{event.bonus:g} bonus)" if has_bonus else ""
+    reward_unit = str(event.reward_type or "").strip() or "rewards"
+    bonus_text = f" (+{event.bonus:g} bonus {reward_unit})" if has_bonus else ""
     return (
         f"{_status_icon(status)} {event.event_name} — "
-        f"{points_text} for {event.reward_amount:g} frags{bonus_text}"
+        f"{points_text} for {event.reward_amount:g} {reward_unit}{bonus_text}"
     )
 
 
@@ -115,11 +116,12 @@ def _build_fusion_embed(
     sorted_events = sorted(events, key=lambda row: (row.start_at_utc, row.sort_order, row.event_id))
     event_days = [event.start_at_utc.astimezone(dt.timezone.utc).date() for event in sorted_events]
 
+    reward_unit = str(fusion.reward_type or "").strip() or "rewards"
     summary_lines = [
         f"Type: {_humanize_type(fusion.fusion_type)}",
         f"Runs: {_format_dt_utc(fusion.start_at_utc)} -> {_format_dt_utc(fusion.end_at_utc)}",
         "",
-        f"Target: {fusion.needed:g} fragments needed / {fusion.available:g} available",
+        f"Target: {fusion.needed:g} {reward_unit} needed / {fusion.available:g} available",
         f"Schedule: {len(events)} events" + (" • includes bonus rewards" if has_bonus else ""),
     ]
     if fusion.fusion_structure.strip():

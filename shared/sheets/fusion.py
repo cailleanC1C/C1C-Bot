@@ -847,22 +847,44 @@ async def get_ended_fusions(now: dt.datetime | None = None) -> list[FusionRow]:
     ended.sort(key=lambda row: (row.end_at_utc, row.fusion_id), reverse=True)
     return ended
 
-async def get_publishable_fusion() -> FusionRow | None:
-    """Return the best fusion row for publish flow selection."""
+def _tracker_kind(row: FusionRow) -> str:
+    return "titan" if str(row.fusion_type or "").strip().casefold() == "titan" else "fusion"
+
+
+async def get_publishable_fusion(
+    *,
+    include_draft: bool = False,
+    tracker_kind: str | None = None,
+    prefer_draft: bool = False,
+) -> FusionRow | None:
+    """Return the best fusion/titan row for command and publish flow selection."""
 
     fusion_bucket, _ = register_cache_buckets()
     rows = [row for row in await _cached_rows(fusion_bucket) if isinstance(row, FusionRow)]
     if not rows:
         return None
 
-    for status in ("active", "published", "draft"):
+    allowed_statuses: tuple[str, ...]
+    if include_draft and prefer_draft:
+        allowed_statuses = ("draft", "active", "published")
+    elif include_draft:
+        allowed_statuses = ("active", "published", "draft")
+    else:
+        allowed_statuses = ("active", "published")
+
+    normalized_kind = str(tracker_kind or "").strip().casefold()
+    if normalized_kind:
+        rows = [row for row in rows if _tracker_kind(row) == normalized_kind]
+    if not rows:
+        return None
+
+    for status in allowed_statuses:
         matches = [row for row in rows if row.status.casefold() == status]
         if matches:
             matches.sort(key=lambda row: (row.start_at_utc, row.fusion_id), reverse=True)
             return matches[0]
 
-    rows.sort(key=lambda row: (row.start_at_utc, row.fusion_id), reverse=True)
-    return rows[0]
+    return None
 
 
 async def update_fusion_publication(
