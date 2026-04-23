@@ -112,6 +112,16 @@ class ShardTrackerView(discord.ui.View):
                 controller=self._controller,
             )
         )
+        self.add_item(
+            _ShardButton(
+                custom_id=f"action:share:{self.active_tab}",
+                label="Share to Clan",
+                emoji=None,
+                style=discord.ButtonStyle.secondary,
+                owner_id=self.owner_id,
+                controller=self._controller,
+            )
+        )
 
     def _add_legendary_button(self) -> None:
         label = "Got Legendary/Mythical" if self.active_tab == "primal" else "Got Legendary"
@@ -200,6 +210,43 @@ class ShardTrackerController:
         active_tab: str,
     ) -> None:
         raise NotImplementedError
+
+
+class ShardReminderOptView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+        self.add_item(
+            _ShardReminderButton(
+                custom_id="shard:opt_in",
+                label="Opt In",
+                style=discord.ButtonStyle.success,
+            )
+        )
+        self.add_item(
+            _ShardReminderButton(
+                custom_id="shard:opt_out",
+                label="Opt Out",
+                style=discord.ButtonStyle.secondary,
+            )
+        )
+
+
+class _ShardReminderButton(discord.ui.Button[ShardReminderOptView]):
+    async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
+        controller = getattr(interaction.client, "get_cog", lambda _name: None)("ShardTracker")
+        if controller is None:
+            await interaction.response.send_message("Shard tracker is unavailable.", ephemeral=True)
+            return
+        parts = str(self.custom_id or "").split(":")
+        if len(parts) != 2:
+            await interaction.response.send_message("Invalid shard reminder action.", ephemeral=True)
+            return
+        action = "in" if parts[1] == "opt_in" else "out"
+        await controller.handle_reminder_opt_action(interaction=interaction, action=action, clan_key=None)
+
+
+def register_persistent_shard_views(bot: discord.Client) -> None:
+    bot.add_view(ShardReminderOptView())
 
 
 def build_overview_embed(

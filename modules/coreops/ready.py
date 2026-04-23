@@ -7,6 +7,7 @@ import logging
 from discord.ext import commands
 
 from modules.community.fusion.opt_in_view import register_persistent_fusion_views
+from modules.community.shard_tracker.views import register_persistent_shard_views
 from modules.onboarding import watcher_promo, watcher_welcome
 from modules.onboarding.ui import panels
 
@@ -29,6 +30,11 @@ async def on_ready(bot: commands.Bot) -> None:
             register_persistent_fusion_views(bot)
         except Exception:
             log.exception("CORE_READY FAILURE: register_persistent_fusion_views")
+            return
+        try:
+            register_persistent_shard_views(bot)
+        except Exception:
+            log.exception("CORE_READY FAILURE: register_persistent_shard_views")
             return
 
         # Ensure both onboarding watchers are wired

@@ -306,6 +306,9 @@ Feature Toggles:
 - `SHARD_MERCY_CHANNEL_ID` — Discord channel ID dedicated to shard tracking.
   Commands run outside this channel reply with a routing reminder; the value is
   read from the same milestones Config tab so shard routing stays sheet-driven.
+- `SHARD_CLANS_TAB` — worksheet name used for clan sharing + weekly shard reminders.
+- `SHARD_REMINDER_TAB` — worksheet name for durable weekly reminder dedupe rows
+  (`clan_key`, `window_key`, `reminder_type`, `sent_at_utc`).
 
 ### Feature toggles worksheet
 

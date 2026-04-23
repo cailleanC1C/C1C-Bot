@@ -33,6 +33,8 @@ keep a private, button-driven tracker thread.
 - **Config tab:** `MILESTONES_CONFIG_TAB` (defaults to `Config`). Required keys:
   - `SHARD_MERCY_TAB` — worksheet name that stores shard rows.
   - `SHARD_MERCY_CHANNEL_ID` — numeric ID for the dedicated Discord channel.
+  - `SHARD_CLANS_TAB` — worksheet name for clan sharing + weekly reminders.
+  - `SHARD_REMINDER_TAB` — worksheet for durable weekly reminder sent tracking.
 - **Worksheet schema:** row 1 contains the canonical headers listed below.
   `discord_id` is the primary key and all headers must remain in this order.
 
@@ -48,6 +50,14 @@ keep a private, button-driven tracker thread.
 
 Rows are created automatically the first time a user opens the tracker; all
 fields initialize to zero and timestamps stay blank until a LEGO is recorded.
+
+### SHARD_CLANS_TAB schema
+
+Required headers:
+
+`clan_key`, `enabled`, `share_channel_id`, `share_thread_id`, `reminder_enabled`,
+`opt_in_role_id`, `reminder_day`, `reminder_time_utc`, `Title`, `Body`,
+`Footer`, `ColorHex`, `EmojiNameOrId`
 
 ## Mercy Math Reference
 
