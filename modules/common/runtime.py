@@ -1510,6 +1510,7 @@ class Runtime:
         from modules.ops import server_map as server_map_module
         from modules.community.leagues import schedule_leagues_jobs
         from modules.community.fusion.scheduler import schedule_fusion_jobs
+        from modules.community.shard_tracker.scheduler import schedule_shard_jobs
 
         toggles = shared_config.features
         ensure_cache_registration()
@@ -1602,6 +1603,7 @@ class Runtime:
         server_map_module.schedule_server_map_job(self)
         schedule_leagues_jobs(self)
         schedule_fusion_jobs(self)
+        schedule_shard_jobs(self)
 
     async def close(self) -> None:
         await self.shutdown_webserver()

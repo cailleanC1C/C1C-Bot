@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, time, timedelta, timezone
 import logging
 import os
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, Literal, Optional
 
 import discord
 from discord import PartialEmoji
@@ -20,6 +21,7 @@ from shared.config import get_admin_role_ids
 from shared.logfmt import user_label
 
 from .data import (
+    ShardClanRow,
     ShardRecord,
     ShardSheetStore,
     ShardTrackerConfigError,
@@ -32,6 +34,7 @@ from .views import (
     ShardDisplay,
     ShardTrackerController,
     ShardTrackerView,
+    ShardReminderOptView,
     build_detail_embed,
     build_last_pulls_embed,
     build_overview_embed,
@@ -280,6 +283,14 @@ class ShardTracker(commands.Cog, ShardTrackerController):
                     mythical_mercy=max(0, record.primals_since_mythic),
                 )
                 await interaction.response.send_modal(modal)
+                return
+
+            if action_name == "share":
+                await self._handle_share_summary_action(
+                    interaction=interaction,
+                    record=record,
+                    default_clan_key=None,
+                )
                 return
 
     # === Internal helpers ===
@@ -888,6 +899,296 @@ class ShardTracker(commands.Cog, ShardTrackerController):
         )
         return embed, view
 
+    async def _handle_share_summary_action(
+        self,
+        *,
+        interaction: discord.Interaction,
+        record: ShardRecord,
+        default_clan_key: str | None,
+    ) -> None:
+        try:
+            clans = await self.store.get_enabled_clans()
+        except (ShardTrackerConfigError, ShardTrackerSheetError) as exc:
+            await interaction.response.send_message(self._config_error_message(str(exc)), ephemeral=True)
+            await self._notify_admins(str(exc))
+            return
+
+        selected = await self._resolve_clan_selection(
+            interaction=interaction,
+            clans=clans,
+            default_clan_key=default_clan_key,
+            action="share",
+        )
+        if selected is None:
+            return
+        destination = self._resolve_share_destination(selected)
+        if destination is None:
+            await interaction.followup.send(
+                f"Clan `{selected.clan_key}` is enabled but has no valid share destination configured.",
+                ephemeral=True,
+            )
+            await self._notify_admins(
+                f"SHARD_CLANS_TAB clan={selected.clan_key} missing/invalid share destination"
+            )
+            return
+
+        embed = self._build_share_embed(interaction.user, record, selected)
+        await destination.send(embed=embed)
+        await interaction.followup.send(
+            f"Shared your shard summary to {destination.mention} for `{selected.clan_key}`.",
+            ephemeral=True,
+        )
+
+    async def handle_reminder_opt_action(
+        self,
+        *,
+        interaction: discord.Interaction,
+        action: Literal["in", "out"],
+        clan_key: str | None,
+    ) -> None:
+        try:
+            clans = await self.store.get_enabled_clans()
+        except (ShardTrackerConfigError, ShardTrackerSheetError) as exc:
+            await interaction.response.send_message(self._config_error_message(str(exc)), ephemeral=True)
+            await self._notify_admins(str(exc))
+            return
+        selected = await self._resolve_clan_selection(
+            interaction=interaction,
+            clans=clans,
+            default_clan_key=clan_key,
+            action="opt_in" if action == "in" else "opt_out",
+        )
+        if selected is None:
+            return
+        if selected.opt_in_role_id is None:
+            await interaction.followup.send(
+                f"Clan `{selected.clan_key}` has no opt-in role configured.",
+                ephemeral=True,
+            )
+            return
+        guild = interaction.guild
+        if guild is None:
+            await interaction.followup.send("Reminder role actions only work in a server.", ephemeral=True)
+            return
+        member = interaction.user if isinstance(interaction.user, discord.Member) else guild.get_member(interaction.user.id)
+        if member is None:
+            await interaction.followup.send("Couldn’t resolve your member record right now.", ephemeral=True)
+            return
+        role = guild.get_role(selected.opt_in_role_id)
+        if role is None:
+            await interaction.followup.send(
+                f"Reminder role for `{selected.clan_key}` is missing in this server.",
+                ephemeral=True,
+            )
+            return
+        try:
+            if action == "in":
+                if role in member.roles:
+                    await interaction.followup.send("Already opted in.", ephemeral=True)
+                    return
+                await member.add_roles(role, reason=f"Shard reminder opt-in ({selected.clan_key})")
+                await interaction.followup.send("Opted in for weekly shard reminders.", ephemeral=True)
+                return
+            if role not in member.roles:
+                await interaction.followup.send("You’re already opted out.", ephemeral=True)
+                return
+            await member.remove_roles(role, reason=f"Shard reminder opt-out ({selected.clan_key})")
+            await interaction.followup.send("Opted out from weekly shard reminders.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send("I don’t have permission to update that role.", ephemeral=True)
+        except Exception:
+            log.exception("shard reminder role update failed")
+            await interaction.followup.send("Couldn’t update your reminder role right now.", ephemeral=True)
+
+    async def handle_clan_choice(
+        self,
+        *,
+        interaction: discord.Interaction,
+        action: Literal["share", "opt_in", "opt_out"],
+        clan_key: str,
+    ) -> None:
+        if action in {"opt_in", "opt_out"}:
+            await self.handle_reminder_opt_action(
+                interaction=interaction,
+                action="in" if action == "opt_in" else "out",
+                clan_key=clan_key,
+            )
+            return
+        async with self._user_lock(interaction.user.id):
+            try:
+                record = await self.store.load_record(
+                    interaction.user.id,
+                    interaction.user.display_name or interaction.user.name,
+                )
+            except (ShardTrackerConfigError, ShardTrackerSheetError) as exc:
+                await interaction.response.send_message(self._config_error_message(str(exc)), ephemeral=True)
+                await self._notify_admins(str(exc))
+                return
+        await self._handle_share_summary_action(
+            interaction=interaction,
+            record=record,
+            default_clan_key=clan_key,
+        )
+
+    async def _resolve_clan_selection(
+        self,
+        *,
+        interaction: discord.Interaction,
+        clans: list[ShardClanRow],
+        default_clan_key: str | None,
+        action: Literal["share", "opt_in", "opt_out"],
+    ) -> ShardClanRow | None:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        if not clans:
+            await interaction.followup.send("No enabled shard clans are configured.", ephemeral=True)
+            return None
+        if default_clan_key:
+            selected = next((row for row in clans if row.clan_key.lower() == default_clan_key.lower()), None)
+            if selected is not None:
+                return selected
+        if len(clans) == 1:
+            return clans[0]
+        view = _ShardClanChoiceView(controller=self, clans=clans, action=action)
+        await interaction.followup.send(
+            "Choose a clan to continue.",
+            view=view,
+            ephemeral=True,
+        )
+        return None
+
+    def _resolve_share_destination(self, clan: ShardClanRow) -> discord.abc.Messageable | None:
+        if clan.share_thread_id:
+            target = self.bot.get_channel(clan.share_thread_id)
+            if isinstance(target, discord.Thread):
+                return target
+        if clan.share_channel_id:
+            target = self.bot.get_channel(clan.share_channel_id)
+            if isinstance(target, (discord.TextChannel, discord.Thread)):
+                return target
+        return None
+
+    def _build_share_embed(
+        self,
+        member: discord.abc.User,
+        record: ShardRecord,
+        clan: ShardClanRow,
+    ) -> discord.Embed:
+        displays = [self._build_display(record, kind) for kind in SHARD_KINDS.values()]
+        mythic = self._build_mythic_display(record)
+        embed = build_overview_embed(member=member, displays=displays, mythic=mythic)
+        embed.title = f"Shard Snapshot — {member.display_name}"
+        embed.description = f"Shared to `{clan.clan_key}`."
+        return embed
+
+    def _build_clan_reminder_embed(
+        self,
+        *,
+        clan: ShardClanRow,
+        guild: discord.Guild | None,
+    ) -> discord.Embed:
+        color = self._parse_color_hex(clan.color_hex)
+        embed = discord.Embed(
+            title=clan.title,
+            description=clan.body,
+            colour=color,
+            timestamp=datetime.now(timezone.utc),
+        )
+        footer_icon = self._resolve_footer_icon_url(guild, clan.emoji_name_or_id)
+        embed.set_footer(text=clan.footer, icon_url=footer_icon)
+        return embed
+
+    async def process_weekly_clan_reminders(self, *, now: datetime | None = None) -> None:
+        reference = now.astimezone(timezone.utc) if now else datetime.now(timezone.utc)
+        try:
+            clans = await self.store.get_enabled_clans()
+        except Exception:
+            log.exception("failed to load shard clans for weekly reminders")
+            return
+        for clan in clans:
+            if not clan.reminder_enabled:
+                continue
+            if not clan.opt_in_role_id:
+                await self._notify_admins(f"SHARD_CLANS_TAB clan={clan.clan_key} missing opt_in_role_id")
+                continue
+            scheduled = self._scheduled_window_start(clan, reference)
+            if scheduled is None:
+                await self._notify_admins(f"SHARD_CLANS_TAB clan={clan.clan_key} has invalid reminder_day/time")
+                continue
+            window_key = scheduled.date().isoformat()
+            if reference < scheduled or reference > (scheduled + timedelta(minutes=30)):
+                continue
+            try:
+                sent_keys = await self.store.get_sent_weekly_reminder_keys(clan.clan_key)
+            except Exception:
+                log.exception("failed loading shard reminder dedupe", extra={"clan_key": clan.clan_key})
+                sent_keys = set()
+            if window_key in sent_keys:
+                continue
+            destination = self._resolve_share_destination(clan)
+            if destination is None:
+                await self._notify_admins(f"SHARD_CLANS_TAB clan={clan.clan_key} destination missing")
+                continue
+            if not clan.title or not clan.body or not clan.footer:
+                await self._notify_admins(f"SHARD_CLANS_TAB clan={clan.clan_key} missing reminder embed fields")
+                continue
+            embed = self._build_clan_reminder_embed(clan=clan, guild=getattr(destination, "guild", None))
+            mention = f"<@&{clan.opt_in_role_id}>"
+            await destination.send(content=mention, embed=embed, view=ShardReminderOptView())
+            await self.store.mark_weekly_reminder_sent(clan_key=clan.clan_key, window_key=window_key, sent_at=reference)
+
+    def _scheduled_window_start(self, clan: ShardClanRow, now_utc: datetime) -> datetime | None:
+        day_names = {
+            "monday": 0,
+            "tuesday": 1,
+            "wednesday": 2,
+            "thursday": 3,
+            "friday": 4,
+            "saturday": 5,
+            "sunday": 6,
+        }
+        day_token = clan.reminder_day.strip().lower()
+        if day_token not in day_names:
+            return None
+        time_token = clan.reminder_time_utc.strip()
+        try:
+            hour, minute = [int(part) for part in time_token.split(":", 1)]
+            scheduled_time = time(hour=hour, minute=minute, tzinfo=timezone.utc)
+        except Exception:
+            return None
+        now_day = now_utc.weekday()
+        delta_days = (now_day - day_names[day_token]) % 7
+        candidate_date = (now_utc - timedelta(days=delta_days)).date()
+        return datetime.combine(candidate_date, scheduled_time)
+
+    @staticmethod
+    def _parse_color_hex(value: str) -> discord.Colour:
+        text = str(value or "").strip()
+        if text.startswith("#"):
+            text = text[1:]
+        elif text.lower().startswith("0x"):
+            text = text[2:]
+        try:
+            return discord.Colour(int(text, 16))
+        except Exception:
+            try:
+                return discord.Colour(int(str(value or "").strip()))
+            except Exception:
+                return discord.Colour.blurple()
+
+    @staticmethod
+    def _resolve_footer_icon_url(guild: discord.Guild | None, emoji_token: str) -> str | None:
+        token = str(emoji_token or "").strip()
+        if not token or guild is None:
+            return None
+        try:
+            emoji_id = int(token)
+        except ValueError:
+            emoji = emoji_pipeline.emoji_for_tag(guild, token)
+            return str(emoji.url) if emoji else None
+        emoji = guild.get_emoji(emoji_id)
+        return str(emoji.url) if emoji else None
+
     def _build_display(self, record: ShardRecord, kind: ShardKind) -> ShardDisplay:
         owned = max(0, getattr(record, kind.stash_field, 0))
         since = max(0, getattr(record, kind.mercy_field, 0))
@@ -1041,6 +1342,43 @@ class ShardTracker(commands.Cog, ShardTrackerController):
         from datetime import datetime, timezone
 
         return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+class _ShardClanChoiceView(discord.ui.View):
+    def __init__(
+        self,
+        *,
+        controller: ShardTracker,
+        clans: list[ShardClanRow],
+        action: Literal["share", "opt_in", "opt_out"],
+    ) -> None:
+        super().__init__(timeout=120)
+        options = [discord.SelectOption(label=row.clan_key[:100], value=row.clan_key[:100]) for row in clans[:25]]
+        self.add_item(_ShardClanChoiceSelect(controller=controller, action=action, options=options))
+
+
+class _ShardClanChoiceSelect(discord.ui.Select[_ShardClanChoiceView]):
+    def __init__(
+        self,
+        *,
+        controller: ShardTracker,
+        action: Literal["share", "opt_in", "opt_out"],
+        options: list[discord.SelectOption],
+    ) -> None:
+        super().__init__(placeholder="Select clan", min_values=1, max_values=1, options=options)
+        self.controller = controller
+        self.action = action
+
+    async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
+        clan_key = str(self.values[0] if self.values else "").strip()
+        if not clan_key:
+            await interaction.response.send_message("Select a clan first.", ephemeral=True)
+            return
+        await self.controller.handle_clan_choice(
+            interaction=interaction,
+            action=self.action,
+            clan_key=clan_key,
+        )
 
 
 class _NumberModal(discord.ui.Modal):
