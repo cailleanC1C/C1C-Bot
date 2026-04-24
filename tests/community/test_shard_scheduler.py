@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -10,6 +11,8 @@ class _FakeJob:
     def __init__(self, *, name: str) -> None:
         self.name = name
         self._runner = None
+        self.interval = timedelta(minutes=30)
+        self.next_run = None
 
     def do(self, runner):
         self._runner = runner
@@ -58,7 +61,9 @@ def test_shard_scheduler_tick_runs_weekly_reminder(caplog) -> None:
     asyncio.run(runner())
 
     reminder.assert_awaited_once()
-    assert "shard reminder scheduler tick" in caplog.text
+    _, kwargs = reminder.await_args
+    assert kwargs.get("source") == "scheduler"
+    assert "shard reminder scheduler tick started" in caplog.text
 
 
 def test_log_scheduler_task_exit_logs_clean_stop(caplog) -> None:

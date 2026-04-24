@@ -252,6 +252,9 @@ class ShardSheetStore:
         rows = await self._load_shard_clans()
         return [row for row in rows if row.enabled]
 
+    async def get_clans(self) -> list[ShardClanRow]:
+        return await self._load_shard_clans()
+
     async def get_enabled_clan(self, clan_key: str) -> ShardClanRow | None:
         key = str(clan_key or "").strip().lower()
         if not key:

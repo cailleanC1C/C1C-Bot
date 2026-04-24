@@ -34,20 +34,41 @@ def schedule_shard_jobs(runtime: "Runtime") -> None:
         return
 
     job = runtime.scheduler.every(minutes=30.0, tag="shards", name="shard_weekly_reminders")
-    log.info("shard reminder scheduler started")
+    next_run = getattr(job, "next_run", None)
+    log.info(
+        "shard reminder scheduler started",
+        extra={
+            "job_name": getattr(job, "name", "shard_weekly_reminders"),
+            "interval_seconds": int(job.interval.total_seconds()),
+            "next_run": next_run.isoformat() if hasattr(next_run, "isoformat") else None,
+            "job_count": len(runtime.scheduler.jobs),
+        },
+    )
 
     async def _runner() -> None:
-        log.info("shard reminder scheduler tick")
+        log.info("shard reminder scheduler tick started")
         if runtime.bot.is_closed() or not runtime.bot.is_ready():
             return
         cog = runtime.bot.get_cog("ShardTracker")
         if cog is None:
             return
         try:
-            await cog.process_weekly_clan_reminders(now=dt.datetime.now(dt.timezone.utc))
+            await cog.process_weekly_clan_reminders(
+                now=dt.datetime.now(dt.timezone.utc),
+                source="scheduler",
+            )
         except Exception:
             log.exception("shard weekly reminder job failed")
 
     task = job.do(_runner)
+    log.info(
+        "shard reminder scheduler registration sanity",
+        extra={
+            "job_name": getattr(job, "name", "shard_weekly_reminders"),
+            "interval_seconds": int(job.interval.total_seconds()),
+            "next_run": job.next_run.isoformat() if job.next_run else None,
+            "job_count": len(runtime.scheduler.jobs),
+        },
+    )
     if isinstance(task, asyncio.Task):
         task.add_done_callback(_log_scheduler_task_exit)

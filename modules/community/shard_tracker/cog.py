@@ -13,6 +13,7 @@ import discord
 from discord import PartialEmoji
 from discord.ext import commands
 
+from c1c_coreops.rbac import admin_only
 from c1c_coreops.helpers import help_metadata, tier
 from modules.common import feature_flags
 from modules.recruitment import emoji_pipeline
@@ -119,6 +120,39 @@ _TYPE_ALIASES = {
 
 _FEATURE_TOGGLE_KEYS = ("shardtracker", "shard_tracker")
 
+_SKIP_DISABLED = "disabled"
+_SKIP_REMINDER_DISABLED = "reminder disabled"
+_SKIP_NOT_IN_TIME_WINDOW = "not in time window"
+_SKIP_MISSING_DESTINATION = "missing destination"
+_SKIP_MISSING_OPT_IN_ROLE = "missing opt_in_role_id"
+_SKIP_MISSING_TEMPLATE = "missing template field"
+_SKIP_ALREADY_SENT = "already sent/dedupe"
+_SKIP_DESTINATION_NOT_FOUND = "destination not found"
+_SKIP_PERMISSION_FAILURE = "permission failure"
+
+
+@dataclass(slots=True)
+class ShardReminderRunStats:
+    rows_loaded: int = 0
+    eligible: int = 0
+    skipped: int = 0
+    dedupe_skipped: int = 0
+    send_attempted: int = 0
+    sent: int = 0
+    failed: int = 0
+    skip_reasons: Dict[str, int] | None = None
+
+    def __post_init__(self) -> None:
+        if self.skip_reasons is None:
+            self.skip_reasons = {}
+
+    def add_skip(self, reason: str) -> None:
+        self.skipped += 1
+        assert self.skip_reasons is not None
+        self.skip_reasons[reason] = self.skip_reasons.get(reason, 0) + 1
+        if reason == _SKIP_ALREADY_SENT:
+            self.dedupe_skipped += 1
+
 
 class ShardTracker(commands.Cog, ShardTrackerController):
     def __init__(self, bot: commands.Bot) -> None:
@@ -167,6 +201,41 @@ class ShardTracker(commands.Cog, ShardTrackerController):
         if not await self._ensure_feature_enabled(ctx):
             return
         await self._handle_stash_set(ctx, shard_type, count)
+
+    @tier("admin")
+    @help_metadata(
+        function_group="milestones",
+        section="community",
+        access_tier="admin",
+        usage="!shards reminder-debug [force|force-send]",
+    )
+    @shards.command(
+        name="reminder-debug",
+        help=(
+            "Admin diagnostic: run the shard weekly reminder processor once "
+            "(force bypasses day/time window; force-send also bypasses dedupe)."
+        ),
+    )
+    @commands.guild_only()
+    @admin_only()
+    async def shards_reminder_debug(self, ctx: commands.Context, mode: str | None = None) -> None:
+        token = (mode or "").strip().lower()
+        force_window = token in {"force", "force-send"}
+        force_send = token == "force-send"
+        if token and token not in {"force", "force-send"}:
+            await ctx.reply(
+                "Usage: `!shards reminder-debug [force|force-send]`.",
+                mention_author=False,
+            )
+            return
+        stats = await self.process_weekly_clan_reminders(
+            now=datetime.now(timezone.utc),
+            force_window=force_window,
+            force_send=force_send,
+            source="debug_command",
+        )
+        embed = self._build_reminder_debug_embed(stats=stats, force_window=force_window, force_send=force_send)
+        await ctx.reply(embed=embed, mention_author=False)
 
     # === Button controller ===
 
@@ -1057,16 +1126,20 @@ class ShardTracker(commands.Cog, ShardTrackerController):
         )
         return None
 
-    def _resolve_share_destination(self, clan: ShardClanRow) -> discord.abc.Messageable | None:
+    def _resolve_share_destination(
+        self, clan: ShardClanRow
+    ) -> tuple[discord.abc.Messageable | None, str | None]:
         if clan.share_thread_id:
             target = self.bot.get_channel(clan.share_thread_id)
             if isinstance(target, discord.Thread):
-                return target
+                return target, None
+            return None, _SKIP_DESTINATION_NOT_FOUND
         if clan.share_channel_id:
             target = self.bot.get_channel(clan.share_channel_id)
             if isinstance(target, (discord.TextChannel, discord.Thread)):
-                return target
-        return None
+                return target, None
+            return None, _SKIP_DESTINATION_NOT_FOUND
+        return None, _SKIP_MISSING_DESTINATION
 
     def _build_share_embed(
         self,
@@ -1098,44 +1171,163 @@ class ShardTracker(commands.Cog, ShardTrackerController):
         embed.set_footer(text=clan.footer, icon_url=footer_icon)
         return embed
 
-    async def process_weekly_clan_reminders(self, *, now: datetime | None = None) -> None:
+    def _build_reminder_debug_embed(
+        self, *, stats: ShardReminderRunStats, force_window: bool, force_send: bool
+    ) -> discord.Embed:
+        mode_bits = []
+        if force_window:
+            mode_bits.append("force-window")
+        if force_send:
+            mode_bits.append("force-send")
+        mode_display = ", ".join(mode_bits) if mode_bits else "normal"
+        skip_lines = ["None"]
+        if stats.skip_reasons:
+            skip_lines = [f"• {reason}: {count}" for reason, count in sorted(stats.skip_reasons.items())]
+        embed = discord.Embed(
+            title="Shard Reminder Debug Run",
+            description=f"Mode: `{mode_display}`",
+            colour=discord.Colour.orange(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(
+            name="Counts",
+            value=(
+                f"rows loaded: **{stats.rows_loaded}**\n"
+                f"eligible: **{stats.eligible}**\n"
+                f"skipped: **{stats.skipped}**\n"
+                f"dedupe-skipped: **{stats.dedupe_skipped}**\n"
+                f"send-attempted: **{stats.send_attempted}**\n"
+                f"sent: **{stats.sent}**\n"
+                f"failed: **{stats.failed}**"
+            ),
+            inline=False,
+        )
+        embed.add_field(name="Skip reasons", value="\n".join(skip_lines), inline=False)
+        return embed
+
+    async def process_weekly_clan_reminders(
+        self,
+        *,
+        now: datetime | None = None,
+        force_window: bool = False,
+        force_send: bool = False,
+        source: str = "scheduler",
+    ) -> ShardReminderRunStats:
         reference = now.astimezone(timezone.utc) if now else datetime.now(timezone.utc)
+        stats = ShardReminderRunStats()
+        log.info(
+            "shard reminder scheduler tick started",
+            extra={"source": source, "force_window": force_window, "force_send": force_send},
+        )
         try:
-            clans = await self.store.get_enabled_clans()
+            clans = await self.store.get_clans()
         except Exception:
             log.exception("failed to load shard clans for weekly reminders")
-            return
+            return stats
+        stats.rows_loaded = len(clans)
+        log.info(
+            "shard reminder rows loaded",
+            extra={"rows_loaded": stats.rows_loaded, "source": source},
+        )
         for clan in clans:
+            if not clan.enabled:
+                stats.add_skip(_SKIP_DISABLED)
+                log.info("shard reminder row skipped", extra={"clan_key": clan.clan_key, "reason": _SKIP_DISABLED})
+                continue
             if not clan.reminder_enabled:
+                stats.add_skip(_SKIP_REMINDER_DISABLED)
+                log.info(
+                    "shard reminder row skipped",
+                    extra={"clan_key": clan.clan_key, "reason": _SKIP_REMINDER_DISABLED},
+                )
                 continue
             if not clan.opt_in_role_id:
                 await self._notify_admins(f"SHARD_CLANS_TAB clan={clan.clan_key} missing opt_in_role_id")
+                stats.add_skip(_SKIP_MISSING_OPT_IN_ROLE)
+                log.info(
+                    "shard reminder row skipped",
+                    extra={"clan_key": clan.clan_key, "reason": _SKIP_MISSING_OPT_IN_ROLE},
+                )
                 continue
             scheduled = self._scheduled_window_start(clan, reference)
             if scheduled is None:
                 await self._notify_admins(f"SHARD_CLANS_TAB clan={clan.clan_key} has invalid reminder_day/time")
+                stats.add_skip(_SKIP_NOT_IN_TIME_WINDOW)
+                log.info(
+                    "shard reminder row skipped",
+                    extra={"clan_key": clan.clan_key, "reason": _SKIP_NOT_IN_TIME_WINDOW},
+                )
                 continue
             window_key = scheduled.date().isoformat()
-            if reference < scheduled or reference > (scheduled + timedelta(minutes=30)):
+            if not force_window and (reference < scheduled or reference > (scheduled + timedelta(minutes=30))):
+                stats.add_skip(_SKIP_NOT_IN_TIME_WINDOW)
+                log.info(
+                    "shard reminder row skipped",
+                    extra={
+                        "clan_key": clan.clan_key,
+                        "reason": _SKIP_NOT_IN_TIME_WINDOW,
+                        "scheduled": scheduled.isoformat(),
+                        "reference": reference.isoformat(),
+                    },
+                )
                 continue
             try:
                 sent_keys = await self.store.get_sent_weekly_reminder_keys(clan.clan_key)
             except Exception:
                 log.exception("failed loading shard reminder dedupe", extra={"clan_key": clan.clan_key})
                 sent_keys = set()
-            if window_key in sent_keys:
+            if (not force_send) and window_key in sent_keys:
+                stats.add_skip(_SKIP_ALREADY_SENT)
+                log.info(
+                    "shard reminder row skipped",
+                    extra={"clan_key": clan.clan_key, "reason": _SKIP_ALREADY_SENT, "window_key": window_key},
+                )
                 continue
-            destination = self._resolve_share_destination(clan)
+            destination, destination_reason = self._resolve_share_destination(clan)
             if destination is None:
                 await self._notify_admins(f"SHARD_CLANS_TAB clan={clan.clan_key} destination missing")
+                reason = destination_reason or _SKIP_MISSING_DESTINATION
+                stats.add_skip(reason)
+                log.info("shard reminder row skipped", extra={"clan_key": clan.clan_key, "reason": reason})
                 continue
             if not clan.title or not clan.body or not clan.footer:
                 await self._notify_admins(f"SHARD_CLANS_TAB clan={clan.clan_key} missing reminder embed fields")
+                stats.add_skip(_SKIP_MISSING_TEMPLATE)
+                log.info(
+                    "shard reminder row skipped",
+                    extra={"clan_key": clan.clan_key, "reason": _SKIP_MISSING_TEMPLATE},
+                )
                 continue
+            stats.eligible += 1
+            log.info("shard reminder row eligible", extra={"clan_key": clan.clan_key, "window_key": window_key})
             embed = self._build_clan_reminder_embed(clan=clan, guild=getattr(destination, "guild", None))
             mention = f"<@&{clan.opt_in_role_id}>"
-            await destination.send(content=mention, embed=embed, view=ShardReminderOptView())
-            await self.store.mark_weekly_reminder_sent(clan_key=clan.clan_key, window_key=window_key, sent_at=reference)
+            stats.send_attempted += 1
+            log.info(
+                "shard reminder send attempt started",
+                extra={"clan_key": clan.clan_key, "window_key": window_key, "source": source},
+            )
+            try:
+                message = await destination.send(content=mention, embed=embed, view=ShardReminderOptView())
+                await self.store.mark_weekly_reminder_sent(
+                    clan_key=clan.clan_key, window_key=window_key, sent_at=reference
+                )
+                stats.sent += 1
+                log.info(
+                    "shard reminder send success",
+                    extra={"clan_key": clan.clan_key, "message_id": getattr(message, "id", None)},
+                )
+            except discord.Forbidden:
+                stats.failed += 1
+                stats.add_skip(_SKIP_PERMISSION_FAILURE)
+                log.exception(
+                    "shard reminder send failure",
+                    extra={"clan_key": clan.clan_key, "reason": _SKIP_PERMISSION_FAILURE},
+                )
+            except Exception:
+                stats.failed += 1
+                log.exception("shard reminder send failure", extra={"clan_key": clan.clan_key})
+        return stats
 
     def _scheduled_window_start(self, clan: ShardClanRow, now_utc: datetime) -> datetime | None:
         day_names = {
