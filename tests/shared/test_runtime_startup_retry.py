@@ -70,6 +70,9 @@ def _patch_runtime_startup(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "modules.community.fusion.scheduler.schedule_fusion_jobs", lambda _runtime: None
     )
+    monkeypatch.setattr(
+        "modules.community.reset_reminders.scheduler.schedule_reset_reminder_jobs", lambda _runtime: None
+    )
 
 
 def test_runtime_startup_retry_rebuilds_bot_per_attempt(

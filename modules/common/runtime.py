@@ -1511,6 +1511,7 @@ class Runtime:
         from modules.community.leagues import schedule_leagues_jobs
         from modules.community.fusion.scheduler import schedule_fusion_jobs
         from modules.community.shard_tracker.scheduler import schedule_shard_jobs
+        from modules.community.reset_reminders.scheduler import schedule_reset_reminder_jobs
 
         toggles = shared_config.features
         ensure_cache_registration()
@@ -1604,6 +1605,7 @@ class Runtime:
         schedule_leagues_jobs(self)
         schedule_fusion_jobs(self)
         schedule_shard_jobs(self)
+        schedule_reset_reminder_jobs(self)
 
     async def close(self) -> None:
         await self.shutdown_webserver()
