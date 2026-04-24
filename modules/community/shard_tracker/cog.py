@@ -1420,7 +1420,11 @@ class ShardTracker(commands.Cog, ShardTrackerController):
         file = discord.File(io.BytesIO(raw), filename=filename)
         log.info(
             "shard reminder emoji attachment resolved",
-            extra={"clan_key": clan_key, "emoji_id": getattr(emoji, "id", None), "filename": filename},
+            extra={
+                "clan_key": clan_key,
+                "emoji_id": getattr(emoji, "id", None),
+                "emoji_attachment_filename": filename,
+            },
         )
         return file
 
