@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import io
 from datetime import datetime, time, timedelta, timezone
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Dict, Iterable, Literal, Optional
 
@@ -129,6 +131,7 @@ _SKIP_MISSING_TEMPLATE = "missing template field"
 _SKIP_ALREADY_SENT = "already sent/dedupe"
 _SKIP_DESTINATION_NOT_FOUND = "destination not found"
 _SKIP_PERMISSION_FAILURE = "permission failure"
+_CUSTOM_EMOJI_MARKUP_RE = re.compile(r"^<(?P<animated>a?):(?P<name>[A-Za-z0-9_~]+):(?P<id>\d+)>$")
 
 
 @dataclass(slots=True)
@@ -1302,13 +1305,25 @@ class ShardTracker(commands.Cog, ShardTrackerController):
             log.info("shard reminder row eligible", extra={"clan_key": clan.clan_key, "window_key": window_key})
             embed = self._build_clan_reminder_embed(clan=clan, guild=getattr(destination, "guild", None))
             mention = f"<@&{clan.opt_in_role_id}>"
+            emoji_file = await self._build_reminder_emoji_file(
+                guild=getattr(destination, "guild", None),
+                emoji_token=clan.emoji_name_or_id,
+                clan_key=clan.clan_key,
+            )
+            send_kwargs = {
+                "content": mention,
+                "embed": embed,
+                "view": ShardReminderOptView(),
+            }
+            if emoji_file is not None:
+                send_kwargs["files"] = [emoji_file]
             stats.send_attempted += 1
             log.info(
                 "shard reminder send attempt started",
                 extra={"clan_key": clan.clan_key, "window_key": window_key, "source": source},
             )
             try:
-                message = await destination.send(content=mention, embed=embed, view=ShardReminderOptView())
+                message = await destination.send(**send_kwargs)
                 await self.store.mark_weekly_reminder_sent(
                     clan_key=clan.clan_key, window_key=window_key, sent_at=reference
                 )
@@ -1380,6 +1395,72 @@ class ShardTracker(commands.Cog, ShardTrackerController):
             return str(emoji.url) if emoji else None
         emoji = guild.get_emoji(emoji_id)
         return str(emoji.url) if emoji else None
+
+    async def _build_reminder_emoji_file(
+        self,
+        *,
+        guild: discord.Guild | None,
+        emoji_token: str,
+        clan_key: str,
+    ) -> discord.File | None:
+        token = str(emoji_token or "").strip()
+        if not token:
+            return None
+        emoji = self._resolve_reminder_emoji(guild, token)
+        if emoji is None:
+            log.warning("shard reminder emoji unresolved", extra={"clan_key": clan_key})
+            return None
+        try:
+            raw = await emoji.read()
+        except Exception:
+            log.warning("shard reminder emoji download failed", extra={"clan_key": clan_key})
+            return None
+        extension = "gif" if bool(getattr(emoji, "animated", False)) else "png"
+        filename = f"shard_reminder_emoji.{extension}"
+        file = discord.File(io.BytesIO(raw), filename=filename)
+        log.info(
+            "shard reminder emoji attachment resolved",
+            extra={"clan_key": clan_key, "emoji_id": getattr(emoji, "id", None), "filename": filename},
+        )
+        return file
+
+    def _resolve_reminder_emoji(
+        self,
+        guild: discord.Guild | None,
+        token: str,
+    ) -> discord.Emoji | None:
+        markup = _CUSTOM_EMOJI_MARKUP_RE.match(token)
+        emoji_id: int | None = None
+        emoji_name: str | None = None
+        if markup:
+            emoji_id = int(markup.group("id"))
+            emoji_name = markup.group("name")
+        elif token.isdigit():
+            emoji_id = int(token)
+        else:
+            emoji_name = token
+
+        if emoji_id is not None:
+            if guild is not None:
+                emoji = guild.get_emoji(emoji_id)
+                if emoji is not None:
+                    return emoji
+            get_emoji = getattr(self.bot, "get_emoji", None)
+            if callable(get_emoji):
+                emoji = get_emoji(emoji_id)
+                if emoji is not None:
+                    return emoji
+
+        if emoji_name:
+            if guild is not None:
+                emoji = emoji_pipeline.emoji_for_tag(guild, emoji_name)
+                if emoji is not None:
+                    return emoji
+            bot_emojis = getattr(self.bot, "emojis", ())
+            for emoji in bot_emojis:
+                if getattr(emoji, "name", "") == emoji_name:
+                    return emoji
+        return None
 
     def _build_display(self, record: ShardRecord, kind: ShardKind) -> ShardDisplay:
         owned = max(0, getattr(record, kind.stash_field, 0))
