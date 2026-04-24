@@ -10,11 +10,14 @@ def test_on_ready_registers_fusion_persistent_view(monkeypatch):
         bot = SimpleNamespace(logger=None)
         monkeypatch.setattr(ready.panels, "register_views", Mock())
         monkeypatch.setattr(ready, "register_persistent_fusion_views", Mock())
+        monkeypatch.setattr(ready, "register_persistent_shard_views", Mock())
         monkeypatch.setattr(ready.watcher_welcome, "setup", AsyncMock())
+        monkeypatch.setattr(ready, "register_persistent_reset_views", AsyncMock())
         monkeypatch.setattr(ready.watcher_promo, "setup", AsyncMock())
 
         await ready.on_ready(bot)
 
         ready.register_persistent_fusion_views.assert_called_once_with(bot)
+        ready.register_persistent_reset_views.assert_awaited_once_with(bot)
 
     asyncio.run(_run())
