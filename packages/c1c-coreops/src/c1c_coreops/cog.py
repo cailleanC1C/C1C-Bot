@@ -4655,6 +4655,18 @@ class CoreOpsCog(commands.Cog):
             normalized = _normalize_snapshot_value(raw_value)
             display_value = str(redact_value(key, normalized))
             entries[key] = _EnvEntry(key=key, normalized=normalized, display=display_value)
+
+        # Backward-compatible alias for legacy env surfaces; fail-soft when absent.
+        if "WATCHDOG_MAX_DISCONNECT_SEC" not in entries:
+            legacy_key = "WATCHDOG_MAX_DISCONNECT_SEC"
+            alias_value = os.getenv(legacy_key)
+            if alias_value is None:
+                alias_value = snapshot.get("WATCHDOG_DISCONNECT_GRACE_SEC")
+            normalized = _normalize_snapshot_value(alias_value)
+            display_value = str(redact_value(legacy_key, normalized))
+            entries[legacy_key] = _EnvEntry(
+                key=legacy_key, normalized=normalized, display=display_value
+            )
         return entries
 
     def _format_key_block(
@@ -4863,6 +4875,7 @@ class CoreOpsCog(commands.Cog):
             "WATCHDOG_CHECK_SEC",
             "WATCHDOG_STALL_SEC",
             "WATCHDOG_DISCONNECT_GRACE_SEC",
+            "WATCHDOG_MAX_DISCONNECT_SEC",
             "TIMEZONE",
             "PORT",
             "LOG_LEVEL",
