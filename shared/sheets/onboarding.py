@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from shared.sheets import core
-from shared.sheets.async_core import afetch_values
+from shared.sheets.async_core import afetch_records, afetch_values
 from shared.sheets.cache_service import cache
 
 _CACHE_TTL = int(os.getenv("SHEETS_CACHE_TTL_SEC", "900"))
@@ -126,6 +126,42 @@ def _load_config(force: bool = False) -> Dict[str, str]:
     return parsed
 
 
+async def _load_config_async(force: bool = False) -> Dict[str, str]:
+    global _CONFIG_CACHE, _CONFIG_CACHE_TS
+    now = time.time()
+    if not force and _CONFIG_CACHE and (now - _CONFIG_CACHE_TS) < _CONFIG_TTL:
+        return _CONFIG_CACHE
+
+    records = await afetch_records(_sheet_id(), _config_tab())
+    parsed: Dict[str, str] = {}
+    for row in records:
+        key_value: Optional[str] = None
+        stored_value: Optional[str] = None
+        for col, value in row.items():
+            col_norm = (col or "").strip().lower()
+            if col_norm == "key":
+                key_value = str(value).strip().lower() if value is not None else ""
+            elif col_norm in {"value", "val"}:
+                stored_value = str(value).strip() if value is not None else ""
+        if key_value:
+            if stored_value:
+                parsed[key_value] = stored_value
+                continue
+            for col, value in row.items():
+                if (col or "").strip().lower() == "key":
+                    continue
+                if value is None:
+                    continue
+                candidate = str(value).strip()
+                if candidate:
+                    parsed[key_value] = candidate
+                    break
+
+    _CONFIG_CACHE = parsed
+    _CONFIG_CACHE_TS = now
+    return parsed
+
+
 def _config_lookup(key: str, default: Optional[str] = None) -> Optional[str]:
     want = (key or "").strip().lower()
     if not want:
@@ -151,6 +187,14 @@ def _read_onboarding_config(sheet_id: Optional[str] = None) -> Dict[str, str]:
 
     _ = sheet_id  # preserved for API compatibility with older helpers
     config = _load_config()
+    return {key.upper(): value for key, value in config.items()}
+
+
+async def _read_onboarding_config_async(sheet_id: Optional[str] = None) -> Dict[str, str]:
+    """Async variant of :func:`_read_onboarding_config`."""
+
+    _ = sheet_id  # preserved for API compatibility with older helpers
+    config = await _load_config_async()
     return {key.upper(): value for key, value in config.items()}
 
 
@@ -695,7 +739,8 @@ _TTL_CLAN_TAGS_SEC = 7 * 24 * 60 * 60
 async def _load_clan_tags_async() -> List[str]:
     _ensure_service_account_credentials()
     sheet_id = _sheet_id()
-    tab = _clanlist_tab()
+    config = await _load_config_async()
+    tab = config.get("clanlist_tab", "ClanList") or "ClanList"
     values = await afetch_values(sheet_id, tab)
     tags: List[str] = []
     for row in values:
