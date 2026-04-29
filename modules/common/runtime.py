@@ -1452,7 +1452,7 @@ class Runtime:
         try:
             rehydrate_tiers(self.bot)
             audit_tiers(self.bot, log)
-            merged = await shared_config.amerge_onboarding_config_early()
+            merged = shared_config.merge_onboarding_config_early()
             log.debug("runtime: onboarding config preload merged %d keys", merged)
         except Exception as exc:
             _startup_phase_log("config validation", "fail", error=repr(exc))

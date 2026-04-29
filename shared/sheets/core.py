@@ -127,13 +127,11 @@ def _sleep_with_new_loop(delay: float) -> None:
         return
 
     try:
-        asyncio.get_running_loop()
-    except RuntimeError:
         asyncio.run(asyncio.sleep(delay))
-        return
-    raise RuntimeError(
-        "_retry_with_backoff must not run inside an active event loop; use the async variant"
-    )
+    except RuntimeError as exc:  # pragma: no cover - unexpected event loop reuse
+        raise RuntimeError(
+            "_retry_with_backoff must not run inside an active event loop; use the async variant"
+        ) from exc
 
 
 def _resolve_sheet_id(sheet_id: str | None) -> str:

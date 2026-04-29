@@ -13,33 +13,11 @@ import discord
 from PIL import Image, ImageDraw, ImageFont
 
 from modules.common import runtime as runtime_helpers
-from shared.config import get_config_snapshot
 from shared.sheets import core as sheets_core
 from shared.sheets import recruitment
 from shared.sheets.export_utils import export_pdf_as_png, get_tab_gid
 
 log = logging.getLogger("c1c.housekeeping.mirralith")
-
-
-def _resolve_mirralith_channel_id() -> tuple[int | None, str, str]:
-    raw_env = (os.getenv("MIRRALITH_CHANNEL_ID") or "").strip()
-    if raw_env:
-        return _parse_channel_id(raw_env), "env:MIRRALITH_CHANNEL_ID", raw_env
-
-    snapshot = get_config_snapshot()
-    raw_cfg = str(snapshot.get("MIRRALITH_CHANNEL_ID") or "").strip()
-    if raw_cfg:
-        return _parse_channel_id(raw_cfg), "config:MIRRALITH_CHANNEL_ID", raw_cfg
-
-    return None, "unset", "unset"
-
-
-def _parse_channel_id(raw: str) -> int | None:
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return value if value > 0 else None
 
 
 @dataclass(frozen=True)
@@ -246,17 +224,15 @@ async def upsert_labeled_message(
 async def run_mirralith_overview_job(bot: discord.Client, trigger: str = "scheduled") -> None:
     log.info("Running Mirralith overview job (trigger=%s)", trigger)
 
-    channel_id, channel_id_source, raw_channel_id = _resolve_mirralith_channel_id()
+    raw_channel_id = os.getenv("MIRRALITH_CHANNEL_ID")
+    try:
+        channel_id = int(raw_channel_id) if raw_channel_id is not None else None
+    except (TypeError, ValueError):
+        log.warning("Mirralith overview channel ID invalid; aborting")
+        return
+
     if not channel_id:
-        reason = "invalid" if raw_channel_id not in {"", "unset"} else "missing"
-        log.warning(
-            "Mirralith overview channel ID %s; aborting",
-            reason,
-            extra={
-                "channel_id_source": channel_id_source,
-                "channel_id_raw": raw_channel_id or "unset",
-            },
-        )
+        log.warning("Mirralith overview channel ID missing; aborting")
         return
 
     channel = bot.get_channel(channel_id)

@@ -333,28 +333,6 @@ def _load_onboarding_config_values() -> tuple[str, Dict[str, str]]:
     return sheet_id, normalized
 
 
-async def _aload_onboarding_config_values() -> tuple[str, Dict[str, str]]:
-    """Async variant of :func:`_load_onboarding_config_values`."""
-
-    sheet_id = (os.getenv("ONBOARDING_SHEET_ID") or "").strip()
-    if not sheet_id:
-        raise RuntimeError("ONBOARDING_SHEET_ID not set")
-
-    onboarding_sheets = sys.modules.get("shared.sheets.onboarding")
-    if onboarding_sheets is None:
-        from shared.sheets import onboarding as onboarding_sheets  # type: ignore
-
-    raw_config = await onboarding_sheets._read_onboarding_config_async(sheet_id)  # type: ignore[attr-defined]
-    normalized: Dict[str, str] = {}
-    for key, value in raw_config.items():
-        key_norm = (key or "").strip().upper()
-        if not key_norm:
-            continue
-        text = "" if value is None else str(value).strip()
-        normalized[key_norm] = text
-    return sheet_id, normalized
-
-
 def _merge_onboarding_tab(config: Dict[str, object]) -> None:
     """Merge the onboarding questions tab name from sheet config."""
 
@@ -364,12 +342,7 @@ def _merge_onboarding_tab(config: Dict[str, object]) -> None:
         log.debug("config: onboarding sheet id not configured; skipping tab merge")
         return
     except Exception as exc:  # pragma: no cover - network or credential failures
-        log.warning(
-            "config: failed to load onboarding Config tab: %s: %s",
-            type(exc).__name__,
-            exc,
-            exc_info=True,
-        )
+        log.warning("config: failed to load onboarding Config tab: %s", exc)
         return
 
     if not values:
@@ -437,32 +410,6 @@ def merge_onboarding_config_early() -> int:
     """Merge onboarding Config tab values into the live config mapping."""
 
     sheet_id, values = _load_onboarding_config_values()
-
-    merged = 0
-    for key, value in values.items():
-        _CONFIG[key] = value
-        merged += 1
-
-    global _LAST_ONBOARDING_CONFIG_KEYS
-    _LAST_ONBOARDING_CONFIG_KEYS = len(values)
-
-    tail = sheet_id[-6:] if len(sheet_id) >= 6 else sheet_id
-    display = f"…{tail}" if len(sheet_id) > len(tail) else tail
-    result = "ok" if merged else "empty"
-    log.info(
-        "🧩 Config — merged onboarding tab • sheet=%s • keys=%d • result=%s",
-        display,
-        len(values),
-        result,
-        extra={"sheet_tail": tail, "keys": len(values), "result": result},
-    )
-    return len(values)
-
-
-async def amerge_onboarding_config_early() -> int:
-    """Async variant of :func:`merge_onboarding_config_early`."""
-
-    sheet_id, values = await _aload_onboarding_config_values()
 
     merged = 0
     for key, value in values.items():
