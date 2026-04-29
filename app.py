@@ -81,13 +81,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return default
 
 
-def _should_log_message_content() -> bool:
-    """Safely gate message content logging.
-
-    Default is secure: content is *not* logged unless explicitly enabled.
-    """
-
-    return _env_bool("LOG_MESSAGE_CONTENT", False)
+LOG_MESSAGE_CONTENT = _env_bool("LOG_MESSAGE_CONTENT", False)
 
 
 def _truncate_text(text: str, max_len: int = LOG_MESSAGE_CONTENT_MAX_LEN) -> str:
@@ -383,7 +377,7 @@ async def on_message(message: discord.Message):
         len(content),
         attachments_count,
     )
-    if _should_log_message_content():
+    if LOG_MESSAGE_CONTENT:
         safe_content = _safe_logged_message_content(content)
         log.info(
             "seen msg: guild=%s chan=%s msg=%s author=%s content_len=%s attachments=%s content=%r",

@@ -3,7 +3,6 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import math
-import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -68,16 +67,11 @@ def _sheet_id() -> str:
     return sheet_id
 
 
-def _tab_name() -> tuple[str, str]:
-    env_value = (os.getenv(_RESET_REMINDER_TAB_KEY) or "").strip()
-    if env_value:
-        return env_value, f"env:{_RESET_REMINDER_TAB_KEY}"
-    cfg_value = str(cfg.get(_RESET_REMINDER_TAB_KEY) or "").strip()
-    if cfg_value:
-        return cfg_value, f"config:{_RESET_REMINDER_TAB_KEY}"
-    raise RuntimeError(
-        f"{_RESET_REMINDER_TAB_KEY} missing; set via env or milestones Config tab"
-    )
+def _tab_name() -> str:
+    tab_name = str(cfg.get(_RESET_REMINDER_TAB_KEY) or "").strip()
+    if not tab_name:
+        raise RuntimeError(f"{_RESET_REMINDER_TAB_KEY} missing in milestones Config tab")
+    return tab_name
 
 
 def _cell(row: list[Any], index: int) -> str:
@@ -120,24 +114,22 @@ def _parse_optional_int(value: object) -> int | None:
     return int(text)
 
 
-def _resolve_header_map(header: list[Any], *, tab_name: str) -> dict[str, int]:
+def _resolve_header_map(header: list[Any]) -> dict[str, int]:
     normalized = [_normalize(cell) for cell in header]
     indices = {name: idx for idx, name in enumerate(normalized) if name}
     missing = [column for column in _REQUIRED_COLUMNS if column not in indices]
     if missing:
-        raise RuntimeError(
-            f"Reset reminder tab '{tab_name}' missing required columns: {missing}"
-        )
+        raise RuntimeError(f"Reset reminder tab missing required columns: {missing}")
     return indices
 
 
 async def _load_reset_reminder_records(*, active_only: bool) -> tuple[str, dict[str, int], list[_ResetReminderRecord]]:
-    tab_name, tab_source = _tab_name()
+    tab_name = _tab_name()
     matrix = await afetch_values(_sheet_id(), tab_name)
     if not matrix:
         return tab_name, {}, []
 
-    header_map = _resolve_header_map(matrix[0], tab_name=tab_name)
+    header_map = _resolve_header_map(matrix[0])
     records: list[_ResetReminderRecord] = []
 
     for row_number, row in enumerate(matrix[1:], start=2):
@@ -173,15 +165,6 @@ async def _load_reset_reminder_records(*, active_only: bool) -> tuple[str, dict[
             log.exception("invalid reset reminder row skipped", extra={"tab": tab_name, "row_number": row_number})
             continue
 
-    log.debug(
-        "loaded reset reminder rows",
-        extra={
-            "tab_name": tab_name,
-            "tab_source": tab_source,
-            "row_count": len(records),
-            "active_only": active_only,
-        },
-    )
     return tab_name, header_map, records
 
 
@@ -271,15 +254,7 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
     try:
         tab_name, header_map, records = await _load_reset_reminder_records(active_only=True)
     except Exception:
-        log.error(
-            "failed to load reset reminders",
-            exc_info=True,
-            extra={
-                "sheet_id": _sheet_id(),
-                "reset_tab_env": (os.getenv(_RESET_REMINDER_TAB_KEY) or "").strip() or "unset",
-                "reset_tab_cfg": str(cfg.get(_RESET_REMINDER_TAB_KEY) or "").strip() or "unset",
-            },
-        )
+        log.exception("failed to load reset reminders")
         return
 
     if not records:
