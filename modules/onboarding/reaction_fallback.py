@@ -33,6 +33,12 @@ def normalize_spaces(value: str) -> str:
     return " ".join(value.split())
 
 
+def _is_supported_fallback_emoji(payload: RawReactionActionEvent) -> bool:
+    emoji_str = str(payload.emoji)
+    emoji_name = getattr(payload.emoji, "name", None)
+    return emoji_str.startswith(FALLBACK_EMOJI) or emoji_name == FALLBACK_EMOJI
+
+
 def _promo_trigger_flow(content: str | None) -> str | None:
     text = content or ""
     for trigger, flow in PROMO_TRIGGER_MAP.items():
@@ -121,7 +127,9 @@ class OnboardingReactionFallbackCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: RawReactionActionEvent) -> None:
-        if str(payload.emoji) != FALLBACK_EMOJI:
+        emoji_str = str(payload.emoji)
+        emoji_name = getattr(payload.emoji, "name", None)
+        if not _is_supported_fallback_emoji(payload):
             return
 
         bot_user = getattr(self.bot, "user", None)
@@ -260,19 +268,20 @@ class OnboardingReactionFallbackCog(commands.Cog):
         actor_is_privileged = rbac.is_admin_member(member) or rbac.is_recruiter(member)
         actor_is_target = target_user_id is not None and int(member.id) == int(target_user_id)
 
+        ticket_context_found = target_user_id is not None
         if target_user_id is None and not actor_is_privileged:
-            await _log_reject(
-                "ambiguous_target",
-                member=member,
-                thread=thread,
-                parent_id=getattr(thread, "parent_id", None),
-                trigger="role_gate",
-                result="ambiguous_target",
-                extra=target_extra,
-            )
-            return
+            warn_context = _base_context(member=member, thread=thread, message_id=payload.message_id)
+            warn_context.update({
+                "trigger": "role_gate",
+                "result": "ambiguous_target_continue",
+                "emoji_received": emoji_str,
+                "emoji_name": emoji_name,
+                "ticket_context_found": False,
+            })
+            warn_context.update(target_extra)
+            await logs.send_welcome_log("warn", **warn_context)
 
-        if not (actor_is_target or actor_is_privileged):
+        if target_user_id is not None and not (actor_is_target or actor_is_privileged):
             await _log_reject(
                 "role_gate",
                 member=member,
@@ -295,6 +304,7 @@ class OnboardingReactionFallbackCog(commands.Cog):
         content = (getattr(message, "content", "") or "")
         content_lower = normalize_spaces(content.lower())
         author_id = getattr(getattr(message, "author", None), "id", None)
+        author_name = getattr(getattr(message, "author", None), "name", None)
         author_is_ticket_tool = ticket_tool_id is not None and author_id == ticket_tool_id
 
         if in_promo_scope:
@@ -324,8 +334,9 @@ class OnboardingReactionFallbackCog(commands.Cog):
                 return
             trigger = "promo_trigger"
         else:
-            phrase_match = "by reacting with" in content_lower
+            phrase_match = "slap a 👍 on this message" in content_lower or "by reacting with" in content_lower
             token_match = TRIGGER_TOKEN in content
+            welcome_match = "welcome to c1c" in content_lower
             eligible = phrase_match or token_match
 
             if not eligible:
@@ -336,7 +347,7 @@ class OnboardingReactionFallbackCog(commands.Cog):
                     parent_id=getattr(thread, "parent_id", None),
                     result="no_trigger",
                     level="warn",
-                    extra={**target_extra, "message_id": payload.message_id},
+                    extra={**target_extra, "message_id": payload.message_id, "author_id": author_id, "author_name": author_name, "matched_fallback_trigger_text": False, "matched_welcome_text": welcome_match},
                 )
                 return
 
@@ -344,6 +355,7 @@ class OnboardingReactionFallbackCog(commands.Cog):
 
         context = _base_context(member=member, thread=thread, message_id=payload.message_id)
         context.update({"trigger": trigger, "result": "emoji_received"})
+        context.update({"emoji_received": emoji_str, "emoji_name": emoji_name, "author_id": author_id, "author_name": author_name, "matched_fallback_trigger_text": True if trigger in {"token_match", "phrase_match", "promo_trigger"} else False, "ticket_context_found": ticket_context_found})
         context.update(target_extra)
         await logs.send_welcome_log("info", **context)
 
@@ -366,6 +378,19 @@ class OnboardingReactionFallbackCog(commands.Cog):
             panels.mark_panel_inactive_by_message(existing_panel.id)
         else:
             pass
+
+
+        trigger_context = _base_context(member=member, thread=thread, message_id=payload.message_id)
+        trigger_context.update({
+            "trigger": trigger,
+            "result": "trigger_matched",
+            "emoji_received": emoji_str,
+            "emoji_name": emoji_name,
+            "matched_text": True,
+            "ticket_context_found": ticket_context_found,
+        })
+        trigger_context.update(target_extra)
+        await logs.send_welcome_log("info", **trigger_context)
 
         try:
             await start_welcome_dialog(
