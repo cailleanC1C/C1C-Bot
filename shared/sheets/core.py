@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 from functools import lru_cache
 from typing import Any, Awaitable, Callable, Dict, Tuple, TypeVar
 
@@ -79,7 +80,7 @@ def _retry_with_backoff(
             last_exc = exc
             if attempt >= tries - 1:
                 raise
-            _sleep_with_new_loop(max(0.0, delay))
+            _sleep_with_new_loop(_next_backoff_delay(delay, multiplier=multiplier, jitter_ratio=0.25 if _is_rate_limited_error(exc) else 0.0))
             delay *= multiplier if multiplier > 1 else 1
     if last_exc is not None:  # pragma: no cover - defensive
         raise last_exc
@@ -113,11 +114,38 @@ async def _retry_with_backoff_async(
             last_exc = exc
             if attempt >= tries - 1:
                 raise
-            await asyncio.sleep(max(0.0, delay))
+            await asyncio.sleep(_next_backoff_delay(delay, multiplier=multiplier, jitter_ratio=0.25 if _is_rate_limited_error(exc) else 0.0))
             delay *= multiplier if multiplier > 1 else 1
     if last_exc is not None:  # pragma: no cover - defensive
         raise last_exc
     raise RuntimeError("_retry_with_backoff_async exhausted without executing")
+
+
+
+
+def _is_rate_limited_error(exc: Exception) -> bool:
+    """Best-effort detection for Google Sheets/API 429-style failures."""
+
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 429:
+        return True
+    response = getattr(exc, "response", None)
+    if response is not None and getattr(response, "status_code", None) == 429:
+        return True
+    text = str(exc).upper()
+    return "429" in text or "RESOURCE_EXHAUSTED" in text or "READREQUESTSPERMINUTEPERUSER" in text
+
+
+def _next_backoff_delay(delay: float, *, multiplier: float, jitter_ratio: float = 0.25) -> float:
+    """Return exponential backoff delay with bounded jitter."""
+
+    capped = max(0.0, float(delay))
+    if capped <= 0:
+        return 0.0
+    jitter = capped * max(0.0, jitter_ratio)
+    low = max(0.0, capped - jitter)
+    high = capped + jitter
+    return random.uniform(low, high)
 
 
 def _sleep_with_new_loop(delay: float) -> None:

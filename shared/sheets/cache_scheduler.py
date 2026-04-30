@@ -32,14 +32,14 @@ class _JobSpec:
 _SPEC_BY_BUCKET: Dict[str, _JobSpec] = {}
 _REGISTERED: Dict[str, Tuple[Any, asyncio.Task]] = {}
 
-STARTUP_BUCKETS: tuple[str, ...] = (
-    "clans",
-    "clan_tags",
-    "templates",
-    "onboarding_questions",
-    "reaction_roles",
-    "fusion",
-    "fusion_events",
+STARTUP_BUCKETS: tuple[tuple[str, float], ...] = (
+    ("clans", 0.0),
+    ("templates", 6.0),
+    ("clan_tags", 12.0),
+    ("onboarding_questions", 20.0),
+    ("reaction_roles", 28.0),
+    ("fusion", 40.0),
+    ("fusion_events", 52.0),
 )
 
 
@@ -279,8 +279,13 @@ async def preload_on_startup() -> None:
     """Synchronously refresh core cache buckets during startup."""
 
     ensure_cache_registration()
-    for name in STARTUP_BUCKETS:
+    last_delay = 0.0
+    for name, delay_sec in STARTUP_BUCKETS:
         bucket = _safe_bucket(name)
+        wait_sec = max(0.0, delay_sec - last_delay)
+        if wait_sec > 0:
+            await asyncio.sleep(wait_sec)
+        last_delay = max(last_delay, delay_sec)
         try:
             await cache.refresh_now(bucket, actor="startup")
         except asyncio.CancelledError:
