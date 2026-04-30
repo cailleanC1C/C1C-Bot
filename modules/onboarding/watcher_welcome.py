@@ -24,6 +24,7 @@ from modules.onboarding.ui import panels
 from modules.onboarding.controllers.welcome_controller import (
     extract_target_from_message,
     locate_welcome_message,
+    locate_welcome_trigger_message,
 )
 from modules.onboarding.sheet_logging import log_sheet_write
 from modules.onboarding.sessions import Session, ensure_session_for_thread
@@ -62,7 +63,7 @@ _ONBOARDING_LOG_CHANNEL_FETCHED = False
 _AUTO_CLOSED_THREADS: set[int] = set()
 
 _TRIGGER_PHRASE = "awake by reacting with"
-_TICKET_EMOJI = "🎫"
+_TICKET_EMOJI = "👍"
 _FALLBACK_AUTO_ADD_ATTEMPTS = 4
 _FALLBACK_AUTO_ADD_DELAY_SECONDS = 1.0
 
@@ -2511,8 +2512,21 @@ class WelcomeTicketWatcher(commands.Cog):
             return
 
         for attempt in range(1, _FALLBACK_AUTO_ADD_ATTEMPTS + 1):
+            preferred_target: discord.Message | None = None
+            target_source = "history_fallback"
             try:
-                target = await locate_welcome_message(thread)
+                preferred_target = await locate_welcome_message(thread)
+                target = await locate_welcome_trigger_message(
+                    thread,
+                    bot_user_id=getattr(getattr(self.bot, "user", None), "id", None),
+                    preferred_message=preferred_target,
+                )
+                if (
+                    target is not None
+                    and preferred_target is not None
+                    and getattr(target, "id", None) == getattr(preferred_target, "id", None)
+                ):
+                    target_source = "direct_message"
             except Exception:
                 log.warning(
                     "fallback_reaction_auto_add target_lookup_failed — thread=%s • attempt=%s",
@@ -2531,11 +2545,12 @@ class WelcomeTicketWatcher(commands.Cog):
                 )
             else:
                 log.info(
-                    "fallback_reaction_auto_add target — thread=%s • message_id=%s • author_id=%s • emoji=%s",
+                    "fallback_reaction_auto_add target — thread=%s • message_id=%s • author_id=%s • emoji=%s • source=%s",
                     getattr(thread, "id", None),
                     getattr(target, "id", None),
                     getattr(getattr(target, "author", None), "id", None),
                     _TICKET_EMOJI,
+                    target_source,
                 )
                 try:
                     await target.add_reaction(_TICKET_EMOJI)

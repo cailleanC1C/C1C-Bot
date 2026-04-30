@@ -1126,6 +1126,48 @@ async def locate_welcome_message(thread: discord.Thread) -> discord.Message | No
     return None
 
 
+def _is_welcome_trigger_message(
+    message: discord.Message | None,
+    *,
+    bot_user_id: int | None = None,
+) -> bool:
+    if message is None:
+        return False
+    author = getattr(message, "author", None)
+    if author is None:
+        return False
+    if bot_user_id is not None and getattr(author, "id", None) != bot_user_id:
+        return False
+    content = (getattr(message, "content", "") or "").lower()
+    return (
+        "slap a 👍 on this message" in content
+        or "awake by reacting with" in content
+        or "[#welcome:ticket]" in content
+    )
+
+
+async def locate_welcome_trigger_message(
+    thread: discord.Thread,
+    *,
+    bot_user_id: int | None = None,
+    preferred_message: discord.Message | None = None,
+) -> discord.Message | None:
+    """Locate the bot-authored welcome trigger/intro message in the thread."""
+
+    if _is_welcome_trigger_message(preferred_message, bot_user_id=bot_user_id):
+        return preferred_message
+
+    history = getattr(thread, "history", None)
+    if callable(history):
+        try:
+            async for candidate in history(limit=25, oldest_first=False):
+                if _is_welcome_trigger_message(candidate, bot_user_id=bot_user_id):
+                    return candidate
+        except Exception:
+            pass
+    return None
+
+
 def extract_target_from_message(
     message: discord.Message | None,
 ) -> tuple[int | None, int | None]:
