@@ -121,6 +121,34 @@ def test_get_upcoming_events_returns_only_future_events_sorted(
     assert [row.event_id for row in result] == ["future-soon", "future-later"]
 
 
+def test_get_fusion_events_matches_fusion_id_casefold_and_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = (
+        fusion.FusionEventRow(
+            fusion_id=" Anomalus_Titan_Event_2026_04 ",
+            event_id="PH_1",
+            event_name="Path Event",
+            event_type="tournament",
+            category="",
+            start_at_utc=dt.datetime(2026, 4, 1, tzinfo=dt.timezone.utc),
+            end_at_utc=dt.datetime(2026, 4, 2, tzinfo=dt.timezone.utc),
+            reward_amount=100.0,
+            bonus=None,
+            reward_type="Titan Event Points",
+            points_needed=1000,
+            is_estimated=True,
+            sort_order=1,
+        ),
+    )
+    monkeypatch.setattr(fusion, "register_cache_buckets", lambda: ("fusion", "fusion_events"))
+    monkeypatch.setattr(fusion, "_cached_rows", AsyncMock(return_value=rows))
+
+    result = asyncio.run(fusion.get_fusion_events("anomalus_titan_event_2026_04"))
+
+    assert [row.event_id for row in result] == ["PH_1"]
+
+
 def test_get_active_events_returns_only_currently_active_events(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
