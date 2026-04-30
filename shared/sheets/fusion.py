@@ -103,6 +103,10 @@ def _normalize(row: Mapping[str, object]) -> dict[str, object]:
     return out
 
 
+def _normalize_fusion_id(value: object) -> str:
+    return " ".join(str(value or "").strip().casefold().split())
+
+
 def _pick(row: Mapping[str, object], *keys: str) -> object:
     for key in keys:
         if key in row:
@@ -479,10 +483,12 @@ async def get_fusion_events(fusion_id: str) -> list[FusionEventRow]:
     _, events_bucket = register_cache_buckets()
     rows = await _cached_rows(events_bucket)
     target = str(fusion_id or "").strip()
+    target_norm = _normalize_fusion_id(fusion_id)
     filtered = [
         row
         for row in rows
-        if isinstance(row, FusionEventRow) and row.fusion_id == target
+        if isinstance(row, FusionEventRow)
+        and (row.fusion_id == target or _normalize_fusion_id(row.fusion_id) == target_norm)
     ]
     filtered.sort(key=lambda row: (row.start_at_utc, row.sort_order, row.event_id))
     return filtered

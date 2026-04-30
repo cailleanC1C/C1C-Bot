@@ -149,12 +149,25 @@ class FusionCog(commands.Cog):
             )
 
         try:
+            event_count = len(await fusion_sheets.get_fusion_events(target.fusion_id))
             announcement_message = await publish_fusion_announcement(self.bot, target)
             if announcement_message is None:
                 await ctx.reply("Configured announcement channel is not messageable.", mention_author=False)
                 return
         except Exception as exc:
-            log.exception("%s publish failed during announce send", tracker_label, extra={"fusion_id": target.fusion_id})
+            log.exception(
+                "%s publish failed during announce send",
+                tracker_label,
+                extra={
+                    "fusion_id": target.fusion_id,
+                    "tracker_kind": tracker_kind,
+                    "event_count": event_count if "event_count" in locals() else None,
+                    "target_channel_id": getattr(target, "announcement_channel_id", None),
+                    "announcement_channel_id": getattr(target, "announcement_channel_id", None),
+                    "announcement_message_id": getattr(target, "announcement_message_id", None),
+                },
+                exc_info=True,
+            )
             await fusion_logs.send_ops_alert(
                 component="command_publish",
                 summary="announce_send_failed",
