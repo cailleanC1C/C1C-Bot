@@ -17,6 +17,7 @@ from modules.community.fusion.announcements import (
     resolve_stored_announcement,
 )
 from modules.community.fusion.rendering import build_fusion_announcement_embed
+from modules.common import runtime as runtime_helpers
 from shared.sheets import fusion as fusion_sheets
 
 log = logging.getLogger("c1c.community.fusion")
@@ -178,11 +179,28 @@ class FusionCog(commands.Cog):
             await ctx.reply("Failed to publish announcement right now.", mention_author=False)
             return
 
-        destination = channel.mention if isinstance(channel, discord.abc.GuildChannel) else "configured channel"
-        await ctx.reply(
-            f"{tracker_label.title()} announcement published to {destination} for **{target.fusion_name}**.",
-            mention_author=False,
-        )
+        actor = getattr(ctx, "author", None)
+        actor_name = str(actor) if actor is not None else "unknown"
+        command_used = getattr(ctx, "invoked_with", None) or tracker_label
+        destination_channel_id = getattr(channel, "id", None)
+        try:
+            await runtime_helpers.send_log_message(
+                "✅ Fusion publish success"
+                f" • command=!{command_used} publish"
+                f" • actor={actor_name} ({getattr(actor, 'id', None)})"
+                f" • tracker_kind={tracker_kind}"
+                f" • fusion_id={target.fusion_id}"
+                f" • event_title={target.fusion_name}"
+                f" • destination_channel_id={destination_channel_id}"
+                f" • announcement_message_id={getattr(announcement_message, 'id', None)}"
+            )
+        except Exception:
+            log.warning(
+                "%s publish succeeded but failed to send ops confirmation",
+                tracker_label,
+                extra={"fusion_id": target.fusion_id, "tracker_kind": tracker_kind},
+                exc_info=True,
+            )
 
     @tier("user")
     @help_metadata(
