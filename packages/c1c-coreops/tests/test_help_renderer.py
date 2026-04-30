@@ -219,7 +219,7 @@ OVERVIEW_SNAPSHOT = (
     "**Recruiters** use it to spot open slots, match new arrivals and drop welcome notes so nobody gets lost on day one.  \n\n"
     "_All handled right here on Discord — fast, friendly, and stitched together with that usual C1C chaos and care._ \n\n"
     "**To learn what a command does, type like this:**  \n"
-    "`@Bot help ping` → shows info for `@Bot ping`"
+    "`C1C-Recruitment help ping` → shows info for `C1C-Recruitment ping`"
 )
 
 
@@ -242,13 +242,11 @@ def test_help_admin_view(monkeypatch: pytest.MonkeyPatch) -> None:
         staff_text = _collect_text(staff_embed)
         user_text = _collect_text(user_embed)
 
-        assert "`!env`" in admin_text
         assert "`!health`" in admin_text
         assert "`!refresh all`" in admin_text
         assert "`!perm`" in admin_text
         assert "`!welcome-refresh`" in admin_text
-        assert "`@Bot help`" not in admin_text
-        assert "`@Bot ping`" not in admin_text
+        assert "@Bot" not in admin_text
         assert "`!clan`" not in admin_text
 
         assert "`!clanmatch`" in staff_text
@@ -259,8 +257,9 @@ def test_help_admin_view(monkeypatch: pytest.MonkeyPatch) -> None:
 
         assert "`!clan`" in user_text
         assert "`!clansearch`" in user_text
-        assert "`@Bot help`" in user_text
-        assert "`@Bot ping`" in user_text
+        assert "help" in user_text
+        assert "ping" in user_text
+        assert "@Bot" not in user_text
         assert "!ops" not in user_text
 
         combined_text = " \n ".join(
@@ -297,8 +296,9 @@ def test_help_staff_view(monkeypatch: pytest.MonkeyPatch) -> None:
 
         assert "`!clan`" in user_text
         assert "`!clansearch`" in user_text
-        assert "`@Bot help`" in user_text
-        assert "`@Bot ping`" in user_text
+        assert "help" in user_text
+        assert "ping" in user_text
+        assert "@Bot" not in user_text
         assert "!ops" not in user_text
 
     asyncio.run(runner())
@@ -349,8 +349,9 @@ def test_help_user_view(monkeypatch: pytest.MonkeyPatch) -> None:
         user_text = _collect_text(user_embed)
         assert "`!clan`" in user_text
         assert "`!clansearch`" in user_text
-        assert "`@Bot help`" in user_text
-        assert "`@Bot ping`" in user_text
+        assert "help" in user_text
+        assert "ping" in user_text
+        assert "@Bot" not in user_text
         assert "!ops" not in user_text
 
     asyncio.run(runner())

@@ -201,14 +201,16 @@ class FusionCog(commands.Cog):
     async def titan(self, ctx: commands.Context) -> None:
         await self._tracker_entrypoint(ctx, tracker_kind="titan", tracker_label="titan")
 
-    @tier("user")
+    @tier("admin")
     @help_metadata(
         function_group="milestones",
         section="community",
-        access_tier="user",
+        access_tier="admin",
         usage="!fusion debug",
     )
     @fusion.command(name="debug", help="Debug active fusion + first events from sheets cache.")
+    @commands.guild_only()
+    @admin_only()
     async def fusion_debug(self, ctx: commands.Context) -> None:
         try:
             active = await fusion_sheets.get_publishable_fusion(include_draft=True)

@@ -542,3 +542,23 @@ def test_summary_commands_do_not_include_admin_gate_checks() -> None:
 
     assert not any("admin" in check for check in fusion_checks)
     assert not any("admin" in check for check in titan_checks)
+
+
+def test_fusion_admin_command_metadata_tiers() -> None:
+    bot = SimpleNamespace()
+    cog = FusionCog(bot)
+
+    assert getattr(cog.fusion, "extras", {}).get("access_tier") == "user"
+    assert getattr(cog.titan, "extras", {}).get("access_tier") == "user"
+    assert getattr(cog.fusion_debug, "extras", {}).get("access_tier") == "admin"
+    assert getattr(cog.fusion_publish, "extras", {}).get("access_tier") == "admin"
+    assert getattr(cog.titan_publish, "extras", {}).get("access_tier") == "admin"
+
+
+def test_fusion_admin_commands_have_rbac_checks() -> None:
+    bot = SimpleNamespace()
+    cog = FusionCog(bot)
+
+    assert cog.fusion_debug.checks
+    assert cog.fusion_publish.checks
+    assert cog.titan_publish.checks

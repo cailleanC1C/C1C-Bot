@@ -1526,7 +1526,7 @@ class CoreOpsCog(commands.Cog):
         await ctx.send(
             str(
                 sanitize_text(
-                    "Use @Bot help, @Bot help <command>, or @Bot help <command> <subcommand>."
+                    f"Use {self._help_command_label(ctx, 'help')}, {self._help_command_label(ctx, 'help <command>')}, or {self._help_command_label(ctx, 'help <command> <subcommand>')}."
                 )
             )
         )
@@ -3391,10 +3391,10 @@ class CoreOpsCog(commands.Cog):
             embeds = build_help_overview_embeds(
                 prefix=prefix,
                 overview_title="C1C-Recruitment — help",
-                overview_description=self._help_bot_description(bot_name=bot_name),
+                overview_description=self._help_bot_description(ctx, bot_name=bot_name),
                 tiers=tiers,
                 bot_version=bot_version,
-                notes=" • For details: @Bot help",
+                notes=f" • For details: {self._help_command_label(ctx, 'help')}",
                 show_empty_sections=self._show_empty_sections(),
             )
             sanitized = [sanitize_embed(embed) for embed in embeds]
@@ -4264,7 +4264,7 @@ class CoreOpsCog(commands.Cog):
                 return can_view_staff(author)
             return True
 
-        for command_name, usage in ("ops help", "@Bot help"), ("ops ping", "@Bot ping"):
+        for command_name, usage in ("ops help", self._help_command_label(ctx, "help")), ("ops ping", self._help_command_label(ctx, "ping")):
             if command_name in seen:
                 continue
             command = self.bot.get_command(command_name)
@@ -4440,7 +4440,14 @@ class CoreOpsCog(commands.Cog):
             flags=flags,
         )
 
-    def _help_bot_description(self, *, bot_name: str) -> str:
+    def _help_command_label(self, ctx: commands.Context, suffix: str) -> str:
+        mention = getattr(getattr(ctx, "me", None), "mention", None)
+        if not mention:
+            mention = getattr(getattr(ctx.bot, "user", None), "mention", None)
+        base = mention or getattr(getattr(ctx.bot, "user", None), "display_name", None) or get_bot_name()
+        return f"{base} {suffix}".strip()
+
+    def _help_bot_description(self, ctx: commands.Context, *, bot_name: str) -> str:
         return (
             "  \n "
             "**C1C-Recruitment keeps the doors open and the hearths warm.**  \n"
@@ -4449,7 +4456,7 @@ class CoreOpsCog(commands.Cog):
             "**Recruiters** use it to spot open slots, match new arrivals and drop welcome notes so nobody gets lost on day one.  \n\n"
             "_All handled right here on Discord — fast, friendly, and stitched together with that usual C1C chaos and care._ \n\n"
             "**To learn what a command does, type like this:**  \n"
-            "`@Bot help ping` → shows info for `@Bot ping`"
+            f"`{self._help_command_label(ctx, 'help ping')}` → shows info for `{self._help_command_label(ctx, 'ping')}`"
         )
 
     def _show_empty_sections(self) -> bool:
