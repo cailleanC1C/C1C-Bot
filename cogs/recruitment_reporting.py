@@ -11,6 +11,7 @@ from modules.recruitment.reporting.daily_recruiter_update import (
     post_daily_recruiter_update,
     run_full_recruiter_reports,
 )
+from modules.housekeeping.role_audit import preview_role_audit_mutations, run_role_and_visitor_audit
 
 
 class RecruitmentReporting(commands.Cog):
@@ -86,6 +87,58 @@ class RecruitmentReporting(commands.Cog):
 
         if not ok:
             await ctx.reply("Failed to post report. Check log channel.", mention_author=False)
+
+    @tier("admin")
+    @help_metadata(function_group="operational", section="utilities", access_tier="admin")
+    @commands.command(
+        name="roleaudit",
+        help="Preview or apply role-audit role mutations.",
+        brief="Preview or apply role-audit role mutations.",
+    )
+    @admin_only()
+    async def roleaudit(self, ctx: commands.Context, action: str = "preview", *args: str) -> None:
+        cmd = (action or "").strip().lower()
+        if cmd == "preview":
+            ok, error, preview = await preview_role_audit_mutations(self.bot, actor="manual")
+            if not ok or preview is None:
+                await ctx.reply(f"Role audit preview failed: {error}", mention_author=False)
+                return
+            mutations = preview.proposed_role_mutations or []
+            lines = ["Role-audit preview (dry-run):"]
+            for member, remove_roles, add_roles in mutations[:20]:
+                remove_txt = ", ".join(f"`{r.name}`" for r in remove_roles) or "-"
+                add_txt = ", ".join(f"`{r.name}`" for r in add_roles) or "-"
+                lines.append(f"• {member.mention}: remove {remove_txt}; add {add_txt}")
+            lines.append(f"Total members affected: {len(mutations)}")
+            lines.append(f"Total mutations: {sum(len(rm)+len(ad) for _, rm, ad in mutations)}")
+            if len(mutations) > 20:
+                lines.append(f"(showing first 20 of {len(mutations)})")
+            await ctx.reply("\n".join(lines), mention_author=False)
+            return
+
+        if cmd == "apply":
+            confirm = len(args) >= 1 and args[0] == "CONFIRM"
+            allow_over_cap = any(a.lower() == "override" for a in args[1:]) if confirm else False
+            if not confirm:
+                await ctx.reply(
+                    "Apply requires explicit confirmation: `!roleaudit apply CONFIRM [override]`",
+                    mention_author=False,
+                )
+                return
+            ok, error = await run_role_and_visitor_audit(
+                self.bot,
+                actor="manual",
+                dry_run=False,
+                max_mutations=10,
+                allow_over_cap=allow_over_cap,
+            )
+            if not ok:
+                await ctx.reply(f"Role audit apply failed: {error}", mention_author=False)
+                return
+            await ctx.reply("Role audit apply completed.", mention_author=False)
+            return
+
+        await ctx.reply("Usage: !roleaudit preview | !roleaudit apply CONFIRM [override]", mention_author=False)
 
 
 async def setup(bot: commands.Bot) -> None:
