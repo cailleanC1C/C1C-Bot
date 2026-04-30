@@ -5,6 +5,8 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
+import time
+import asyncio
 
 import discord
 from discord.ext import commands
@@ -18,6 +20,14 @@ log = logging.getLogger("c1c.community.fusion.reminders")
 
 _PRESTART_HOURS = max(1, int(os.getenv("FUSION_PRESTART_REMINDER_HOURS", "6")))
 _LOOKBACK_MINUTES = max(5, int(os.getenv("FUSION_REMINDER_LOOKBACK_MIN", "30")))
+_DEDUP_TIMEOUT_BACKOFF_SEC = max(60, int(os.getenv("FUSION_REMINDER_DEDUPE_BACKOFF_SEC", "300")))
+_DEDUP_TIMEOUT_SEC = max(1.0, float(os.getenv("FUSION_REMINDER_DEDUPE_TIMEOUT_SEC", "10")))
+
+_DEDUP_BACKOFF_UNTIL_MONOTONIC: float = 0.0
+_FALLBACK_SENT_KEYS: set[tuple[str, str, str]] = set()
+_DEDUP_DEGRADED_SINCE_MONOTONIC: float = 0.0
+_DEDUP_DEGRADED_ALERTED_KEYS: set[tuple[str, str]] = set()
+_DEDUP_DEGRADED_ALERT_AFTER_SEC = 600.0
 
 
 def _utc_now(now: dt.datetime | None = None) -> dt.datetime:
@@ -93,24 +103,84 @@ async def process_fusion_reminders(
     if target is None:
         return
 
-    try:
-        sent_keys = await fusion_sheets.get_sent_reminder_keys(target.fusion_id)
-    except Exception as exc:
-        log.exception(
-            "fusion reminder failed to load durable dedupe state; continuing fail-open "
-            "(requires tab from FUSION_REMINDER_TAB with headers fusion_id, event_id, "
-            "reminder_type; details=%s)",
-            exc,
-            extra={"fusion_id": target.fusion_id},
+    dedupe_meta = fusion_sheets.reminder_dedupe_backend_metadata()
+    dedupe_backend = dedupe_meta.get("backend_type", "unknown")
+    dedupe_tab = dedupe_meta.get("tab_name", "")
+    dedupe_config_key = dedupe_meta.get("config_key", "")
+    now_monotonic = time.monotonic()
+    durable_dedupe_available = now_monotonic >= _DEDUP_BACKOFF_UNTIL_MONOTONIC
+    sent_keys: set[tuple[str, str]] = set()
+    if durable_dedupe_available:
+        try:
+            sent_keys = await asyncio.wait_for(
+                fusion_sheets.get_sent_reminder_keys(target.fusion_id),
+                timeout=_DEDUP_TIMEOUT_SEC,
+            )
+            _recover_from_dedupe_backoff()
+        except TimeoutError as exc:
+            _register_dedupe_timeout_backoff()
+            durable_dedupe_available = False
+            context = {
+                "fusion_id": target.fusion_id,
+                "timeout_sec": _DEDUP_TIMEOUT_SEC,
+                "retry_backoff_sec": _DEDUP_TIMEOUT_BACKOFF_SEC,
+                "dedupe_backend": dedupe_backend,
+                "dedupe_tab": dedupe_tab,
+                "dedupe_config_key": dedupe_config_key,
+                "operation": "read_sent_reminder_keys",
+            }
+            log.exception(
+                "fusion reminder durable dedupe timed out; using in-memory single-send fallback",
+                extra=context,
+                exc_info=True,
+            )
+            await fusion_logs.send_ops_alert(
+                component="reminders",
+                summary="durable_dedupe_unavailable_degraded_mode",
+                dedupe_key=f"fusion:reminders:dedupe:{target.fusion_id}",
+                error=exc,
+                fields=context,
+            )
+        except Exception as exc:
+            _register_dedupe_degraded_mode()
+            log.exception(
+                "fusion reminder failed to load durable dedupe state; using in-memory single-send fallback",
+                extra={
+                    "fusion_id": target.fusion_id,
+                    "dedupe_backend": dedupe_backend,
+                    "dedupe_tab": dedupe_tab,
+                    "dedupe_config_key": dedupe_config_key,
+                    "operation": "read_sent_reminder_keys",
+                },
+                exc_info=True,
+            )
+            await fusion_logs.send_ops_alert(
+                component="reminders",
+                summary="durable_dedupe_unavailable_degraded_mode",
+                dedupe_key=f"fusion:reminders:dedupe:{target.fusion_id}",
+                error=exc,
+                fields={
+                    "fusion_id": target.fusion_id,
+                    "dedupe_backend": dedupe_backend,
+                    "dedupe_tab": dedupe_tab,
+                    "dedupe_config_key": dedupe_config_key,
+                    "operation": "read_sent_reminder_keys",
+                },
+            )
+            durable_dedupe_available = False
+    else:
+        _register_dedupe_degraded_mode()
+        log.warning(
+            "fusion reminder durable dedupe in backoff window; using in-memory single-send fallback",
+            extra={
+                "fusion_id": target.fusion_id,
+                "retry_backoff_sec": _DEDUP_TIMEOUT_BACKOFF_SEC,
+                "dedupe_backend": dedupe_backend,
+                "dedupe_tab": dedupe_tab,
+                "dedupe_config_key": dedupe_config_key,
+                "operation": "read_sent_reminder_keys",
+            },
         )
-        await fusion_logs.send_ops_alert(
-            component="reminders",
-            summary="durable_dedupe_unavailable_fail_open",
-            dedupe_key=f"fusion:reminders:dedupe:{target.fusion_id}",
-            error=exc,
-            fields={"fusion_id": target.fusion_id},
-        )
-        sent_keys = set()
 
     try:
         events = await fusion_sheets.get_fusion_events(target.fusion_id)
@@ -141,6 +211,14 @@ async def process_fusion_reminders(
             key = (event.event_id, reminder_type)
             if key in sent_keys:
                 continue
+            memory_key = (target.fusion_id, event.event_id, reminder_type)
+            await _maybe_alert_prolonged_dedupe_degradation(
+                target.fusion_id,
+                reminder_type=reminder_type,
+                backend=dedupe_backend,
+            )
+            if memory_key in _FALLBACK_SENT_KEYS:
+                continue
             if not _within_window(trigger_at=trigger_at, now=reference, lookback=lookback):
                 continue
 
@@ -168,22 +246,32 @@ async def process_fusion_reminders(
                 mention_content = f"<@&{target.opt_in_role_id}>" if target.opt_in_role_id else None
                 reminder_view = build_fusion_opt_in_view(target)
                 await announcement_message.channel.send(content=mention_content, embed=embed, view=reminder_view)
-                await fusion_sheets.mark_reminder_sent(
-                    target.fusion_id,
-                    event_id=event.event_id,
-                    reminder_type=reminder_type,
-                    sent_at=reference,
-                )
+                if durable_dedupe_available:
+                    await fusion_sheets.mark_reminder_sent(
+                        target.fusion_id,
+                        event_id=event.event_id,
+                        reminder_type=reminder_type,
+                        sent_at=reference,
+                    )
                 sent_keys.add(key)
+                _FALLBACK_SENT_KEYS.add(memory_key)
             except Exception as exc:
                 context = {
                     "fusion_id": target.fusion_id,
                     "event_id": event.event_id,
                     "reminder_type": reminder_type,
+                    "channel_id": getattr(getattr(announcement_message, "channel", None), "id", None)
+                    if "announcement_message" in locals()
+                    else None,
+                    "thread_id": getattr(getattr(announcement_message, "channel", None), "id", None)
+                    if "announcement_message" in locals()
+                    and isinstance(getattr(announcement_message, "channel", None), discord.Thread)
+                    else None,
                 }
                 log.exception(
                     "fusion reminder send failed",
                     extra=context,
+                    exc_info=True,
                 )
                 await fusion_logs.send_ops_alert(
                     component="reminders",
@@ -197,3 +285,52 @@ async def process_fusion_reminders(
 
 
 __all__ = ["process_fusion_reminders"]
+
+
+def _register_dedupe_timeout_backoff() -> None:
+    global _DEDUP_BACKOFF_UNTIL_MONOTONIC
+    _DEDUP_BACKOFF_UNTIL_MONOTONIC = time.monotonic() + _DEDUP_TIMEOUT_BACKOFF_SEC
+    _register_dedupe_degraded_mode()
+
+
+def _register_dedupe_degraded_mode() -> None:
+    global _DEDUP_DEGRADED_SINCE_MONOTONIC
+    if _DEDUP_DEGRADED_SINCE_MONOTONIC <= 0:
+        _DEDUP_DEGRADED_SINCE_MONOTONIC = time.monotonic()
+
+
+def _recover_from_dedupe_backoff() -> None:
+    global _DEDUP_BACKOFF_UNTIL_MONOTONIC, _DEDUP_DEGRADED_SINCE_MONOTONIC
+    if _DEDUP_BACKOFF_UNTIL_MONOTONIC <= 0:
+        return
+    _DEDUP_BACKOFF_UNTIL_MONOTONIC = 0.0
+    _DEDUP_DEGRADED_SINCE_MONOTONIC = 0.0
+    _DEDUP_DEGRADED_ALERTED_KEYS.clear()
+
+
+async def _maybe_alert_prolonged_dedupe_degradation(
+    fusion_id: str,
+    *,
+    reminder_type: str,
+    backend: str,
+) -> None:
+    if _DEDUP_DEGRADED_SINCE_MONOTONIC <= 0:
+        return
+    duration_sec = time.monotonic() - _DEDUP_DEGRADED_SINCE_MONOTONIC
+    if duration_sec < _DEDUP_DEGRADED_ALERT_AFTER_SEC:
+        return
+    alert_key = (fusion_id, reminder_type)
+    if alert_key in _DEDUP_DEGRADED_ALERTED_KEYS:
+        return
+    _DEDUP_DEGRADED_ALERTED_KEYS.add(alert_key)
+    await fusion_logs.send_ops_alert(
+        component="reminders",
+        summary="durable_dedupe_unavailable_degraded_mode",
+        dedupe_key=f"fusion:reminders:dedupe_degraded:{fusion_id}:{reminder_type}",
+        fields={
+            "fusion_id": fusion_id,
+            "reminder_type": reminder_type,
+            "backend": backend,
+            "degraded_duration_sec": round(duration_sec, 1),
+        },
+    )
