@@ -209,6 +209,18 @@ def _reminder_schema_debug() -> dict[str, str]:
     return debug
 
 
+def reminder_dedupe_backend_metadata() -> dict[str, str]:
+    """Return non-secret metadata for reminder durable dedupe diagnostics."""
+
+    debug = _reminder_schema_debug()
+    tab_name = str(debug.get(_FUSION_REMINDER_TAB_KEY, "") or "").strip()
+    return {
+        "backend_type": "google_sheets",
+        "config_key": _FUSION_REMINDER_TAB_KEY,
+        "tab_name": tab_name,
+    }
+
+
 def _resolve_progress_sheet_schema() -> tuple[str, dict[str, str]]:
     tab_name = _resolve_tab_name(_FUSION_PROGRESS_TAB_KEY)
     return tab_name, dict(_FUSION_PROGRESS_COLUMN_ALIASES)
@@ -1029,6 +1041,7 @@ __all__ = [
     "get_publishable_fusion",
     "get_fusion_events",
     "get_sent_reminder_keys",
+    "reminder_dedupe_backend_metadata",
     "get_user_event_progress",
     "get_upcoming_events",
     "mark_reminder_sent",
