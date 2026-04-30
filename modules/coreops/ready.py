@@ -6,6 +6,8 @@ import logging
 
 from discord.ext import commands
 
+from shared.config import cfg, get_feature_toggles
+
 from modules.community.fusion.opt_in_view import register_persistent_fusion_views
 from modules.community.shard_tracker.views import register_persistent_shard_views
 from modules.community.reset_reminders.scheduler import register_persistent_reset_views
@@ -41,7 +43,24 @@ async def on_ready(bot: commands.Bot) -> None:
         try:
             await register_persistent_reset_views(bot)
         except Exception:
-            log.exception("CORE_READY FAILURE: register_persistent_reset_views")
+            hook_name = "register_persistent_reset_views"
+            toggles = get_feature_toggles()
+            reset_feature_enabled = any(
+                bool(toggles.get(key, False))
+                for key in (
+                    "reset_reminders",
+                    "reset_reminders_enabled",
+                    "feature_reset_reminders",
+                )
+            )
+            log.exception(
+                "CORE_READY FAILURE: %s | env=%s | guild_count=%s | guild_ids=%s | reset_feature_enabled=%s",
+                hook_name,
+                str(cfg.get("ENV_NAME") or "unknown").strip() or "unknown",
+                len(getattr(bot, "guilds", []) or []),
+                [getattr(guild, "id", None) for guild in (getattr(bot, "guilds", []) or [])],
+                reset_feature_enabled,
+            )
             return
 
         # Ensure both onboarding watchers are wired
