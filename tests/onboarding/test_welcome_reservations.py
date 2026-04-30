@@ -55,6 +55,14 @@ def test_parse_thread_name_open() -> None:
     assert parts.state == "open"
 
 
+def test_parse_thread_name_open_without_w_prefix() -> None:
+    parts = parse_welcome_thread_name("0867-Caillean")
+    assert parts is not None
+    assert parts.ticket_code == "W0867"
+    assert parts.username == "Caillean"
+    assert parts.state == "open"
+
+
 def test_parse_thread_name_reserved() -> None:
     parts = parse_welcome_thread_name("Res-W0298-Caillean AT-C1CE")
     assert parts is not None
@@ -71,6 +79,10 @@ def test_parse_thread_name_closed() -> None:
     assert parts.username == "Caillean AT"
     assert parts.clan_tag == "NONE"
     assert parts.state == "closed"
+
+
+def test_parse_thread_name_invalid() -> None:
+    assert parse_welcome_thread_name("welcome-caillean") is None
 
 
 def test_decision_reservation_same_clan() -> None:

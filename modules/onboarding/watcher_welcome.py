@@ -64,7 +64,7 @@ _AUTO_CLOSED_THREADS: set[int] = set()
 _TRIGGER_PHRASE = "awake by reacting with"
 _TICKET_EMOJI = "🎫"
 
-_TICKET_CODE_RE = re.compile(r"(W\d{4})", re.IGNORECASE)
+_TICKET_CODE_RE = re.compile(r"(W?\d{4})", re.IGNORECASE)
 _PROMO_TICKET_CODE_RE = re.compile(r"([RML]\d{4})", re.IGNORECASE)
 _PROMO_THREAD_NAME_RE = re.compile(
     r"^(?P<prefix>[RML])(?P<digits>\d{4})[-_\s]+(?P<slug>[A-Za-z0-9][A-Za-z0-9._-]*)"
@@ -85,15 +85,18 @@ def _normalize_ticket_code(ticket: str | None) -> str:
     token = (ticket or "").strip().lstrip("#")
     if not token:
         return ""
-    if not token.upper().startswith("W"):
-        token = f"W{token}"
-    prefix = token[:1].upper()
-    digits = token[1:5]
-    if len(digits) == 4 and digits.isdigit():
-        return f"{prefix}{digits}"
+
+    direct = re.fullmatch(r"(?P<prefix>[Ww]?)(?P<digits>\d{4})", token)
+    if direct:
+        digits = direct.group("digits")
+        return f"W{digits}"
+
     match = _TICKET_CODE_RE.search(token)
     if match:
-        return match.group(1).upper()
+        raw = match.group(1).upper()
+        digits = raw[1:] if raw.startswith("W") else raw
+        if len(digits) == 4 and digits.isdigit():
+            return f"W{digits}"
     return ""
 
 
@@ -117,13 +120,16 @@ def parse_welcome_thread_name(name: str | None) -> Optional[ThreadNameParts]:
     if not name:
         return None
 
-    match = _TICKET_CODE_RE.search(name)
+    normalized = (name or "").strip()
+    match = re.search(r"(?<![A-Za-z0-9])(?P<code>W?\d{4})(?!\d)", normalized, re.IGNORECASE)
     if not match:
         return None
 
-    ticket_code = _normalize_ticket_code(match.group(1))
-    prefix = name[: match.start()].strip(" -_") or None
-    suffix = name[match.end():].strip(" -_")
+    ticket_code = _normalize_ticket_code(match.group("code"))
+    if not ticket_code:
+        return None
+    prefix = normalized[: match.start()].strip(" -_") or None
+    suffix = normalized[match.end():].strip(" -_")
 
     username = suffix or ""
     clan_tag: Optional[str] = None
@@ -1662,10 +1668,10 @@ async def post_open_questions_panel(
     elif resolution.flow:
         normalized_flow = resolution.flow
 
+    parser = parse_promo_thread_name if normalized_flow.startswith("promo") else parse_welcome_thread_name
+    parsed_parts = parser(thread_name)
     if ticket_code is None:
-        parser = parse_promo_thread_name if normalized_flow.startswith("promo") else parse_welcome_thread_name
-        parts = parser(thread_name)
-        ticket_code = getattr(parts, "ticket_code", None)
+        ticket_code = getattr(parsed_parts, "ticket_code", None)
 
     parent_channel = getattr(thread, "parent", None)
     question_count, schema_version = logs.question_stats(normalized_flow)
@@ -1779,6 +1785,17 @@ async def post_open_questions_panel(
             panel_message_id,
         )
 
+    expected_patterns = "W####-Name | ####-Name | Res-W####-Name-CLAN | Closed-W####-Name-CLAN | R/M/L####-Name"
+    log.warning(
+        "failed to parse ticket context for panel post",
+        extra={
+            "reason": "ticket_not_parsed",
+            "thread_id": getattr(thread, "id", None),
+            "thread_name": thread_name,
+            "flow": normalized_flow,
+            "expected_patterns": expected_patterns,
+        },
+    )
     await _emit(result="skipped", reason="ticket_not_parsed")
     return PanelOutcome("skipped", "ticket_not_parsed", ticket_code, thread_name, _elapsed())
 
@@ -2181,7 +2198,13 @@ class WelcomeWatcher(commands.Cog):
             context = await self._ensure_context(thread)
         except Exception:
             context = None
-            log.exception("failed to resolve ticket context for panel post", extra={"thread_id": getattr(thread, "id", None)})
+            log.exception(
+                "failed to resolve ticket context for panel post",
+                extra={
+                    "thread_id": getattr(thread, "id", None),
+                    "thread_name": getattr(thread, "name", None),
+                },
+            )
         if context is not None:
             context_user_id = getattr(context, "recruit_id", None)
 
