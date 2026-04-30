@@ -13,13 +13,14 @@ from modules.onboarding import logs, thread_membership, thread_scopes
 from modules.onboarding.controllers.welcome_controller import (
     extract_target_from_message,
     locate_welcome_message,
+    locate_welcome_trigger_message,
 )
 from modules.onboarding.ui import panels
 from modules.onboarding.welcome_flow import start_welcome_dialog
 from shared.config import get_ticket_tool_bot_id
 
 # Fallback: 🎫 on the Ticket Tool close-button message
-FALLBACK_EMOJI = "🎫"  # :ticket:
+FALLBACK_EMOJI = "👍"
 TRIGGER_TOKEN = "[#welcome:ticket]"
 PROMO_TRIGGER_MAP = {
     "<!-- trigger:promo.r -->": "promo.r",
@@ -232,6 +233,28 @@ class OnboardingReactionFallbackCog(commands.Cog):
                 target_extra.setdefault("message_id", int(payload.message_id))
             except (TypeError, ValueError):
                 pass
+        try:
+            trigger_message = await locate_welcome_trigger_message(
+                thread,
+                bot_user_id=getattr(getattr(self.bot, "user", None), "id", None),
+                preferred_message=welcome_message,
+            )
+        except Exception as exc:
+            lookup_context = _base_context(member=member, thread=thread)
+            lookup_context.update({"result": "trigger_lookup_failed", "trigger": "target_lookup"})
+            await logs.send_welcome_exception("warn", exc, **lookup_context)
+            return
+        if trigger_message is not None and int(getattr(trigger_message, "id", 0) or 0) != int(payload.message_id):
+            await _log_reject(
+                "wrong_message",
+                member=member,
+                thread=thread,
+                parent_id=getattr(thread, "parent_id", None),
+                trigger="target_gate",
+                result="wrong_message",
+                extra={**target_extra, "target_message_id": getattr(trigger_message, "id", None)},
+            )
+            return
 
         ticket_tool_id = get_ticket_tool_bot_id()
         actor_is_privileged = rbac.is_admin_member(member) or rbac.is_recruiter(member)
