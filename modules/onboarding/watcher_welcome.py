@@ -362,7 +362,7 @@ async def persist_session_for_thread(
             if session is not None and panel_message_id is not None:
                 session.panel_message_id = panel_message_id
                 try:
-                    session.save_to_sheet()
+                    await session.asave_to_sheet()
                 except Exception:
                     log.exception(
                         "failed to persist onboarding session panel id",
@@ -444,6 +444,13 @@ async def _scan_incomplete_threads(bot: commands.Bot) -> None:
 
     now = datetime.now(timezone.utc)
 
+    session_rows_by_thread_id: dict[int, dict[str, object]] = {}
+    try:
+        session_rows = await onboarding_sessions.aload_all(timeout=15.0)
+        session_rows_by_thread_id = onboarding_sessions.index_by_thread_id(session_rows)
+    except Exception:
+        log.exception("failed to load onboarding sessions for scan", exc_info=True)
+
     if feature_flags.is_enabled("welcome_dialog") and feature_flags.is_enabled("recruitment_welcome"):
         channel_id = get_welcome_channel_id()
         try:
@@ -454,7 +461,12 @@ async def _scan_incomplete_threads(bot: commands.Bot) -> None:
         if channel_int is not None:
             threads = await _collect_threads(bot, channel_int, scope_check=thread_scopes.is_welcome_parent)
             for thread in threads:
-                await _process_incomplete_thread(bot, thread, now)
+                await _process_incomplete_thread(
+                    bot,
+                    thread,
+                    now,
+                    session_row=session_rows_by_thread_id.get(int(getattr(thread, "id", 0))),
+                )
 
     if feature_flags.is_enabled("promo_enabled") and feature_flags.is_enabled("enable_promo_hook"):
         promo_channel = get_promo_channel_id()
@@ -466,7 +478,12 @@ async def _scan_incomplete_threads(bot: commands.Bot) -> None:
         if promo_channel_int is not None:
             threads = await _collect_threads(bot, promo_channel_int, scope_check=thread_scopes.is_promo_parent)
             for thread in threads:
-                await _process_promo_thread(bot, thread, now)
+                await _process_promo_thread(
+                    bot,
+                    thread,
+                    now,
+                    session_row=session_rows_by_thread_id.get(int(getattr(thread, "id", 0))),
+                )
 
 
 async def _collect_threads(
@@ -514,7 +531,7 @@ async def _resolve_target_user(thread: discord.Thread, parts: ThreadNameParts) -
     return target_id, parts.username
 
 
-def _persist_reminder_state(session: Session | None, *, action: str, timestamp: datetime) -> None:
+async def _persist_reminder_state(session: Session | None, *, action: str, timestamp: datetime) -> None:
     if session is None:
         return
 
@@ -533,7 +550,7 @@ def _persist_reminder_state(session: Session | None, *, action: str, timestamp: 
 
     session._touch(timestamp=timestamp)
     try:
-        session.save_to_sheet()
+        await session.asave_to_sheet()
     except Exception:
         log.exception(
             "failed to persist welcome reminder state",
@@ -610,7 +627,9 @@ async def _post_inactivity_log(
         log.debug("failed to post onboarding inactivity log", exc_info=True)
 
 
-async def _process_incomplete_thread(bot: commands.Bot, thread: discord.Thread, now: datetime) -> None:
+async def _process_incomplete_thread(
+    bot: commands.Bot, thread: discord.Thread, now: datetime, *, session_row: dict[str, object] | None = None
+) -> None:
     parsed = parse_welcome_thread_name(getattr(thread, "name", None))
     if parsed is None or parsed.state == "closed":
         return
@@ -627,6 +646,7 @@ async def _process_incomplete_thread(bot: commands.Bot, thread: discord.Thread, 
                 updated_at=created_at,
                 thread_name=getattr(thread, "name", ""),
                 create_if_missing=True,
+                preloaded_session_row=session_row, 
             )
         except Exception:
             log.exception(
@@ -682,7 +702,7 @@ async def _process_incomplete_thread(bot: commands.Bot, thread: discord.Thread, 
                 extra={"thread_id": getattr(thread, "id", None)},
             )
             return
-        _persist_reminder_state(session, action=action, timestamp=now)
+        await _persist_reminder_state(session, action=action, timestamp=now)
         if watcher and context:
             await watcher._touch_welcome_sheet_for_reminder(
                 phase="reminder_3h",
@@ -711,7 +731,7 @@ async def _process_incomplete_thread(bot: commands.Bot, thread: discord.Thread, 
                 extra={"thread_id": getattr(thread, "id", None)},
             )
             return
-        _persist_reminder_state(session, action=action, timestamp=now)
+        await _persist_reminder_state(session, action=action, timestamp=now)
         if watcher and context:
             await watcher._touch_welcome_sheet_for_reminder(
                 phase="reminder_3h",
@@ -742,7 +762,7 @@ async def _process_incomplete_thread(bot: commands.Bot, thread: discord.Thread, 
                 extra={"thread_id": getattr(thread, "id", None)},
             )
             return
-        _persist_reminder_state(session, action=action, timestamp=now)
+        await _persist_reminder_state(session, action=action, timestamp=now)
         if watcher and context:
             await watcher._touch_welcome_sheet_for_reminder(
                 phase="reminder_24h",
@@ -780,7 +800,7 @@ async def _process_incomplete_thread(bot: commands.Bot, thread: discord.Thread, 
                 extra={"thread_id": getattr(thread, "id", None)},
             )
             return
-        _persist_reminder_state(session, action=action, timestamp=now)
+        await _persist_reminder_state(session, action=action, timestamp=now)
         if watcher and context:
             await watcher._touch_welcome_sheet_for_reminder(
                 phase="reminder_24h",
@@ -810,7 +830,7 @@ async def _process_incomplete_thread(bot: commands.Bot, thread: discord.Thread, 
             "If you still need a clan later, you're welcome to open a new ticket."
         )
 
-        _persist_reminder_state(session, action=action, timestamp=now)
+        await _persist_reminder_state(session, action=action, timestamp=now)
         watcher = bot.get_cog("WelcomeTicketWatcher")
         if watcher is not None:
             context = await watcher._ensure_context(thread)
@@ -860,7 +880,7 @@ async def _process_incomplete_thread(bot: commands.Bot, thread: discord.Thread, 
             f"Please remove {mention} from the server."
         )
 
-        _persist_reminder_state(session, action=action, timestamp=now)
+        await _persist_reminder_state(session, action=action, timestamp=now)
         watcher = bot.get_cog("WelcomeTicketWatcher")
         if watcher is not None:
             context = await watcher._ensure_context(thread)
@@ -904,7 +924,9 @@ async def _process_incomplete_thread(bot: commands.Bot, thread: discord.Thread, 
         )
 
 
-async def _process_promo_thread(bot: commands.Bot, thread: discord.Thread, now: datetime) -> None:
+async def _process_promo_thread(
+    bot: commands.Bot, thread: discord.Thread, now: datetime, *, session_row: dict[str, object] | None = None
+) -> None:
     parsed = parse_promo_thread_name(getattr(thread, "name", None))
     if parsed is None:
         return
@@ -920,6 +942,7 @@ async def _process_promo_thread(bot: commands.Bot, thread: discord.Thread, now: 
                 updated_at=created_at,
                 thread_name=getattr(thread, "name", ""),
                 create_if_missing=False,
+                preloaded_session_row=session_row,
             )
         except Exception:
             log.exception(
@@ -961,7 +984,7 @@ async def _process_promo_thread(bot: commands.Bot, thread: discord.Thread, now: 
                 extra={"thread_id": getattr(thread, "id", None)},
             )
             return
-        _persist_reminder_state(session, action=action, timestamp=now)
+        await _persist_reminder_state(session, action=action, timestamp=now)
         if watcher and context:
             await watcher._touch_promo_sheet_for_reminder(
                 phase="reminder_3h",
@@ -990,7 +1013,7 @@ async def _process_promo_thread(bot: commands.Bot, thread: discord.Thread, now: 
                 extra={"thread_id": getattr(thread, "id", None)},
             )
             return
-        _persist_reminder_state(session, action=action, timestamp=now)
+        await _persist_reminder_state(session, action=action, timestamp=now)
         if watcher and context:
             await watcher._touch_promo_sheet_for_reminder(
                 phase="reminder_3h",
@@ -1021,7 +1044,7 @@ async def _process_promo_thread(bot: commands.Bot, thread: discord.Thread, now: 
                 extra={"thread_id": getattr(thread, "id", None)},
             )
             return
-        _persist_reminder_state(session, action=action, timestamp=now)
+        await _persist_reminder_state(session, action=action, timestamp=now)
         if watcher and context:
             await watcher._touch_promo_sheet_for_reminder(
                 phase="reminder_24h",
@@ -1059,7 +1082,7 @@ async def _process_promo_thread(bot: commands.Bot, thread: discord.Thread, now: 
                 extra={"thread_id": getattr(thread, "id", None)},
             )
             return
-        _persist_reminder_state(session, action=action, timestamp=now)
+        await _persist_reminder_state(session, action=action, timestamp=now)
         if watcher and context:
             await watcher._touch_promo_sheet_for_reminder(
                 phase="reminder_24h",
@@ -1089,7 +1112,7 @@ async def _process_promo_thread(bot: commands.Bot, thread: discord.Thread, now: 
             "If you still want to request a move later, feel free to open a new promo ticket anytime."
         )
 
-        _persist_reminder_state(session, action=action, timestamp=now)
+        await _persist_reminder_state(session, action=action, timestamp=now)
         watcher = bot.get_cog("PromoTicketWatcher")
         if watcher is not None:
             context = await watcher._ensure_context(thread)
@@ -1137,7 +1160,7 @@ async def _process_promo_thread(bot: commands.Bot, thread: discord.Thread, now: 
             "If you still want to request a move later, feel free to open a new promo ticket anytime."
         )
 
-        _persist_reminder_state(session, action=action, timestamp=now)
+        await _persist_reminder_state(session, action=action, timestamp=now)
         watcher = bot.get_cog("PromoTicketWatcher")
         if watcher is not None:
             context = await watcher._ensure_context(thread)

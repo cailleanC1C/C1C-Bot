@@ -114,11 +114,36 @@ class Session:
         }
         sess_sheet.save(payload)
 
+    async def asave_to_sheet(self) -> None:
+        payload = {
+            "user_id": str(self.applicant_id),
+            "thread_id": str(self.thread_id),
+            "thread_name": self.thread_name or "",
+            "panel_message_id": int(self.panel_message_id or 0),
+            "step_index": int(self.step_index),
+            "answers": self.answers,
+            "completed": bool(self.completed),
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "updated_at": _serialize_dt(self.updated_at),
+            "first_reminder_at": (self.first_reminder_at or self.empty_first_reminder_at).isoformat()
+            if (self.first_reminder_at or self.empty_first_reminder_at)
+            else None,
+            "warning_sent_at": (self.warning_sent_at or self.empty_warning_sent_at).isoformat()
+            if (self.warning_sent_at or self.empty_warning_sent_at)
+            else None,
+            "auto_closed_at": self.auto_closed_at.isoformat() if self.auto_closed_at else None,
+        }
+        await sess_sheet.asave(payload)
+
     @classmethod
     def load_from_sheet(cls, applicant_id: int, thread_id: int) -> Optional["Session"]:
         row = sess_sheet.load(int(applicant_id), int(thread_id))
         if not row:
             return None
+        return cls.from_sheet_row(applicant_id=applicant_id, thread_id=thread_id, row=row)
+
+    @classmethod
+    def from_sheet_row(cls, applicant_id: int, thread_id: int, row: Dict[str, Any]) -> "Session":
         panel_id = row.get("panel_message_id") or None
         session = cls(
             thread_id=int(thread_id),
@@ -210,6 +235,7 @@ async def ensure_session_for_thread(
     updated_at: datetime | None = None,
     thread_name: str | None = None,
     create_if_missing: bool = True,
+    preloaded_session_row: Dict[str, Any] | None = None,
 ) -> Session | None:
     """Load or create a session row for the given ``user_id`` and ``thread_id``.
 
@@ -226,7 +252,11 @@ async def ensure_session_for_thread(
 
     normalized_updated = _normalize_ts(updated_at)
     try:
-        existing = Session.load_from_sheet(int(user_id), int(thread_id))
+        if preloaded_session_row is not None:
+            existing = Session.from_sheet_row(user_id, thread_id, preloaded_session_row)
+        else:
+            row = await sess_sheet.aload(int(thread_id))
+            existing = Session.from_sheet_row(user_id, thread_id, row) if row else None
     except Exception:
         log.exception(
             "failed to load onboarding session", extra={"thread_id": thread_id, "user_id": user_id}
@@ -246,7 +276,7 @@ async def ensure_session_for_thread(
             updated = True
         if updated:
             try:
-                existing.save_to_sheet()
+                await existing.asave_to_sheet()
             except Exception:
                 log.exception(
                     "failed to persist onboarding session timestamp",
@@ -264,7 +294,7 @@ async def ensure_session_for_thread(
         updated_at=normalized_updated or utc_now(),
     )
     try:
-        session.save_to_sheet()
+        await session.asave_to_sheet()
     except Exception:
         log.exception(
             "failed to create onboarding session", extra={"thread_id": thread_id, "user_id": user_id}
@@ -273,4 +303,3 @@ async def ensure_session_for_thread(
 
 
 __all__ = ["Session", "SessionStore", "store", "utc_now", "ensure_session_for_thread"]
-

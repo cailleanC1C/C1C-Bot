@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import asyncio
 import json
 import logging
 from typing import Any, Dict, Iterable, Optional, Sequence
@@ -84,6 +85,11 @@ def load(user_id: int | None, thread_id: int) -> Optional[Dict[str, Any]]:
     }
 
 
+async def aload(thread_id: int, *, timeout: float | None = 15.0) -> Optional[Dict[str, Any]]:
+    rows = await _aload_rows(timeout=timeout)
+    return _load_from_rows(rows, thread_id=thread_id)
+
+
 def load_all() -> list[Dict[str, Any]]:
     worksheet = _sheet()
     rows = worksheet.get_all_values()
@@ -127,6 +133,11 @@ def load_all() -> list[Dict[str, Any]]:
     return sessions
 
 
+async def aload_all(*, timeout: float | None = 15.0) -> list[Dict[str, Any]]:
+    rows = await _aload_rows(timeout=timeout)
+    return _load_all_from_rows(rows)
+
+
 def save(payload: Dict[str, Any], *, allow_create: bool = True) -> bool:
     worksheet = _sheet()
     rows = worksheet.get_all_values()
@@ -164,8 +175,50 @@ def save(payload: Dict[str, Any], *, allow_create: bool = True) -> bool:
     return True
 
 
+async def asave(payload: Dict[str, Any], *, allow_create: bool = True, timeout: float | None = 15.0) -> bool:
+    worksheet = await _asheet(timeout=timeout)
+    rows = await core._retry_with_backoff_async(core.async_adapter.aworksheet_values_all, worksheet, timeout=timeout)
+    header = _validated_header(rows[0] if rows else [])
+    if header is None:
+        return False
+    header_map = _header_index_map(header)
+    target_row = _get_row_index_by_thread_id(rows[1:], header_map, payload.get("thread_id"))
+    existing: Dict[str, Any] = {}
+    if target_row is not None:
+        existing = _record_from_row(rows[target_row], header, header_map)
+    record = _merge_record(existing, payload)
+    values = build_row(record, headers=header)
+    if target_row is not None:
+        await core._retry_with_backoff_async(
+            core.async_adapter.aworksheet_values_update,
+            worksheet,
+            _range_for_row(target_row + 1, header),
+            [values],
+            timeout=timeout,
+        )
+    elif allow_create:
+        await core.async_adapter.arun(worksheet.append_row, values, timeout=timeout)
+    else:
+        log.info("🧾 onboarding session skipped • thread_id=%s • reason=missing_row", record.get("thread_id"))
+        return False
+    return True
+
+
 def get_by_thread_id(thread_id: int | str | None) -> Optional[Dict[str, Any]]:
     return load(user_id=None, thread_id=int(thread_id)) if thread_id is not None else None
+
+
+def load_from_rows(rows: Sequence[Sequence[Any]], thread_id: int | str | None) -> Optional[Dict[str, Any]]:
+    return _load_from_rows(rows, thread_id=thread_id)
+
+
+def index_by_thread_id(rows: Sequence[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    indexed: Dict[int, Dict[str, Any]] = {}
+    for row in rows:
+        thread = _safe_int(row.get("thread_id"))
+        if thread is not None:
+            indexed[thread] = row
+    return indexed
 
 
 def upsert_session(
@@ -375,3 +428,61 @@ def _column_letter(index: int) -> str:
         index, remainder = divmod(index - 1, 26)
         label = chr(65 + remainder) + label
     return label
+
+
+async def _asheet(*, timeout: float | None = 15.0):
+    sheet_id = get_onboarding_sheet_id().strip()
+    if not sheet_id:
+        raise RuntimeError("ONBOARDING_SHEET_ID not set")
+    tab_name = get_onboarding_sessions_tab().strip()
+    if not tab_name:
+        raise RuntimeError("ONBOARDING_SESSIONS_TAB not set in sheet/env config")
+    return await core.aget_worksheet(sheet_id, tab_name, timeout=timeout)
+
+
+async def _aload_rows(*, timeout: float | None = 15.0) -> list[list[Any]]:
+    worksheet = await _asheet(timeout=timeout)
+    return await core._retry_with_backoff_async(core.async_adapter.aworksheet_values_all, worksheet, timeout=timeout)
+
+
+def _load_from_rows(rows: Sequence[Sequence[Any]], *, thread_id: int | str | None) -> Optional[Dict[str, Any]]:
+    header = _validated_header(rows[0] if rows else [])
+    if header is None:
+        return None
+    header_map = _header_index_map(header)
+    target_row = _get_row_index_by_thread_id(rows[1:], header_map, thread_id)
+    if target_row is None:
+        return None
+    return _session_from_record(_record_from_row(rows[target_row], header, header_map))
+
+
+def _load_all_from_rows(rows: Sequence[Sequence[Any]]) -> list[Dict[str, Any]]:
+    header = _validated_header(rows[0] if rows else [])
+    if header is None:
+        return []
+    header_map = _header_index_map(header)
+    return [_session_from_record(_record_from_row(row, header, header_map)) for row in rows[1:]]
+
+
+def _session_from_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    raw_answers = record.get("answers_json") or "{}"
+    try:
+        answers = json.loads(raw_answers)
+    except Exception:
+        answers = {}
+    panel_id = _safe_int(record.get("panel_message_id"))
+    completed_token = str(record.get("completed", "")).strip().lower()
+    return {
+        "thread_name": record.get("thread_name") or "",
+        "user_id": str(record.get("user_id") or ""),
+        "thread_id": str(record.get("thread_id") or ""),
+        "panel_message_id": panel_id if panel_id not in (None, 0) else None,
+        "step_index": _safe_int(record.get("step_index"), default=0),
+        "completed": completed_token in {"true", "1", "yes", "true"},
+        "completed_at": record.get("completed_at") or None,
+        "updated_at": record.get("updated_at") or "",
+        "first_reminder_at": record.get("first_reminder_at") or "",
+        "warning_sent_at": record.get("warning_sent_at") or "",
+        "auto_closed_at": record.get("auto_closed_at") or "",
+        "answers": answers,
+    }
