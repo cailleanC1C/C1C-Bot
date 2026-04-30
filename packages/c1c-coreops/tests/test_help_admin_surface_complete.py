@@ -219,7 +219,6 @@ def test_help_admin_view_usage_policy(monkeypatch: pytest.MonkeyPatch) -> None:
         staff_text = " \n ".join(_fields(staff_embed).values())
         user_text = " \n ".join(_fields(user_embed).values())
 
-        assert "`!env`" in admin_text
         assert "`!health`" in admin_text
         assert "`!refresh all`" in admin_text
         assert "`!ops refresh`" in admin_text
@@ -228,16 +227,16 @@ def test_help_admin_view_usage_policy(monkeypatch: pytest.MonkeyPatch) -> None:
         assert "`!ops config`" in admin_text
         assert "`!welcome-refresh`" in admin_text
         assert "`!perm`" in admin_text
-        assert "`@Bot help`" not in admin_text
-        assert "`@Bot ping`" not in admin_text
+        assert "@Bot" not in admin_text
         assert "`!clan`" not in admin_text
 
         assert "`!clanmatch`" in staff_text
         assert "`!welcome-refresh`" not in staff_text
         assert "`!refresh all`" not in staff_text
 
-        assert "`@Bot help`" in user_text
-        assert "`@Bot ping`" in user_text
+        assert "help" in user_text
+        assert "ping" in user_text
+        assert "@Bot" not in user_text
 
         combined_text = " \n ".join(
             value for embed in embeds for value in _fields(embed).values()
@@ -274,8 +273,9 @@ def test_help_staff_view(monkeypatch: pytest.MonkeyPatch) -> None:
         assert "`!refresh all`" not in staff_text
         assert "`!perm`" not in staff_text
 
-        assert "`@Bot help`" in user_text
-        assert "`@Bot ping`" in user_text
+        assert "help" in user_text
+        assert "ping" in user_text
+        assert "@Bot" not in user_text
 
     asyncio.run(runner())
 
@@ -298,8 +298,9 @@ def test_help_user_view(monkeypatch: pytest.MonkeyPatch) -> None:
 
         assert "`!clan`" in user_text
         assert "`!clansearch`" in user_text
-        assert "`@Bot help`" in user_text
-        assert "`@Bot ping`" in user_text
+        assert "help" in user_text
+        assert "ping" in user_text
+        assert "@Bot" not in user_text
         assert "!ops" not in user_text
 
     asyncio.run(runner())

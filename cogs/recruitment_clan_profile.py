@@ -66,7 +66,7 @@ class ClanProfileCog(commands.Cog):
         name="clan",
         help="Shows a clan’s profile card by tag, including entry requirements and crest details.",
         brief="Shows a clan’s profile card by tag.",
-        usage="clan <tag>",
+        usage="clan <clantag>",
     )
     async def clan(self, ctx: commands.Context, tag: str) -> None:
         """Render a crest-enabled clan profile with a 💡 reaction toggle."""
