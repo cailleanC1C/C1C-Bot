@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -13,6 +12,7 @@ from c1c_coreops.helpers import help_metadata, tier
 from c1c_coreops.help import build_coreops_footer
 from c1c_coreops.rbac import admin_only
 from modules.common import feature_flags, runtime as runtime_helpers
+from modules.common.discord_utils import resolve_message_target
 from modules.common.logs import channel_label
 from modules.ops import cluster_role_map, server_map
 from shared.config import get_who_we_are_channel_id
@@ -366,20 +366,36 @@ class AppAdmin(commands.Cog):
             return
 
         channel_id = get_who_we_are_channel_id()
-        target_channel, channel_error = await runtime_helpers.resolve_configured_text_channel(
-            self.bot,
-            channel_id=channel_id,
-            logger=log,
-            context="role map",
-        )
-        if channel_error:
+        try:
+            target_channel = await resolve_message_target(self.bot, channel_id)
+        except (TypeError, ValueError):
             await ctx.reply(
                 "I couldn’t determine where to post the role map. Please try again in a guild channel.",
                 mention_author=False,
             )
             await runtime_helpers.send_log_message(
                 f"📘 **Cluster role map** — cmd=whoweare • guild={guild_name} "
-                f"• status=error • reason={channel_error}"
+                "• status=error • reason=invalid_channel"
+            )
+            return
+        except PermissionError:
+            await ctx.reply(
+                "I couldn’t post the role map. Please check channel permissions and try again.",
+                mention_author=False,
+            )
+            await runtime_helpers.send_log_message(
+                f"📘 **Cluster role map** — cmd=whoweare • guild={guild_name} "
+                "• status=error • reason=forbidden_channel"
+            )
+            return
+        except RuntimeError as exc:
+            await ctx.reply(
+                "I couldn’t determine where to post the role map right now. Please try again shortly.",
+                mention_author=False,
+            )
+            await runtime_helpers.send_log_message(
+                f"📘 **Cluster role map** — cmd=whoweare • guild={guild_name} "
+                f"• status=error • reason={exc}"
             )
             return
 
