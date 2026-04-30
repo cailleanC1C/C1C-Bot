@@ -92,17 +92,21 @@ def _is_stable_welcome_intro_message(message: discord.Message | None) -> bool:
     return "welcome to c1c" in content and "slap a 👍 on this message" in content
 
 
-async def _find_newest_stable_welcome_intro(thread: discord.Thread) -> discord.Message | None:
+async def _find_newest_stable_welcome_intro(thread: discord.Thread) -> tuple[discord.Message | None, list[int], int]:
     history = getattr(thread, "history", None)
     if not callable(history):
-        return None
+        return None, [], 0
+    ordered_messages: list[discord.Message] = []
     try:
-        async for candidate in history(limit=50, oldest_first=False):
-            if _is_stable_welcome_intro_message(candidate):
-                return candidate
+        async for candidate in history(limit=75, oldest_first=True):
+            ordered_messages.append(candidate)
     except Exception:
-        return None
-    return None
+        return None, [], len(ordered_messages)
+
+    matched_messages = [m for m in ordered_messages if _is_stable_welcome_intro_message(m)]
+    matched_ids = [int(getattr(m, "id", 0)) for m in matched_messages if getattr(m, "id", None) is not None]
+    target = matched_messages[-1] if matched_messages else None
+    return target, matched_ids, len(ordered_messages)
 
 
 def _normalize_ticket_code(ticket: str | None) -> str:
@@ -2533,25 +2537,17 @@ class WelcomeTicketWatcher(commands.Cog):
             return
 
         for attempt in range(1, _FALLBACK_AUTO_ADD_ATTEMPTS + 1):
-            preferred_target: discord.Message | None = None
-            target_source = "history_fallback"
+            target_source = "stable_text_match_last"
+            ordered_count = 0
+            matched_ids: list[int] = []
             try:
-                target = await _find_newest_stable_welcome_intro(thread)
-                if target is not None:
-                    target_source = "stable_text_match"
-                else:
-                    preferred_target = await locate_welcome_message(thread)
-                    target = await locate_welcome_trigger_message(
-                        thread,
-                        bot_user_id=getattr(getattr(self.bot, "user", None), "id", None),
-                        preferred_message=preferred_target,
-                    )
-                    if (
-                        target is not None
-                        and preferred_target is not None
-                        and getattr(target, "id", None) == getattr(preferred_target, "id", None)
-                    ):
-                        target_source = "direct_message"
+                target, matched_ids, ordered_count = await _find_newest_stable_welcome_intro(thread)
+                log.info(
+                    "fallback_reaction_auto_add inspect — thread=%s • total_messages=%s • matched_message_ids=%s",
+                    getattr(thread, "id", None),
+                    ordered_count,
+                    matched_ids,
+                )
             except Exception:
                 log.warning(
                     "fallback_reaction_auto_add target_lookup_failed — thread=%s • attempt=%s",
@@ -2562,20 +2558,24 @@ class WelcomeTicketWatcher(commands.Cog):
                 target = None
 
             if target is None:
-                log.info(
-                    "fallback_reaction_auto_add retry — reason=target_missing • thread=%s • attempt=%s/%s",
+                log.warning(
+                    "fallback_reaction_auto_add retry — reason=target_missing_no_content_match • thread=%s • attempt=%s/%s • total_messages=%s • matched_message_ids=%s",
                     getattr(thread, "id", None),
                     attempt,
                     _FALLBACK_AUTO_ADD_ATTEMPTS,
+                    ordered_count,
+                    matched_ids,
                 )
             else:
                 log.info(
-                    "fallback_reaction_auto_add target — thread=%s • message_id=%s • author_id=%s • emoji=%s • source=%s",
+                    "fallback_reaction_auto_add target — thread=%s • chosen_target_message_id=%s • author_id=%s • emoji=%s • source=%s • total_messages=%s • matched_message_ids=%s",
                     getattr(thread, "id", None),
                     getattr(target, "id", None),
                     getattr(getattr(target, "author", None), "id", None),
                     _TICKET_EMOJI,
                     target_source,
+                    ordered_count,
+                    matched_ids,
                 )
                 try:
                     await target.add_reaction(_TICKET_EMOJI)
@@ -2588,7 +2588,7 @@ class WelcomeTicketWatcher(commands.Cog):
                     return
                 except Exception:
                     log.error(
-                        "fallback_reaction_auto_add failed — thread=%s • message_id=%s • emoji=%s • attempt=%s/%s",
+                        "fallback_reaction_auto_add failed — thread=%s • chosen_target_message_id=%s • emoji=%s • attempt=%s/%s",
                         getattr(thread, "id", None),
                         getattr(target, "id", None),
                         _TICKET_EMOJI,
@@ -2600,7 +2600,7 @@ class WelcomeTicketWatcher(commands.Cog):
                 await asyncio.sleep(_FALLBACK_AUTO_ADD_DELAY_SECONDS)
 
         log.warning(
-            "fallback_reaction_auto_add skipped — reason=target_unavailable_or_reaction_failed • thread=%s",
+            "fallback_reaction_auto_add skipped — reason=target_unavailable_or_reaction_failed_after_content_filter • thread=%s",
             getattr(thread, "id", None),
         )
 
