@@ -322,3 +322,34 @@ def test_completion_logging_helper(monkeypatch):
     asyncio.run(runner())
     assert recorded and recorded[0]["event"] == "complete"
     assert recorded[0]["extras"]["level_detail"] == "Late Game"
+
+
+def test_post_panel_uses_explicit_subject_user_id(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def fake_lifecycle_log(**_payload):
+        return None
+
+    async def ensure_membership(_thread):
+        return True, None
+
+    async def fake_persist(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(logs, "log_onboarding_panel_lifecycle", fake_lifecycle_log)
+    monkeypatch.setattr(logs, "question_stats", lambda flow: (16, "v1"))
+    monkeypatch.setattr(watcher_welcome.thread_membership, "ensure_thread_membership", ensure_membership)
+    monkeypatch.setattr(panels, "OpenQuestionsPanelView", lambda: SimpleNamespace())
+    monkeypatch.setattr(watcher_welcome, "persist_session_for_thread", fake_persist)
+
+    watcher = watcher_welcome.WelcomeWatcher(bot=SimpleNamespace(user=SimpleNamespace(id=99999)))
+    thread = DummyThread(name="0867-Caillean")
+    actor = SimpleNamespace(display_name="Recruit", bot=False)
+
+    async def runner() -> None:
+        await watcher._post_panel(thread, actor=actor, source="emoji", subject_user_id=123456789)
+
+    asyncio.run(runner())
+
+    assert captured["user_id"] == 123456789
+    assert captured["ticket_number"] == "W0867"

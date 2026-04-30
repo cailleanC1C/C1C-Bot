@@ -128,16 +128,16 @@ def parse_welcome_thread_name(name: str | None) -> Optional[ThreadNameParts]:
     ticket_code = _normalize_ticket_code(match.group("code"))
     if not ticket_code:
         return None
-    prefix = normalized[: match.start()].strip(" -_") or None
-    suffix = normalized[match.end():].strip(" -_")
 
-    username = suffix or ""
-    clan_tag: Optional[str] = None
-    if suffix:
-        parts = suffix.split("-", 1)
-        username = parts[0].strip(" -_")
-        if len(parts) > 1:
-            clan_tag = parts[1].strip(" -_") or None
+    separator_chars = " -_–—"
+    prefix = normalized[: match.start()].strip(separator_chars) or None
+    suffix = normalized[match.end():].strip(separator_chars)
+    if not suffix:
+        return None
+
+    tokens = [token.strip(separator_chars) for token in re.split(r"[-_–—]+", suffix, maxsplit=1)]
+    username = (tokens[0] if tokens else "").strip(separator_chars)
+    clan_tag = (tokens[1] if len(tokens) > 1 else "").strip(separator_chars) or None
 
     if not username:
         return None
@@ -1786,6 +1786,7 @@ async def post_open_questions_panel(
         )
 
     expected_patterns = "W####-Name | ####-Name | Res-W####-Name-CLAN | Closed-W####-Name-CLAN | R/M/L####-Name"
+    parsed_ticket_hint = _normalize_ticket_code(thread_name or "") or _normalize_promo_ticket(thread_name or "") or None
     log.warning(
         "failed to parse ticket context for panel post",
         extra={
@@ -1793,6 +1794,7 @@ async def post_open_questions_panel(
             "thread_id": getattr(thread, "id", None),
             "thread_name": thread_name,
             "flow": normalized_flow,
+            "parsed_ticket": parsed_ticket_hint,
             "expected_patterns": expected_patterns,
         },
     )
@@ -2192,6 +2194,7 @@ class WelcomeWatcher(commands.Cog):
         flow: str = "welcome",
         ticket_code: str | None = None,
         trigger_message: discord.Message | None = None,
+        subject_user_id: int | None = None,
     ) -> None:
         context_user_id: int | None = None
         try:
@@ -2215,7 +2218,7 @@ class WelcomeWatcher(commands.Cog):
             flow=flow,
             ticket_code=ticket_code,
             trigger_message=trigger_message,
-            subject_user_id=context_user_id,
+            subject_user_id=context_user_id if context_user_id is not None else subject_user_id,
         )
         self._log_panel_outcome(actor, thread, outcome, flow=flow)
 
@@ -2313,7 +2316,7 @@ class WelcomeWatcher(commands.Cog):
             await logs.send_welcome_log("warn", **context)
             return
 
-        await self._post_panel(thread, actor=actor, source="emoji")
+        await self._post_panel(thread, actor=actor, source="emoji", subject_user_id=payload.user_id)
 
 
 class _ClanSelect(discord.ui.Select):
