@@ -539,7 +539,12 @@ async def run_full_recruiter_reports(
     await _log_event(bot=bot, actor=actor, result=result, error=error, user_id=user_id)
 
     audit_dest_id, audit_dest_key = resolve_audit_destination()
-    audit_ok, audit_error = await run_role_and_visitor_audit(bot)
+    audit_dry_run = True
+    audit_ok, audit_error = await run_role_and_visitor_audit(
+        bot,
+        actor=actor,
+        dry_run=audit_dry_run,
+    )
     audit_result = "ok" if audit_ok else "fail"
     await _log_event(
         bot=bot,

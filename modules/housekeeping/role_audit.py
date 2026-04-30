@@ -51,6 +51,7 @@ class AuditResult:
     visitors_no_ticket: list[discord.Member] | None = None
     visitors_closed_only: list[tuple[discord.Member, list[TicketThread]]] | None = None
     visitors_extra_roles: list[tuple[discord.Member, list[discord.Role], list[TicketThread]]] | None = None
+    proposed_role_mutations: list[tuple[discord.Member, list[discord.Role], list[discord.Role]]] | None = None
 
 
 def _member_roles(member: discord.Member) -> set[int]:
@@ -108,9 +109,16 @@ def _format_ticket_links(tickets: Sequence[TicketThread]) -> str:
 async def _apply_role_changes(
     member: discord.Member,
     *,
+    actor: str = "manual",
+    dry_run: bool = True,
     remove: Sequence[discord.Role] = (),
     add: Sequence[discord.Role] = (),
 ) -> bool:
+    actor_normalized = (actor or "").strip().lower()
+    scheduled_actors = {"scheduled", "background", "cron", "startup", "ready"}
+    if dry_run or actor_normalized in scheduled_actors:
+        return True
+    before_roles = [getattr(role, "name", str(getattr(role, "id", "unknown"))) for role in getattr(member, "roles", [])]
     try:
         if remove:
             await member.remove_roles(*remove, reason=ROLE_AUDIT_REASON)
@@ -129,6 +137,21 @@ async def _apply_role_changes(
             extra={"member_id": getattr(member, "id", None), "error": str(exc)},
         )
         return False
+    after_roles = [getattr(role, "name", str(getattr(role, "id", "unknown"))) for role in getattr(member, "roles", [])]
+    log.info(
+        "role audit mutation applied",
+        extra={
+            "actor": actor,
+            "member_id": getattr(member, "id", None),
+            "member_name": getattr(member, "display_name", None) or getattr(member, "name", None),
+            "before_roles": before_roles,
+            "after_roles": after_roles,
+            "remove_roles": [getattr(r, "name", str(getattr(r, "id", "unknown"))) for r in remove],
+            "add_roles": [getattr(r, "name", str(getattr(r, "id", "unknown"))) for r in add],
+            "reason": ROLE_AUDIT_REASON,
+            "success": True,
+        },
+    )
     return True
 
 
@@ -142,6 +165,8 @@ async def _audit_guild(
     clan_role_ids: set[int],
     raid_role_name: str,
     wanderer_role_name: str,
+    actor: str = "manual",
+    dry_run: bool = True,
 ) -> AuditResult | None:
     raid_role = guild.get_role(raid_role_id)
     wanderer_role = guild.get_role(wanderer_role_id)
@@ -185,6 +210,7 @@ async def _audit_guild(
         visitors_no_ticket=[],
         visitors_closed_only=[],
         visitors_extra_roles=[],
+        proposed_role_mutations=[],
     )
 
     for member in members:
@@ -197,15 +223,26 @@ async def _audit_guild(
             clan_role_ids=clan_role_ids,
         )
         if classification == "stray":
+            result.proposed_role_mutations.append((member, [raid_role], [wanderer_role]))
             changed = await _apply_role_changes(
-                member, remove=(raid_role,), add=(wanderer_role,)
+                member,
+                actor=actor,
+                dry_run=dry_run,
+                remove=(raid_role,),
+                add=(wanderer_role,),
             )
             if changed:
                 result.auto_fixed_strays.append(member)
             continue
 
         if classification == "drop_raid":
-            changed = await _apply_role_changes(member, remove=(raid_role,))
+            result.proposed_role_mutations.append((member, [raid_role], []))
+            changed = await _apply_role_changes(
+                member,
+                actor=actor,
+                dry_run=dry_run,
+                remove=(raid_role,),
+            )
             if changed:
                 result.auto_fixed_wanderers.append(member)
             continue
@@ -244,17 +281,21 @@ def _render_report(
     summary: AuditResult,
     raid_role_name: str,
     wanderer_role_name: str,
+    dry_run: bool = True,
 ) -> discord.Embed:
     date_text = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     parts: list[str] = []
 
+    stray_action = "Would remove" if dry_run else "Removed"
+    stray_add_action = "would add" if dry_run else "added"
+    wanderer_action = "Would remove" if dry_run else "Removed"
     stray_lines = [
-        f"• {_format_member(member)} – Removed `{raid_role_name}`, added `{wanderer_role_name}` (no clan tags)"
+        f"• {_format_member(member)} – {stray_action} `{raid_role_name}`, {stray_add_action} `{wanderer_role_name}` (no clan tags)"
         for member in (summary.auto_fixed_strays or [])
     ]
     wanderer_lines = [
-        f"• {_format_member(member)} – Removed `{raid_role_name}`, kept `{wanderer_role_name}` (no clan tags)"
+        f"• {_format_member(member)} – {wanderer_action} `{raid_role_name}`, kept `{wanderer_role_name}` (no clan tags)"
         for member in (summary.auto_fixed_wanderers or [])
     ]
     parts.extend(_render_section("1) Auto-fixed stray members", stray_lines + wanderer_lines))
@@ -299,7 +340,14 @@ def _render_report(
     return embed
 
 
-async def run_role_and_visitor_audit(bot: commands.Bot) -> tuple[bool, str]:
+async def run_role_and_visitor_audit(
+    bot: commands.Bot,
+    *,
+    actor: str = "manual",
+    dry_run: bool = True,
+    max_mutations: int = 10,
+    allow_over_cap: bool = False,
+) -> tuple[bool, str]:
     raid_role_id = get_raid_role_id()
     wanderer_role_id = get_wandering_souls_role_id()
     visitor_role_id = get_visitor_role_id()
@@ -327,6 +375,7 @@ async def run_role_and_visitor_audit(bot: commands.Bot) -> tuple[bool, str]:
         visitors_no_ticket=[],
         visitors_closed_only=[],
         visitors_extra_roles=[],
+        proposed_role_mutations=[],
     )
 
     for guild in target_guilds:
@@ -346,6 +395,8 @@ async def run_role_and_visitor_audit(bot: commands.Bot) -> tuple[bool, str]:
             clan_role_ids=clan_role_ids,
             raid_role_name=raid_role_name,
             wanderer_role_name=wanderer_role_name,
+            actor=actor,
+            dry_run=dry_run,
         )
         if result is None:
             continue
@@ -357,9 +408,41 @@ async def run_role_and_visitor_audit(bot: commands.Bot) -> tuple[bool, str]:
         aggregated.visitors_no_ticket.extend(result.visitors_no_ticket or [])
         aggregated.visitors_closed_only.extend(result.visitors_closed_only or [])
         aggregated.visitors_extra_roles.extend(result.visitors_extra_roles or [])
+        aggregated.proposed_role_mutations.extend(result.proposed_role_mutations or [])
 
     if aggregated.checked == 0:
         return False, "no-members"
+
+    proposed_adds = len(aggregated.auto_fixed_strays or [])
+    proposed_removes = len(aggregated.auto_fixed_strays or []) + len(aggregated.auto_fixed_wanderers or [])
+    actor_normalized = (actor or "").strip().lower()
+    scheduled_actors = {"scheduled", "background", "cron", "startup", "ready"}
+    if dry_run or actor_normalized in scheduled_actors:
+        log.info(
+            "role audit mutations skipped",
+            extra={
+                "reason": "scheduled_report_only",
+                "actor": actor,
+                "guilds": ",".join(
+                    f"{getattr(guild, 'id', 'unknown')}:{getattr(guild, 'name', 'unknown')}"
+                    for guild in target_guilds
+                ),
+                "member_count_scanned": aggregated.checked,
+                "proposed_add_count": proposed_adds,
+                "proposed_remove_count": proposed_removes,
+            },
+        )
+    elif len(aggregated.proposed_role_mutations or []) > max_mutations and not allow_over_cap:
+        log.warning(
+            "role audit apply aborted due to mutation cap",
+            extra={
+                "reason": "mutation_cap_exceeded",
+                "actor": actor,
+                "max_mutations": max_mutations,
+                "proposed_mutations": len(aggregated.proposed_role_mutations or []),
+            },
+        )
+        return False, "mutation-cap-exceeded"
 
     await bot.wait_until_ready()
     channel = bot.get_channel(dest_id)
@@ -387,6 +470,7 @@ async def run_role_and_visitor_audit(bot: commands.Bot) -> tuple[bool, str]:
         summary=aggregated,
         raid_role_name=raid_role_name,
         wanderer_role_name=wanderer_role_name,
+        dry_run=dry_run or actor_normalized in scheduled_actors,
     )
 
     try:
@@ -398,4 +482,47 @@ async def run_role_and_visitor_audit(bot: commands.Bot) -> tuple[bool, str]:
     return True, "-"
 
 
-__all__ = ["run_role_and_visitor_audit"]
+async def preview_role_audit_mutations(
+    bot: commands.Bot, *, actor: str = "manual"
+) -> tuple[bool, str, AuditResult | None]:
+    ok, error = await run_role_and_visitor_audit(bot, actor=actor, dry_run=True)
+    if not ok:
+        return False, error, None
+    # recompute detail snapshot without side effects
+    raid_role_id = get_raid_role_id()
+    wanderer_role_id = get_wandering_souls_role_id()
+    visitor_role_id = get_visitor_role_id()
+    clan_role_ids = get_clan_role_ids()
+    allowed = get_allowed_guild_ids()
+    target_guilds = [guild for guild in bot.guilds if not allowed or guild.id in allowed]
+    combined = AuditResult(
+        checked=0,
+        auto_fixed_strays=[],
+        auto_fixed_wanderers=[],
+        wanderers_with_clans=[],
+        visitors_no_ticket=[],
+        visitors_closed_only=[],
+        visitors_extra_roles=[],
+        proposed_role_mutations=[],
+    )
+    for guild in target_guilds:
+        result = await _audit_guild(
+            bot,
+            guild,
+            raid_role_id=raid_role_id,
+            wanderer_role_id=wanderer_role_id,
+            visitor_role_id=visitor_role_id,
+            clan_role_ids=clan_role_ids,
+            raid_role_name="Raid",
+            wanderer_role_name="Wandering Souls",
+            actor=actor,
+            dry_run=True,
+        )
+        if result is None:
+            continue
+        combined.checked += result.checked
+        combined.proposed_role_mutations.extend(result.proposed_role_mutations or [])
+    return True, "-", combined
+
+
+__all__ = ["run_role_and_visitor_audit", "preview_role_audit_mutations", "AuditResult"]
