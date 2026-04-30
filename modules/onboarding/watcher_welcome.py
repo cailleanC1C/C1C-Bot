@@ -63,6 +63,8 @@ _AUTO_CLOSED_THREADS: set[int] = set()
 
 _TRIGGER_PHRASE = "awake by reacting with"
 _TICKET_EMOJI = "🎫"
+_FALLBACK_AUTO_ADD_ATTEMPTS = 4
+_FALLBACK_AUTO_ADD_DELAY_SECONDS = 1.0
 
 _TICKET_CODE_RE = re.compile(r"(W?\d{4})", re.IGNORECASE)
 _PROMO_TICKET_CODE_RE = re.compile(r"([RML]\d{4})", re.IGNORECASE)
@@ -2479,6 +2481,89 @@ class WelcomeTicketWatcher(commands.Cog):
         self._tickets[thread.id] = context
         return context
 
+    async def _auto_add_fallback_reaction(self, thread: discord.Thread) -> None:
+        log.info(
+            "fallback_reaction_auto_add start — thread=%s • channel=%s",
+            getattr(thread, "id", None),
+            getattr(thread, "parent_id", None),
+        )
+        me = getattr(thread.guild, "me", None) if getattr(thread, "guild", None) else None
+        if me is None:
+            log.warning(
+                "fallback_reaction_auto_add skipped — reason=no_guild_member • thread=%s",
+                getattr(thread, "id", None),
+            )
+            return
+        perms = thread.permissions_for(me)
+        missing_perms: list[str] = []
+        if not perms.view_channel:
+            missing_perms.append("View Channel")
+        if not perms.read_message_history:
+            missing_perms.append("Read Message History")
+        if not perms.add_reactions:
+            missing_perms.append("Add Reactions")
+        if missing_perms:
+            log.warning(
+                "fallback_reaction_auto_add skipped — reason=missing_permissions • thread=%s • missing=%s",
+                getattr(thread, "id", None),
+                ", ".join(missing_perms),
+            )
+            return
+
+        for attempt in range(1, _FALLBACK_AUTO_ADD_ATTEMPTS + 1):
+            try:
+                target = await locate_welcome_message(thread)
+            except Exception:
+                log.warning(
+                    "fallback_reaction_auto_add target_lookup_failed — thread=%s • attempt=%s",
+                    getattr(thread, "id", None),
+                    attempt,
+                    exc_info=True,
+                )
+                target = None
+
+            if target is None:
+                log.info(
+                    "fallback_reaction_auto_add retry — reason=target_missing • thread=%s • attempt=%s/%s",
+                    getattr(thread, "id", None),
+                    attempt,
+                    _FALLBACK_AUTO_ADD_ATTEMPTS,
+                )
+            else:
+                log.info(
+                    "fallback_reaction_auto_add target — thread=%s • message_id=%s • author_id=%s • emoji=%s",
+                    getattr(thread, "id", None),
+                    getattr(target, "id", None),
+                    getattr(getattr(target, "author", None), "id", None),
+                    _TICKET_EMOJI,
+                )
+                try:
+                    await target.add_reaction(_TICKET_EMOJI)
+                    log.info(
+                        "fallback_reaction_auto_add success — thread=%s • message_id=%s • emoji=%s",
+                        getattr(thread, "id", None),
+                        getattr(target, "id", None),
+                        _TICKET_EMOJI,
+                    )
+                    return
+                except Exception:
+                    log.error(
+                        "fallback_reaction_auto_add failed — thread=%s • message_id=%s • emoji=%s • attempt=%s/%s",
+                        getattr(thread, "id", None),
+                        getattr(target, "id", None),
+                        _TICKET_EMOJI,
+                        attempt,
+                        _FALLBACK_AUTO_ADD_ATTEMPTS,
+                        exc_info=True,
+                    )
+            if attempt < _FALLBACK_AUTO_ADD_ATTEMPTS:
+                await asyncio.sleep(_FALLBACK_AUTO_ADD_DELAY_SECONDS)
+
+        log.warning(
+            "fallback_reaction_auto_add skipped — reason=target_unavailable_or_reaction_failed • thread=%s",
+            getattr(thread, "id", None),
+        )
+
     async def _handle_ticket_open(self, thread: discord.Thread, context: TicketContext) -> None:
         existing_row: List[str] | None = None
         try:
@@ -2586,6 +2671,7 @@ class WelcomeTicketWatcher(commands.Cog):
                 context.username,
                 exc,
             )
+        await self._auto_add_fallback_reaction(thread)
 
     async def _touch_welcome_sheet_for_reminder(
         self,
