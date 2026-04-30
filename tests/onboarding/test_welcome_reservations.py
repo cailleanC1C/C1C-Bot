@@ -63,6 +63,15 @@ def test_parse_thread_name_open_without_w_prefix() -> None:
     assert parts.state == "open"
 
 
+
+
+def test_parse_thread_name_open_without_w_prefix_em_dash() -> None:
+    parts = parse_welcome_thread_name("0867—Caillean")
+    assert parts is not None
+    assert parts.ticket_code == "W0867"
+    assert parts.username == "Caillean"
+    assert parts.state == "open"
+
 def test_parse_thread_name_reserved() -> None:
     parts = parse_welcome_thread_name("Res-W0298-Caillean AT-C1CE")
     assert parts is not None
