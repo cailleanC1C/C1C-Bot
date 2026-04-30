@@ -73,6 +73,104 @@ class FusionCog(commands.Cog):
             await ctx.reply(f"Couldn’t check the {tracker_label} right now. Try again in a moment.", mention_author=False)
             return
 
+    async def _publish_tracker(
+        self,
+        ctx: commands.Context,
+        *,
+        tracker_kind: str,
+        tracker_label: str,
+        prefer_draft: bool,
+    ) -> None:
+        try:
+            target = await fusion_sheets.get_publishable_fusion(
+                include_draft=True,
+                tracker_kind=tracker_kind,
+                prefer_draft=prefer_draft,
+            )
+        except Exception as exc:
+            log.exception("%s publish failed to load rows", tracker_label)
+            await fusion_logs.send_ops_alert(
+                component="command_publish",
+                summary=f"load_{tracker_label}_failed",
+                dedupe_key=f"fusion:command:publish:load_{tracker_label}",
+                error=exc,
+            )
+            await ctx.reply(f"Could not load {tracker_label} data right now.", mention_author=False)
+            return
+
+        if target is None:
+            await ctx.reply(
+                f"No {tracker_label} rows exist in the configured fusion sheet tab.",
+                mention_author=False,
+            )
+            return
+
+        missing_fields: list[str] = []
+        if target.announcement_channel_id is None:
+            missing_fields.append("announcement_channel_id")
+        if not target.fusion_name:
+            missing_fields.append("fusion_name")
+        if not target.champion:
+            missing_fields.append("champion")
+        if target.start_at_utc is None:
+            missing_fields.append("start_at_utc")
+        if target.end_at_utc is None:
+            missing_fields.append("end_at_utc")
+
+        if missing_fields:
+            await ctx.reply(
+                f"{tracker_label.title()} row is missing required fields: " + ", ".join(missing_fields),
+                mention_author=False,
+            )
+            return
+
+        channel = await resolve_announcement_channel(self.bot, target.announcement_channel_id)
+        if channel is None:
+            await ctx.reply("Configured announcement channel is not messageable.", mention_author=False)
+            return
+
+        resolution = await resolve_stored_announcement(self.bot, target)
+        if resolution.message is not None:
+            await ctx.reply(
+                f"This {tracker_label} already has an announcement post. Clear the message id or use a future republish flow.",
+                mention_author=False,
+            )
+            return
+        if resolution.had_reference and resolution.is_stale:
+            log.info(
+                "%s publish allowed despite stale announcement metadata",
+                tracker_label,
+                extra={
+                    "fusion_id": target.fusion_id,
+                    "status": target.status,
+                    "announcement_channel_id": target.announcement_channel_id,
+                    "announcement_message_id": target.announcement_message_id,
+                },
+            )
+
+        try:
+            announcement_message = await publish_fusion_announcement(self.bot, target)
+            if announcement_message is None:
+                await ctx.reply("Configured announcement channel is not messageable.", mention_author=False)
+                return
+        except Exception as exc:
+            log.exception("%s publish failed during announce send", tracker_label, extra={"fusion_id": target.fusion_id})
+            await fusion_logs.send_ops_alert(
+                component="command_publish",
+                summary="announce_send_failed",
+                dedupe_key=f"fusion:command:publish:send:{tracker_label}:{target.fusion_id}",
+                error=exc,
+                fields={"fusion_id": target.fusion_id, "tracker_kind": tracker_kind},
+            )
+            await ctx.reply("Failed to publish announcement right now.", mention_author=False)
+            return
+
+        destination = channel.mention if isinstance(channel, discord.abc.GuildChannel) else "configured channel"
+        await ctx.reply(
+            f"{tracker_label.title()} announcement published to {destination} for **{target.fusion_name}**.",
+            mention_author=False,
+        )
+
     @tier("user")
     @help_metadata(
         function_group="milestones",
@@ -95,7 +193,11 @@ class FusionCog(commands.Cog):
         access_tier="user",
         usage="!titan",
     )
-    @commands.command(name="titan", help="Titan reminder data commands.")
+    @commands.group(
+        name="titan",
+        invoke_without_command=True,
+        help="Titan reminder data commands.",
+    )
     async def titan(self, ctx: commands.Context) -> None:
         await self._tracker_entrypoint(ctx, tracker_kind="titan", tracker_label="titan")
 
@@ -171,88 +273,27 @@ class FusionCog(commands.Cog):
     @commands.guild_only()
     @admin_only()
     async def fusion_publish(self, ctx: commands.Context) -> None:
-        try:
-            target = await fusion_sheets.get_publishable_fusion(
-                include_draft=True,
-                tracker_kind="fusion",
-                prefer_draft=True,
-            )
-        except Exception as exc:
-            log.exception("fusion publish failed to load fusion rows")
-            await fusion_logs.send_ops_alert(
-                component="command_publish",
-                summary="load_fusion_failed",
-                dedupe_key="fusion:command:publish:load_fusion",
-                error=exc,
-            )
-            await ctx.reply("Could not load fusion data right now.", mention_author=False)
-            return
+        await self._publish_tracker(
+            ctx,
+            tracker_kind="fusion",
+            tracker_label="fusion",
+            prefer_draft=True,
+        )
 
-        if target is None:
-            await ctx.reply("No fusion rows exist in the configured fusion sheet tab.", mention_author=False)
-            return
-
-        missing_fields: list[str] = []
-        if target.announcement_channel_id is None:
-            missing_fields.append("announcement_channel_id")
-        if not target.fusion_name:
-            missing_fields.append("fusion_name")
-        if not target.champion:
-            missing_fields.append("champion")
-        if target.start_at_utc is None:
-            missing_fields.append("start_at_utc")
-        if target.end_at_utc is None:
-            missing_fields.append("end_at_utc")
-
-        if missing_fields:
-            await ctx.reply(
-                "Fusion row is missing required fields: " + ", ".join(missing_fields),
-                mention_author=False,
-            )
-            return
-
-        channel = await resolve_announcement_channel(self.bot, target.announcement_channel_id)
-        if channel is None:
-            await ctx.reply("Configured announcement channel is not messageable.", mention_author=False)
-            return
-
-        resolution = await resolve_stored_announcement(self.bot, target)
-        if resolution.message is not None:
-            await ctx.reply(
-                "This fusion already has an announcement post. Clear the message id or use a future republish flow.",
-                mention_author=False,
-            )
-            return
-        if resolution.had_reference and resolution.is_stale:
-            log.info(
-                "fusion publish allowed despite stale announcement metadata",
-                extra={
-                    "fusion_id": target.fusion_id,
-                    "status": target.status,
-                    "announcement_channel_id": target.announcement_channel_id,
-                    "announcement_message_id": target.announcement_message_id,
-                },
-            )
-
-        try:
-            announcement_message = await publish_fusion_announcement(self.bot, target)
-            if announcement_message is None:
-                await ctx.reply("Configured announcement channel is not messageable.", mention_author=False)
-                return
-        except Exception as exc:
-            log.exception("fusion publish failed during announce send", extra={"fusion_id": target.fusion_id})
-            await fusion_logs.send_ops_alert(
-                component="command_publish",
-                summary="announce_send_failed",
-                dedupe_key=f"fusion:command:publish:send:{target.fusion_id}",
-                error=exc,
-                fields={"fusion_id": target.fusion_id},
-            )
-            await ctx.reply("Failed to publish announcement right now.", mention_author=False)
-            return
-
-        destination = channel.mention if isinstance(channel, discord.abc.GuildChannel) else "configured channel"
-        await ctx.reply(
-            f"Fusion announcement published to {destination} for **{target.fusion_name}**.",
-            mention_author=False,
+    @tier("admin")
+    @help_metadata(
+        function_group="milestones",
+        section="community",
+        access_tier="admin",
+        usage="!titan publish",
+    )
+    @titan.command(name="publish", help="Publish titan announcement to the configured channel.")
+    @commands.guild_only()
+    @admin_only()
+    async def titan_publish(self, ctx: commands.Context) -> None:
+        await self._publish_tracker(
+            ctx,
+            tracker_kind="titan",
+            tracker_label="titan",
+            prefer_draft=True,
         )
