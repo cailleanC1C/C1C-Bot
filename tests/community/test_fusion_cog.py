@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import discord
+from discord.ext import commands
 import modules.community.fusion.cog as fusion_cog_module
 from modules.community.fusion import logs as fusion_logs
 from modules.community.fusion.cog import FusionCog
@@ -503,6 +504,38 @@ def test_publish_commands_include_admin_gate_checks() -> None:
     assert any("admin" in check for check in titan_checks)
 
 
+
+
+def test_fusion_publish_denies_non_admin_users() -> None:
+    async def _run() -> None:
+        check = FusionCog.fusion_publish.checks[-1]
+        ctx = SimpleNamespace(guild=object(), author=object(), _coreops_suppress_denials=True)
+
+        try:
+            await check(ctx)
+        except commands.CheckFailure as exc:
+            assert "Admins only" in str(exc)
+            return
+
+        raise AssertionError("Expected CheckFailure for non-admin user")
+
+    asyncio.run(_run())
+
+
+def test_titan_publish_denies_non_admin_users() -> None:
+    async def _run() -> None:
+        check = FusionCog.titan_publish.checks[-1]
+        ctx = SimpleNamespace(guild=object(), author=object(), _coreops_suppress_denials=True)
+
+        try:
+            await check(ctx)
+        except commands.CheckFailure as exc:
+            assert "Admins only" in str(exc)
+            return
+
+        raise AssertionError("Expected CheckFailure for non-admin user")
+
+    asyncio.run(_run())
 def test_summary_commands_do_not_include_admin_gate_checks() -> None:
     fusion_checks = [repr(check).lower() for check in FusionCog.fusion.checks]
     titan_checks = [repr(check).lower() for check in FusionCog.titan.checks]
