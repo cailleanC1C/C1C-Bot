@@ -293,6 +293,42 @@ def test_fusion_publish_persists_announcement_channel_id(monkeypatch):
     asyncio.run(_run())
 
 
+def test_titan_publish_selects_titan_draft_and_creates_announcement(monkeypatch):
+    async def _run() -> None:
+        channel = FakeMessageable(123)
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=1003))
+        bot = SimpleNamespace(get_channel=lambda _channel_id: channel, fetch_channel=AsyncMock())
+        cog = FusionCog(bot)
+        ctx = SimpleNamespace(reply=AsyncMock())
+        captured_kwargs: dict[str, object] = {}
+
+        async def _fake_get_publishable(**kwargs):
+            captured_kwargs.update(kwargs)
+            return _fusion_row(announcement_channel_id=123, announcement_message_id=None, status="draft")
+
+        update = AsyncMock()
+        monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", _fake_get_publishable)
+        monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=[]))
+        monkeypatch.setattr(fusion_cog_module, "build_fusion_announcement_embed", lambda *_args: object())
+        monkeypatch.setattr(fusion_sheets, "update_fusion_publication", update)
+
+        await cog.titan_publish.callback(cog, ctx)
+
+        assert captured_kwargs == {
+            "include_draft": True,
+            "tracker_kind": "titan",
+            "prefer_draft": True,
+        }
+        channel.send.assert_awaited_once()
+        assert update.await_count == 1
+        ctx.reply.assert_awaited_once_with(
+            "Titan announcement published to configured channel for **Mavara**.",
+            mention_author=False,
+        )
+
+    asyncio.run(_run())
+
+
 def test_fusion_publish_blocks_duplicate_when_existing_message_resolves(monkeypatch):
     async def _run() -> None:
         channel = FakeMessageable(123)
@@ -457,3 +493,19 @@ def test_fusion_debug_event_failure_still_replies_when_internal_log_delivery_fai
         ctx.reply.assert_awaited_once_with("Fusion events are temporarily unavailable.", mention_author=False)
 
     asyncio.run(_run())
+
+
+def test_publish_commands_include_admin_gate_checks() -> None:
+    fusion_checks = [repr(check).lower() for check in FusionCog.fusion_publish.checks]
+    titan_checks = [repr(check).lower() for check in FusionCog.titan_publish.checks]
+
+    assert any("admin" in check for check in fusion_checks)
+    assert any("admin" in check for check in titan_checks)
+
+
+def test_summary_commands_do_not_include_admin_gate_checks() -> None:
+    fusion_checks = [repr(check).lower() for check in FusionCog.fusion.checks]
+    titan_checks = [repr(check).lower() for check in FusionCog.titan.checks]
+
+    assert not any("admin" in check for check in fusion_checks)
+    assert not any("admin" in check for check in titan_checks)
