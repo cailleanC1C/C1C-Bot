@@ -13,6 +13,8 @@ from discord.ext import commands
 from modules.common.embeds import get_embed_colour
 from modules.common.tickets import TicketThread, fetch_ticket_threads
 from shared.config import (
+    get_log_channel_id,
+    get_logging_channel_id,
     get_admin_audit_dest_id,
     get_allowed_guild_ids,
     get_clan_role_ids,
@@ -26,6 +28,18 @@ from shared.config import (
 log = logging.getLogger("c1c.housekeeping.role_audit")
 
 ROLE_AUDIT_REASON = "Housekeeping role audit"
+
+
+def resolve_audit_destination() -> tuple[int | None, str]:
+    """Return audit destination ID with config-source label."""
+    for key, value in (
+        ("ADMIN_AUDIT_DEST_ID", get_admin_audit_dest_id()),
+        ("LOG_CHANNEL_ID", get_log_channel_id()),
+        ("LOGGING_CHANNEL_ID", get_logging_channel_id()),
+    ):
+        if value:
+            return value, key
+    return None, "unconfigured"
 
 
 @dataclass(slots=True)
@@ -290,7 +304,7 @@ async def run_role_and_visitor_audit(bot: commands.Bot) -> tuple[bool, str]:
     wanderer_role_id = get_wandering_souls_role_id()
     visitor_role_id = get_visitor_role_id()
     clan_role_ids = get_clan_role_ids()
-    dest_id = get_admin_audit_dest_id()
+    dest_id, dest_source = resolve_audit_destination()
 
     if not all((raid_role_id, wanderer_role_id, visitor_role_id, clan_role_ids, dest_id)):
         return False, "config-missing"
@@ -358,6 +372,16 @@ async def run_role_and_visitor_audit(bot: commands.Bot) -> tuple[bool, str]:
 
     if not isinstance(channel, (discord.TextChannel, discord.Thread)):
         return False, "dest-invalid"
+    log.info(
+        "role audit destination resolved",
+        extra={
+            "destination_source": "env",
+            "destination_key": dest_source,
+            "destination_id": dest_id,
+            "destination_label": getattr(channel, "name", str(dest_id)),
+            "destination_kind": type(channel).__name__,
+        },
+    )
 
     embed = _render_report(
         summary=aggregated,
