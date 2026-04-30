@@ -85,11 +85,26 @@ _PROMO_TYPE_MAP = {
 
 
 
-def _is_stable_welcome_intro_message(message: discord.Message | None) -> bool:
+def _inspect_stable_welcome_intro_message(
+    message: discord.Message | None,
+    *,
+    index: int,
+) -> tuple[bool, str | None]:
     if message is None:
-        return False
+        return False, "message_none"
+
     content = (getattr(message, "content", "") or "").lower()
-    return "welcome to c1c" in content and "slap a 👍 on this message" in content
+    if "welcome to c1c" not in content:
+        return False, "missing_welcome_phrase"
+
+    author = getattr(message, "author", None)
+    author_name = (getattr(author, "name", "") or "").strip()
+    # Ticket Tool author remains a strong operational hint, but is not required for a match.
+
+    if index >= 5:
+        return False, "outside_first_five_messages"
+
+    return True, None
 
 
 async def _find_newest_stable_welcome_intro(thread: discord.Thread) -> tuple[discord.Message | None, list[int], int]:
@@ -103,7 +118,21 @@ async def _find_newest_stable_welcome_intro(thread: discord.Thread) -> tuple[dis
     except Exception:
         return None, [], len(ordered_messages)
 
-    matched_messages = [m for m in ordered_messages if _is_stable_welcome_intro_message(m)]
+    matched_messages: list[discord.Message] = []
+    for idx, message in enumerate(ordered_messages):
+        matched, reason = _inspect_stable_welcome_intro_message(message, index=idx)
+        if matched:
+            matched_messages.append(message)
+        content_preview = (getattr(message, "content", "") or "")[:80].replace("\n", " ")
+        log.info(
+            "fallback_reaction_auto_add inspect_message — thread=%s • message_id=%s • content_preview=%r • matched=%s • reason=%s",
+            getattr(thread, "id", None),
+            getattr(message, "id", None),
+            content_preview,
+            matched,
+            reason or "matched",
+        )
+
     matched_ids = [int(getattr(m, "id", 0)) for m in matched_messages if getattr(m, "id", None) is not None]
     target = matched_messages[-1] if matched_messages else None
     return target, matched_ids, len(ordered_messages)
