@@ -84,6 +84,27 @@ _PROMO_TYPE_MAP = {
 }
 
 
+
+def _is_stable_welcome_intro_message(message: discord.Message | None) -> bool:
+    if message is None:
+        return False
+    content = (getattr(message, "content", "") or "").lower()
+    return "welcome to c1c" in content and "slap a 👍 on this message" in content
+
+
+async def _find_newest_stable_welcome_intro(thread: discord.Thread) -> discord.Message | None:
+    history = getattr(thread, "history", None)
+    if not callable(history):
+        return None
+    try:
+        async for candidate in history(limit=50, oldest_first=False):
+            if _is_stable_welcome_intro_message(candidate):
+                return candidate
+    except Exception:
+        return None
+    return None
+
+
 def _normalize_ticket_code(ticket: str | None) -> str:
     token = (ticket or "").strip().lstrip("#")
     if not token:
@@ -2515,18 +2536,22 @@ class WelcomeTicketWatcher(commands.Cog):
             preferred_target: discord.Message | None = None
             target_source = "history_fallback"
             try:
-                preferred_target = await locate_welcome_message(thread)
-                target = await locate_welcome_trigger_message(
-                    thread,
-                    bot_user_id=getattr(getattr(self.bot, "user", None), "id", None),
-                    preferred_message=preferred_target,
-                )
-                if (
-                    target is not None
-                    and preferred_target is not None
-                    and getattr(target, "id", None) == getattr(preferred_target, "id", None)
-                ):
-                    target_source = "direct_message"
+                target = await _find_newest_stable_welcome_intro(thread)
+                if target is not None:
+                    target_source = "stable_text_match"
+                else:
+                    preferred_target = await locate_welcome_message(thread)
+                    target = await locate_welcome_trigger_message(
+                        thread,
+                        bot_user_id=getattr(getattr(self.bot, "user", None), "id", None),
+                        preferred_message=preferred_target,
+                    )
+                    if (
+                        target is not None
+                        and preferred_target is not None
+                        and getattr(target, "id", None) == getattr(preferred_target, "id", None)
+                    ):
+                        target_source = "direct_message"
             except Exception:
                 log.warning(
                     "fallback_reaction_auto_add target_lookup_failed — thread=%s • attempt=%s",

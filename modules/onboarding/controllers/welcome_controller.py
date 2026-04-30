@@ -1136,14 +1136,14 @@ def _is_welcome_trigger_message(
     author = getattr(message, "author", None)
     if author is None:
         return False
+    content = (getattr(message, "content", "") or "").lower()
+    has_stable_intro = "welcome to c1c" in content and "slap a 👍 on this message" in content
+    has_legacy_intro = "awake by reacting with" in content or "[#welcome:ticket]" in content
+    if has_stable_intro:
+        return True
     if bot_user_id is not None and getattr(author, "id", None) != bot_user_id:
         return False
-    content = (getattr(message, "content", "") or "").lower()
-    return (
-        "slap a 👍 on this message" in content
-        or "awake by reacting with" in content
-        or "[#welcome:ticket]" in content
-    )
+    return has_legacy_intro
 
 
 async def locate_welcome_trigger_message(
