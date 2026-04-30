@@ -24,6 +24,7 @@ from modules.recruitment.reporting.open_ticket_report import (
     send_currently_open_tickets_report,
 )
 from modules.housekeeping.role_audit import run_role_and_visitor_audit
+from modules.housekeeping.role_audit import resolve_audit_destination
 
 log = logging.getLogger("c1c.recruitment.reporting.daily")
 
@@ -442,8 +443,11 @@ async def _log_event(
     error: str,
     user_id: Optional[int] = None,
     note: Optional[str] = None,
+    destination_source: str = "env",
+    destination_key: Optional[str] = None,
+    destination_id: Optional[int] = None,
 ) -> None:
-    dest_id = get_report_destination_id() or 0
+    dest_id = destination_id if destination_id is not None else (get_report_destination_id() or 0)
     guild_id: Optional[int] = None
     guild: Optional[discord.Guild] = None
     if dest_id:
@@ -461,6 +465,12 @@ async def _log_event(
     if note:
         reason_text = (
             f"{reason_text}; note={note}" if reason_text and reason_text != "-" else f"note={note}"
+        )
+    if destination_key:
+        reason_text = (
+            f"{reason_text}; dest_source={destination_source}; dest_key={destination_key}; dest_id={dest_id}"
+            if reason_text and reason_text != "-"
+            else f"dest_source={destination_source}; dest_key={destination_key}; dest_id={dest_id}"
         )
     ok = result.lower() == "ok"
     message = LogTemplates.report(
@@ -528,6 +538,7 @@ async def run_full_recruiter_reports(
     result = "ok" if ok else "fail"
     await _log_event(bot=bot, actor=actor, result=result, error=error, user_id=user_id)
 
+    audit_dest_id, audit_dest_key = resolve_audit_destination()
     audit_ok, audit_error = await run_role_and_visitor_audit(bot)
     audit_result = "ok" if audit_ok else "fail"
     await _log_event(
@@ -537,6 +548,8 @@ async def run_full_recruiter_reports(
         error=audit_error,
         note="role-audit",
         user_id=user_id,
+        destination_key=audit_dest_key,
+        destination_id=audit_dest_id,
     )
 
     tickets_ok, tickets_error = await send_currently_open_tickets_report(bot)
