@@ -2608,11 +2608,63 @@ class WelcomeTicketWatcher(commands.Cog):
                 )
                 try:
                     await target.add_reaction(_TICKET_EMOJI)
+                    thread_id = getattr(thread, "id", None)
+                    welcome_message_id = getattr(target, "id", None)
+                    target_user_id: int | None = None
+                    try:
+                        target_user_id, _ = extract_target_from_message(target)
+                    except Exception:
+                        target_user_id = None
+
                     log.info(
-                        "fallback_reaction_auto_add success — thread=%s • message_id=%s • emoji=%s",
-                        getattr(thread, "id", None),
-                        getattr(target, "id", None),
+                        "fallback_reaction_auto_add success — thread=%s • message_id=%s • emoji=%s • auto_reaction_added=true",
+                        thread_id,
+                        welcome_message_id,
                         _TICKET_EMOJI,
+                    )
+
+                    if target_user_id is None:
+                        log.info(
+                            "fallback_auto_panel_spawn skipped — auto_panel_spawn_attempted=true • auto_panel_spawn_result=skipped • reason=target_user_unresolved • thread_id=%s • target_user_id=%s • welcome_message_id=%s",
+                            thread_id,
+                            target_user_id,
+                            welcome_message_id,
+                        )
+                        return
+
+                    log.info(
+                        "fallback_auto_panel_spawn attempt — auto_panel_spawn_attempted=true • thread_id=%s • target_user_id=%s • welcome_message_id=%s",
+                        thread_id,
+                        target_user_id,
+                        welcome_message_id,
+                    )
+                    outcome = await post_open_questions_panel(
+                        self.bot,
+                        thread,
+                        actor=target.author if isinstance(getattr(target, "author", None), (discord.Member, discord.User)) else None,
+                        flow="welcome",
+                        trigger_message=target,
+                        subject_user_id=target_user_id,
+                    )
+                    result = "error"
+                    if outcome.result == "panel_created":
+                        result = "posted"
+                    elif outcome.result == "skipped" and outcome.reason == "panel_exists":
+                        result = "reused"
+                    elif outcome.result == "skipped":
+                        result = "skipped"
+                    log.info(
+                        "fallback_auto_panel_spawn result — auto_panel_spawn_result=%s • thread_id=%s • target_user_id=%s • welcome_message_id=%s",
+                        result,
+                        thread_id,
+                        target_user_id,
+                        welcome_message_id,
+                    )
+                    self._log_panel_outcome(
+                        target.author if isinstance(getattr(target, "author", None), (discord.Member, discord.User)) else None,
+                        thread,
+                        outcome,
+                        flow="welcome",
                     )
                     return
                 except Exception:
