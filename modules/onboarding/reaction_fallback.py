@@ -10,7 +10,8 @@ import discord
 from discord import RawReactionActionEvent
 from discord.ext import commands
 
-from modules.common import feature_flags, rbac
+from c1c_coreops import rbac
+from modules.common import feature_flags
 from shared.config import get_ticket_tool_bot_id
 from modules.onboarding import logs, thread_membership, thread_scopes
 from modules.onboarding.controllers.welcome_controller import (
