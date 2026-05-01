@@ -31,6 +31,7 @@ from modules.onboarding.ui.views import NextStepView
 from modules.onboarding.ui import panels
 from shared.logfmt import channel_label, user_label
 from shared.sheets.onboarding_questions import Question, schema_hash
+from shared.sheets import onboarding_sessions
 from shared.config import get_recruiter_role_ids
 
 log = logging.getLogger(__name__)
@@ -1530,7 +1531,102 @@ class BaseWelcomeController:
             allowed_mentions=allowed_mentions if mention_text else None,
         )
 
+        await self.cleanup_onboarding_panel(thread, exclude_message_id=getattr(summary_message, "id", None))
+
         return summary_message, summary_embed
+
+    async def cleanup_onboarding_panel(
+        self,
+        thread: discord.Thread | discord.TextChannel,
+        *,
+        exclude_message_id: int | None = None,
+    ) -> None:
+        thread_id = getattr(thread, "id", None)
+        panel_message_id: int | None = None
+        if thread_id is not None:
+            panel_message_id = self._panel_messages.get(int(thread_id))
+        if panel_message_id is None:
+            row = onboarding_sessions.get_by_thread_id(thread_id)
+            raw_panel_id = row.get("panel_message_id") if isinstance(row, dict) else None
+            try:
+                panel_message_id = int(raw_panel_id) if raw_panel_id else None
+            except (TypeError, ValueError):
+                panel_message_id = None
+
+        panel_message: discord.Message | None = None
+        if panel_message_id:
+            try:
+                panel_message = await thread.fetch_message(int(panel_message_id))
+            except Exception:
+                panel_message = None
+
+        if panel_message is None:
+            markers = ("ready when you are", "open questions", "restart", "resume")
+            try:
+                async for candidate in thread.history(limit=30):
+                    if exclude_message_id and getattr(candidate, "id", None) == exclude_message_id:
+                        continue
+                    author_id = getattr(getattr(candidate, "author", None), "id", None)
+                    bot_id = getattr(getattr(self, "bot", None), "user", None)
+                    bot_id = getattr(bot_id, "id", None)
+                    if bot_id is None or author_id != bot_id:
+                        continue
+                    content_text = str(getattr(candidate, "content", "") or "").casefold()
+                    matches_text = any(marker in content_text for marker in markers)
+                    view_obj = getattr(candidate, "components", None) or []
+                    matches_buttons = any(
+                        any(
+                            any(marker in str(getattr(comp, "label", "") or "").casefold() for marker in markers)
+                            for comp in getattr(row, "children", [])
+                        )
+                        for row in view_obj
+                    )
+                    if matches_text or matches_buttons:
+                        panel_message = candidate
+                        break
+            except Exception:
+                panel_message = None
+
+        if panel_message is None:
+            log.info(
+                "onboarding panel cleanup skipped • reason=summary_posted • thread_id=%s • result=not_found",
+                thread_id,
+            )
+            return
+
+        if exclude_message_id and getattr(panel_message, "id", None) == exclude_message_id:
+            log.info(
+                "onboarding panel cleanup skipped • reason=summary_posted • thread_id=%s • result=not_found",
+                thread_id,
+            )
+            return
+
+        try:
+            await panel_message.delete()
+            log.info(
+                "onboarding panel cleanup • reason=summary_posted • thread_id=%s • deleted_message_id=%s • result=deleted",
+                thread_id,
+                getattr(panel_message, "id", None),
+            )
+            panels.mark_panel_inactive_by_message(getattr(panel_message, "id", None))
+            return
+        except Exception:
+            pass
+
+        try:
+            await panel_message.edit(view=None)
+            log.info(
+                "onboarding panel cleanup • reason=summary_posted • thread_id=%s • deleted_message_id=%s • result=failed",
+                thread_id,
+                getattr(panel_message, "id", None),
+            )
+        except Exception:
+            log.warning(
+                "onboarding panel cleanup failed • reason=summary_posted • thread_id=%s • deleted_message_id=%s • result=failed",
+                thread_id,
+                getattr(panel_message, "id", None),
+                exc_info=True,
+            )
 
     def _thread_for(self, thread_id: int) -> discord.Thread | None:
         return self._threads.get(thread_id)

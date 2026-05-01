@@ -54,6 +54,38 @@ def _format_interval(delta: timedelta) -> float:
     return delta.total_seconds()
 
 
+def _is_closed_ticket_name(thread: discord.Thread | None) -> bool:
+    if thread is None:
+        return False
+    name = str(getattr(thread, "name", "") or "")
+    return name.lower().startswith("closed-")
+
+
+def _is_thread_archived_or_locked(thread: discord.Thread | None) -> bool:
+    if thread is None:
+        return False
+    return bool(getattr(thread, "archived", False)) or bool(getattr(thread, "locked", False))
+
+
+async def has_recruitment_summary(thread: discord.Thread, *, history_limit: int = 50) -> bool:
+    markers = ("c1c • recruitment summary", "recruitment summary")
+    try:
+        async for message in thread.history(limit=history_limit):
+            content = str(getattr(message, "content", "") or "").casefold()
+            if any(marker in content for marker in markers):
+                return True
+
+            embeds = getattr(message, "embeds", []) or []
+            for embed in embeds:
+                title = str(getattr(embed, "title", "") or "").casefold()
+                description = str(getattr(embed, "description", "") or "").casefold()
+                if any(marker in title or marker in description for marker in markers):
+                    return True
+    except Exception:
+        log.warning("failed checking thread for recruitment summary", exc_info=True)
+    return False
+
+
 async def ensure_idle_watcher(bot: commands.Bot) -> None:
     global _WATCHER_TASK
 
@@ -204,6 +236,43 @@ async def _handle_row(
 
     resolution = welcome_flow.resolve_onboarding_flow(thread)
     flow = (resolution.flow or "welcome").lower()
+
+    session_status = str(row.get("status") or "").strip().lower()
+    if session_status in {"closed", "cancelled", "completed", "auto_closed"}:
+        log.info(
+            "onboarding reminder skipped • reason=closed_ticket • thread_id=%s • thread_name=%s • user_id=%s",
+            getattr(thread, "id", thread_id),
+            getattr(thread, "name", ""),
+            user_id,
+        )
+        return
+
+    if _is_closed_ticket_name(thread):
+        log.info(
+            "onboarding reminder skipped • reason=closed_ticket • thread_id=%s • thread_name=%s • user_id=%s",
+            getattr(thread, "id", thread_id),
+            getattr(thread, "name", ""),
+            user_id,
+        )
+        return
+
+    if _is_thread_archived_or_locked(thread):
+        log.info(
+            "onboarding reminder skipped • reason=thread_archived_or_locked • thread_id=%s • thread_name=%s • user_id=%s",
+            getattr(thread, "id", thread_id),
+            getattr(thread, "name", ""),
+            user_id,
+        )
+        return
+
+    if await has_recruitment_summary(thread):
+        log.info(
+            "onboarding reminder skipped • reason=recruitment_summary_exists • thread_id=%s • thread_name=%s • user_id=%s",
+            getattr(thread, "id", thread_id),
+            getattr(thread, "name", ""),
+            user_id,
+        )
+        return
 
     first_reminder_at = _parse_iso(row.get("first_reminder_at"))
     warning_sent_at = _parse_iso(row.get("warning_sent_at"))
