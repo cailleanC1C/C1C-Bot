@@ -1,13 +1,17 @@
 """Fallback handler for onboarding reaction triggers."""
 from __future__ import annotations
 
+from collections import OrderedDict
+import logging
+from time import monotonic
 from typing import Any, Optional
 
 import discord
 from discord import RawReactionActionEvent
 from discord.ext import commands
 
-from modules.common import feature_flags
+from modules.common import feature_flags, rbac
+from shared.config import get_ticket_tool_bot_id
 from modules.onboarding import logs, thread_membership, thread_scopes
 from modules.onboarding.controllers.welcome_controller import (
     extract_target_from_message,
@@ -17,10 +21,43 @@ from modules.onboarding.controllers.welcome_controller import (
 from modules.onboarding.ui import panels
 from modules.onboarding.welcome_flow import start_welcome_dialog
 
+log = logging.getLogger("c1c.onboarding.reaction_fallback")
+
 # Fallback: 🎫 on the Ticket Tool close-button message
 FALLBACK_EMOJI = "👍"
 LEGACY_TICKET_EMOJI = "🎫"
 TRIGGER_TOKEN = "[#welcome:ticket]"
+
+
+_UNSUPPORTED_DEDUPE_TTL_SEC = 300.0
+_UNSUPPORTED_DEDUPE_MAX = 1024
+
+
+class _UnsupportedEmojiDeduper:
+    def __init__(self, *, ttl_sec: float = _UNSUPPORTED_DEDUPE_TTL_SEC, max_entries: int = _UNSUPPORTED_DEDUPE_MAX) -> None:
+        self._ttl_sec = max(1.0, float(ttl_sec))
+        self._max_entries = max(1, int(max_entries))
+        self._entries: "OrderedDict[tuple[int, int, int, str], float]" = OrderedDict()
+
+    def should_log(self, *, guild_id: int | None, channel_id: int, message_id: int, user_id: int, emoji: str) -> bool:
+        now = monotonic()
+        key = (int(guild_id or 0), int(message_id), int(user_id), str(emoji))
+        expires = self._entries.get(key)
+        if expires is not None and expires > now:
+            self._entries.move_to_end(key)
+            return False
+        self._entries[key] = now + self._ttl_sec
+        self._entries.move_to_end(key)
+        self._prune(now)
+        return True
+
+    def _prune(self, now: float) -> None:
+        stale = [k for k, v in self._entries.items() if v <= now]
+        for key in stale:
+            self._entries.pop(key, None)
+        while len(self._entries) > self._max_entries:
+            self._entries.popitem(last=False)
+
 PROMO_TRIGGER_MAP = {
     "<!-- trigger:promo.r -->": "promo.r",
     "<!-- trigger:promo.m -->": "promo.m",
@@ -126,23 +163,32 @@ class OnboardingReactionFallbackCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self._unsupported_deduper = _UnsupportedEmojiDeduper()
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: RawReactionActionEvent) -> None:
         emoji_str = str(payload.emoji)
         emoji_name = getattr(payload.emoji, "name", None)
         if not _is_supported_fallback_emoji(payload):
-            reject_context = _base_context(user_id=payload.user_id, message_id=payload.message_id)
-            reject_context.update({
-                "trigger": "reaction_received",
-                "result": "emoji_not_supported",
-                "emoji_received": emoji_str,
-                "emoji_name": emoji_name,
-                "emoji_accepted": False,
-                "panel_spawn_attempted": False,
-                "skip_reason": "emoji_not_supported",
-            })
-            await logs.send_welcome_log("info", **reject_context)
+            if self._unsupported_deduper.should_log(
+                guild_id=payload.guild_id,
+                channel_id=payload.channel_id,
+                message_id=payload.message_id,
+                user_id=payload.user_id,
+                emoji=emoji_str,
+            ):
+                log.debug(
+                    "onboarding_reaction_ignored",
+                    extra={
+                        "result": "emoji_not_supported",
+                        "trigger": "reaction_add",
+                        "channel_id": payload.channel_id,
+                        "message_id": payload.message_id,
+                        "user_id": payload.user_id,
+                        "emoji": emoji_str,
+                        "emoji_name": emoji_name,
+                    },
+                )
             return
 
         bot_user = getattr(self.bot, "user", None)
