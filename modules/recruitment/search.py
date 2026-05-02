@@ -37,14 +37,52 @@ def _norm(value: str | None) -> str:
     return (value or "").strip().upper()
 
 
+def _normalize_filter_value(value: str | None) -> str | None:
+    token = _norm(value)
+    if token in {"", "—", "-", "ANY", "NONE", "NULL", "BLANK", "UNSET"}:
+        return None
+    token_map = {
+        "EASY": "ESY",
+        "ESY": "ESY",
+        "NORMAL": "NML",
+        "NML": "NML",
+        "HARD": "HRD",
+        "HRD": "HRD",
+        "BRUTAL": "BTL",
+        "BTL": "BTL",
+        "NIGHTMARE": "NM",
+        "NM": "NM",
+        "ULTRA NIGHTMARE": "UNM",
+        "ULTRA-NIGHTMARE": "UNM",
+        "ULTRANIGHTMARE": "UNM",
+        "UNM": "UNM",
+    }
+    return token_map.get(token, token)
+
+
+def _normalize_playstyle_value(value: str | None) -> str | None:
+    token = _norm(value)
+    if token in {"", "—", "-", "ANY", "NONE", "BLANK", "UNSET"}:
+        return None
+    return value
+
+
 def _difficulty_match(cell_value: str, wanted: str | None) -> bool:
-    if not wanted:
+    normalized = _normalize_filter_value(wanted)
+    if not normalized:
         return True
-    token = _norm(wanted)
     cell = _norm(cell_value)
-    if token in {"UNM", "ULTRA NIGHTMARE", "ULTRA-NIGHTMARE", "ULTRANIGHTMARE"}:
-        return any(k in cell for k in ("UNM", "ULTRA NIGHTMARE", "ULTRA-NIGHTMARE", "ULTRANIGHTMARE"))
-    return token in cell
+    if normalized in cell:
+        return True
+    aliases = {
+        "ESY": ("EASY",),
+        "NML": ("NORMAL",),
+        "HRD": ("HARD",),
+        "BTL": ("BRUTAL",),
+        "NM": ("NIGHTMARE",),
+        "UNM": ("ULTRA NIGHTMARE", "ULTRA-NIGHTMARE", "ULTRANIGHTMARE"),
+    }
+    return any(alias in cell for alias in aliases.get(normalized, ()))
 
 
 def _cell(row: Sequence[str], header_map: dict[str, int], key: str) -> str:
@@ -55,12 +93,13 @@ def _cell(row: Sequence[str], header_map: dict[str, int], key: str) -> str:
 
 
 def _flag_ok(row: Sequence[str], idx: int, expected: str | None) -> bool:
-    token = _norm(expected)
-    if token in {"", "—", "-", "ANY", "NONE", "NULL"}:
+    expected_token = _normalize_filter_value(expected)
+    if expected_token is None:
         return True
     if idx < 0 or idx >= len(row):
         return False
-    return str(row[idx] or "").strip() == expected
+    cell_token = _normalize_filter_value(str(row[idx] or "").strip())
+    return cell_token == expected_token
 
 
 def _playstyle_ok(row: Sequence[str], wanted: str | None) -> bool:
@@ -190,54 +229,81 @@ def filter_records_with_diagnostics(
     """Apply filters and return matches plus reason counts for dropped rows."""
 
     normalized = normalize_records(records)
-    matches: list[RecruitmentClanRecord] = []
-    diagnostics: dict[str, int] = {}
+    diagnostics: dict[str, int] = {"initial_clans": len(normalized)}
 
     try:
         header_map = sheet_recruitment.get_clan_header_map()
     except Exception:
         header_map = {}
 
+    working = list(normalized)
+
+    if roster_mode == "open":
+        working = [record for record in working if record.open_spots > 0]
+    elif roster_mode == "full":
+        working = [record for record in working if record.open_spots <= 0]
+    elif roster_mode == "inactives":
+        working = [record for record in working if record.inactives > 0]
+    diagnostics["after_open_spots_filter"] = len(working)
+
+    cb = _normalize_filter_value(cb)
+    hydra = _normalize_filter_value(hydra)
+    chimera = _normalize_filter_value(chimera)
+    cvc = _normalize_filter_value(cvc)
+    siege = _normalize_filter_value(siege)
+    playstyle = _normalize_playstyle_value(playstyle)
+
+    cb_pass: list[RecruitmentClanRecord] = []
+    hydra_pass: list[RecruitmentClanRecord] = []
+    chimera_pass: list[RecruitmentClanRecord] = []
+    playstyle_pass: list[RecruitmentClanRecord] = []
+    cvc_pass: list[RecruitmentClanRecord] = []
+    siege_pass: list[RecruitmentClanRecord] = []
+
     primary_matches: list[RecruitmentClanRecord] = []
     range_matches: list[RecruitmentClanRecord] = []
 
-    for record in normalized:
+    for record in working:
         try:
             row = record.row
 
             cb_primary_ok = _difficulty_match(_cell(row, header_map, "cb"), cb)
-            hydra_primary_ok = _difficulty_match(_cell(row, header_map, "hydra"), hydra)
-            chimera_primary_ok = _difficulty_match(_cell(row, header_map, "chimera"), chimera)
-
             cb_range_ok = _difficulty_match(_cell(row, header_map, "cb_range"), cb)
+            if not (cb_primary_ok or cb_range_ok):
+                diagnostics["cb"] = diagnostics.get("cb", 0) + 1
+                continue
+            cb_pass.append(record)
+
+            hydra_primary_ok = _difficulty_match(_cell(row, header_map, "hydra"), hydra)
             hydra_range_ok = _difficulty_match(_cell(row, header_map, "hydra_range"), hydra)
+            if not (hydra_primary_ok or hydra_range_ok):
+                diagnostics["hydra"] = diagnostics.get("hydra", 0) + 1
+                continue
+            hydra_pass.append(record)
+
+            chimera_primary_ok = _difficulty_match(_cell(row, header_map, "chimera"), chimera)
             chimera_range_ok = _difficulty_match(_cell(row, header_map, "chimera_range"), chimera)
+            if not (chimera_primary_ok or chimera_range_ok):
+                diagnostics["chimera"] = diagnostics.get("chimera", 0) + 1
+                continue
+            chimera_pass.append(record)
 
-            primary_ok = cb_primary_ok and hydra_primary_ok and chimera_primary_ok
-            fallback_ok = (cb_primary_ok or cb_range_ok) and (hydra_primary_ok or hydra_range_ok) and (chimera_primary_ok or chimera_range_ok)
-
-            if not fallback_ok:
-                diagnostics["difficulty"] = diagnostics.get("difficulty", 0) + 1
-                continue
-            if not _flag_ok(row, COL_S_CVC, cvc):
-                diagnostics["cvc"] = diagnostics.get("cvc", 0) + 1
-                continue
-            if not _flag_ok(row, COL_T_SIEGE, siege):
-                diagnostics["siege"] = diagnostics.get("siege", 0) + 1
-                continue
             if not _playstyle_ok(row, playstyle):
                 diagnostics["playstyle"] = diagnostics.get("playstyle", 0) + 1
                 continue
-            if roster_mode == "open" and record.open_spots <= 0:
-                diagnostics["roster_open_spots"] = diagnostics.get("roster_open_spots", 0) + 1
-                continue
-            if roster_mode == "full" and record.open_spots > 0:
-                diagnostics["roster_full_only"] = diagnostics.get("roster_full_only", 0) + 1
-                continue
-            if roster_mode == "inactives" and record.inactives <= 0:
-                diagnostics["roster_inactives"] = diagnostics.get("roster_inactives", 0) + 1
-                continue
+            playstyle_pass.append(record)
 
+            if not _flag_ok(row, COL_S_CVC, cvc):
+                diagnostics["cvc"] = diagnostics.get("cvc", 0) + 1
+                continue
+            cvc_pass.append(record)
+
+            if not _flag_ok(row, COL_T_SIEGE, siege):
+                diagnostics["siege"] = diagnostics.get("siege", 0) + 1
+                continue
+            siege_pass.append(record)
+
+            primary_ok = cb_primary_ok and hydra_primary_ok and chimera_primary_ok
             if primary_ok:
                 primary_matches.append(record)
             else:
@@ -245,6 +311,13 @@ def filter_records_with_diagnostics(
         except Exception:
             diagnostics["exception"] = diagnostics.get("exception", 0) + 1
             continue
+
+    diagnostics["after_cb_filter"] = len(cb_pass)
+    diagnostics["after_hydra_filter"] = len(hydra_pass)
+    diagnostics["after_chimera_filter"] = len(chimera_pass)
+    diagnostics["after_playstyle_filter"] = len(playstyle_pass)
+    diagnostics["after_cvc_filter"] = len(cvc_pass)
+    diagnostics["after_siege_filter"] = len(siege_pass)
 
     matches = list(primary_matches)
     if len(matches) < 3:
