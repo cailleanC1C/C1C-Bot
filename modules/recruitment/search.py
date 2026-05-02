@@ -16,20 +16,60 @@ from shared.sheets.recruitment import (
 )
 
 from modules.recruitment import search_helpers
-from modules.recruitment.search_helpers import (
-    parse_inactives_num,
-    parse_spots_num,
-    row_matches,
-)
+from modules.recruitment.search_helpers import parse_inactives_num, parse_spots_num
+
+COL_S_CVC = 18
+COL_T_SIEGE = 19
+COL_U_STYLE = 20
 
 __all__ = [
     "fetch_roster_records",
     "filter_records",
     "normalize_records",
     "enforce_inactives_only",
+    "filter_records_with_diagnostics",
 ]
 
 log = logging.getLogger(__name__)
+
+
+def _norm(value: str | None) -> str:
+    return (value or "").strip().upper()
+
+
+def _difficulty_match(cell_value: str, wanted: str | None) -> bool:
+    if not wanted:
+        return True
+    token = _norm(wanted)
+    cell = _norm(cell_value)
+    if token in {"UNM", "ULTRA NIGHTMARE", "ULTRA-NIGHTMARE", "ULTRANIGHTMARE"}:
+        return any(k in cell for k in ("UNM", "ULTRA NIGHTMARE", "ULTRA-NIGHTMARE", "ULTRANIGHTMARE"))
+    return token in cell
+
+
+def _cell(row: Sequence[str], header_map: dict[str, int], key: str) -> str:
+    idx = header_map.get(key)
+    if idx is None or idx < 0 or idx >= len(row):
+        return ""
+    return str(row[idx] or "")
+
+
+def _flag_ok(row: Sequence[str], idx: int, expected: str | None) -> bool:
+    token = _norm(expected)
+    if token in {"", "—", "-", "ANY", "NONE", "NULL"}:
+        return True
+    if idx < 0 or idx >= len(row):
+        return False
+    return str(row[idx] or "").strip() == expected
+
+
+def _playstyle_ok(row: Sequence[str], wanted: str | None) -> bool:
+    if not wanted:
+        return True
+    if COL_U_STYLE >= len(row):
+        return False
+    return search_helpers._playstyle_ok(str(row[COL_U_STYLE] or ""), wanted)
+
 
 
 async def fetch_roster_records(*, force: bool = False) -> list[RecruitmentClanRecord]:
@@ -123,34 +163,96 @@ def filter_records(
 ) -> list[RecruitmentClanRecord]:
     """Apply sheet and roster-mode filters to ``records``."""
 
+    matches, _diag = filter_records_with_diagnostics(
+        records,
+        cb=cb,
+        hydra=hydra,
+        chimera=chimera,
+        cvc=cvc,
+        siege=siege,
+        playstyle=playstyle,
+        roster_mode=roster_mode,
+    )
+    return matches
+
+
+def filter_records_with_diagnostics(
+    records: Sequence[RecruitmentClanRecord | Sequence[str]],
+    *,
+    cb: str | None,
+    hydra: str | None,
+    chimera: str | None,
+    cvc: str | None,
+    siege: str | None,
+    playstyle: str | None,
+    roster_mode: str | None,
+) -> tuple[list[RecruitmentClanRecord], dict[str, int]]:
+    """Apply filters and return matches plus reason counts for dropped rows."""
+
     normalized = normalize_records(records)
     matches: list[RecruitmentClanRecord] = []
-    if not normalized:
-        return matches
+    diagnostics: dict[str, int] = {}
+
+    try:
+        header_map = sheet_recruitment.get_clan_header_map()
+    except Exception:
+        header_map = {}
+
+    primary_matches: list[RecruitmentClanRecord] = []
+    range_matches: list[RecruitmentClanRecord] = []
 
     for record in normalized:
         try:
-            if not row_matches(
-                record.row,
-                cb,
-                hydra,
-                chimera,
-                cvc,
-                siege,
-                playstyle,
-            ):
+            row = record.row
+
+            cb_primary_ok = _difficulty_match(_cell(row, header_map, "cb"), cb)
+            hydra_primary_ok = _difficulty_match(_cell(row, header_map, "hydra"), hydra)
+            chimera_primary_ok = _difficulty_match(_cell(row, header_map, "chimera"), chimera)
+
+            cb_range_ok = _difficulty_match(_cell(row, header_map, "cb_range"), cb)
+            hydra_range_ok = _difficulty_match(_cell(row, header_map, "hydra_range"), hydra)
+            chimera_range_ok = _difficulty_match(_cell(row, header_map, "chimera_range"), chimera)
+
+            primary_ok = cb_primary_ok and hydra_primary_ok and chimera_primary_ok
+            fallback_ok = (cb_primary_ok or cb_range_ok) and (hydra_primary_ok or hydra_range_ok) and (chimera_primary_ok or chimera_range_ok)
+
+            if not fallback_ok:
+                diagnostics["difficulty"] = diagnostics.get("difficulty", 0) + 1
+                continue
+            if not _flag_ok(row, COL_S_CVC, cvc):
+                diagnostics["cvc"] = diagnostics.get("cvc", 0) + 1
+                continue
+            if not _flag_ok(row, COL_T_SIEGE, siege):
+                diagnostics["siege"] = diagnostics.get("siege", 0) + 1
+                continue
+            if not _playstyle_ok(row, playstyle):
+                diagnostics["playstyle"] = diagnostics.get("playstyle", 0) + 1
                 continue
             if roster_mode == "open" and record.open_spots <= 0:
+                diagnostics["roster_open_spots"] = diagnostics.get("roster_open_spots", 0) + 1
                 continue
             if roster_mode == "full" and record.open_spots > 0:
+                diagnostics["roster_full_only"] = diagnostics.get("roster_full_only", 0) + 1
                 continue
             if roster_mode == "inactives" and record.inactives <= 0:
+                diagnostics["roster_inactives"] = diagnostics.get("roster_inactives", 0) + 1
                 continue
-            matches.append(record)
+
+            if primary_ok:
+                primary_matches.append(record)
+            else:
+                range_matches.append(record)
         except Exception:
+            diagnostics["exception"] = diagnostics.get("exception", 0) + 1
             continue
 
-    return matches
+    matches = list(primary_matches)
+    if len(matches) < 3:
+        matches.extend(range_matches)
+    else:
+        diagnostics["range_fallback_held"] = len(range_matches)
+
+    return matches, diagnostics
 
 
 def enforce_inactives_only(

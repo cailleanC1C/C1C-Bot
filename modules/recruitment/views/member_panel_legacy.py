@@ -406,7 +406,7 @@ class MemberPanelControllerLegacy:
         if roster_mode in {"", "any"}:
             roster_mode = None
 
-        matches = roster_search.filter_records(
+        matches, diagnostics = roster_search.filter_records_with_diagnostics(
             rows,
             cb=state.cb,
             hydra=state.hydra,
@@ -416,6 +416,11 @@ class MemberPanelControllerLegacy:
             playstyle=state.playstyle,
             roster_mode=roster_mode,
         )
+        if not matches:
+            log.debug(
+                "member legacy clansearch returned no rows",
+                extra={"state": state.__dict__, "diagnostics": diagnostics},
+            )
 
         return roster_search.enforce_inactives_only(
             matches,

@@ -808,7 +808,7 @@ class RecruiterPanelView(discord.ui.View):
 
             self.has_searched = True
 
-            filtered_records = roster_search.filter_records(
+            filtered_records, diagnostics = roster_search.filter_records_with_diagnostics(
                 records,
                 cb=self.cb,
                 hydra=self.hydra,
@@ -835,6 +835,21 @@ class RecruiterPanelView(discord.ui.View):
             )
 
             if not filtered_records:
+                log.debug(
+                    "recruiter clanmatch returned no rows",
+                    extra={
+                        "filters": {
+                            "cb": self.cb,
+                            "hydra": self.hydra,
+                            "chimera": self.chimera,
+                            "cvc": self.cvc,
+                            "siege": self.siege,
+                            "playstyle": self.playstyle,
+                            "roster_mode": self.roster_mode,
+                        },
+                        "diagnostics": diagnostics,
+                    },
+                )
                 self.matches = []
                 self.results_filters_text = filters_summary
                 self.results_note = None
@@ -939,5 +954,4 @@ class RecruiterPanelView(discord.ui.View):
                 await self.results_message.edit(view=self.results_view)
         if self.message:
             self.cog.unregister_panel(self.message.id)
-
 
