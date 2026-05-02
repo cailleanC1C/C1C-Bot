@@ -170,27 +170,6 @@ class OnboardingReactionFallbackCog(commands.Cog):
     async def on_raw_reaction_add(self, payload: RawReactionActionEvent) -> None:
         emoji_str = str(payload.emoji)
         emoji_name = getattr(payload.emoji, "name", None)
-        if not _is_supported_fallback_emoji(payload):
-            if self._unsupported_deduper.should_log(
-                guild_id=payload.guild_id,
-                channel_id=payload.channel_id,
-                message_id=payload.message_id,
-                user_id=payload.user_id,
-                emoji=emoji_str,
-            ):
-                log.debug(
-                    "onboarding_reaction_ignored",
-                    extra={
-                        "result": "emoji_not_supported",
-                        "trigger": "reaction_add",
-                        "channel_id": payload.channel_id,
-                        "message_id": payload.message_id,
-                        "user_id": payload.user_id,
-                        "emoji": emoji_str,
-                        "emoji_name": emoji_name,
-                    },
-                )
-            return
 
         bot_user = getattr(self.bot, "user", None)
         if bot_user and payload.user_id == bot_user.id:
@@ -245,30 +224,31 @@ class OnboardingReactionFallbackCog(commands.Cog):
         if thread is None:
             return
 
-        received_context = _base_context(member=member, thread=thread, message_id=payload.message_id)
-        received_context.update({
-            "trigger": "reaction_received",
-            "result": "reaction_received",
-            "emoji_received": emoji_str,
-            "emoji_name": emoji_name,
-            "thread_name": getattr(thread, "name", None),
-            "emoji_accepted": True,
-            "panel_spawn_attempted": False,
-        })
-        await logs.send_welcome_log("info", **received_context)
-
         in_welcome_scope = thread_scopes.is_welcome_parent(thread)
         in_promo_scope = thread_scopes.is_promo_parent(thread)
-
         if not (in_welcome_scope or in_promo_scope):
-            await _log_reject(
-                "wrong_scope",
-                member=member,
-                thread=thread,
-                parent_id=getattr(thread, "parent_id", None),
-                trigger="scope_gate",
-                result="wrong_scope",
-            )
+            return
+
+        if not _is_supported_fallback_emoji(payload):
+            if self._unsupported_deduper.should_log(
+                guild_id=payload.guild_id,
+                channel_id=payload.channel_id,
+                message_id=payload.message_id,
+                user_id=payload.user_id,
+                emoji=emoji_str,
+            ):
+                log.debug(
+                    "onboarding_reaction_ignored",
+                    extra={
+                        "result": "emoji_not_supported",
+                        "trigger": "reaction_add",
+                        "channel_id": payload.channel_id,
+                        "message_id": payload.message_id,
+                        "user_id": payload.user_id,
+                        "emoji": emoji_str,
+                        "emoji_name": emoji_name,
+                    },
+                )
             return
 
         if not in_promo_scope and not feature_flags.is_enabled("welcome_dialog"):
