@@ -9,6 +9,7 @@ __all__ = [
     "parse_spots_num",
     "parse_inactives_num",
     "row_matches",
+    "evaluate_row_filters",
     "format_filters_footer",
 ]
 
@@ -91,7 +92,8 @@ def _cell_has_diff(cell_text: str, token: str | None) -> bool:
 
 
 def _cell_equals_flag(cell_text: str, expected: Optional[str]) -> bool:
-    if expected is None:
+    normalized_expected = _norm(expected or "")
+    if normalized_expected in {"", "—", "-", "ANY", "NONE", "NULL"}:
         return True
     return (cell_text or "").strip() == expected
 
@@ -188,6 +190,41 @@ def row_matches(
     )
 
 
+def evaluate_row_filters(
+    row: Sequence[str],
+    cb: Optional[str],
+    hydra: Optional[str],
+    chimera: Optional[str],
+    cvc: Optional[str],
+    siege: Optional[str],
+    playstyle: Optional[str],
+) -> tuple[bool, str]:
+    """Return ``(matches, reason)`` for debugging filter behavior."""
+
+    if len(row) <= IDX_AB:
+        return False, "short_row"
+    if _is_header_row(row):
+        return False, "header_row"
+    if not (row[COL_B_CLAN] or "").strip():
+        return False, "blank_clan"
+    roster_cell = row[COL_E_SPOTS] if len(row) > COL_E_SPOTS else ""
+    if not str(roster_cell or "").strip():
+        return False, "blank_roster"
+    if not _cell_has_diff(row[COL_P_CB], cb):
+        return False, "cb"
+    if not _cell_has_diff(row[COL_Q_HYDRA], hydra):
+        return False, "hydra"
+    if not _cell_has_diff(row[COL_R_CHIMERA], chimera):
+        return False, "chimera"
+    if not _cell_equals_flag(row[COL_S_CVC], cvc):
+        return False, "cvc"
+    if not _cell_equals_flag(row[COL_T_SIEGE], siege):
+        return False, "siege"
+    if not _playstyle_ok(row[COL_U_STYLE], playstyle):
+        return False, "playstyle"
+    return True, "ok"
+
+
 def format_filters_footer(
     cb: Optional[str],
     hydra: Optional[str],
@@ -233,4 +270,3 @@ def format_filters_footer(
         parts.append(extra_note)
 
     return " • ".join(parts)
-

@@ -466,7 +466,7 @@ class MemberPanelController:
     def _filter_rows(
         self, records: Sequence[RecruitmentClanRecord], filters: MemberSearchFilters
     ) -> list[RecruitmentClanRecord]:
-        return roster_search.filter_records(
+        matches, diagnostics = roster_search.filter_records_with_diagnostics(
             records,
             cb=filters.cb,
             hydra=filters.hydra,
@@ -476,4 +476,9 @@ class MemberPanelController:
             playstyle=filters.playstyle,
             roster_mode=filters.roster_mode,
         )
-
+        if not matches:
+            log.debug(
+                "member clansearch returned no rows",
+                extra={"filters": filters.__dict__, "diagnostics": diagnostics},
+            )
+        return matches

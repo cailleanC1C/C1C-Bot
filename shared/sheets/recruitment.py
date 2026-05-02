@@ -68,6 +68,12 @@ def _column_aliases(*aliases: str) -> tuple[str, ...]:
 
 
 HEADER_MAP: Dict[str, tuple[str, ...]] = {
+    "cb": _column_aliases("cb", "clan boss", "clanboss"),
+    "hydra": _column_aliases("hydra", "hydra difficulty"),
+    "chimera": _column_aliases("chimera", "chimera difficulty"),
+    "cb_range": _column_aliases("cb range", "clan boss range", "clanboss range"),
+    "hydra_range": _column_aliases("hydra range", "hydra difficulty range"),
+    "chimera_range": _column_aliases("chimera range", "chimera difficulty range"),
     "open_spots": _column_aliases(
         "open spots",
         "spots",
