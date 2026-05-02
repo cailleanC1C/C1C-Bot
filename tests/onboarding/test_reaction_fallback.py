@@ -234,8 +234,7 @@ def test_wrong_parent_rejected(monkeypatch, caplog):
 
     start_mock.assert_not_called()
     join_mock.assert_not_called()
-    details = _find_log(caplog, "result")
-    assert details["result"] == "wrong_scope"
+    assert not caplog.records
 
 
 def test_promo_parent_allows_dialog(monkeypatch, caplog):
