@@ -276,6 +276,13 @@ def _render_section(title: str, lines: Sequence[str]) -> list[str]:
     return [f"**{title}**", *content]
 
 
+def _format_joined_date(member: discord.abc.User) -> str:
+    joined_at = getattr(member, "joined_at", None)
+    if not joined_at:
+        return "unknown"
+    return joined_at.strftime("%Y-%m-%d")
+
+
 def _render_report(
     *,
     summary: AuditResult,
@@ -298,7 +305,7 @@ def _render_report(
         f"• {_format_member(member)} – {wanderer_action} `{raid_role_name}`, kept `{wanderer_role_name}` (no clan tags)"
         for member in (summary.auto_fixed_wanderers or [])
     ]
-    parts.extend(_render_section("1) Auto-fixed stray members", stray_lines + wanderer_lines))
+    parts.extend(_render_section("1) Stray members", stray_lines + wanderer_lines))
     parts.append("")
 
     manual_lines = [
@@ -313,7 +320,10 @@ def _render_report(
     )
     parts.append("")
 
-    visitor_no_ticket = [f"• {_format_member(member)} – no ticket found" for member in (summary.visitors_no_ticket or [])]
+    visitor_no_ticket = [
+        f"• {_format_member(member)} – joined {_format_joined_date(member)} – no ticket found"
+        for member in (summary.visitors_no_ticket or [])
+    ]
     parts.extend(_render_section("3) Visitors without any ticket", visitor_no_ticket))
     parts.append("")
 
