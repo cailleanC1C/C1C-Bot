@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from datetime import datetime, timezone
 
 from modules.housekeeping import role_audit
 
@@ -41,7 +42,7 @@ def test_classify_roles_covers_stray_and_wander_cases():
 
 
 def test_render_report_formats_all_sections():
-    member = DummyMember(id=1, name="tester", roles=[])
+    member = DummyMember(id=1, name="tester", roles=[], joined_at=datetime(2026, 4, 18, tzinfo=timezone.utc))
     clan_role = DummyRole(id=10, name="ClanTag")
     ticket = SimpleNamespace(name="W0001-test", url="https://discord.com/channels/1/2")
 
@@ -62,8 +63,21 @@ def test_render_report_formats_all_sections():
     assert isinstance(embed, role_audit.discord.Embed)
     description = embed.description or ""
 
-    assert "Auto-fixed stray members" in description
+    assert "1) Stray members" in description
     assert "Manual review" in description
     assert "Visitors without any ticket" in description
+    assert "joined 2026-04-18" in description
     assert "Visitors with only closed tickets" in description
     assert "Visitors with extra roles" in description
+
+
+def test_render_report_uses_unknown_join_date_when_missing():
+    member = DummyMember(id=1, name="tester", roles=[], joined_at=None)
+    summary = role_audit.AuditResult(checked=1, visitors_no_ticket=[member])
+
+    embed = role_audit._render_report(
+        summary=summary, raid_role_name="Raid", wanderer_role_name="Wandering Souls"
+    )
+
+    description = embed.description or ""
+    assert "joined unknown" in description
