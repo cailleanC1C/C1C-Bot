@@ -22,7 +22,7 @@ TAB_LABELS: Mapping[str, str] = {
     "last_pulls": "Last Pulls",
 }
 
-FOOTER_TEXT = "For info about how this works type !help shards"
+FOOTER_TEXT = "For info about how this works type '@C1C Woadkeeper help shards'\nUse !shards again to summon a new panel if the previous one has expired."
 OVERFLOW_RANGE = 100
 
 

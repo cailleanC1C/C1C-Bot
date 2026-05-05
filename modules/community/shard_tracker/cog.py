@@ -166,6 +166,7 @@ class ShardTracker(commands.Cog, ShardTrackerController):
         self._emoji_warning_emitted = False
         self._emoji_tags = self._load_emoji_tags()
         self._tab_emojis = self._load_tab_emojis()
+        self._latest_panel_messages: Dict[tuple[int, int, int], int] = {}
 
     # === Commands ===
 
@@ -413,7 +414,7 @@ class ShardTracker(commands.Cog, ShardTrackerController):
         if tab and tab not in SHARD_KINDS:
             tab = "overview"
         embed, view = self._build_panel(ctx.author, record, thread, tab)
-        await self._send_thread_message(ctx, parent_channel, thread, embed, view)
+        await self._send_thread_message(ctx, parent_channel, thread, embed, view, owner_id=ctx.author.id)
 
     async def _handle_stash_set(
         self, ctx: commands.Context, shard_type: str, count: int
@@ -904,17 +905,57 @@ class ShardTracker(commands.Cog, ShardTrackerController):
         thread: discord.Thread | None,
         embed: discord.Embed,
         view: discord.ui.View | None,
+        *,
+        owner_id: int,
     ) -> None:
         if thread is None:
             await ctx.reply("Unable to locate or create your shard thread.", mention_author=False)
             return
+        await self._delete_previous_panel_if_possible(thread=thread, owner_id=owner_id)
         content = f"{ctx.author.mention}"
-        await thread.send(content=content, embed=embed, view=view)
+        message = await thread.send(content=content, embed=embed, view=view)
+        self._remember_latest_panel_message(thread=thread, owner_id=owner_id, message_id=message.id)
         if parent and parent == ctx.channel:
             await ctx.reply(
                 f"📬 Posted in your shard thread: {thread.mention}",
                 mention_author=False,
             )
+
+    def _panel_state_key(self, *, thread: discord.Thread, owner_id: int) -> tuple[int, int, int]:
+        guild_id = getattr(getattr(thread, "guild", None), "id", 0)
+        return (guild_id, thread.id, owner_id)
+
+    def _remember_latest_panel_message(self, *, thread: discord.Thread, owner_id: int, message_id: int) -> None:
+        self._latest_panel_messages[self._panel_state_key(thread=thread, owner_id=owner_id)] = message_id
+
+    async def _delete_previous_panel_if_possible(self, *, thread: discord.Thread, owner_id: int) -> None:
+        message_id = self._latest_panel_messages.get(self._panel_state_key(thread=thread, owner_id=owner_id))
+        if not message_id:
+            return
+        try:
+            previous_message = await thread.fetch_message(message_id)
+        except discord.NotFound:
+            log.debug("previous shard panel missing before delete", extra={"thread_id": thread.id, "owner_id": owner_id, "message_id": message_id})
+            return
+        except discord.Forbidden:
+            log.warning("missing permissions deleting previous shard panel", extra={"thread_id": thread.id, "owner_id": owner_id, "message_id": message_id})
+            return
+        except discord.HTTPException:
+            log.warning("failed to fetch previous shard panel", extra={"thread_id": thread.id, "owner_id": owner_id, "message_id": message_id})
+            return
+
+        if previous_message.author.id != getattr(self.bot.user, "id", None):
+            log.debug("tracked shard panel was not authored by bot; skipping delete", extra={"thread_id": thread.id, "owner_id": owner_id, "message_id": message_id})
+            return
+
+        try:
+            await previous_message.delete()
+        except discord.NotFound:
+            log.debug("previous shard panel already deleted", extra={"thread_id": thread.id, "owner_id": owner_id, "message_id": message_id})
+        except discord.Forbidden:
+            log.warning("missing permissions deleting previous shard panel", extra={"thread_id": thread.id, "owner_id": owner_id, "message_id": message_id})
+        except discord.HTTPException:
+            log.warning("failed deleting previous shard panel", extra={"thread_id": thread.id, "owner_id": owner_id, "message_id": message_id})
 
     def _build_panel(
         self,
@@ -968,6 +1009,7 @@ class ShardTracker(commands.Cog, ShardTrackerController):
             shard_labels=labels,
             shard_emojis=self._tab_emojis,
             active_tab=tab,
+            timeout=None,
         )
         return embed, view
 
