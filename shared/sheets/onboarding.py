@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
@@ -21,6 +22,7 @@ _CONFIG_CACHE_TS: float = 0.0
 
 _CLAN_TAGS: List[str] | None = None
 _CLAN_TAG_TS: float = 0.0
+_WELCOME_REPAIR_LAST_RUN: float = 0.0
 
 
 log = logging.getLogger(__name__)
@@ -61,6 +63,8 @@ PROMO_HEADERS: List[str] = [
 WELCOME_TICKET_INDEX = 0
 WELCOME_CLAN_TAG_INDEX = 2
 WELCOME_DATE_CLOSED_INDEX = 3
+_DISCORD_ID_RE = re.compile(r"^\d{15,22}$")
+_WELCOME_TICKET_RE = re.compile(r"^[A-Z]+\d{2,}$")
 
 
 def _sheet_id() -> str:
@@ -264,6 +268,94 @@ def _normalize_header_name(name: str) -> str:
     return "".join(ch for ch in str(name or "").lower() if ch.isalnum())
 
 
+def _is_isoish(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return True
+    except ValueError:
+        return False
+
+
+def _is_discord_id(value: str) -> bool:
+    return bool(_DISCORD_ID_RE.match(str(value or "").strip()))
+
+
+def _looks_like_ticket(value: str) -> bool:
+    return bool(_WELCOME_TICKET_RE.match(_fmt_ticket(value)))
+
+
+def repair_welcome_rows(ws) -> dict[str, int]:
+    header = _ensure_headers(ws, WELCOME_HEADERS)
+    norm = [_normalize_header_name(col) for col in header]
+    idx = {name: pos for pos, name in enumerate(norm)}
+    required = {"ticketnumber", "username"}
+    if not required.issubset(idx):
+        return {"repaired": 0, "flagged": 0, "scanned": 0}
+
+    values = core.call_with_backoff(ws.get_all_values)
+    repaired = 0
+    flagged = 0
+    scanned = 0
+    for row_number, row in enumerate(values[1:], start=2):
+        scanned += 1
+        row_values = list(row) + [""] * (len(header) - len(row))
+        ticket = row_values[idx["ticketnumber"]].strip()
+        username = row_values[idx["username"]].strip()
+        user_id_idx = idx.get("userid")
+        thread_id_idx = idx.get("threadid")
+        status_idx = idx.get("status")
+        created_idx = idx.get("createdat")
+        updated_idx = idx.get("updatedat")
+
+        user_id = row_values[user_id_idx].strip() if user_id_idx is not None else ""
+        thread_id = row_values[thread_id_idx].strip() if thread_id_idx is not None else ""
+
+        changed = False
+        if user_id_idx is not None and not _is_discord_id(user_id):
+            candidate = thread_id if _is_discord_id(thread_id) else ""
+            if candidate:
+                row_values[user_id_idx] = candidate
+                if thread_id_idx is not None:
+                    row_values[thread_id_idx] = ""
+                changed = True
+            elif _is_isoish(user_id):
+                row_values[user_id_idx] = ""
+                changed = True
+
+        if thread_id_idx is not None and not _is_discord_id(row_values[thread_id_idx]):
+            if _is_isoish(row_values[thread_id_idx]) or "-" in row_values[thread_id_idx]:
+                row_values[thread_id_idx] = ""
+                changed = True
+
+        invalid = (not _looks_like_ticket(ticket)) or (not username)
+        if invalid and status_idx is not None:
+            status_value = str(row_values[status_idx] or "").strip().lower()
+            if status_value not in {"invalid", "needs_review"}:
+                row_values[status_idx] = "needs_review"
+                changed = True
+            flagged += 1
+        elif status_idx is not None and str(row_values[status_idx] or "").strip().lower() == "needs_review":
+            # keep explicit invalid marker untouched
+            pass
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if changed and updated_idx is not None:
+            row_values[updated_idx] = now_iso
+        if created_idx is not None and not str(row_values[created_idx] or "").strip():
+            row_values[created_idx] = now_iso
+            changed = True
+
+        if changed:
+            end_col = _col_to_a1(len(header) - 1)
+            core.call_with_backoff(ws.update, f"A{row_number}:{end_col}{row_number}", [row_values[: len(header)]])
+            repaired += 1
+
+    return {"repaired": repaired, "flagged": flagged, "scanned": scanned}
+
+
 def _match_row(
     headers: Sequence[str],
     row: Sequence[str],
@@ -375,19 +467,73 @@ def append_welcome_ticket_row(
     created_at: datetime | None = None,
     updated_at: datetime | None = None,
 ) -> str:
+    global _WELCOME_REPAIR_LAST_RUN
     sheet_id, tab = _resolve_onboarding_and_welcome_tab()
     ws = core.get_worksheet(sheet_id, tab)
     header = _ensure_headers(ws, WELCOME_HEADERS)
+    now_ts = time.time()
+    if (now_ts - _WELCOME_REPAIR_LAST_RUN) > 3600:
+        summary = repair_welcome_rows(ws)
+        _WELCOME_REPAIR_LAST_RUN = now_ts
+        if summary.get("repaired") or summary.get("flagged"):
+            log.warning("welcome row repair pass summary • %s", summary)
+    normalized_header = [_normalize_header_name(col) for col in header]
     ticket_value = _fmt_ticket(ticket)
+    if not ticket_value:
+        raise ValueError("ticket value is required for welcome ticket writes")
+    if not _looks_like_ticket(ticket_value):
+        raise ValueError(f"ticket value has unexpected format: {ticket_value}")
+    if not str(username or "").strip():
+        raise ValueError("username is required for welcome ticket writes")
+
+    existing_match = None
+    try:
+        keys, search_values = _ticket_key_columns(header, ticket_value, thread_id)
+        values = core.call_with_backoff(ws.get_all_values)
+        for row in values[1:]:
+            if _match_row(header, row, keys, search_values):
+                existing_match = list(row)
+                break
+    except Exception:
+        existing_match = None
+
     created, updated = _normalize_ticket_timestamps(created_at, updated_at)
+    if existing_match and created_at is None:
+        try:
+            created_idx = normalized_header.index("createdat")
+        except ValueError:
+            created_idx = -1
+        if created_idx >= 0 and created_idx < len(existing_match):
+            existing_created = str(existing_match[created_idx] or "").strip()
+            if existing_created:
+                try:
+                    created = datetime.fromisoformat(existing_created.replace("Z", "+00:00"))
+                except ValueError:
+                    pass
+
+    clan_text = str(clan_tag or "").strip()
+    closed_text = str(date_closed or "").strip()
+    if existing_match:
+        try:
+            clan_idx = normalized_header.index("clantag")
+            if not clan_text and clan_idx < len(existing_match):
+                clan_text = str(existing_match[clan_idx] or "").strip()
+        except ValueError:
+            pass
+        try:
+            closed_idx = normalized_header.index("dateclosed")
+            if not closed_text and closed_idx < len(existing_match):
+                closed_text = str(existing_match[closed_idx] or "").strip()
+        except ValueError:
+            pass
 
     value_map: dict[str, str] = {
         "ticket": ticket_value,
         "ticketnumber": ticket_value,
         "ticketid": ticket_value,
         "username": str(username or "").strip(),
-        "clantag": str(clan_tag or "").strip(),
-        "dateclosed": str(date_closed or "").strip(),
+        "clantag": clan_text,
+        "dateclosed": closed_text,
         "threadname": str(thread_name or "").strip(),
         "userid": str(user_id) if user_id is not None else "",
         "threadid": str(thread_id) if thread_id is not None else "",
