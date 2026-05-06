@@ -23,6 +23,8 @@ _CONFIG_CACHE_TS: float = 0.0
 _CLAN_TAGS: List[str] | None = None
 _CLAN_TAG_TS: float = 0.0
 _WELCOME_REPAIR_LAST_RUN: float = 0.0
+_WELCOME_REPAIR_ALERT_LAST_TS: float = 0.0
+_WELCOME_REPAIR_ALERT_PENDING: str | None = None
 
 
 log = logging.getLogger(__name__)
@@ -356,6 +358,28 @@ def repair_welcome_rows(ws) -> dict[str, int]:
     return {"repaired": repaired, "flagged": flagged, "scanned": scanned}
 
 
+def _queue_welcome_repair_alert(summary: dict[str, int]) -> None:
+    global _WELCOME_REPAIR_ALERT_LAST_TS, _WELCOME_REPAIR_ALERT_PENDING
+    flagged = int(summary.get("flagged", 0) or 0)
+    if flagged <= 0:
+        return
+    repaired = int(summary.get("repaired", 0) or 0)
+    now_ts = time.time()
+    if (now_ts - _WELCOME_REPAIR_ALERT_LAST_TS) < 3600:
+        return
+    _WELCOME_REPAIR_ALERT_LAST_TS = now_ts
+    _WELCOME_REPAIR_ALERT_PENDING = (
+        f"Welcome ticket repair: {repaired} repaired, {flagged} flagged for review"
+    )
+
+
+def consume_welcome_repair_alert() -> str | None:
+    global _WELCOME_REPAIR_ALERT_PENDING
+    message = _WELCOME_REPAIR_ALERT_PENDING
+    _WELCOME_REPAIR_ALERT_PENDING = None
+    return message
+
+
 def _match_row(
     headers: Sequence[str],
     row: Sequence[str],
@@ -475,8 +499,9 @@ def append_welcome_ticket_row(
     if (now_ts - _WELCOME_REPAIR_LAST_RUN) > 3600:
         summary = repair_welcome_rows(ws)
         _WELCOME_REPAIR_LAST_RUN = now_ts
+        _queue_welcome_repair_alert(summary)
         if summary.get("repaired") or summary.get("flagged"):
-            log.warning("welcome row repair pass summary • %s", summary)
+            log.warning("welcome row repair pass summary", extra={"summary": summary})
     normalized_header = [_normalize_header_name(col) for col in header]
     ticket_value = _fmt_ticket(ticket)
     if not ticket_value:

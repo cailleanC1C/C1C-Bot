@@ -1661,6 +1661,17 @@ async def _send_runtime(message: str) -> None:
         log.warning("failed to send welcome watcher log message", exc_info=True)
 
 
+async def _send_welcome_repair_visibility() -> None:
+    try:
+        message = onboarding_sheets.consume_welcome_repair_alert()
+    except Exception:
+        log.debug("failed to consume welcome repair alert", exc_info=True)
+        return
+    if not message:
+        return
+    await _send_runtime(message)
+
+
 def _channel_readable_label(bot: commands.Bot, channel_id: int | None) -> str:
     if channel_id is None:
         return "#unknown"
@@ -2785,6 +2796,7 @@ class WelcomeTicketWatcher(commands.Cog):
                 context.username,
                 result,
             )
+            await _send_welcome_repair_visibility()
         except Exception as exc:
             log.error(
                 "❌ welcome_ticket_open — ticket=%s • user=%s • result=error • reason=%s",
@@ -2852,6 +2864,7 @@ class WelcomeTicketWatcher(commands.Cog):
                     updated_at=updated_value,
                 ),
             )
+            await _send_welcome_repair_visibility()
         except Exception:
             log.debug(
                 "welcome reminder: sheet touch failed",
@@ -3076,6 +3089,7 @@ class WelcomeTicketWatcher(commands.Cog):
                 row_values = None
             else:
                 context.row_created_during_close = True
+                await _send_welcome_repair_visibility()
                 log.warning(
                     "⚠️ welcome_close_manual — ticket=%s • user=%s • reason=onboarding_row_missing_manual_close • action=row_inserted_no_reconcile",
                     context.ticket_number,
@@ -3304,6 +3318,7 @@ class WelcomeTicketWatcher(commands.Cog):
                     updated_at=datetime.now(timezone.utc),
                 ),
             )
+            await _send_welcome_repair_visibility()
         except Exception:
             log.exception(
                 "❌ welcome_close — ticket=%s • user=%s • final=%s • result=error • reason=sheet_write",
