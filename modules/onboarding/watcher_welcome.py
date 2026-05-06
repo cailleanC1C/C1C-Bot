@@ -1941,9 +1941,11 @@ class WelcomeWatcher(commands.Cog):
         self._onb_reg_error: str | None = None
         self._announced = False
         self.ticket_tool_id = get_ticket_tool_bot_id()
+        self._startup_repair_done: bool = False
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
+        log.warning("welcomewatcher.on_ready fired")
         # Guard against firing multiple times on reconnects
         if self._announced:
             return
@@ -2014,6 +2016,11 @@ class WelcomeWatcher(commands.Cog):
 
         self._register_persistent_view()
 
+        if not self._startup_repair_done:
+            self._startup_repair_done = True
+            await asyncio.sleep(2)
+            await self._run_startup_welcome_ticket_repair()
+
         if self._onb_registered:
             label = _channel_readable_label(self.bot, self.channel_id)
             line = log_lifecycle(
@@ -2041,6 +2048,22 @@ class WelcomeWatcher(commands.Cog):
             )
             if line:
                 asyncio.create_task(_send_runtime(line))
+
+
+    async def _run_startup_welcome_ticket_repair(self) -> None:
+        log.warning("welcome ticket repair started")
+        try:
+            summary = await asyncio.to_thread(
+                onboarding_sheets.run_welcome_ticket_repair_pass,
+                min_interval_sec=0,
+            )
+        except Exception:
+            log.exception("welcome ticket repair failed with exception")
+            return
+
+        repaired = int(summary.get("repaired", 0) or 0)
+        flagged = int(summary.get("flagged", 0) or 0)
+        log.warning("welcome ticket repair complete: %s repaired, %s flagged", repaired, flagged)
 
     def _register_persistent_view(self) -> None:
         registration = panels.register_persistent_views(self.bot)
@@ -2491,6 +2514,7 @@ class WelcomeTicketWatcher(commands.Cog):
         except (TypeError, ValueError):
             self.channel_id = None
         self.ticket_tool_id = get_ticket_tool_bot_id()
+        self._startup_repair_done: bool = False
         self._tickets: Dict[int, TicketContext] = {}
         self._clan_tags: List[str] = []
         self._clan_tag_set: Set[str] = set()

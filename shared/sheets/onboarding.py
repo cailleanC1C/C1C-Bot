@@ -477,6 +477,22 @@ def _normalize_ticket_timestamps(
     return created, normalized_updated
 
 
+
+
+def run_welcome_ticket_repair_pass(*, min_interval_sec: float = 3600) -> dict[str, int]:
+    """Run a repair/flag sweep on the Welcome ticket tab using config-resolved sheet/tab."""
+
+    global _WELCOME_REPAIR_LAST_RUN
+    now_ts = time.time()
+    if min_interval_sec > 0 and (now_ts - _WELCOME_REPAIR_LAST_RUN) <= min_interval_sec:
+        return {"repaired": 0, "flagged": 0, "scanned": 0}
+
+    sheet_id, tab = _resolve_onboarding_and_welcome_tab()
+    ws = core.get_worksheet(sheet_id, tab)
+    summary = repair_welcome_rows(ws)
+    _WELCOME_REPAIR_LAST_RUN = now_ts
+    _queue_welcome_repair_alert(summary)
+    return summary
 def append_welcome_ticket_row(
     ticket: str,
     username: str,
@@ -491,17 +507,10 @@ def append_welcome_ticket_row(
     created_at: datetime | None = None,
     updated_at: datetime | None = None,
 ) -> str:
-    global _WELCOME_REPAIR_LAST_RUN
     sheet_id, tab = _resolve_onboarding_and_welcome_tab()
     ws = core.get_worksheet(sheet_id, tab)
     header = _ensure_headers(ws, WELCOME_HEADERS)
-    now_ts = time.time()
-    if (now_ts - _WELCOME_REPAIR_LAST_RUN) > 3600:
-        summary = repair_welcome_rows(ws)
-        _WELCOME_REPAIR_LAST_RUN = now_ts
-        _queue_welcome_repair_alert(summary)
-        if summary.get("repaired") or summary.get("flagged"):
-            log.warning("welcome row repair pass summary", extra={"summary": summary})
+    run_welcome_ticket_repair_pass(min_interval_sec=3600)
     normalized_header = [_normalize_header_name(col) for col in header]
     ticket_value = _fmt_ticket(ticket)
     if not ticket_value:
