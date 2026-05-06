@@ -1945,6 +1945,7 @@ class WelcomeWatcher(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
+        log.warning("welcomewatcher.on_ready fired")
         # Guard against firing multiple times on reconnects
         if self._announced:
             return
@@ -2017,6 +2018,7 @@ class WelcomeWatcher(commands.Cog):
 
         if not self._startup_repair_done:
             self._startup_repair_done = True
+            await asyncio.sleep(2)
             await self._run_startup_welcome_ticket_repair()
 
         if self._onb_registered:
@@ -2049,19 +2051,20 @@ class WelcomeWatcher(commands.Cog):
 
 
     async def _run_startup_welcome_ticket_repair(self) -> None:
-        log.info("welcome ticket repair started")
+        log.warning("welcome ticket repair started")
         try:
             summary = await asyncio.to_thread(
                 onboarding_sheets.run_welcome_ticket_repair_pass,
                 min_interval_sec=0,
             )
         except Exception:
-            log.exception("welcome ticket repair failed")
+            log.exception("welcome ticket repair failed with exception")
             return
 
         repaired = int(summary.get("repaired", 0) or 0)
         flagged = int(summary.get("flagged", 0) or 0)
-        log.info("welcome ticket repair complete: %s repaired, %s flagged", repaired, flagged)
+        log.warning("welcome ticket repair complete: %s repaired, %s flagged", repaired, flagged)
+
     def _register_persistent_view(self) -> None:
         registration = panels.register_persistent_views(self.bot)
 
