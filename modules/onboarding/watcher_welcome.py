@@ -1661,6 +1661,17 @@ async def _send_runtime(message: str) -> None:
         log.warning("failed to send welcome watcher log message", exc_info=True)
 
 
+async def _send_welcome_repair_visibility() -> None:
+    try:
+        message = onboarding_sheets.consume_welcome_repair_alert()
+    except Exception:
+        log.debug("failed to consume welcome repair alert", exc_info=True)
+        return
+    if not message:
+        return
+    await _send_runtime(message)
+
+
 def _channel_readable_label(bot: commands.Bot, channel_id: int | None) -> str:
     if channel_id is None:
         return "#unknown"
@@ -2785,6 +2796,7 @@ class WelcomeTicketWatcher(commands.Cog):
                 context.username,
                 result,
             )
+            await _send_welcome_repair_visibility()
         except Exception as exc:
             log.error(
                 "❌ welcome_ticket_open — ticket=%s • user=%s • result=error • reason=%s",
@@ -2803,9 +2815,8 @@ class WelcomeTicketWatcher(commands.Cog):
         created_at: datetime,
         user_ref: str,
     ) -> None:
-        headers = _WELCOME_HEADERS
-        created_value = created_at.isoformat()
-        updated_value = datetime.now(timezone.utc).isoformat()
+        created_value = created_at
+        updated_value = datetime.now(timezone.utc)
 
         try:
             existing = await asyncio.to_thread(
@@ -2819,35 +2830,16 @@ class WelcomeTicketWatcher(commands.Cog):
             )
             existing = None
 
+        clan_value = context.final_clan or ""
+        closed_value = ""
         if existing:
             row_values = list(existing[1])
-        else:
-            row_values = [
-                context.ticket_number,
-                context.username,
-                context.final_clan or "",
-                "",
-                getattr(thread, "name", ""),
-                str(context.recruit_id or ""),
-                str(getattr(thread, "id", 0)),
-                "",
-                "open",
-                created_value,
-                "",
-            ]
-
-        if len(row_values) < len(headers):
-            row_values.extend(["" for _ in range(len(headers) - len(row_values))])
-
-        try:
-            created_idx = headers.index("created_at")
-            updated_idx = headers.index("updated_at")
-        except ValueError:
-            return
-
-        if not row_values[created_idx]:
-            row_values[created_idx] = created_value
-        row_values[updated_idx] = updated_value
+            clan_idx = onboarding_sheets.WELCOME_CLAN_TAG_INDEX
+            closed_idx = onboarding_sheets.WELCOME_DATE_CLOSED_INDEX
+            if clan_idx < len(row_values) and not clan_value:
+                clan_value = str(row_values[clan_idx] or "").strip()
+            if closed_idx < len(row_values):
+                closed_value = str(row_values[closed_idx] or "").strip()
 
         try:
             await log_sheet_write(
@@ -2858,9 +2850,21 @@ class WelcomeTicketWatcher(commands.Cog):
                 thread=thread,
                 user=user_ref,
                 write_coro=lambda: asyncio.to_thread(
-                    onboarding_sheets.upsert_welcome, row_values, headers
+                    onboarding_sheets.append_welcome_ticket_row,
+                    context.ticket_number,
+                    context.username,
+                    clan_value,
+                    closed_value,
+                    thread_name=getattr(thread, "name", ""),
+                    user_id=context.recruit_id,
+                    thread_id=int(getattr(thread, "id", 0)),
+                    panel_message_id=context.prompt_message_id,
+                    status="open",
+                    created_at=created_value,
+                    updated_at=updated_value,
                 ),
             )
+            await _send_welcome_repair_visibility()
         except Exception:
             log.debug(
                 "welcome reminder: sheet touch failed",
@@ -3064,9 +3068,19 @@ class WelcomeTicketWatcher(commands.Cog):
 
         row_values: List[str] | None = row_info[1] if row_info else None
         if not row_values:
-            row_values = [context.ticket_number, context.username, "", ""]
             try:
-                await asyncio.to_thread(onboarding_sheets.upsert_welcome, row_values, _WELCOME_HEADERS)
+                await asyncio.to_thread(
+                    onboarding_sheets.append_welcome_ticket_row,
+                    context.ticket_number,
+                    context.username,
+                    "",
+                    "",
+                    thread_name=getattr(thread, "name", ""),
+                    user_id=context.recruit_id,
+                    thread_id=int(getattr(thread, "id", 0)),
+                    panel_message_id=context.prompt_message_id,
+                    status="open",
+                )
             except Exception:
                 log.exception(
                     "failed to insert onboarding row during manual close",
@@ -3075,6 +3089,7 @@ class WelcomeTicketWatcher(commands.Cog):
                 row_values = None
             else:
                 context.row_created_during_close = True
+                await _send_welcome_repair_visibility()
                 log.warning(
                     "⚠️ welcome_close_manual — ticket=%s • user=%s • reason=onboarding_row_missing_manual_close • action=row_inserted_no_reconcile",
                     context.ticket_number,
@@ -3280,7 +3295,6 @@ class WelcomeTicketWatcher(commands.Cog):
         )
 
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        row = [context.ticket_number, context.username, final_tag, timestamp]
 
         try:
             result = await log_sheet_write(
@@ -3291,9 +3305,20 @@ class WelcomeTicketWatcher(commands.Cog):
                 thread=thread,
                 user=context.username,
                 write_coro=lambda: asyncio.to_thread(
-                    onboarding_sheets.upsert_welcome, row, _WELCOME_HEADERS
+                    onboarding_sheets.append_welcome_ticket_row,
+                    context.ticket_number,
+                    context.username,
+                    final_tag,
+                    timestamp,
+                    thread_name=getattr(thread, "name", ""),
+                    user_id=context.recruit_id,
+                    thread_id=int(getattr(thread, "id", 0)),
+                    panel_message_id=context.prompt_message_id,
+                    status="closed",
+                    updated_at=datetime.now(timezone.utc),
                 ),
             )
+            await _send_welcome_repair_visibility()
         except Exception:
             log.exception(
                 "❌ welcome_close — ticket=%s • user=%s • final=%s • result=error • reason=sheet_write",
