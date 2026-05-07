@@ -360,7 +360,7 @@ async def _load_fusions() -> tuple[FusionRow, ...]:
             fusion_type = _normalize_fusion_type(fusion_type_raw)
             fusion_structure = str(row.get("fusion_structure") or "").strip()
             reward_type = str(row.get("reward_type") or "").strip()
-            needed = _parse_int(_pick(row, "fusion.needed", "needed"))
+            needed = _parse_int(_pick(row, "needed_total", "needed", "fusion.needed"))
             available = _parse_int(_pick(row, "fusion.available", "available"))
             start_at_utc = _parse_iso_utc(row.get("start_at_utc"))
             end_at_utc = _parse_iso_utc(row.get("end_at_utc"))
@@ -396,7 +396,7 @@ async def _load_fusions() -> tuple[FusionRow, ...]:
             failed_field = "unknown"
             for field_name, parser in (
                 ("fusion_type", lambda: _normalize_fusion_type(fusion_type_raw)),
-                ("needed", lambda: _parse_int(_pick(row, "fusion.needed", "needed"))),
+                ("needed", lambda: _parse_int(_pick(row, "needed_total", "needed", "fusion.needed"))),
                 ("available", lambda: _parse_int(_pick(row, "fusion.available", "available"))),
                 ("start_at_utc", lambda: _parse_iso_utc(row.get("start_at_utc"))),
                 ("end_at_utc", lambda: _parse_iso_utc(row.get("end_at_utc"))),
