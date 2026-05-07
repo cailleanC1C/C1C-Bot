@@ -107,6 +107,10 @@ def _normalize_fusion_id(value: object) -> str:
     return " ".join(str(value or "").strip().casefold().split())
 
 
+def _normalize_fusion_type(value: object) -> str:
+    return " ".join(str(value or "").strip().casefold().split())
+
+
 def _pick(row: Mapping[str, object], *keys: str) -> object:
     for key in keys:
         if key in row:
@@ -350,7 +354,7 @@ async def _load_fusions() -> tuple[FusionRow, ...]:
                     fusion_name=str(row.get("fusion_name") or "").strip(),
                     champion=str(row.get("champion") or "").strip(),
                     champion_image_url=str(row.get("champion_image_url") or "").strip(),
-                    fusion_type=str(row.get("fusion_type") or "").strip(),
+                    fusion_type=_normalize_fusion_type(row.get("fusion_type")),
                     fusion_structure=str(row.get("fusion_structure") or "").strip(),
                     reward_type=str(row.get("reward_type") or "").strip(),
                     needed=_parse_int(_pick(row, "fusion.needed", "needed")),
@@ -866,7 +870,10 @@ async def get_ended_fusions(now: dt.datetime | None = None) -> list[FusionRow]:
     return ended
 
 def _tracker_kind(row: FusionRow) -> str:
-    return "titan" if str(row.fusion_type or "").strip().casefold() == "titan" else "fusion"
+    normalized = _normalize_fusion_type(row.fusion_type)
+    if normalized in {"titan", "titan_event", "titan event"}:
+        return "titan"
+    return "fusion"
 
 
 async def get_publishable_fusion(

@@ -314,3 +314,89 @@ def test_transition_fusion_to_ended_is_noop_when_already_ended(
     assert changed is False
     worksheet.update.assert_not_awaited()
     fusion.cache.refresh_now.assert_not_awaited()
+
+
+def _fusion_row(*, fusion_id: str, fusion_type: str, status: str) -> fusion.FusionRow:
+    return fusion.FusionRow(
+        fusion_id=fusion_id,
+        fusion_name=fusion_id,
+        champion="Champ",
+        champion_image_url="",
+        fusion_type=fusion_type,
+        fusion_structure="",
+        reward_type="fragments",
+        needed=100,
+        available=0,
+        start_at_utc=dt.datetime(2026, 5, 1, tzinfo=dt.timezone.utc),
+        end_at_utc=dt.datetime(2026, 5, 20, tzinfo=dt.timezone.utc),
+        announcement_channel_id=None,
+        opt_in_role_id=None,
+        announcement_message_id=None,
+        published_at=None,
+        last_announcement_refresh_at=None,
+        last_announcement_status_hash="",
+        status=status,
+    )
+
+
+def test_get_publishable_fusion_includes_fragment_draft(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = (
+        _fusion_row(fusion_id="hybrid-active", fusion_type="hybrid", status="active"),
+        _fusion_row(fusion_id="fragment-draft", fusion_type="fragment", status="draft"),
+    )
+    monkeypatch.setattr(fusion, "register_cache_buckets", lambda: ("fusion", "fusion_events"))
+    monkeypatch.setattr(fusion, "_cached_rows", AsyncMock(return_value=rows))
+
+    result = asyncio.run(
+        fusion.get_publishable_fusion(include_draft=True, tracker_kind="fusion", prefer_draft=True)
+    )
+
+    assert result is not None
+    assert result.fusion_id == "fragment-draft"
+
+
+@pytest.mark.parametrize(
+    ("fusion_type", "expected"),
+    [
+        ("hybrid", "fusion"),
+        ("fragment", "fusion"),
+        ("fusion", "fusion"),
+        ("traditional", "fusion"),
+        ("titan", "titan"),
+        ("titan_event", "titan"),
+        ("titan event", "titan"),
+    ],
+)
+def test_tracker_kind_maps_supported_fusion_types(fusion_type: str, expected: str) -> None:
+    row = _fusion_row(fusion_id="f-1", fusion_type=fusion_type, status="draft")
+    assert fusion._tracker_kind(row) == expected
+
+
+def test_load_fusions_normalizes_fragment_fusion_type_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_fetch_records(_sheet_id: str, _tab_name: str):
+        return [
+            {
+                "fusion_id": "fragment-case",
+                "fusion_name": "Mashiro",
+                "champion": "Mashiro",
+                "champion_image_url": "",
+                "fusion_type": "FRAGMENT",
+                "reward_type": "fragments",
+                "needed": "100",
+                "available": "0",
+                "start_at_utc": "2026-05-01T00:00:00Z",
+                "end_at_utc": "2026-05-20T00:00:00Z",
+                "status": "draft",
+            }
+        ]
+
+    monkeypatch.setattr(fusion, "afetch_records", _fake_fetch_records)
+    monkeypatch.setattr(fusion, "_resolve_tab_name", lambda _key: "Fusion")
+    monkeypatch.setattr(fusion, "_sheet_id", lambda: "sheet-id")
+
+    rows = asyncio.run(fusion._load_fusions())
+
+    assert len(rows) == 1
+    assert rows[0].fusion_type == "fragment"
