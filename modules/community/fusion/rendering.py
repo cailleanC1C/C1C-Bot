@@ -117,10 +117,15 @@ def _build_fusion_embed(
     event_days = [event.start_at_utc.astimezone(dt.timezone.utc).date() for event in sorted_events]
 
     reward_unit = str(fusion.reward_type or "").strip() or "rewards"
+    fusion_type = str(fusion.fusion_type or "").strip().casefold()
+    if fusion_type == "fragment":
+        goal_line = f"Goal: Collect 100 fragments to summon {fusion.champion}"
+    else:
+        goal_line = f"Goal: Earn {fusion.needed:g} {reward_unit} for {fusion.champion}"
+
     summary_lines = [
         f"Type: {_humanize_type(fusion.fusion_type)}",
-        f"Runs: {_format_dt_utc(fusion.start_at_utc)} -> {_format_dt_utc(fusion.end_at_utc)}",
-        "",
+        goal_line,
         f"Target: {fusion.needed:g} {reward_unit} needed / {fusion.available:g} available",
         f"Schedule: {len(events)} events" + (" • includes bonus rewards" if has_bonus else ""),
     ]
@@ -130,11 +135,11 @@ def _build_fusion_embed(
     milestones_lines = [
         f"First start: {_format_day_label(min(event_days))}" if event_days else "First start: TBA",
         f"Last start: {_format_day_label(max(event_days))}" if event_days else "Last start: TBA",
+        f"End: {_format_dt_utc(fusion.end_at_utc)}",
     ]
     if has_bonus:
         bonus_events = [event.event_name for event in sorted_events if event.bonus is not None and event.bonus > 0]
-        prefix = "Bonus event" if len(bonus_events) == 1 else "Bonus events"
-        milestones_lines.append(f"{prefix}: {', '.join(bonus_events)}")
+        milestones_lines.append(f"Bonus Events: {', '.join(bonus_events)}")
 
     embed = discord.Embed(
         title=f"Fusion: {fusion.fusion_name}",
