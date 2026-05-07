@@ -56,7 +56,9 @@ def test_build_fusion_embed_target_and_schedule_field_chunks() -> None:
 
     embed = build_fusion_announcement_embed(_fusion(), list(reversed(events)))
 
+    assert "Goal: Earn 400 fragments for Mavara" in (embed.description or "")
     assert "Target: 400 fragments needed / 450 available" in (embed.description or "")
+    assert "Runs:" not in (embed.description or "")
     assert embed.fields[0].name == "Key Milestones"
     assert embed.fields[1].name == "Schedule Status"
     assert len(embed.fields) >= 4
@@ -97,5 +99,17 @@ def test_build_fusion_embed_uses_dynamic_reward_labels_for_titan() -> None:
 
     embed = build_fusion_announcement_embed(titan, [event])
 
+    assert "Goal: Earn 1750 points for Mavara" in (embed.description or "")
     assert "Target: 1750 points needed / 2000 available" in (embed.description or "")
     assert "for 25 points (+50 bonus points)" in embed.fields[-1].value
+
+
+def test_build_fusion_embed_fragment_goal_and_end_in_milestones() -> None:
+    fragment = replace(_fusion(), fusion_type="fragment", needed=100, available=78)
+    event = _event(9, 1)
+
+    embed = build_fusion_announcement_embed(fragment, [event])
+
+    assert "Goal: Collect 100 fragments to summon Mavara" in (embed.description or "")
+    milestones = embed.fields[0].value or ""
+    assert "End: 2026-04-22 00:00 UTC" in milestones
