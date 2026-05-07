@@ -40,6 +40,38 @@ def test_load_fusions_reads_fusion_prefixed_needed(monkeypatch: pytest.MonkeyPat
     assert rows[0].start_at_utc == dt.datetime(2026, 4, 8, tzinfo=dt.timezone.utc)
 
 
+
+
+def test_load_fusions_reads_needed_total_alias_for_fragment(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_fetch_records(_sheet_id: str, _tab_name: str):
+        return [
+            {
+                "fusion_id": "f-frag",
+                "fusion_name": "Mashiro",
+                "champion": "Mashiro",
+                "champion_image_url": "https://cdn.discordapp.com/mashiro.png",
+                "fusion_type": "fragment",
+                "fusion_structure": "",
+                "reward_type": "fragment",
+                "needed_total": "100",
+                "available": "135",
+                "start_at_utc": "2026-04-08T00:00:00Z",
+                "end_at_utc": "2026-04-22T00:00:00Z",
+                "status": "active",
+            }
+        ]
+
+    monkeypatch.setattr(fusion, "afetch_records", _fake_fetch_records)
+    monkeypatch.setattr(fusion, "_resolve_tab_name", lambda _key: "Fusion")
+    monkeypatch.setattr(fusion, "_sheet_id", lambda: "sheet-id")
+
+    rows = asyncio.run(fusion._load_fusions())
+
+    assert len(rows) == 1
+    assert rows[0].fusion_type == "fragment"
+    assert rows[0].needed == 100
+    assert rows[0].available == 135
+
 def _event(
     *,
     event_id: str,
