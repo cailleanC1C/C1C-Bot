@@ -23,6 +23,7 @@ _CACHE_TTL = int(os.getenv("SHEETS_CACHE_TTL_SEC", "900"))
 
 _FUSION_BUCKET = "fusion"
 _FUSION_EVENTS_BUCKET = "fusion_events"
+_LAST_FUSION_PARSE_ERRORS: dict[str, str] = {}
 _FUSION_REMINDER_TAB_KEY = "FUSION_REMINDER_TAB"
 _FUSION_PROGRESS_TAB_KEY = "FUSION_USER_EVENT_PROGRESS_TAB"
 _PROGRESS_ALLOWED_STATUSES = {"not_started", "in_progress", "done", "done_bonus", "skipped"}
@@ -345,50 +346,100 @@ async def _load_fusions() -> tuple[FusionRow, ...]:
     tab_name = _resolve_tab_name("FUSION_TAB")
     rows = await afetch_records(_sheet_id(), tab_name)
     parsed: list[FusionRow] = []
+    parse_errors: dict[str, str] = {}
     for raw in rows or []:
         row = _normalize(raw)
+        fusion_id = str(row.get("fusion_id") or "").strip()
+        fusion_name = str(row.get("fusion_name") or "").strip()
+        status = str(row.get("status") or "").strip().lower()
+        fusion_type_raw = row.get("fusion_type")
+        raw_keys = sorted([str(key) for key in row.keys()]) if isinstance(row, dict) else []
         try:
+            champion = str(row.get("champion") or "").strip()
+            champion_image_url = str(row.get("champion_image_url") or "").strip()
+            fusion_type = _normalize_fusion_type(fusion_type_raw)
+            fusion_structure = str(row.get("fusion_structure") or "").strip()
+            reward_type = str(row.get("reward_type") or "").strip()
+            needed = _parse_int(_pick(row, "fusion.needed", "needed"))
+            available = _parse_int(_pick(row, "fusion.available", "available"))
+            start_at_utc = _parse_iso_utc(row.get("start_at_utc"))
+            end_at_utc = _parse_iso_utc(row.get("end_at_utc"))
+            announcement_channel_id = _parse_discord_id(row.get("announcement_channel_id"))
+            opt_in_role_id = _parse_discord_id(row.get("opt_in_role_id"))
+            announcement_message_id = _parse_discord_id(row.get("announcement_message_id"))
+            published_at = _parse_iso_utc_optional(row.get("published_at"))
+            last_announcement_refresh_at = _parse_iso_utc_optional(row.get("last_announcement_refresh_at"))
+            last_announcement_status_hash = str(row.get("last_announcement_status_hash") or "").strip()
             parsed.append(
                 FusionRow(
-                    fusion_id=str(row.get("fusion_id") or "").strip(),
-                    fusion_name=str(row.get("fusion_name") or "").strip(),
-                    champion=str(row.get("champion") or "").strip(),
-                    champion_image_url=str(row.get("champion_image_url") or "").strip(),
-                    fusion_type=_normalize_fusion_type(row.get("fusion_type")),
-                    fusion_structure=str(row.get("fusion_structure") or "").strip(),
-                    reward_type=str(row.get("reward_type") or "").strip(),
-                    needed=_parse_int(_pick(row, "fusion.needed", "needed")),
-                    available=_parse_int(_pick(row, "fusion.available", "available")),
-                    start_at_utc=_parse_iso_utc(row.get("start_at_utc")),
-                    end_at_utc=_parse_iso_utc(row.get("end_at_utc")),
-                    announcement_channel_id=_parse_discord_id(
-                        row.get("announcement_channel_id")
-                    ),
-                    opt_in_role_id=_parse_discord_id(row.get("opt_in_role_id")),
-                    announcement_message_id=_parse_discord_id(
-                        row.get("announcement_message_id")
-                    ),
-                    published_at=_parse_iso_utc_optional(row.get("published_at")),
-                    last_announcement_refresh_at=_parse_iso_utc_optional(
-                        row.get("last_announcement_refresh_at")
-                    ),
-                    last_announcement_status_hash=str(
-                        row.get("last_announcement_status_hash") or ""
-                    ).strip(),
-                    status=str(row.get("status") or "").strip().lower(),
+                    fusion_id=fusion_id,
+                    fusion_name=fusion_name,
+                    champion=champion,
+                    champion_image_url=champion_image_url,
+                    fusion_type=fusion_type,
+                    fusion_structure=fusion_structure,
+                    reward_type=reward_type,
+                    needed=needed,
+                    available=available,
+                    start_at_utc=start_at_utc,
+                    end_at_utc=end_at_utc,
+                    announcement_channel_id=announcement_channel_id,
+                    opt_in_role_id=opt_in_role_id,
+                    announcement_message_id=announcement_message_id,
+                    published_at=published_at,
+                    last_announcement_refresh_at=last_announcement_refresh_at,
+                    last_announcement_status_hash=last_announcement_status_hash,
+                    status=status,
                 )
             )
-        except Exception:
+        except Exception as exc:
+            failed_field = "unknown"
+            for field_name, parser in (
+                ("fusion_type", lambda: _normalize_fusion_type(fusion_type_raw)),
+                ("needed", lambda: _parse_int(_pick(row, "fusion.needed", "needed"))),
+                ("available", lambda: _parse_int(_pick(row, "fusion.available", "available"))),
+                ("start_at_utc", lambda: _parse_iso_utc(row.get("start_at_utc"))),
+                ("end_at_utc", lambda: _parse_iso_utc(row.get("end_at_utc"))),
+                ("announcement_channel_id", lambda: _parse_discord_id(row.get("announcement_channel_id"))),
+                ("opt_in_role_id", lambda: _parse_discord_id(row.get("opt_in_role_id"))),
+                ("announcement_message_id", lambda: _parse_discord_id(row.get("announcement_message_id"))),
+                ("published_at", lambda: _parse_iso_utc_optional(row.get("published_at"))),
+                ("last_announcement_refresh_at", lambda: _parse_iso_utc_optional(row.get("last_announcement_refresh_at"))),
+            ):
+                try:
+                    parser()
+                except Exception:
+                    failed_field = field_name
+                    break
             log.warning(
                 "fusion row skipped due to parse error",
                 extra={
-                    "fusion_id": str(row.get("fusion_id") or "").strip(),
-                    "fusion_name": str(row.get("fusion_name") or "").strip(),
-                    "status": str(row.get("status") or "").strip(),
+                    "fusion_id": fusion_id,
+                    "fusion_name": fusion_name,
+                    "status": status,
+                    "fusion_type": str(fusion_type_raw or "").strip(),
+                    "failed_field": failed_field,
+                    "tab": tab_name,
+                    "row_keys": raw_keys,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
                 },
                 exc_info=True,
             )
+            if status == "draft":
+                log.info(
+                    "draft fusion row skipped because it could not be parsed",
+                    extra={"fusion_id": fusion_id, "fusion_name": fusion_name, "failed_field": failed_field},
+                )
+            if fusion_id:
+                parse_errors[fusion_id] = failed_field
+    global _LAST_FUSION_PARSE_ERRORS
+    _LAST_FUSION_PARSE_ERRORS = parse_errors
     return tuple(parsed)
+
+
+def get_last_fusion_parse_errors() -> dict[str, str]:
+    return dict(_LAST_FUSION_PARSE_ERRORS)
 
 
 async def _load_fusion_events() -> tuple[FusionEventRow, ...]:
@@ -1046,6 +1097,7 @@ __all__ = [
     "derive_event_status",
     "get_valid_event_timing",
     "get_publishable_fusion",
+    "get_last_fusion_parse_errors",
     "get_fusion_events",
     "get_sent_reminder_keys",
     "reminder_dedupe_backend_metadata",

@@ -489,7 +489,20 @@ def run_welcome_ticket_repair_pass(*, min_interval_sec: float = 3600) -> dict[st
 
     sheet_id, tab = _resolve_onboarding_and_welcome_tab()
     ws = core.get_worksheet(sheet_id, tab)
-    summary = repair_welcome_rows(ws)
+    scanned_rows = -1
+    try:
+        raw_values = core.call_with_backoff(ws.get_all_values)
+        scanned_rows = max(0, len(raw_values) - 1)
+    except Exception:
+        scanned_rows = -1
+    try:
+        summary = repair_welcome_rows(ws)
+    except Exception:
+        log.exception(
+            "welcome ticket repair failed with exception",
+            extra={"tab_name": tab, "sheet_id": sheet_id, "row_count": scanned_rows},
+        )
+        raise
     _WELCOME_REPAIR_LAST_RUN = now_ts
     _queue_welcome_repair_alert(summary)
     return summary
