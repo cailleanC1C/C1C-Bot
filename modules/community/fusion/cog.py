@@ -100,6 +100,25 @@ class FusionCog(commands.Cog):
             return
 
         if target is None:
+            parse_errors = fusion_sheets.get_last_fusion_parse_errors()
+            kind_parse_errors = {
+                fusion_id: field
+                for fusion_id, field in parse_errors.items()
+                if tracker_kind in {"fusion", "titan"} and tracker_kind in fusion_id.casefold()
+            }
+            if parse_errors and not kind_parse_errors:
+                kind_parse_errors = parse_errors
+            if kind_parse_errors:
+                log.warning(
+                    "%s publish found fusion parse errors in source rows",
+                    tracker_label,
+                    extra={"parse_errors": kind_parse_errors},
+                )
+                await ctx.reply(
+                    f"{tracker_label.title()} row exists but could not be parsed; check logs.",
+                    mention_author=False,
+                )
+                return
             await ctx.reply(
                 f"No {tracker_label} rows exist in the configured fusion sheet tab.",
                 mention_author=False,
