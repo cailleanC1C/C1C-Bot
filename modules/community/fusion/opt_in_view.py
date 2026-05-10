@@ -24,6 +24,7 @@ _FUSION_PROGRESS_EVENT_CUSTOM_ID = "fusion:progress:event"
 _FUSION_PROGRESS_STATUS_CUSTOM_ID = "fusion:progress:status"
 _FUSION_PROGRESS_SHARE_SUMMARY_CUSTOM_ID = "fusion:progress:share:summary"
 _FUSION_PROGRESS_SHARE_DETAILED_CUSTOM_ID = "fusion:progress:share:detailed"
+_FUSION_PROGRESS_MARK_ALL_CUSTOM_ID = "fusion:progress:mark_all"
 
 _DISPLAY_STATUS_ORDER = ("done", "in_progress", "skipped", "missed", "not_started")
 _EVENT_DROPDOWN_STATUS_ORDER = ("not_started", "in_progress", "missed", "skipped", "done", "done_bonus")
@@ -73,7 +74,7 @@ def _effective_display_status(
     if timing is None:
         return status
     start_at, end_at = timing
-    if fusion_sheets.derive_event_status(start_at_utc=start_at, end_at_utc=end_at, now=now) == "ended":
+    if status == "not_started" and fusion_sheets.derive_event_status(start_at_utc=start_at, end_at_utc=end_at, now=now) == "ended":
         return "missed"
     return status
 
@@ -523,6 +524,31 @@ class FusionProgressShareModeView(discord.ui.View):
         await self._handle_share(interaction, mode="detailed")
 
 
+
+
+class _FusionProgressMarkAllButton(discord.ui.Button):
+    def __init__(self) -> None:
+        super().__init__(label="Mark All", style=discord.ButtonStyle.success, custom_id=_FUSION_PROGRESS_MARK_ALL_CUSTOM_ID, row=2)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, FusionProgressPanelView):
+            return
+        if interaction.user.id != view.user_id:
+            await _send_ephemeral(interaction, "This progress panel belongs to a different user.")
+            return
+        event = view.events_by_id.get(view.selected_event_id or "")
+        if event is None or not event.milestones:
+            await _send_ephemeral(interaction, "Selected event has no milestones.")
+            return
+        now = dt.datetime.now(dt.timezone.utc)
+        for milestone in event.milestones:
+            milestone_key = str(milestone.points_needed)
+            await fusion_sheets.upsert_user_event_progress(view.fusion_id, str(view.user_id), event.event_id, "done", now, milestone_key=milestone_key)
+            view.progress_by_event[f"{event.event_id}:{milestone_key}"] = "done"
+        view.last_update = (event.event_name, "done")
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+
 class _FusionProgressShareButton(discord.ui.Button):
     def __init__(self) -> None:
         super().__init__(
@@ -601,6 +627,8 @@ class FusionProgressPanelView(discord.ui.View):
             if selected_status == "done_bonus" and selected_event is not None and not _event_has_bonus(selected_event):
                 selected_status = "done"
         self.add_item(_FusionProgressStatusSelect(selected_status, selected_event=selected_event))
+        if selected_event is not None and selected_event.milestones:
+            self.add_item(_FusionProgressMarkAllButton())
         self.add_item(_FusionProgressShareButton())
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:

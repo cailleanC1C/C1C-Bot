@@ -37,6 +37,7 @@ _FUSION_PROGRESS_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "fusion_id": ("fusion_id", "fusion key", "fusionkey"),
     "user_id": ("user_id", "user key", "userkey"),
     "event_id": ("event_id", "event key", "eventkey"),
+    "milestone_key": ("milestone_key", "milestone", "milestone key"),
     "status": ("status",),
     "updated_at_utc": ("updated_at_utc", "updated at utc", "updatedat", "updated_at"),
 }
@@ -65,6 +66,12 @@ class FusionRow:
 
 
 @dataclass(frozen=True, slots=True)
+class FusionEventMilestone:
+    points_needed: int
+    reward_amount: float
+
+
+@dataclass(frozen=True, slots=True)
 class FusionEventRow:
     fusion_id: str
     event_id: str
@@ -77,8 +84,9 @@ class FusionEventRow:
     bonus: float | None
     reward_type: str
     points_needed: int | None
-    is_estimated: bool
-    sort_order: int
+    milestones: tuple[FusionEventMilestone, ...] = tuple()
+    is_estimated: bool = False
+    sort_order: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +94,7 @@ class FusionUserEventProgressRow:
     fusion_id: str
     user_id: str
     event_id: str
+    milestone_key: str
     status: str
     updated_at: dt.datetime
 
@@ -165,6 +174,29 @@ def _parse_float_optional(value: object) -> float | None:
         return None
 
 
+
+
+def _parse_milestones(value: object, *, fusion_id: str, event_id: str) -> tuple[FusionEventMilestone, ...]:
+    text = str(value or "").strip()
+    if not text:
+        return tuple()
+    parsed: list[FusionEventMilestone] = []
+    for token in text.split(","):
+        part = token.strip()
+        if not part:
+            continue
+        try:
+            points_raw, reward_raw = part.split(":", 1)
+            points = int(float(points_raw.strip()))
+            reward = float(reward_raw.strip())
+            if points <= 0 or reward < 0:
+                raise ValueError("non-positive milestone")
+            parsed.append(FusionEventMilestone(points_needed=points, reward_amount=reward))
+        except Exception:
+            log.warning("fusion milestones entry malformed; ignoring", extra={"fusion_id": fusion_id, "event_id": event_id, "entry": part})
+    parsed.sort(key=lambda m: m.points_needed)
+    return tuple(parsed)
+
 def _parse_bool(value: object) -> bool:
     text = str(value or "").strip().lower()
     return text in {"1", "true", "yes", "y"}
@@ -237,7 +269,7 @@ def _resolve_progress_header_indices(
     header: list[str],
     include_updated_at: bool,
 ) -> dict[str, int]:
-    required_fields = ["fusion_id", "user_id", "event_id", "status"]
+    required_fields = ["fusion_id", "user_id", "event_id", "milestone_key", "status"]
     if include_updated_at:
         required_fields.append("updated_at_utc")
     return {
@@ -482,6 +514,7 @@ async def _load_fusion_events() -> tuple[FusionEventRow, ...]:
                     bonus=_parse_float_optional(row.get("bonus")),
                     reward_type=str(row.get("reward_type") or "").strip(),
                     points_needed=_parse_int_optional(row.get("points_needed")),
+                    milestones=_parse_milestones(row.get("milestones"), fusion_id=str(row.get("fusion_id") or "").strip(), event_id=str(row.get("event_id") or "").strip()),
                     is_estimated=_parse_bool(row.get("is_estimated")),
                     sort_order=_parse_int(row.get("sort_order")),
                 )
@@ -812,6 +845,7 @@ async def get_user_event_progress(fusion_id: str, user_id: str) -> dict[str, str
     fusion_idx = index_by_field["fusion_id"]
     user_idx = index_by_field["user_id"]
     event_idx = index_by_field["event_id"]
+    milestone_idx = index_by_field["milestone_key"]
     status_idx = index_by_field["status"]
     target_fusion = str(fusion_id or "").strip()
     target_user = str(user_id or "").strip()
@@ -825,8 +859,10 @@ async def get_user_event_progress(fusion_id: str, user_id: str) -> dict[str, str
         event_id = str(row[event_idx] if event_idx < len(row) else "").strip()
         if not event_id:
             continue
+        milestone_key = str(row[milestone_idx] if milestone_idx < len(row) else "").strip()
         status = _normalize_progress_status(row[status_idx] if status_idx < len(row) else "")
-        rows[event_id] = status
+        key = f"{event_id}:{milestone_key}" if milestone_key else event_id
+        rows[key] = status
     return rows
 
 
@@ -836,6 +872,7 @@ async def upsert_user_event_progress(
     event_id: str,
     status: str,
     updated_at: dt.datetime,
+    milestone_key: str = "",
 ) -> None:
     """Write user progress status for one fusion/user/event tuple."""
 
@@ -862,11 +899,13 @@ async def upsert_user_event_progress(
     fusion_idx = index_by_field["fusion_id"]
     user_idx = index_by_field["user_id"]
     event_idx = index_by_field["event_id"]
+    milestone_idx = index_by_field["milestone_key"]
     status_idx = index_by_field["status"]
     updated_idx = index_by_field["updated_at_utc"]
     target_fusion = str(fusion_id or "").strip()
     target_user = str(user_id or "").strip()
     target_event = str(event_id or "").strip()
+    target_milestone = str(milestone_key or "").strip()
     timestamp = updated_at.astimezone(dt.timezone.utc).isoformat()
 
     worksheet = await aget_worksheet(_sheet_id(), tab_name)
@@ -874,7 +913,8 @@ async def upsert_user_event_progress(
         row_fusion = str(row[fusion_idx] if fusion_idx < len(row) else "").strip()
         row_user = str(row[user_idx] if user_idx < len(row) else "").strip()
         row_event = str(row[event_idx] if event_idx < len(row) else "").strip()
-        if (row_fusion, row_user, row_event) != (target_fusion, target_user, target_event):
+        row_milestone = str(row[milestone_idx] if milestone_idx < len(row) else "").strip()
+        if (row_fusion, row_user, row_event, row_milestone) != (target_fusion, target_user, target_event, target_milestone):
             continue
         await acall_with_backoff(
             worksheet.update,
@@ -894,6 +934,7 @@ async def upsert_user_event_progress(
     row_values[fusion_idx] = target_fusion
     row_values[user_idx] = target_user
     row_values[event_idx] = target_event
+    row_values[milestone_idx] = target_milestone
     row_values[status_idx] = normalized_status
     row_values[updated_idx] = timestamp
     await acall_with_backoff(
