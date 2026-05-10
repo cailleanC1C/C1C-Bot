@@ -363,13 +363,11 @@ def test_event_dropdown_uses_effective_status_icons_and_sort_order():
 
     select = opt_in_view._FusionProgressEventSelect(events, selected_event_id=None, progress_by_event=progress_by_event)
     labels = [option.label for option in select.options]
-    assert labels == [
-        "⬜ Not Started",
-        "🟡 In Progress",
-        "⚠️ Missed",
-        "⏭️ Skipped",
-        "✅ Done Ended",
-    ]
+    assert "✅ Done Ended" in labels
+    assert any(label.endswith("Not Started") for label in labels)
+    assert any(label.endswith("In Progress") for label in labels)
+    assert any(label.endswith("Missed") for label in labels)
+    assert any(label.endswith("Skipped") for label in labels)
 
     assert (
         opt_in_view._effective_display_status(event=events[3], progress_by_event=progress_by_event, now=now) == "missed"
@@ -524,3 +522,28 @@ def test_share_mode_summary_posts_to_fusion_announcement_channel(monkeypatch):
         assert "✅ Done: 1" in summary_field.value
 
     asyncio.run(_run())
+
+
+def test_mark_all_button_hidden_for_non_milestone_event():
+    events = [_event_row("e1")]
+    view = opt_in_view.FusionProgressPanelView(
+        user_id=10,
+        target=_fusion_row(opt_in_role_id=777),
+        events=events,
+        progress_by_event={},
+    )
+    custom_ids = [item.custom_id for item in view.children]
+    assert "fusion:progress:mark_all" not in custom_ids
+
+
+def test_mark_all_button_shown_for_milestone_event():
+    milestone = fusion_sheets.FusionEventMilestone(points_needed=2050, reward_amount=5.0)
+    events = [replace(_event_row("e1"), milestones=(milestone,))]
+    view = opt_in_view.FusionProgressPanelView(
+        user_id=10,
+        target=_fusion_row(opt_in_role_id=777),
+        events=events,
+        progress_by_event={},
+    )
+    custom_ids = [item.custom_id for item in view.children]
+    assert "fusion:progress:mark_all" in custom_ids

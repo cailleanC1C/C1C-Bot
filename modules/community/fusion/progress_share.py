@@ -60,7 +60,7 @@ def _effective_display_status(
     if timing is None:
         return status
     start_at, end_at = timing
-    if fusion_sheets.derive_event_status(start_at_utc=start_at, end_at_utc=end_at, now=now) == "ended":
+    if status == "not_started" and fusion_sheets.derive_event_status(start_at_utc=start_at, end_at_utc=end_at, now=now) == "ended":
         return "missed"
     return status
 
