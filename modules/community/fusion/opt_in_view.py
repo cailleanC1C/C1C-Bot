@@ -64,6 +64,7 @@ def _supports_partial_fragments(event: fusion_sheets.FusionEventRow | None, *, s
         status == "in_progress"
         and event.reward_amount > 0
         and str(event.reward_type or "").strip().lower() == "fragment"
+        and bool(event.milestones)
     )
 
 
@@ -280,7 +281,7 @@ def _build_progress_summary_embed(
     reward_unit = str(target.reward_type or "").strip() or "rewards"
 
     embed = discord.Embed(
-        title=f"My Progress — {target.fusion_name}",
+        title=f"My Progress: {target.fusion_name}",
         description="Private tracker for your fusion progress.",
         color=discord.Color.blurple(),
     )
@@ -652,6 +653,12 @@ class _FusionProgressModal(discord.ui.Modal, title="Log Partial Fragments"):
         self.event = event
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not self.event.milestones:
+            await _send_ephemeral(
+                interaction,
+                "This event doesn’t support stepped progress yet, so partial fragments can’t be logged.",
+            )
+            return
         try:
             amount = float(str(self.partial_amount.value).strip())
         except ValueError:
