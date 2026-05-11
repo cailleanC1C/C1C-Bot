@@ -678,11 +678,8 @@ def _render_payload(payload: Mapping[str, Any]) -> str | None:
         detail_items: list[str] = []
         detail_fields = [
             ("view", ("view_tag", "view")),
-            ("custom_id", ("custom_id",)),
             ("view_id", ("view_id",)),
-            ("app_perms_text", ("app_perms_text", "app_permissions")),
             ("missing", ("missing",)),
-            ("trigger", ("trigger",)),
             ("source", ("source",)),
             ("reason", ("reason",)),
             ("schema", ("schema",)),
@@ -700,9 +697,6 @@ def _render_payload(payload: Mapping[str, Any]) -> str | None:
                 continue
             detail_items.append(f"{name}={_stringify(value)}")
 
-        permissions_snapshot = payload.get("app_permissions_snapshot")
-        if permissions_snapshot:
-            detail_items.append(f"app_perms_flags={_stringify(permissions_snapshot)}")
 
         extra_details = payload.get("details")
         if isinstance(extra_details, Mapping):
