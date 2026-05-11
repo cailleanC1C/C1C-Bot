@@ -25,6 +25,7 @@ _FUSION_PROGRESS_STATUS_CUSTOM_ID = "fusion:progress:status"
 _FUSION_PROGRESS_SHARE_SUMMARY_CUSTOM_ID = "fusion:progress:share:summary"
 _FUSION_PROGRESS_SHARE_DETAILED_CUSTOM_ID = "fusion:progress:share:detailed"
 _FUSION_PROGRESS_MARK_ALL_CUSTOM_ID = "fusion:progress:mark_all"
+_FUSION_PROGRESS_UPDATE_CUSTOM_ID = "fusion:progress:update"
 
 _DISPLAY_STATUS_ORDER = ("done", "in_progress", "skipped", "missed", "not_started")
 _EVENT_DROPDOWN_STATUS_ORDER = ("not_started", "in_progress", "missed", "skipped", "done", "done_bonus")
@@ -105,6 +106,21 @@ def _normalize_progress_payload(payload: object) -> tuple[dict[str, str], bool]:
             status = "not_started"
         normalized[event_id] = status
     return normalized, False
+
+
+def _normalize_partial_payload(payload: object) -> dict[str, float]:
+    candidate = payload.get("partials") if isinstance(payload, Mapping) else {}
+    partials: dict[str, float] = {}
+    if isinstance(candidate, Mapping):
+        for key, value in candidate.items():
+            event_id = str(key or "").strip()
+            if not event_id:
+                continue
+            try:
+                partials[event_id] = max(0.0, float(str(value).strip() or "0"))
+            except ValueError:
+                continue
+    return partials
 
 
 def _event_bonus_amount(event: fusion_sheets.FusionEventRow) -> float:
@@ -246,10 +262,11 @@ def _build_progress_summary_embed(
     target: fusion_sheets.FusionRow,
     events: Sequence[fusion_sheets.FusionEventRow],
     progress_by_event: dict[str, str],
+    partial_by_event: Mapping[str, float] | None = None,
     selected_event_id: str | None = None,
     last_update: tuple[str, str] | None = None,
 ) -> discord.Embed:
-    snapshot = build_share_snapshot(events=events, progress_by_event=progress_by_event)
+    snapshot = build_share_snapshot(events=events, progress_by_event=progress_by_event, partial_by_event=partial_by_event)
     reward_unit = str(target.reward_type or "").strip() or "rewards"
 
     embed = discord.Embed(
@@ -281,7 +298,14 @@ def _build_progress_summary_embed(
             icon = _STATUS_ICONS.get(current, _STATUS_ICONS["not_started"])
             embed.add_field(
                 name="Selected Event",
-                value=f"{icon} {selected.event_name}\n{_event_reward_label(selected)}",
+                value=(
+                    f"{icon} {selected.event_name}\n{_event_reward_label(selected)}"
+                    + (
+                        f"\nPartial logged: {float((partial_by_event or {}).get(selected.event_id, 0.0)):g}"
+                        if current == "in_progress"
+                        else ""
+                    )
+                ),
                 inline=False,
             )
 
@@ -582,6 +606,60 @@ class _FusionProgressShareButton(discord.ui.Button):
         )
 
 
+class _FusionProgressUpdateButton(discord.ui.Button):
+    def __init__(self) -> None:
+        super().__init__(label="Update Progress", style=discord.ButtonStyle.primary, custom_id=_FUSION_PROGRESS_UPDATE_CUSTOM_ID, row=2)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, FusionProgressPanelView):
+            return
+        event = view.events_by_id.get(view.selected_event_id or "")
+        if event is None:
+            await _send_ephemeral(interaction, "Choose an event first.")
+            return
+        if view.progress_by_event.get(event.event_id) != "in_progress":
+            await _send_ephemeral(interaction, "Set this event to In Progress before logging partials.")
+            return
+        if event.reward_amount <= 0:
+            await _send_ephemeral(interaction, "This event has no reward amount to log partial progress.")
+            return
+        await interaction.response.send_modal(_FusionProgressModal(view=view, event=event))
+
+
+class _FusionProgressModal(discord.ui.Modal, title="Update Partial Progress"):
+    partial_amount = discord.ui.TextInput(label="Amount earned so far", placeholder="0", required=True)
+
+    def __init__(self, *, view: "FusionProgressPanelView", event: fusion_sheets.FusionEventRow) -> None:
+        super().__init__()
+        self.panel_view = view
+        self.event = event
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            amount = float(str(self.partial_amount.value).strip())
+        except ValueError:
+            await _send_ephemeral(interaction, "Please enter a valid number.")
+            return
+        if amount < 0 or amount > self.event.reward_amount:
+            await _send_ephemeral(interaction, f"Enter a value between 0 and {self.event.reward_amount:g}.")
+            return
+        now = dt.datetime.now(dt.timezone.utc)
+        await fusion_sheets.upsert_user_event_progress(
+            self.panel_view.fusion_id,
+            str(self.panel_view.user_id),
+            self.event.event_id,
+            "in_progress",
+            now,
+            partial_amount=amount,
+        )
+        self.panel_view.progress_by_event[self.event.event_id] = "in_progress"
+        self.panel_view.partial_by_event[self.event.event_id] = amount
+        self.panel_view.last_update = (self.event.event_name, "in_progress")
+        self.panel_view.refresh_items()
+        await interaction.response.edit_message(embed=self.panel_view.build_embed(), view=self.panel_view)
+
+
 class FusionProgressPanelView(discord.ui.View):
     """Ephemeral progress panel for one user and one fusion."""
 
@@ -592,6 +670,7 @@ class FusionProgressPanelView(discord.ui.View):
         target: fusion_sheets.FusionRow,
         events: Sequence[fusion_sheets.FusionEventRow],
         progress_by_event: dict[str, str],
+        partial_by_event: dict[str, float] | None = None,
     ) -> None:
         super().__init__(timeout=900)
         self.user_id = int(user_id)
@@ -600,6 +679,7 @@ class FusionProgressPanelView(discord.ui.View):
         self.events = list(events)
         self.events_by_id = {event.event_id: event for event in self.events}
         self.progress_by_event = dict(progress_by_event)
+        self.partial_by_event = dict(partial_by_event or {})
         self.selected_event_id = self.events[0].event_id if self.events else None
         self.last_update: tuple[str, str] | None = None
         self.refresh_items()
@@ -627,6 +707,7 @@ class FusionProgressPanelView(discord.ui.View):
             if selected_status == "done_bonus" and selected_event is not None and not _event_has_bonus(selected_event):
                 selected_status = "done"
         self.add_item(_FusionProgressStatusSelect(selected_status, selected_event=selected_event))
+        self.add_item(_FusionProgressUpdateButton())
         if selected_event is not None and selected_event.milestones:
             self.add_item(_FusionProgressMarkAllButton())
         self.add_item(_FusionProgressShareButton())
@@ -642,6 +723,7 @@ class FusionProgressPanelView(discord.ui.View):
             target=self.target,
             events=self.events,
             progress_by_event=self.progress_by_event,
+            partial_by_event=self.partial_by_event,
             selected_event_id=self.selected_event_id,
             last_update=self.last_update,
         )
@@ -706,6 +788,7 @@ async def _handle_my_progress(interaction: discord.Interaction) -> None:
         raw_progress = {}
 
     progress_by_event = _normalize_saved_progress(raw_progress=raw_progress, events=events)
+    partial_by_event = _normalize_partial_payload(raw_progress)
 
     progress_by_event, malformed_payload = _normalize_progress_payload(progress_by_event)
     if malformed_payload:
@@ -723,6 +806,7 @@ async def _handle_my_progress(interaction: discord.Interaction) -> None:
         target=target,
         events=events,
         progress_by_event=progress_by_event,
+        partial_by_event=partial_by_event,
     )
     embed = view.build_embed()
     if interaction.response.is_done():
