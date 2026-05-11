@@ -11,7 +11,7 @@ from modules.common.runtime import Runtime
 from modules.onboarding.watcher_welcome import _channel_readable_label
 from shared.cache import telemetry as cache_telemetry
 from shared.config import get_promo_channel_id, get_welcome_channel_id
-from shared.sheet_config import shared_config
+from modules.common import feature_flags
 
 log = logging.getLogger("c1c.ops.startup_summary")
 
@@ -67,11 +67,18 @@ def render_startup_summary(*, bot_client: commands.Bot, runtime: Runtime, jobs: 
     lines = ["✅ Woadkeeper startup complete", ""]
 
     try:
-        toggles = shared_config.features
+        try:
+            promo_enabled = feature_flags.is_enabled("promo_enabled") and feature_flags.is_enabled("enable_promo_hook")
+            welcome_enabled = feature_flags.is_enabled("recruitment_welcome") and feature_flags.is_enabled("welcome_dialog")
+            promo_status = "enabled" if promo_enabled else "disabled"
+            welcome_status = "enabled" if welcome_enabled else "disabled"
+        except Exception:
+            promo_status = "configured" if _safe_channel_id(get_promo_channel_id()) else "not configured"
+            welcome_status = "configured" if _safe_channel_id(get_welcome_channel_id()) else "not configured"
         watchers = [
             "Watchers",
-            f"• Promo watcher: {'enabled' if bool(getattr(toggles,'promo_watcher_enabled',False)) else 'disabled'} — {_channel_line(bot_client, _safe_channel_id(get_promo_channel_id()))}",
-            f"• Welcome watcher: {'enabled' if bool(getattr(toggles,'welcome_watcher_enabled',False)) else 'disabled'} — {_channel_line(bot_client, _safe_channel_id(get_welcome_channel_id()))}",
+            f"• Promo watcher: {promo_status} — {_channel_line(bot_client, _safe_channel_id(get_promo_channel_id()))}",
+            f"• Welcome watcher: {welcome_status} — {_channel_line(bot_client, _safe_channel_id(get_welcome_channel_id()))}",
         ]
         lines.extend(watchers)
     except Exception:
