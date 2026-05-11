@@ -10,7 +10,7 @@ from discord.ext import commands
 from modules.common.runtime import Runtime
 from modules.onboarding.watcher_welcome import _channel_readable_label
 from shared.cache import telemetry as cache_telemetry
-from shared.config import cfg_int
+from shared.config import get_promo_channel_id, get_welcome_channel_id
 from shared.sheet_config import shared_config
 
 log = logging.getLogger("c1c.ops.startup_summary")
@@ -28,6 +28,12 @@ _SCHEDULER_MAP = {
     "fusion_reminders": "fusion_reminders",
     "reset_reminders": "reset_reminders",
 }
+def _safe_channel_id(value: object) -> int | None:
+    try:
+        parsed = int(value) if value is not None else 0
+        return parsed or None
+    except (TypeError, ValueError):
+        return None
 
 def _channel_line(bot_client: commands.Bot, channel_id: int | None) -> str:
     if not channel_id:
@@ -64,8 +70,8 @@ def render_startup_summary(*, bot_client: commands.Bot, runtime: Runtime, jobs: 
         toggles = shared_config.features
         watchers = [
             "Watchers",
-            f"• Promo watcher: {'enabled' if bool(getattr(toggles,'promo_watcher_enabled',False)) else 'disabled'} — {_channel_line(bot_client, cfg_int('PROMO_CHANNEL_ID', 0) or None)}",
-            f"• Welcome watcher: {'enabled' if bool(getattr(toggles,'welcome_watcher_enabled',False)) else 'disabled'} — {_channel_line(bot_client, cfg_int('WELCOME_CHANNEL_ID', 0) or None)}",
+            f"• Promo watcher: {'enabled' if bool(getattr(toggles,'promo_watcher_enabled',False)) else 'disabled'} — {_channel_line(bot_client, _safe_channel_id(get_promo_channel_id()))}",
+            f"• Welcome watcher: {'enabled' if bool(getattr(toggles,'welcome_watcher_enabled',False)) else 'disabled'} — {_channel_line(bot_client, _safe_channel_id(get_welcome_channel_id()))}",
         ]
         lines.extend(watchers)
     except Exception:
