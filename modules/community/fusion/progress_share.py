@@ -47,6 +47,7 @@ class ProgressShareSnapshot:
     display_status_by_event: dict[str, str]
     completed_reward_total: float
     in_progress_partial_total: float
+    skipped_reward_total: float
 
 
 def _event_bonus_amount(event: fusion_sheets.FusionEventRow) -> float:
@@ -87,9 +88,11 @@ def build_share_snapshot(
     display_status_by_event: dict[str, str] = {}
     completed_reward_total = 0.0
     in_progress_partial_total = 0.0
+    skipped_reward_total = 0.0
     partial_map = partial_by_event or {}
 
     for event in events:
+        raw_status = str(progress_by_event.get(event.event_id, "not_started") or "").strip().lower()
         status = _effective_display_status(
             event=event,
             progress_by_event=progress_by_event,
@@ -116,12 +119,17 @@ def build_share_snapshot(
                 completed_reward_total += event.reward_amount
         elif status == "in_progress":
             in_progress_partial_total += partial_amount
+        elif status in {"skipped", "missed"}:
+            skipped_reward_total += event.reward_amount
+            if raw_status == "done_bonus":
+                skipped_reward_total += _event_bonus_amount(event)
 
     return ProgressShareSnapshot(
         counts=counts,
         display_status_by_event=display_status_by_event,
         completed_reward_total=completed_reward_total + in_progress_partial_total,
         in_progress_partial_total=in_progress_partial_total,
+        skipped_reward_total=skipped_reward_total,
     )
 
 
@@ -144,6 +152,21 @@ def _build_summary_block(*, snapshot: ProgressShareSnapshot, overall_progress_li
         f"⚠️ Missed: {snapshot.counts['missed']}\n"
         f"⬜ Not Started: {snapshot.counts['not_started']}\n"
         f"{overall_progress_line}"
+    )
+
+
+def _build_strategic_progress_block(*, target: fusion_sheets.FusionRow, snapshot: ProgressShareSnapshot) -> str:
+    reward_type = str(target.reward_type or "").strip().title() or "Reward"
+    acquired = snapshot.completed_reward_total
+    skipped = snapshot.skipped_reward_total
+    to_go = max(float(target.needed) - acquired, 0.0)
+    to_go_line = "Fusion ready" if to_go <= 0 else f"{to_go:g} to go"
+    return (
+        f"{reward_type} Progress\n"
+        f"{acquired:g} acquired\n"
+        f"{skipped:g} skipped\n"
+        f"{to_go_line}\n\n"
+        f"{target.needed:g} / {target.available:g} needed"
     )
 
 
@@ -171,6 +194,11 @@ def build_progress_share_embed(
     embed.add_field(
         name="Summary",
         value=_build_summary_block(snapshot=snapshot, overall_progress_line=overall_progress_line),
+        inline=False,
+    )
+    embed.add_field(
+        name="Strategic Progress",
+        value=_build_strategic_progress_block(target=target, snapshot=snapshot),
         inline=False,
     )
 
