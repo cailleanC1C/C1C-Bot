@@ -322,6 +322,7 @@ async def on_ready():
     if not await _enforce_guild_allow_list(log_when_empty=True, log_success=False):
         return
 
+    runtime.suppress_startup_admin_logs = True
     try:
         runtime.startup_diag_mark(feature_init_started=True)
         await core_ready.on_ready(bot)
@@ -365,15 +366,21 @@ async def on_ready():
 
         await keepalive.ensure_started(bot)
         runtime.schedule_startup_preload()
+    except Exception:
+        log.warning("non-critical ready task failed", exc_info=True)
+    finally:
+        runtime.suppress_startup_admin_logs = False
+
+    try:
         watchdog_values = _read_watchdog_values(runtime)
         summary = _build_startup_summary_message(
             bot_client=bot,
             jobs=runtime.scheduler.jobs,
             watchdog=watchdog_values,
         )
-        await runtime.send_log_message(summary)
+        await runtime.send_log_message(summary, bypass_startup_suppression=True)
     except Exception:
-        log.warning("non-critical ready task failed", exc_info=True)
+        log.exception("startup summary failed")
 
 
 @bot.event
