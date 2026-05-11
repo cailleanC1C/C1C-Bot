@@ -150,8 +150,7 @@ def _build_summary_block(*, snapshot: ProgressShareSnapshot, overall_progress_li
         f"🟡 In Progress: {snapshot.counts['in_progress']}\n"
         f"⏭️ Skipped: {snapshot.counts['skipped']}\n"
         f"⚠️ Missed: {snapshot.counts['missed']}\n"
-        f"⬜ Not Started: {snapshot.counts['not_started']}\n"
-        f"{overall_progress_line}"
+        f"⬜ Not Started: {snapshot.counts['not_started']}"
     )
 
 
@@ -165,8 +164,8 @@ def _build_strategic_progress_block(*, target: fusion_sheets.FusionRow, snapshot
         f"**{reward_type} Progress**\n"
         f"{acquired:g} acquired\n"
         f"{skipped:g} skipped\n"
-        f"{to_go_line}\n\n"
-        f"{target.needed:g} / {target.available:g} needed"
+        f"{to_go_line}\n"
+        f"{target.needed:g} / {target.available:g} needed\n"
     )
 
 
