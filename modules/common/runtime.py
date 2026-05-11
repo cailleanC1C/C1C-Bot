@@ -309,14 +309,36 @@ def schedule_startup_preload(bot: commands.Bot | None = None) -> None:
     )
 
 
-async def send_log_message(message: str) -> None:
+def _is_suppressed_startup_admin_message(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    return any(
+        token in text
+        for token in (
+            "scope=startup",
+            "watchdog started",
+            "watchdog loop started",
+            "watcher enabled",
+            "welcome watcher",
+            "promo watcher",
+            "scheduler interval",
+            "scheduler intervals",
+        )
+    )
+
+
+async def send_log_message(message: str, *, bypass_startup_suppression: bool = False) -> None:
     """Proxy to the active runtime's log channel helper, if available."""
 
     runtime = get_active_runtime()
     if runtime is None:
         return
     try:
-        await runtime.send_log_message(message)
+        if bypass_startup_suppression:
+            await runtime.send_log_message(message, bypass_startup_suppression=True)
+        else:
+            await runtime.send_log_message(message)
     except Exception:
         log.warning("failed to send log message (non-fatal)", exc_info=True)
 
@@ -933,6 +955,7 @@ class Runtime:
         self._startup_scheduler_registered = False
         self._startup_scheduler_lock = asyncio.Lock()
         self._startup_diag: dict[str, Any] = {}
+        self.suppress_startup_admin_logs: bool = False
         set_active_runtime(self)
 
     def _reset_startup_diag(self, *, attempt: int) -> None:
@@ -1049,8 +1072,16 @@ class Runtime:
     async def shutdown_health_server(self) -> None:
         await self.shutdown_webserver()
 
-    async def send_log_message(self, message: str) -> None:
+    async def send_log_message(
+        self, message: str, *, bypass_startup_suppression: bool = False
+    ) -> None:
         try:
+            if (
+                self.suppress_startup_admin_logs
+                and not bypass_startup_suppression
+                and _is_suppressed_startup_admin_message(message)
+            ):
+                return
             channel_id = get_log_channel_id()
             if not channel_id:
                 return
