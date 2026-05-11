@@ -57,6 +57,16 @@ _STATUS_INDEX_TO_CANONICAL = {
 _EVENT_DROPDOWN_STATUS_RANK = {status: idx for idx, status in enumerate(_EVENT_DROPDOWN_STATUS_ORDER)}
 
 
+def _supports_partial_fragments(event: fusion_sheets.FusionEventRow | None, *, status: str | None) -> bool:
+    if event is None:
+        return False
+    return (
+        status == "in_progress"
+        and event.reward_amount > 0
+        and str(event.reward_type or "").strip().lower() == "fragment"
+    )
+
+
 def _effective_display_status(
     *,
     event: fusion_sheets.FusionEventRow,
@@ -301,8 +311,8 @@ def _build_progress_summary_embed(
                 value=(
                     f"{icon} {selected.event_name}\n{_event_reward_label(selected)}"
                     + (
-                        f"\nPartial logged: {float((partial_by_event or {}).get(selected.event_id, 0.0)):g}"
-                        if current == "in_progress"
+                        f"\nPartial logged: {float((partial_by_event or {}).get(selected.event_id, 0.0)):g} / {selected.reward_amount:g} fragments"
+                        if _supports_partial_fragments(selected, status=current)
                         else ""
                     )
                 ),
@@ -616,7 +626,7 @@ class _FusionProgressShareButton(discord.ui.Button):
 
 class _FusionProgressUpdateButton(discord.ui.Button):
     def __init__(self) -> None:
-        super().__init__(label="Update Progress", style=discord.ButtonStyle.primary, custom_id=_FUSION_PROGRESS_UPDATE_CUSTOM_ID, row=2)
+        super().__init__(label="Log Partial Fragments", style=discord.ButtonStyle.primary, custom_id=_FUSION_PROGRESS_UPDATE_CUSTOM_ID, row=2)
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view = self.view
@@ -626,17 +636,15 @@ class _FusionProgressUpdateButton(discord.ui.Button):
         if event is None:
             await _send_ephemeral(interaction, "Choose an event first.")
             return
-        if view.progress_by_event.get(event.event_id) != "in_progress":
-            await _send_ephemeral(interaction, "Set this event to In Progress before logging partials.")
-            return
-        if event.reward_amount <= 0:
-            await _send_ephemeral(interaction, "This event has no reward amount to log partial progress.")
+        status = view.progress_by_event.get(event.event_id, "not_started")
+        if not _supports_partial_fragments(event, status=status):
+            await _send_ephemeral(interaction, "Partial fragments can only be logged for in-progress fragment events with a reward amount.")
             return
         await interaction.response.send_modal(_FusionProgressModal(view=view, event=event))
 
 
-class _FusionProgressModal(discord.ui.Modal, title="Update Partial Progress"):
-    partial_amount = discord.ui.TextInput(label="Amount earned so far", placeholder="0", required=True)
+class _FusionProgressModal(discord.ui.Modal, title="Log Partial Fragments"):
+    partial_amount = discord.ui.TextInput(label="Fragments earned so far", placeholder="0", required=True)
 
     def __init__(self, *, view: "FusionProgressPanelView", event: fusion_sheets.FusionEventRow) -> None:
         super().__init__()
@@ -715,7 +723,8 @@ class FusionProgressPanelView(discord.ui.View):
             if selected_status == "done_bonus" and selected_event is not None and not _event_has_bonus(selected_event):
                 selected_status = "done"
         self.add_item(_FusionProgressStatusSelect(selected_status, selected_event=selected_event))
-        self.add_item(_FusionProgressUpdateButton())
+        if _supports_partial_fragments(selected_event, status=selected_status):
+            self.add_item(_FusionProgressUpdateButton())
         if selected_event is not None and selected_event.milestones:
             self.add_item(_FusionProgressMarkAllButton())
         self.add_item(_FusionProgressShareButton())
