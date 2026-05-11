@@ -343,7 +343,8 @@ def register_persistent_views(bot: discord.Client) -> dict[str, Any]:
                 fields["duplicate_registration"] = True
                 if stacksite:
                     fields["stacksite"] = stacksite
-            diag.log_event_sync("info", "persistent_view_registered", **fields)
+            event_level = "debug" if not duplicate else "warning"
+            diag.log_event_sync(event_level, "persistent_view_registered", **fields)
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     buttons, text_inputs, selects = _component_counts(view)

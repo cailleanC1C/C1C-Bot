@@ -1302,7 +1302,7 @@ class Runtime:
             }
             if len(extra_info["feature_keys"]) == 1:
                 extra_info["feature_key"] = extra_info["feature_keys"][0]
-            log.info(
+            log.debug(
                 "feature module loaded",
                 extra=extra_info,
             )
@@ -1382,7 +1382,7 @@ class Runtime:
                 raise
             else:
                 human_log.human(
-                    "info",
+                    "debug",
                     "feature module loaded",
                     feature_module=ext,
                     feature_key="always_on",
@@ -1402,7 +1402,7 @@ class Runtime:
                 continue
             else:
                 human_log.human(
-                    "info",
+                    "debug",
                     "feature module loaded",
                     feature_module=ext,
                     feature_key="community",
@@ -1526,11 +1526,7 @@ class Runtime:
             _startup_phase_log("scheduler registration", "ok")
 
     async def _register_ready_schedulers_inner(self) -> None:
-        from shared.sheets.cache_scheduler import (
-            ensure_cache_registration,
-            preload_on_startup,
-            register_refresh_job,
-        )
+        from shared.sheets.cache_scheduler import ensure_cache_registration, register_refresh_job
         from modules.housekeeping import cleanup as housekeeping_cleanup
         from modules.housekeeping import keepalive as housekeeping_keepalive
         from modules.housekeeping import mirralith_overview as housekeeping_mirralith
@@ -1542,7 +1538,8 @@ class Runtime:
 
         toggles = shared_config.features
         ensure_cache_registration()
-        await preload_on_startup()
+        # Keep startup registration fast; long-running cache preload happens in
+        # the background startup preloader task.
         cache_specs = (
             ("clans", timedelta(hours=3), "3h"),
             ("templates", timedelta(days=7), "7d"),
