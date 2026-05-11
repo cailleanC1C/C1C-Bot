@@ -357,11 +357,6 @@ async def refresh_server_map(
     requested_label = requested_channel or "config"
     target_label = channel_label(guild, channel_id)
 
-    await runtime_helpers.send_log_message(
-        "📘 Server map — "
-        f"cmd={cmd_label} • guild={guild_name} "
-        f"• channel_fallback={target_label} • requested_channel={requested_label}"
-    )
 
     try:
         state = await server_map_state.fetch_state()
@@ -377,8 +372,7 @@ async def refresh_server_map(
     now = dt.datetime.now(dt.timezone.utc)
 
     if not force and not should_refresh(last_run, refresh_days, now=now):
-        message = _format_skip("interval_not_elapsed", last_run_raw)
-        await runtime_helpers.send_log_message(message)
+        log.debug("server map skipped: interval not elapsed", extra={"last_run": last_run_raw, "actor": actor})
         return ServerMapResult(
             status="skipped",
             reason="interval_not_elapsed",
@@ -419,7 +413,7 @@ async def refresh_server_map(
         len(category_blacklist),
         len(channel_blacklist),
     )
-    await runtime_helpers.send_log_message(config_debug)
+    log.debug(config_debug)
 
     bodies, stats = build_map_messages(
         guild,
@@ -474,11 +468,6 @@ async def refresh_server_map(
         except discord.HTTPException:
             log.debug("failed to delete old server map message", exc_info=True)
 
-    if cleaned:
-        await runtime_helpers.send_log_message(
-            f"📘 Server map — cmd={cmd_label} • guild={guild_name} • cleaned_messages={cleaned}"
-        )
-
     if updated_messages:
         primary = updated_messages[0]
         try:
@@ -499,15 +488,11 @@ async def refresh_server_map(
         return ServerMapResult(status="error", reason="state_update_failed")
 
     await runtime_helpers.send_log_message(
-        "📘 Server map — "
-        f"cmd={cmd_label} • guild={guild_name} "
-        f"• categories={stats.categories} "
-        f"• channels={stats.channels} "
-        f"• uncategorized={stats.uncategorized} "
-        f"• messages={len(updated_messages)} "
-        f"• cat_blacklist_ids={len(category_blacklist)} "
-        f"• chan_blacklist_ids={len(channel_blacklist)} "
-        f"• target_channel={target_label}"
+        "✅ Server map updated — "
+        f"cmd={cmd_label} • guild={guild_name} • target={target_label} "
+        f"• categories={stats.categories} • channels={stats.channels} • uncategorized={stats.uncategorized} "
+        f"• messages={len(updated_messages)}"
+        + (f" • cleaned={cleaned}" if cleaned else "")
     )
 
     return ServerMapResult(

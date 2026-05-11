@@ -235,6 +235,71 @@ async def _enforce_guild_allow_list(
     return True
 
 
+
+
+def _channel_readable(bot_client: commands.Bot, channel_id: int | None) -> str:
+    if not channel_id:
+        return "not configured"
+    channel = bot_client.get_channel(channel_id)
+    if channel is not None:
+        return onboarding_channel_path(channel)
+    return f"<#{channel_id}>"
+
+
+def _fmt_next(jobs: list[object], job_name: str) -> str:
+    for job in jobs:
+        if getattr(job, "name", None) == job_name:
+            next_run = getattr(job, "next_run", None)
+            if next_run is None:
+                return "pending"
+            try:
+                return next_run.astimezone(dt.timezone.utc).replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M UTC")
+            except Exception:
+                return "pending"
+    return "not scheduled"
+
+
+def _read_watchdog_values(runtime_obj: Runtime) -> tuple[int, int, int]:
+    return (
+        int(getattr(runtime_obj, "_watchdog_check_sec", 300)),
+        int(getattr(runtime_obj, "_watchdog_stall_sec", 1200)),
+        int(getattr(runtime_obj, "_watchdog_disconnect_grace_sec", 6000)),
+    )
+
+
+def _build_startup_summary_message(*, bot_client: commands.Bot, jobs: list[object], watchdog: tuple[int, int, int]) -> str:
+    toggles = shared_config.features
+    cache_buckets = ["clans", "fusion", "fusion_events", "onboarding_questions", "reaction_roles"]
+    cache_lines = []
+    for name in cache_buckets:
+        snap = cache_telemetry.get_snapshot(name)
+        status = "ok" if (snap.last_result or "").lower() in {"ok", "success"} else (snap.last_result or "pending")
+        rows = snap.item_count if snap.item_count is not None else "?"
+        cache_lines.append(f"• {name}: {status}, {rows} rows")
+
+    interval_s, stall_s, grace_s = watchdog
+    lines = [
+        "✅ Woadkeeper startup complete",
+        "",
+        "Watchers",
+        f"• Welcome: {'enabled' if toggles.welcome_watcher_enabled else 'disabled'} — {_channel_readable(bot_client, get_welcome_channel_id())}",
+        f"• Promo: {'enabled' if toggles.promo_watcher_enabled else 'disabled'} — {_channel_readable(bot_client, get_promo_channel_id())}",
+        "",
+        "Cache",
+        *cache_lines,
+        "",
+        "Schedulers",
+        f"• clans: next {_fmt_next(jobs, 'cache_refresh:clans')}",
+        f"• templates: next {_fmt_next(jobs, 'cache_refresh:templates')}",
+        f"• cleanup: next {_fmt_next(jobs, 'cleanup_watcher')}",
+        f"• mirralith_overview: next {_fmt_next(jobs, 'mirralith_overview')}",
+        "",
+        "Watchdog",
+        f"• interval {interval_s}s",
+        f"• stall {stall_s}s",
+        f"• disconnect grace {grace_s}s",
+    ]
+    return "\n".join(lines)
 @bot.event
 async def on_ready():
     hb.note_ready()
@@ -254,7 +319,7 @@ async def on_ready():
         )
     bot._c1c_started_mono = _STARTED_MONO
 
-    if not await _enforce_guild_allow_list(log_when_empty=True):
+    if not await _enforce_guild_allow_list(log_when_empty=True, log_success=False):
         return
 
     try:
@@ -277,19 +342,7 @@ async def on_ready():
         log.exception("READY FAILURE: ensure_scheduler_started")
 
     try:
-        started, interval, stall, grace = runtime.watchdog(delay_sec=5.0)
-        if started:
-            async def announce() -> None:
-                await asyncio.sleep(5.0)
-                await runtime.send_log_message(
-                    LogTemplates.watchdog(
-                        interval_s=interval,
-                        stall_s=stall,
-                        disconnect_grace_s=grace,
-                    )
-                )
-
-            runtime.scheduler.spawn(announce(), name="watchdog_announce")
+        runtime.watchdog(delay_sec=5.0)
 
         if not hasattr(bot, "_cron_summary_task"):
             async def _daily_summary_loop() -> None:
@@ -312,6 +365,13 @@ async def on_ready():
 
         await keepalive.ensure_started(bot)
         runtime.schedule_startup_preload()
+        watchdog_values = _read_watchdog_values(runtime)
+        summary = _build_startup_summary_message(
+            bot_client=bot,
+            jobs=runtime.scheduler.jobs,
+            watchdog=watchdog_values,
+        )
+        await runtime.send_log_message(summary)
     except Exception:
         log.warning("non-critical ready task failed", exc_info=True)
 

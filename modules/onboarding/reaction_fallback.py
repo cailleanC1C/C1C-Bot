@@ -182,30 +182,7 @@ class OnboardingReactionFallbackCog(commands.Cog):
         if guild is None:
             return
 
-        member: Optional[discord.Member] = payload.member
-        if member is None:
-            member = guild.get_member(payload.user_id)
-        if member is None:
-            try:
-                member = await guild.fetch_member(payload.user_id)
-            except Exception as exc:
-                context = _base_context(user_id=payload.user_id)
-                context.update({"result": "member_fetch_failed", "trigger": "member_lookup"})
-                await logs.send_welcome_exception("warn", exc, **context)
-                return
-
-        if not isinstance(member, discord.Member):
-            context = _base_context(user_id=payload.user_id)
-            context.update({"result": "member_type", "trigger": "member_lookup"})
-            await logs.send_welcome_log("warn", **context)
-            return
-
-        if getattr(member, "bot", False):
-            context = _base_context(member=member, user_id=payload.user_id)
-            context.update({"result": "bot_member", "trigger": "member_lookup"})
-            await logs.send_welcome_log("info", **context)
-            return
-
+        member: Optional[discord.Member] = None
         thread: Optional[discord.Thread] = guild.get_thread(payload.channel_id)
         if thread is None:
             channel = self.bot.get_channel(payload.channel_id)
@@ -227,6 +204,24 @@ class OnboardingReactionFallbackCog(commands.Cog):
         in_welcome_scope = thread_scopes.is_welcome_parent(thread)
         in_promo_scope = thread_scopes.is_promo_parent(thread)
         if not (in_welcome_scope or in_promo_scope):
+            return
+
+        member = payload.member
+        if member is None:
+            member = guild.get_member(payload.user_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(payload.user_id)
+            except Exception:
+                log.debug("onboarding_reaction_member_lookup_failed", exc_info=True)
+                return
+
+        if not isinstance(member, discord.Member):
+            log.debug("onboarding_reaction_member_not_member", extra={"user_id": payload.user_id})
+            return
+
+        if getattr(member, "bot", False):
+            log.debug("onboarding_reaction_ignored_bot_member", extra={"user_id": payload.user_id})
             return
 
         if not _is_supported_fallback_emoji(payload):
