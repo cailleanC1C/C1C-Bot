@@ -268,37 +268,60 @@ def _read_watchdog_values(runtime_obj: Runtime) -> tuple[int, int, int]:
 
 
 def _build_startup_summary_message(*, bot_client: commands.Bot, jobs: list[object], watchdog: tuple[int, int, int]) -> str:
-    toggles = shared_config.features
-    cache_buckets = ["clans", "fusion", "fusion_events", "onboarding_questions", "reaction_roles"]
-    cache_lines = []
-    for name in cache_buckets:
-        snap = cache_telemetry.get_snapshot(name)
-        status = "ok" if (snap.last_result or "").lower() in {"ok", "success"} else (snap.last_result or "pending")
-        rows = snap.item_count if snap.item_count is not None else "?"
-        cache_lines.append(f"• {name}: {status}, {rows} rows")
+    lines = ["✅ Woadkeeper startup complete", ""]
 
-    interval_s, stall_s, grace_s = watchdog
-    lines = [
-        "✅ Woadkeeper startup complete",
-        "",
-        "Watchers",
-        f"• Welcome: {'enabled' if toggles.welcome_watcher_enabled else 'disabled'} — {_channel_readable(bot_client, get_welcome_channel_id())}",
-        f"• Promo: {'enabled' if toggles.promo_watcher_enabled else 'disabled'} — {_channel_readable(bot_client, get_promo_channel_id())}",
-        "",
-        "Cache",
-        *cache_lines,
-        "",
-        "Schedulers",
-        f"• clans: next {_fmt_next(jobs, 'cache_refresh:clans')}",
-        f"• templates: next {_fmt_next(jobs, 'cache_refresh:templates')}",
-        f"• cleanup: next {_fmt_next(jobs, 'cleanup_watcher')}",
-        f"• mirralith_overview: next {_fmt_next(jobs, 'mirralith_overview')}",
-        "",
-        "Watchdog",
-        f"• interval {interval_s}s",
-        f"• stall {stall_s}s",
-        f"• disconnect grace {grace_s}s",
-    ]
+    try:
+        toggles = shared_config.features
+        watcher_lines = [
+            "Watchers",
+            f"• Welcome: {'enabled' if toggles.welcome_watcher_enabled else 'disabled'} — {_channel_readable(bot_client, get_welcome_channel_id())}",
+            f"• Promo: {'enabled' if toggles.promo_watcher_enabled else 'disabled'} — {_channel_readable(bot_client, get_promo_channel_id())}",
+        ]
+        lines.extend(watcher_lines)
+    except Exception:
+        log.exception("startup summary watchers section unavailable", exc_info=True)
+        lines.extend(["Watchers", "• unavailable"])
+
+    try:
+        cache_buckets = ["clans", "fusion", "fusion_events", "onboarding_questions", "reaction_roles"]
+        cache_lines = []
+        for name in cache_buckets:
+            snap = cache_telemetry.get_snapshot(name)
+            status = "ok" if (snap.last_result or "").lower() in {"ok", "success"} else (snap.last_result or "pending")
+            rows = snap.item_count if snap.item_count is not None else "?"
+            cache_lines.append(f"• {name}: {status}, {rows} rows")
+        lines.extend(["", "Cache", *cache_lines])
+    except Exception:
+        log.exception("startup summary cache section unavailable", exc_info=True)
+        lines.extend(["", "Cache", "• unavailable"])
+
+    try:
+        scheduler_lines = [
+            "Schedulers",
+            f"• clans: next {_fmt_next(jobs, 'cache_refresh:clans')}",
+            f"• templates: next {_fmt_next(jobs, 'cache_refresh:templates')}",
+            f"• cleanup: next {_fmt_next(jobs, 'cleanup_watcher')}",
+            f"• mirralith_overview: next {_fmt_next(jobs, 'mirralith_overview')}",
+        ]
+        lines.extend(["", *scheduler_lines])
+    except Exception:
+        log.exception("startup summary scheduler section unavailable", exc_info=True)
+        lines.extend(["", "Schedulers", "• unavailable"])
+
+    try:
+        interval_s, stall_s, grace_s = watchdog
+        lines.extend(
+            [
+                "",
+                "Watchdog",
+                f"• interval {interval_s}s",
+                f"• stall {stall_s}s",
+                f"• disconnect grace {grace_s}s",
+            ]
+        )
+    except Exception:
+        log.exception("startup summary watchdog section unavailable", exc_info=True)
+        lines.extend(["", "Watchdog", "• unavailable"])
     return "\n".join(lines)
 @bot.event
 async def on_ready():
@@ -380,7 +403,7 @@ async def on_ready():
         )
         await runtime.send_log_message(summary, bypass_startup_suppression=True)
     except Exception:
-        log.exception("startup summary failed")
+        log.exception("startup summary failed", exc_info=True)
 
 
 @bot.event
