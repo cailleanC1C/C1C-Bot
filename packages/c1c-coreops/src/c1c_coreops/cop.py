@@ -18,6 +18,7 @@ from cogs.recruitment_clan_profile import ClanProfileCog
 from cogs.recruitment_member import RecruitmentMember
 from cogs.recruitment_recruiter import RecruiterPanelCog
 from cogs.recruitment_welcome import WelcomeBridge
+from cogs.clanrole_management import ClanRoleManagementCog
 from modules.ops.permissions_ui import PermissionsUICog
 from shared.testing.environment import apply_required_test_environment
 
@@ -190,6 +191,7 @@ async def _setup_help_bot() -> commands.Bot:
     await bot.add_cog(WelcomeBridge(bot))
     await bot.add_cog(RecruitmentMember(bot))
     await bot.add_cog(ClanProfileCog(bot))
+    await bot.add_cog(ClanRoleManagementCog())
     return bot
 
 
