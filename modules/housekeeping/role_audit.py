@@ -52,6 +52,10 @@ class AuditResult:
     visitors_closed_only: list[tuple[discord.Member, list[TicketThread]]] | None = None
     visitors_extra_roles: list[tuple[discord.Member, list[discord.Role], list[TicketThread]]] | None = None
     proposed_role_mutations: list[tuple[discord.Member, list[discord.Role], list[discord.Role]]] | None = None
+    action_roles_removed: list[str] | None = None
+    action_roles_added: list[str] | None = None
+    action_users_kicked: list[str] | None = None
+    action_failed_or_skipped: list[str] | None = None
 
 
 def _member_roles(member: discord.Member) -> set[int]:
@@ -113,11 +117,11 @@ async def _apply_role_changes(
     dry_run: bool = True,
     remove: Sequence[discord.Role] = (),
     add: Sequence[discord.Role] = (),
-) -> bool:
+) -> tuple[bool, str | None]:
     actor_normalized = (actor or "").strip().lower()
     scheduled_actors = {"scheduled", "background", "cron", "startup", "ready"}
     if dry_run or actor_normalized in scheduled_actors:
-        return True
+        return True, None
     before_roles = [getattr(role, "name", str(getattr(role, "id", "unknown"))) for role in getattr(member, "roles", [])]
     try:
         if remove:
@@ -129,14 +133,14 @@ async def _apply_role_changes(
             "role audit skipped member — missing permissions",
             extra={"member_id": getattr(member, "id", None)},
         )
-        return False
+        return False, "missing permission"
     except discord.HTTPException as exc:
         log.warning(
             "role audit member update failed",
             exc_info=True,
             extra={"member_id": getattr(member, "id", None), "error": str(exc)},
         )
-        return False
+        return False, str(exc)
     after_roles = [getattr(role, "name", str(getattr(role, "id", "unknown"))) for role in getattr(member, "roles", [])]
     log.info(
         "role audit mutation applied",
@@ -152,7 +156,7 @@ async def _apply_role_changes(
             "success": True,
         },
     )
-    return True
+    return True, None
 
 
 async def _audit_guild(
@@ -211,6 +215,10 @@ async def _audit_guild(
         visitors_closed_only=[],
         visitors_extra_roles=[],
         proposed_role_mutations=[],
+        action_roles_removed=[],
+        action_roles_added=[],
+        action_users_kicked=[],
+        action_failed_or_skipped=[],
     )
 
     for member in members:
@@ -224,7 +232,7 @@ async def _audit_guild(
         )
         if classification == "stray":
             result.proposed_role_mutations.append((member, [raid_role], [wanderer_role]))
-            changed = await _apply_role_changes(
+            changed, error = await _apply_role_changes(
                 member,
                 actor=actor,
                 dry_run=dry_run,
@@ -233,11 +241,22 @@ async def _audit_guild(
             )
             if changed:
                 result.auto_fixed_strays.append(member)
+                if not dry_run:
+                    result.action_roles_removed.append(
+                        f"• {_format_member(member)} – removed `{raid_role_name}`"
+                    )
+                    result.action_roles_added.append(
+                        f"• {_format_member(member)} – added `{wanderer_role_name}`"
+                    )
+            elif error:
+                result.action_failed_or_skipped.append(
+                    f"• {_format_member(member)} – could not update roles: {error}"
+                )
             continue
 
         if classification == "drop_raid":
             result.proposed_role_mutations.append((member, [raid_role], []))
-            changed = await _apply_role_changes(
+            changed, error = await _apply_role_changes(
                 member,
                 actor=actor,
                 dry_run=dry_run,
@@ -245,6 +264,14 @@ async def _audit_guild(
             )
             if changed:
                 result.auto_fixed_wanderers.append(member)
+                if not dry_run:
+                    result.action_roles_removed.append(
+                        f"• {_format_member(member)} – removed `{raid_role_name}`"
+                    )
+            elif error:
+                result.action_failed_or_skipped.append(
+                    f"• {_format_member(member)} – could not remove `{raid_role_name}`: {error}"
+                )
             continue
 
         if classification == "wander_with_clan":
@@ -272,8 +299,7 @@ async def _audit_guild(
 
 
 def _render_section(title: str, lines: Sequence[str]) -> list[str]:
-    content = lines or ["• None"]
-    return [f"**{title}**", *content]
+    return [f"**{title}**", *lines]
 
 
 def _format_joined_date(member: discord.abc.User) -> str:
@@ -305,40 +331,63 @@ def _render_report(
         f"• {_format_member(member)} – {wanderer_action} `{raid_role_name}`, kept `{wanderer_role_name}` (no clan tags)"
         for member in (summary.auto_fixed_wanderers or [])
     ]
-    parts.extend(_render_section("1) Stray members", stray_lines + wanderer_lines))
-    parts.append("")
+    detected_sections: list[tuple[str, list[str]]] = []
+    action_sections: list[tuple[str, list[str]]] = []
+    if stray_lines or wanderer_lines:
+        detected_sections.append(("1) Stray members", stray_lines + wanderer_lines))
 
     manual_lines = [
         f"• {_format_member(member)} – Has `{wanderer_role_name}` and clan tags: {_format_roles(clan_roles)}"
         for member, clan_roles in (summary.wanderers_with_clans or [])
     ]
-    parts.extend(
-        _render_section(
-            "2) Manual review – Wandering Souls with clan tags",
-            manual_lines,
-        )
-    )
-    parts.append("")
+    if manual_lines:
+        detected_sections.append(("2) Manual review – Wandering Souls with clan tags", manual_lines))
 
     visitor_no_ticket = [
         f"• {_format_member(member)} – joined {_format_joined_date(member)} – no ticket found"
         for member in (summary.visitors_no_ticket or [])
     ]
-    parts.extend(_render_section("3) Visitors without any ticket", visitor_no_ticket))
-    parts.append("")
+    if visitor_no_ticket:
+        detected_sections.append(("3) Visitors without any ticket", visitor_no_ticket))
 
     visitor_closed_only = [
         f"• {_format_member(member)} – Tickets: {_format_ticket_links(tickets)}"
         for member, tickets in (summary.visitors_closed_only or [])
     ]
-    parts.extend(_render_section("4) Visitors with only closed tickets", visitor_closed_only))
-    parts.append("")
+    if visitor_closed_only:
+        detected_sections.append(("4) Visitors with only closed tickets", visitor_closed_only))
 
     visitor_extra_roles = [
         f"• {_format_member(member)} – Roles: {_format_roles(roles)} – Tickets: {_format_ticket_links(tickets)}"
         for member, roles, tickets in (summary.visitors_extra_roles or [])
     ]
-    parts.extend(_render_section("5) Visitors with extra roles", visitor_extra_roles))
+    if visitor_extra_roles:
+        detected_sections.append(("5) Visitors with extra roles", visitor_extra_roles))
+
+    if summary.action_roles_removed:
+        action_sections.append(("6) Roles removed", summary.action_roles_removed))
+    if summary.action_roles_added:
+        action_sections.append(("7) Roles added", summary.action_roles_added))
+    if summary.action_users_kicked:
+        action_sections.append(("8) Users kicked", summary.action_users_kicked))
+    if summary.action_failed_or_skipped:
+        action_sections.append(("9) Failed / skipped actions", summary.action_failed_or_skipped))
+
+    if detected_sections:
+        parts.extend(["━━━━━━━━━━━━", "DETECTED ISSUES", "━━━━━━━━━━━━", ""])
+        for idx, (title, lines) in enumerate(detected_sections):
+            parts.extend(_render_section(title, lines))
+            if idx < len(detected_sections) - 1:
+                parts.append("")
+
+    if action_sections:
+        if parts:
+            parts.append("")
+        parts.extend(["━━━━━━━━━━━━", "ACTIONS PERFORMED", "━━━━━━━━━━━━", ""])
+        for idx, (title, lines) in enumerate(action_sections):
+            parts.extend(_render_section(title, lines))
+            if idx < len(action_sections) - 1:
+                parts.append("")
 
     embed = discord.Embed(
         title="🧹 Role & Visitor Audit",
@@ -386,6 +435,10 @@ async def run_role_and_visitor_audit(
         visitors_closed_only=[],
         visitors_extra_roles=[],
         proposed_role_mutations=[],
+        action_roles_removed=[],
+        action_roles_added=[],
+        action_users_kicked=[],
+        action_failed_or_skipped=[],
     )
 
     for guild in target_guilds:
@@ -419,6 +472,10 @@ async def run_role_and_visitor_audit(
         aggregated.visitors_closed_only.extend(result.visitors_closed_only or [])
         aggregated.visitors_extra_roles.extend(result.visitors_extra_roles or [])
         aggregated.proposed_role_mutations.extend(result.proposed_role_mutations or [])
+        aggregated.action_roles_removed.extend(result.action_roles_removed or [])
+        aggregated.action_roles_added.extend(result.action_roles_added or [])
+        aggregated.action_users_kicked.extend(result.action_users_kicked or [])
+        aggregated.action_failed_or_skipped.extend(result.action_failed_or_skipped or [])
 
     if aggregated.checked == 0:
         return False, "no-members"
@@ -514,6 +571,10 @@ async def preview_role_audit_mutations(
         visitors_closed_only=[],
         visitors_extra_roles=[],
         proposed_role_mutations=[],
+        action_roles_removed=[],
+        action_roles_added=[],
+        action_users_kicked=[],
+        action_failed_or_skipped=[],
     )
     for guild in target_guilds:
         result = await _audit_guild(

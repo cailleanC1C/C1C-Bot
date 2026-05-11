@@ -63,12 +63,15 @@ def test_render_report_formats_all_sections():
     assert isinstance(embed, role_audit.discord.Embed)
     description = embed.description or ""
 
+    assert "DETECTED ISSUES" in description
     assert "1) Stray members" in description
     assert "Manual review" in description
     assert "Visitors without any ticket" in description
     assert "joined 2026-04-18" in description
     assert "Visitors with only closed tickets" in description
     assert "Visitors with extra roles" in description
+    assert "ACTIONS PERFORMED" not in description
+    assert "• None" not in description
 
 
 def test_render_report_uses_unknown_join_date_when_missing():
@@ -81,3 +84,47 @@ def test_render_report_uses_unknown_join_date_when_missing():
 
     description = embed.description or ""
     assert "joined unknown" in description
+
+
+def test_render_report_apply_mode_includes_actions_and_failures():
+    member = DummyMember(id=1, name="tester", roles=[], joined_at=datetime(2026, 4, 18, tzinfo=timezone.utc))
+    summary = role_audit.AuditResult(
+        checked=2,
+        auto_fixed_strays=[member],
+        action_roles_removed=["• <@1> – removed `Raid`"],
+        action_roles_added=["• <@1> – added `Wandering Souls`"],
+        action_users_kicked=["• <@1> – kicked: visitor expired / no valid ticket"],
+        action_failed_or_skipped=["• <@1> – could not kick: missing permission"],
+    )
+    embed = role_audit._render_report(
+        summary=summary,
+        raid_role_name="Raid",
+        wanderer_role_name="Wandering Souls",
+        dry_run=False,
+    )
+    description = embed.description or ""
+    assert "ACTIONS PERFORMED" in description
+    assert "6) Roles removed" in description
+    assert "7) Roles added" in description
+    assert "8) Users kicked" in description
+    assert "9) Failed / skipped actions" in description
+    assert "removed `Raid`" in description
+    assert "added `Wandering Souls`" in description
+    assert "kicked:" in description
+
+
+def test_render_report_dry_run_wording_and_footer():
+    member = DummyMember(id=1, name="tester", roles=[], joined_at=datetime(2026, 4, 18, tzinfo=timezone.utc))
+    summary = role_audit.AuditResult(checked=9, auto_fixed_strays=[member], auto_fixed_wanderers=[member])
+    embed = role_audit._render_report(
+        summary=summary,
+        raid_role_name="raid",
+        wanderer_role_name="Wandering Souls",
+        dry_run=True,
+    )
+    description = embed.description or ""
+    assert "Would remove" in description
+    assert "would add" in description
+    assert embed.footer.text is not None
+    assert "Date:" in embed.footer.text
+    assert "Checked: 9 members" in embed.footer.text
