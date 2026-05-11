@@ -1945,7 +1945,7 @@ class WelcomeWatcher(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
-        log.warning("welcomewatcher.on_ready fired")
+        log.debug("welcomewatcher.on_ready fired")
         # Guard against firing multiple times on reconnects
         if self._announced:
             return
@@ -1962,8 +1962,6 @@ class WelcomeWatcher(commands.Cog):
                 result="disabled",
                 reason="missing_channel_id",
             )
-            if line:
-                asyncio.create_task(_send_runtime(line))
             return
 
         try:
@@ -1980,8 +1978,6 @@ class WelcomeWatcher(commands.Cog):
                 reason="invalid_channel_id",
                 channel_id=channel_id,
             )
-            if line:
-                asyncio.create_task(_send_runtime(line))
             return
 
         self.channel_id = channel_id_int
@@ -1996,8 +1992,6 @@ class WelcomeWatcher(commands.Cog):
                 result="disabled",
                 reason="feature_welcome_dialog_off",
             )
-            if line:
-                asyncio.create_task(_send_runtime(line))
             return
 
         if not feature_flags.is_enabled("recruitment_welcome"):
@@ -2010,8 +2004,6 @@ class WelcomeWatcher(commands.Cog):
                 result="disabled",
                 reason="feature_recruitment_welcome_off",
             )
-            if line:
-                asyncio.create_task(_send_runtime(line))
             return
 
         self._register_persistent_view()
@@ -2032,19 +2024,7 @@ class WelcomeWatcher(commands.Cog):
                 channel=label,
                 channel_id=self.channel_id,
             )
-            message = "\n".join(
-                [
-                    "✅ Welcome watcher",
-                    "",
-                    "Status:",
-                    "• enabled",
-                    "",
-                    "Channel:",
-                    f"• <#{self.channel_id}>",
-                    f"• path: {label}",
-                ]
-            )
-            asyncio.create_task(_send_runtime(message))
+            log.debug("welcome watcher ready", extra={"channel_id": self.channel_id, "channel": label})
         else:
             reason = self._onb_reg_error or "unknown"
             line = log_lifecycle(
@@ -2057,12 +2037,11 @@ class WelcomeWatcher(commands.Cog):
                 channel_id=self.channel_id,
                 reason=reason,
             )
-            if line:
-                asyncio.create_task(_send_runtime(line))
+            log.warning("welcome watcher registration failed", extra={"reason": reason, "channel_id": self.channel_id})
 
 
     async def _run_startup_welcome_ticket_repair(self) -> None:
-        log.warning("welcome ticket repair started")
+        log.debug("welcome ticket repair started")
         try:
             summary = await asyncio.to_thread(
                 onboarding_sheets.run_welcome_ticket_repair_pass,
@@ -2074,7 +2053,14 @@ class WelcomeWatcher(commands.Cog):
 
         repaired = int(summary.get("repaired", 0) or 0)
         flagged = int(summary.get("flagged", 0) or 0)
-        log.warning("welcome ticket repair complete: %s repaired, %s flagged", repaired, flagged)
+        log.info("welcome ticket repair complete", extra={
+            "repaired": repaired,
+            "flagged": flagged,
+            "legacy_rows": int(summary.get("legacy_rows", 0) or 0),
+            "welcome_rows": int(summary.get("welcome_rows", 0) or 0),
+            "reservation_rows": int(summary.get("reservation_rows", 0) or 0),
+            "malformed_rows": int(summary.get("malformed_rows", 0) or 0),
+        })
 
     def _register_persistent_view(self) -> None:
         registration = panels.register_persistent_views(self.bot)

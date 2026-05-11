@@ -301,6 +301,10 @@ def repair_welcome_rows(ws) -> dict[str, int]:
     repaired = 0
     flagged = 0
     scanned = 0
+    legacy_rows = 0
+    welcome_rows = 0
+    reservation_rows = 0
+    malformed_rows = 0
     for row_number, row in enumerate(values[1:], start=2):
         scanned += 1
         row_values = list(row) + [""] * (len(header) - len(row))
@@ -332,7 +336,23 @@ def repair_welcome_rows(ws) -> dict[str, int]:
                 row_values[thread_id_idx] = ""
                 changed = True
 
-        invalid = (not _looks_like_ticket(ticket)) or (not username)
+        ticket_like = _looks_like_ticket(ticket)
+        has_username = bool(username)
+        has_user_or_thread_id = _is_discord_id(user_id) or _is_discord_id(thread_id)
+        status_value = str(row_values[status_idx] or "").strip().lower() if status_idx is not None else ""
+        is_reservation = status_value in {"reserved", "reservation", "queued", "pending"}
+        looks_like_current_welcome = ticket_like and has_username
+
+        if is_reservation:
+            reservation_rows += 1
+        elif looks_like_current_welcome:
+            welcome_rows += 1
+        elif not ticket_like and not has_user_or_thread_id and status_value in {"", "completed", "closed", "archived", "done"}:
+            legacy_rows += 1
+        else:
+            malformed_rows += 1
+
+        invalid = looks_like_current_welcome and not has_user_or_thread_id
         if invalid and status_idx is not None:
             status_value = str(row_values[status_idx] or "").strip().lower()
             if status_value not in {"invalid", "needs_review"}:
@@ -355,7 +375,7 @@ def repair_welcome_rows(ws) -> dict[str, int]:
             core.call_with_backoff(ws.update, f"A{row_number}:{end_col}{row_number}", [row_values[: len(header)]])
             repaired += 1
 
-    return {"repaired": repaired, "flagged": flagged, "scanned": scanned}
+    return {"repaired": repaired, "flagged": flagged, "scanned": scanned, "legacy_rows": legacy_rows, "welcome_rows": welcome_rows, "reservation_rows": reservation_rows, "malformed_rows": malformed_rows}
 
 
 def _queue_welcome_repair_alert(summary: dict[str, int]) -> None:
