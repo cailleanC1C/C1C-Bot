@@ -960,8 +960,6 @@ class PromoTicketWatcher(commands.Cog):
                 channel=None,
                 channel_id=None,
             )
-            if line:
-                asyncio.create_task(_send_runtime(line))
             return
 
         try:
@@ -978,8 +976,6 @@ class PromoTicketWatcher(commands.Cog):
                 reason="invalid_promo_channel",
                 channel_id=channel_id,
             )
-            if line:
-                asyncio.create_task(_send_runtime(line))
             return
 
         self.channel_id = channel_id_int
@@ -994,8 +990,6 @@ class PromoTicketWatcher(commands.Cog):
                 result="disabled",
                 reason="feature_promo_enabled_off",
             )
-            if line:
-                asyncio.create_task(_send_runtime(line))
             return
 
         if not feature_flags.is_enabled("enable_promo_hook"):
@@ -1008,8 +1002,6 @@ class PromoTicketWatcher(commands.Cog):
                 result="disabled",
                 reason="feature_enable_promo_hook_off",
             )
-            if line:
-                asyncio.create_task(_send_runtime(line))
             return
 
         label = _channel_readable_label(self.bot, channel_id_int)

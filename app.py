@@ -38,6 +38,7 @@ from c1c_coreops.rbac import (
 )
 from c1c_coreops.cron_summary import emit_daily_summary
 from modules.recruitment.reporting.daily_recruiter_update import ensure_scheduler_started
+from modules.ops.startup_summary import render_startup_summary
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -219,7 +220,7 @@ async def _enforce_guild_allow_list(
             return False
 
     if log_success:
-        log.info(
+        log.debug(
             "Guild allow-list verified",
             extra={
                 "allowed": allowed_sorted,
@@ -237,115 +238,6 @@ async def _enforce_guild_allow_list(
 
 
 
-def _channel_readable(bot_client: commands.Bot, channel_id: int | None) -> str:
-    if not channel_id:
-        return "not configured"
-    mention = f"<#{channel_id}>"
-    channel = bot_client.get_channel(channel_id)
-    if channel is None:
-        return mention
-    return f"{mention} ({onboarding_channel_path(channel)})"
-
-
-def _fmt_next(jobs: list[object], job_name: str) -> str:
-    for job in jobs:
-        if getattr(job, "name", None) == job_name:
-            next_run = getattr(job, "next_run", None)
-            if next_run is None:
-                return "pending"
-            try:
-                return next_run.astimezone(dt.timezone.utc).replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M UTC")
-            except Exception:
-                return "pending"
-    return "not scheduled"
-
-
-def _read_watchdog_values(runtime_obj: Runtime) -> tuple[int, int, int]:
-    return (
-        int(getattr(runtime_obj, "_watchdog_check_sec", 300)),
-        int(getattr(runtime_obj, "_watchdog_stall_sec", 1200)),
-        int(getattr(runtime_obj, "_watchdog_disconnect_grace_sec", 6000)),
-    )
-
-
-def _build_startup_summary_message(*, bot_client: commands.Bot, jobs: list[object], watchdog: tuple[int, int, int]) -> str:
-    lines = ["✅ Woadkeeper startup complete", ""]
-
-    try:
-        toggles = shared_config.features
-        promo_label = _channel_readable(bot_client, cfg_int("PROMO_CHANNEL_ID", 0) or None)
-        welcome_label = _channel_readable(bot_client, cfg_int("WELCOME_CHANNEL_ID", 0) or None)
-        watcher_lines = [
-            "Watchers",
-            f"• Promo watcher: {('enabled' if toggles.promo_watcher_enabled else 'disabled')} — {promo_label}",
-            f"• Welcome watcher: {('enabled' if toggles.welcome_watcher_enabled else 'disabled')} — {welcome_label}",
-        ]
-        lines.extend(watcher_lines)
-    except Exception:
-        log.exception("startup summary watchers section unavailable")
-        lines.extend(["Watchers", "• unavailable"])
-
-    try:
-        cache_buckets = ["clan_tags", "clans", "fusion", "fusion_events", "leagues", "onboarding_questions", "reaction_roles", "templates"]
-        cache_lines = []
-        for name in cache_buckets:
-            snap = cache_telemetry.get_snapshot(name)
-            status = "ok" if (snap.last_result or "").lower() in {"ok", "success"} else (snap.last_result or "pending")
-            rows = snap.item_count if snap.item_count is not None else "?"
-            cache_lines.append(f"• {name}: {status} ({rows})")
-        lines.extend(["", "Cache", *cache_lines])
-    except Exception:
-        log.exception("startup summary cache section unavailable")
-        lines.extend(["", "Cache", "• unavailable"])
-
-    try:
-        scheduled_names = [
-            ("clans", "cache_refresh:clans"),
-            ("templates", "cache_refresh:templates"),
-            ("clan_tags", "cache_refresh:clan_tags"),
-            ("onboarding_questions", "cache_refresh:onboarding_questions"),
-            ("cleanup", "cleanup_watcher"),
-            ("mirralith_overview", "mirralith_overview"),
-            ("housekeeping_keepalive", "housekeeping_keepalive"),
-            ("shard_weekly_reminders", "shard_weekly_reminders"),
-        ]
-        scheduler_lines = ["Schedulers"]
-        for label, job_name in scheduled_names:
-            next_value = _fmt_next(jobs, job_name)
-            if next_value != "not scheduled":
-                scheduler_lines.append(f"• {label}: next {next_value}")
-
-        for job in jobs:
-            name = str(getattr(job, "name", "") or "")
-            if not name:
-                continue
-            if name.startswith("fusion_") and name not in {n for _, n in scheduled_names}:
-                scheduler_lines.append(f"• {name}: next {_fmt_next(jobs, name)}")
-            if name.startswith("reset_reminder") or name == "reset_reminders":
-                scheduler_lines.append(f"• {name}: next {_fmt_next(jobs, name)}")
-
-        if len(scheduler_lines) == 1:
-            scheduler_lines.append("• none scheduled")
-        lines.extend(["", *scheduler_lines])
-    except Exception:
-        log.exception("startup summary scheduler section unavailable")
-        lines.extend(["", "Schedulers", "• unavailable"])
-
-    try:
-        interval_s, stall_s, grace_s = watchdog
-        lines.extend(
-            [
-                "",
-                "Watchdog",
-                f"• interval {interval_s}s",
-                f"• stall {stall_s}s",
-                f"• disconnect grace {grace_s}s",
-            ]
-        )
-    except Exception:
-        log.exception("startup summary watchdog section unavailable")
-        lines.extend(["", "Watchdog", "• unavailable"])
-    return "\n".join(lines)
 @bot.event
 async def on_ready():
     hb.note_ready()
@@ -368,66 +260,61 @@ async def on_ready():
     if not await _enforce_guild_allow_list(log_when_empty=True, log_success=False):
         return
 
-    runtime.suppress_startup_admin_logs = True
     try:
-        try:
-            runtime.startup_diag_mark(feature_init_started=True)
-            await core_ready.on_ready(bot)
-        except Exception:
-            log.exception("READY FAILURE: core_ready.on_ready")
-            await _shutdown("ready_lifecycle_failure:core_ready")
-            return
+        runtime.startup_diag_mark(feature_init_started=True)
+        await core_ready.on_ready(bot)
+    except Exception:
+        log.exception("READY FAILURE: core_ready.on_ready")
+        await _shutdown("ready_lifecycle_failure:core_ready")
+        return
 
-        try:
-            runtime.startup_diag_mark(scheduler_start_reached=True)
-            await runtime.register_ready_schedulers()
-        except Exception:
-            log.exception("READY FAILURE: runtime.register_ready_schedulers")
+    try:
+        runtime.startup_diag_mark(scheduler_start_reached=True)
+        await runtime.register_ready_schedulers()
+    except Exception:
+        log.exception("READY FAILURE: runtime.register_ready_schedulers")
 
-        try:
-            await ensure_scheduler_started(bot)
-        except Exception:
-            log.exception("READY FAILURE: ensure_scheduler_started")
+    try:
+        await ensure_scheduler_started(bot)
+    except Exception:
+        log.exception("READY FAILURE: ensure_scheduler_started")
 
-        try:
-            runtime.watchdog(delay_sec=5.0)
+    try:
+        runtime.watchdog(delay_sec=5.0)
 
-            if not hasattr(bot, "_cron_summary_task"):
-                async def _daily_summary_loop() -> None:
-                    while True:
-                        now = dt.datetime.now(dt.timezone.utc)
-                        target = now.replace(hour=0, minute=5, second=0, microsecond=0)
-                        if now >= target:
-                            target = target + dt.timedelta(days=1)
-                        await asyncio.sleep((target - now).total_seconds())
-                        try:
-                            await emit_daily_summary(CRON_JOB_NAMES)
-                        except asyncio.CancelledError:
-                            raise
-                        except Exception:
-                            log.warning("[cron] summary_failed", exc_info=True)
+        if not hasattr(bot, "_cron_summary_task"):
+            async def _daily_summary_loop() -> None:
+                while True:
+                    now = dt.datetime.now(dt.timezone.utc)
+                    target = now.replace(hour=0, minute=5, second=0, microsecond=0)
+                    if now >= target:
+                        target = target + dt.timedelta(days=1)
+                    await asyncio.sleep((target - now).total_seconds())
+                    try:
+                        await emit_daily_summary(CRON_JOB_NAMES)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        log.warning("[cron] summary_failed", exc_info=True)
 
-                runtime.scheduler.spawn(_daily_summary_loop(), name="cron_daily_summary")
-                bot._cron_summary_task = True
-                log.info("[cron] summary scheduler started (00:05Z)")
+            runtime.scheduler.spawn(_daily_summary_loop(), name="cron_daily_summary")
+            bot._cron_summary_task = True
+            log.info("[cron] summary scheduler started (00:05Z)")
 
-            await keepalive.ensure_started(bot)
-            runtime.schedule_startup_preload()
-        except Exception:
-            log.warning("non-critical ready task failed", exc_info=True)
+        await keepalive.ensure_started(bot)
+        runtime.schedule_startup_preload()
+    except Exception:
+        log.warning("non-critical ready task failed", exc_info=True)
 
-        try:
-            watchdog_values = _read_watchdog_values(runtime)
-            summary = _build_startup_summary_message(
-                bot_client=bot,
-                jobs=runtime.scheduler.jobs,
-                watchdog=watchdog_values,
-            )
-            await runtime.send_log_message(summary, bypass_startup_suppression=True)
-        except Exception:
-            log.exception("startup summary failed", exc_info=True)
-    finally:
-        runtime.suppress_startup_admin_logs = False
+    try:
+        summary = render_startup_summary(
+            bot_client=bot,
+            runtime=runtime,
+            jobs=runtime.scheduler.jobs,
+        )
+        await runtime.send_log_message(summary)
+    except Exception:
+        log.exception("startup summary failed", exc_info=True)
 
 
 @bot.event
@@ -493,13 +380,13 @@ async def on_message(message: discord.Message):
     )
     if LOG_MESSAGE_CONTENT:
         safe_content = _safe_logged_message_content(content)
-        log.info(
+        log.debug(
             "seen msg: guild=%s chan=%s msg=%s author=%s content_len=%s attachments=%s content=%r",
             *base_fields,
             safe_content,
         )
     else:
-        log.info(
+        log.debug(
             "seen msg: guild=%s chan=%s msg=%s author=%s content_len=%s attachments=%s",
             *base_fields,
         )

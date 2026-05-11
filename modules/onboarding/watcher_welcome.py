@@ -2106,7 +2106,7 @@ class WelcomeWatcher(commands.Cog):
         if isinstance(duration_ms, int):
             payload["duration"] = f"{duration_ms}ms"
         if duplicate:
-            payload["duplicate_registration"] = True
+            log.debug("welcome watcher persistent view duplicate registration", extra={"view": view_name})
         if error is not None:
             payload["reason"] = f"{error.__class__.__name__}: {error}"
 
