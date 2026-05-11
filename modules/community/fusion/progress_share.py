@@ -71,6 +71,7 @@ def build_share_snapshot(
     *,
     events: Sequence[fusion_sheets.FusionEventRow],
     progress_by_event: Mapping[str, str],
+    partial_by_event: Mapping[str, float] | None = None,
     now: dt.datetime | None = None,
 ) -> ProgressShareSnapshot:
     current_time = now or dt.datetime.now(dt.timezone.utc)
@@ -81,7 +82,12 @@ def build_share_snapshot(
     partial_map = partial_by_event or {}
 
     for event in events:
-        status = _effective_display_status(event=event, progress_by_event=progress_by_event, now=current_time)
+        status = _effective_display_status(
+            event=event,
+            progress_by_event=progress_by_event,
+            partial_by_event=partial_by_event,
+            now=current_time,
+        )
         if status == "done_bonus":
             display_status_by_event[event.event_id] = status
             counts["done"] += 1
@@ -131,10 +137,15 @@ def build_progress_share_embed(
     target: fusion_sheets.FusionRow,
     events: Sequence[fusion_sheets.FusionEventRow],
     progress_by_event: Mapping[str, str],
+    partial_by_event: Mapping[str, float] | None = None,
     user_display_name: str,
     mode: ShareMode,
 ) -> discord.Embed:
-    snapshot = build_share_snapshot(events=events, progress_by_event=progress_by_event)
+    snapshot = build_share_snapshot(
+        events=events,
+        progress_by_event=progress_by_event,
+        partial_by_event=partial_by_event,
+    )
     overall_progress_line = _build_overall_progress_line(target=target, snapshot=snapshot)
 
     embed = discord.Embed(
