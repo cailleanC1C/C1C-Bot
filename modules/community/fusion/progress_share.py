@@ -162,10 +162,10 @@ def _build_strategic_progress_block(*, target: fusion_sheets.FusionRow, snapshot
     to_go_line = "Fusion ready" if to_go <= 0 else f"{to_go:g} to go"
     return (
         f"**{reward_type} Progress**\n"
+        f"{target.needed:g} / {target.available:g} needed\n"
         f"{acquired:g} acquired\n"
         f"{skipped:g} skipped\n"
-        f"{to_go_line}\n"
-        f"{target.needed:g} / {target.available:g} needed\n"
+        f"{to_go_line}\n\n"
     )
 
 
