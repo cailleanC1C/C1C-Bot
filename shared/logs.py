@@ -71,9 +71,6 @@ def log_lifecycle(
         else:
             title = f"{resolved_scope.capitalize()} watcher"
 
-    # Ensure all lifecycle logs carry the normalized flow for CI.
-    fields.setdefault("flow", resolved_scope)
-
     kv_text = _fmt_kvs(fields)
     line = f"{prefix} {title} — event={event}" + (f" • {kv_text}" if kv_text else "")
     try:
