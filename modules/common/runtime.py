@@ -1527,7 +1527,6 @@ class Runtime:
 
     async def _register_ready_schedulers_inner(self) -> None:
         from shared.sheets.cache_scheduler import (
-            emit_schedule_log,
             ensure_cache_registration,
             preload_on_startup,
             register_refresh_job,
@@ -1551,7 +1550,6 @@ class Runtime:
             ("onboarding_questions", timedelta(days=7), "7d"),
         )
         successes: list[tuple[Any, Any]] = []
-        failure: tuple[str, BaseException] | None = None
         for bucket, interval, cadence in cache_specs:
             spec, job = register_refresh_job(
                 self,
@@ -1625,10 +1623,6 @@ class Runtime:
         else:
             log.info("housekeeping keepalive disabled via feature toggle")
 
-        self.scheduler.spawn(
-            emit_schedule_log(self, successes, failure),
-            name="cache_refresh_schedule_log",
-        )
         server_map_module.schedule_server_map_job(self)
         schedule_leagues_jobs(self)
         schedule_fusion_jobs(self)

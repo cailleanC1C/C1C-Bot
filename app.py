@@ -274,25 +274,25 @@ def _build_startup_summary_message(*, bot_client: commands.Bot, jobs: list[objec
         toggles = shared_config.features
         watcher_lines = [
             "Watchers",
-            f"• Welcome: {'enabled' if toggles.welcome_watcher_enabled else 'disabled'} — {_channel_readable(bot_client, get_welcome_channel_id())}",
-            f"• Promo: {'enabled' if toggles.promo_watcher_enabled else 'disabled'} — {_channel_readable(bot_client, get_promo_channel_id())}",
+            f"• Promo watcher: {'enabled' if toggles.promo_watcher_enabled else 'disabled'}",
+            f"• Welcome watcher: {'enabled' if toggles.welcome_watcher_enabled else 'disabled'}",
         ]
         lines.extend(watcher_lines)
     except Exception:
-        log.exception("startup summary watchers section unavailable", exc_info=True)
+        log.exception("startup summary watchers section unavailable")
         lines.extend(["Watchers", "• unavailable"])
 
     try:
-        cache_buckets = ["clans", "fusion", "fusion_events", "onboarding_questions", "reaction_roles"]
+        cache_buckets = ["clans", "templates", "clan_tags", "onboarding_questions"]
         cache_lines = []
         for name in cache_buckets:
             snap = cache_telemetry.get_snapshot(name)
             status = "ok" if (snap.last_result or "").lower() in {"ok", "success"} else (snap.last_result or "pending")
             rows = snap.item_count if snap.item_count is not None else "?"
-            cache_lines.append(f"• {name}: {status}, {rows} rows")
+            cache_lines.append(f"• {name}: {status} ({rows})")
         lines.extend(["", "Cache", *cache_lines])
     except Exception:
-        log.exception("startup summary cache section unavailable", exc_info=True)
+        log.exception("startup summary cache section unavailable")
         lines.extend(["", "Cache", "• unavailable"])
 
     try:
@@ -305,7 +305,7 @@ def _build_startup_summary_message(*, bot_client: commands.Bot, jobs: list[objec
         ]
         lines.extend(["", *scheduler_lines])
     except Exception:
-        log.exception("startup summary scheduler section unavailable", exc_info=True)
+        log.exception("startup summary scheduler section unavailable")
         lines.extend(["", "Schedulers", "• unavailable"])
 
     try:
@@ -320,7 +320,7 @@ def _build_startup_summary_message(*, bot_client: commands.Bot, jobs: list[objec
             ]
         )
     except Exception:
-        log.exception("startup summary watchdog section unavailable", exc_info=True)
+        log.exception("startup summary watchdog section unavailable")
         lines.extend(["", "Watchdog", "• unavailable"])
     return "\n".join(lines)
 @bot.event
