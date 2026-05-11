@@ -58,6 +58,8 @@ def test_build_progress_share_embed_summary_mode_has_generic_summary_block():
     summary_field = next(field for field in embed.fields if field.name == "Summary")
     assert "✅ Done: 1" in summary_field.value
     assert "Progress: 5 / 450 fragments" in summary_field.value
+    strategic_field = next(field for field in embed.fields if field.name == "\u200b")
+    assert "**Fragments Progress**" in strategic_field.value
     assert all(field.name != "Event Breakdown" for field in embed.fields)
 
 
@@ -87,4 +89,6 @@ def test_build_progress_share_embed_uses_dynamic_reward_unit():
     )
 
     summary_field = next(field for field in embed.fields if field.name == "Summary")
+    strategic_field = next(field for field in embed.fields if field.name == "\u200b")
     assert "Progress: 25 / 1750 points" in summary_field.value
+    assert "**Points Progress**" in strategic_field.value

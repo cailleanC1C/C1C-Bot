@@ -289,7 +289,7 @@ def _build_progress_summary_embed(
     acquired = snapshot.completed_reward_total
     skipped = snapshot.skipped_reward_total
     still_needed = max(float(target.needed) - acquired, 0.0)
-    still_needed_line = "Fusion ready" if still_needed <= 0 else f"{still_needed:g} still needed"
+    still_needed_line = "Fusion ready" if still_needed <= 0 else f"{still_needed:g} to go"
 
     embed = discord.Embed(
         title=f"My Progress: {target.fusion_name}",
@@ -308,12 +308,13 @@ def _build_progress_summary_embed(
         inline=False,
     )
     embed.add_field(
-        name=f"{reward_label} Progress",
+        name="\u200b",
         value=(
+            f"**{reward_label} Progress**\n"
             f"{acquired:g} acquired\n"
             f"{skipped:g} skipped\n"
             f"{still_needed_line}\n\n"
-            f"{target.needed:g} / {target.available:g} required"
+            f"{target.needed:g} / {target.available:g} needed"
         ),
         inline=False,
     )

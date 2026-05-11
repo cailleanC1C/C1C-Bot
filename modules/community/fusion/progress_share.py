@@ -162,7 +162,7 @@ def _build_strategic_progress_block(*, target: fusion_sheets.FusionRow, snapshot
     to_go = max(float(target.needed) - acquired, 0.0)
     to_go_line = "Fusion ready" if to_go <= 0 else f"{to_go:g} to go"
     return (
-        f"{reward_type} Progress\n"
+        f"**{reward_type} Progress**\n"
         f"{acquired:g} acquired\n"
         f"{skipped:g} skipped\n"
         f"{to_go_line}\n\n"
@@ -197,7 +197,7 @@ def build_progress_share_embed(
         inline=False,
     )
     embed.add_field(
-        name="Strategic Progress",
+        name="\u200b",
         value=_build_strategic_progress_block(target=target, snapshot=snapshot),
         inline=False,
     )
