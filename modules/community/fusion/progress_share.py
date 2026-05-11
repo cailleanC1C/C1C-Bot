@@ -149,7 +149,7 @@ def build_progress_share_embed(
     overall_progress_line = _build_overall_progress_line(target=target, snapshot=snapshot)
 
     embed = discord.Embed(
-        title=f"Progress Share — {target.fusion_name}",
+        title=f"Progress Share: {target.fusion_name}",
         color=discord.Color.blurple(),
     )
     embed.add_field(name="User", value=user_display_name, inline=False)
@@ -173,7 +173,7 @@ def build_progress_share_embed(
                 and str(event.reward_type or "").strip().lower() == "fragment"
             ):
                 partial_amount = max(0.0, float((partial_by_event or {}).get(event.event_id, 0.0)))
-                line += f" — {partial_amount:g} / {event.reward_amount:g} fragments"
+                line += f" ({partial_amount:g} / {event.reward_amount:g} fragments)"
             detail_lines.append(line)
         embed.add_field(name="Event Breakdown", value="\n".join(detail_lines)[:1024] or "No events available.", inline=False)
 
