@@ -39,7 +39,7 @@ _FUSION_PROGRESS_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "event_id": ("event_id", "event key", "eventkey"),
     "milestone_key": ("milestone_key", "milestone", "milestone key"),
     "status": ("status",),
-    "partial_amount": ("partial_amount", "partial progress", "partial", "earned_amount", "progress_amount"),
+    "partial_amount": ("partial_amount",),
     "updated_at_utc": ("updated_at_utc", "updated at utc", "updatedat", "updated_at"),
 }
 
@@ -282,6 +282,47 @@ def _resolve_progress_header_indices(
         )
         for field in required_fields
     }
+
+
+def _find_optional_progress_column_index(*, header: list[str], field: str) -> int:
+    aliases = _FUSION_PROGRESS_COLUMN_ALIASES.get(field, (field,))
+    for alias in aliases:
+        normalized = alias.strip().lower()
+        if normalized and normalized in header:
+            return header.index(normalized)
+    return -1
+
+
+async def _ensure_optional_progress_header(
+    *,
+    worksheet: Any,
+    tab_name: str,
+    matrix: list[list[object]],
+    header: list[str],
+    field: str,
+    before_field: str | None = None,
+) -> tuple[list[list[object]], list[str]]:
+    if _find_optional_progress_column_index(header=header, field=field) >= 0:
+        return matrix, header
+    if field != "partial_amount":
+        return matrix, header
+
+    insert_at = len(header) + 1
+    if before_field:
+        before_idx = _find_optional_progress_column_index(header=header, field=before_field)
+        if before_idx >= 0:
+            insert_at = before_idx + 1
+
+    await acall_with_backoff(
+        worksheet.insert_cols,
+        values=[[field]],
+        col=insert_at,
+    )
+    refreshed = await afetch_values(_sheet_id(), tab_name)
+    if not refreshed:
+        return matrix, header
+    refreshed_header = [str(cell or "").strip().lower() for cell in refreshed[0]]
+    return refreshed, refreshed_header
 
 def _parse_iso_utc(value: object) -> dt.datetime:
     raw = str(value or "").strip()
@@ -848,12 +889,7 @@ async def get_user_event_progress(fusion_id: str, user_id: str) -> dict[str, str
     event_idx = index_by_field["event_id"]
     milestone_idx = index_by_field["milestone_key"]
     status_idx = index_by_field["status"]
-    partial_idx = _resolve_header_index(
-        tab_name=tab_name,
-        header=header,
-        field="partial_amount",
-        aliases_by_field=_FUSION_PROGRESS_COLUMN_ALIASES,
-    ) if any(alias in header for alias in _FUSION_PROGRESS_COLUMN_ALIASES["partial_amount"]) else -1
+    partial_idx = _find_optional_progress_column_index(header=header, field="partial_amount")
     target_fusion = str(fusion_id or "").strip()
     target_user = str(user_id or "").strip()
 
@@ -916,12 +952,7 @@ async def upsert_user_event_progress(
     milestone_idx = index_by_field["milestone_key"]
     status_idx = index_by_field["status"]
     updated_idx = index_by_field["updated_at_utc"]
-    partial_idx = _resolve_header_index(
-        tab_name=tab_name,
-        header=header,
-        field="partial_amount",
-        aliases_by_field=_FUSION_PROGRESS_COLUMN_ALIASES,
-    ) if any(alias in header for alias in _FUSION_PROGRESS_COLUMN_ALIASES["partial_amount"]) else -1
+    partial_idx = _find_optional_progress_column_index(header=header, field="partial_amount")
     target_fusion = str(fusion_id or "").strip()
     target_user = str(user_id or "").strip()
     target_event = str(event_id or "").strip()
@@ -929,6 +960,27 @@ async def upsert_user_event_progress(
     timestamp = updated_at.astimezone(dt.timezone.utc).isoformat()
 
     worksheet = await aget_worksheet(_sheet_id(), tab_name)
+    if partial_idx < 0:
+        matrix, header = await _ensure_optional_progress_header(
+            worksheet=worksheet,
+            tab_name=tab_name,
+            matrix=matrix,
+            header=header,
+            field="partial_amount",
+            before_field="updated_at_utc",
+        )
+        index_by_field = _resolve_progress_header_indices(
+            tab_name=tab_name,
+            header=header,
+            include_updated_at=True,
+        )
+        fusion_idx = index_by_field["fusion_id"]
+        user_idx = index_by_field["user_id"]
+        event_idx = index_by_field["event_id"]
+        milestone_idx = index_by_field["milestone_key"]
+        status_idx = index_by_field["status"]
+        updated_idx = index_by_field["updated_at_utc"]
+        partial_idx = _find_optional_progress_column_index(header=header, field="partial_amount")
     for row_idx, row in enumerate(matrix[1:], start=2):
         row_fusion = str(row[fusion_idx] if fusion_idx < len(row) else "").strip()
         row_user = str(row[user_idx] if user_idx < len(row) else "").strip()

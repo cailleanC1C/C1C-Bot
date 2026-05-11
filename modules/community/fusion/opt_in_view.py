@@ -435,12 +435,14 @@ class _FusionProgressStatusSelect(discord.ui.Select):
             },
         )
         try:
+            partial_amount = view.partial_by_event.get(event.event_id) if status == "in_progress" else None
             await fusion_sheets.upsert_user_event_progress(
                 view.fusion_id,
                 str(view.user_id),
                 event.event_id,
                 status,
                 now,
+                partial_amount=partial_amount,
             )
         except Exception as exc:
             context = {
@@ -461,6 +463,8 @@ class _FusionProgressStatusSelect(discord.ui.Select):
             return
 
         view.progress_by_event[event.event_id] = status
+        if status != "in_progress":
+            view.partial_by_event.pop(event.event_id, None)
         view.selected_event_id = event.event_id
         view.last_update = (event.event_name, status)
         view.refresh_items()
@@ -480,12 +484,14 @@ class FusionProgressShareModeView(discord.ui.View):
         target: fusion_sheets.FusionRow,
         events: Sequence[fusion_sheets.FusionEventRow],
         progress_by_event: Mapping[str, str],
+        partial_by_event: Mapping[str, float] | None = None,
     ) -> None:
         super().__init__(timeout=300)
         self.user_id = int(user_id)
         self.target = target
         self.events = list(events)
         self.progress_by_event = dict(progress_by_event)
+        self.partial_by_event = dict(partial_by_event or {})
 
     async def _handle_share(self, interaction: discord.Interaction, *, mode: Literal["summary", "detailed"]) -> None:
         if interaction.user.id != self.user_id:
@@ -504,6 +510,7 @@ class FusionProgressShareModeView(discord.ui.View):
             target=self.target,
             events=self.events,
             progress_by_event=self.progress_by_event,
+            partial_by_event=self.partial_by_event,
             user_display_name=interaction.user.display_name,
             mode=mode,
         )
@@ -591,6 +598,7 @@ class _FusionProgressShareButton(discord.ui.Button):
             target=view.target,
             events=view.events,
             progress_by_event=view.progress_by_event,
+            partial_by_event=view.partial_by_event,
         )
         if interaction.response.is_done():
             await interaction.followup.send(
