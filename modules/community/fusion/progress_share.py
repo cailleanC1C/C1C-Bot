@@ -33,6 +33,14 @@ _STATUS_ICONS = {
 _ALLOWED_PROGRESS_STATES = frozenset({"not_started", "in_progress", "done", "done_bonus", "skipped"})
 
 
+def _is_stepped_fragment_event(event: fusion_sheets.FusionEventRow) -> bool:
+    return (
+        event.reward_amount > 0
+        and str(event.reward_type or "").strip().lower() == "fragment"
+        and bool(event.milestones)
+    )
+
+
 @dataclass(slots=True)
 class ProgressShareSnapshot:
     counts: dict[str, int]
@@ -88,19 +96,26 @@ def build_share_snapshot(
             partial_by_event=partial_by_event,
             now=current_time,
         )
+        partial_amount = max(0.0, float(partial_map.get(event.event_id, 0.0)))
         if status == "done_bonus":
             display_status_by_event[event.event_id] = status
             counts["done"] += 1
-            completed_reward_total += event.reward_amount + _event_bonus_amount(event)
+            done_base = event.reward_amount
+            if _is_stepped_fragment_event(event) and partial_amount > 0:
+                done_base = partial_amount
+            completed_reward_total += done_base + _event_bonus_amount(event)
             continue
         if status not in counts:
             status = "not_started"
         display_status_by_event[event.event_id] = status
         counts[status] += 1
         if status == "done":
-            completed_reward_total += event.reward_amount
+            if _is_stepped_fragment_event(event) and partial_amount > 0:
+                completed_reward_total += partial_amount
+            else:
+                completed_reward_total += event.reward_amount
         elif status == "in_progress":
-            in_progress_partial_total += max(0.0, float(partial_map.get(event.event_id, 0.0)))
+            in_progress_partial_total += partial_amount
 
     return ProgressShareSnapshot(
         counts=counts,
@@ -168,12 +183,7 @@ def build_progress_share_embed(
             label = _STATUS_LABELS.get(status, "Not Started")
             line = f"{icon} {event.event_name}: {label}"
             partial_amount = max(0.0, float((partial_by_event or {}).get(event.event_id, 0.0)))
-            if (
-                status == "in_progress"
-                and event.reward_amount > 0
-                and partial_amount > 0
-                and str(event.reward_type or "").strip().lower() == "fragment"
-            ):
+            if status in {"in_progress", "done", "done_bonus"} and partial_amount > 0 and _is_stepped_fragment_event(event):
                 line += f" ({partial_amount:g} / {event.reward_amount:g} fragments)"
             detail_lines.append(line)
         embed.add_field(name="Event Breakdown", value="\n".join(detail_lines)[:1024] or "No events available.", inline=False)
