@@ -167,12 +167,13 @@ def build_progress_share_embed(
             icon = _STATUS_ICONS.get(status, _STATUS_ICONS["not_started"])
             label = _STATUS_LABELS.get(status, "Not Started")
             line = f"{icon} {event.event_name}: {label}"
+            partial_amount = max(0.0, float((partial_by_event or {}).get(event.event_id, 0.0)))
             if (
                 status == "in_progress"
                 and event.reward_amount > 0
+                and partial_amount > 0
                 and str(event.reward_type or "").strip().lower() == "fragment"
             ):
-                partial_amount = max(0.0, float((partial_by_event or {}).get(event.event_id, 0.0)))
                 line += f" ({partial_amount:g} / {event.reward_amount:g} fragments)"
             detail_lines.append(line)
         embed.add_field(name="Event Breakdown", value="\n".join(detail_lines)[:1024] or "No events available.", inline=False)
