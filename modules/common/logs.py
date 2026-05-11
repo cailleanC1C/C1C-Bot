@@ -20,10 +20,12 @@ log = _Log()
 
 
 def channel_label(guild, channel_id):
-    g = getattr(guild, "name", None) or getattr(guild, "id", "?")
-    return f"#{g}:{channel_id}"
+    if channel_id in (None, ""):
+        return "#unknown"
+    return f"<#{channel_id}>"
 
 
 def user_label(guild, user_id):
-    g = getattr(guild, "name", None) or getattr(guild, "id", "?")
-    return f"{g}:{user_id}"
+    if user_id in (None, ""):
+        return "unknown"
+    return f"<@{user_id}>"

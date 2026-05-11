@@ -12,6 +12,7 @@ __all__ = [
     "BucketResult",
     "channel_label",
     "user_label",
+    "role_label",
     "guild_label",
     "fmt_duration",
     "fmt_count",
@@ -48,8 +49,12 @@ def _clean_name(name: Optional[str], default: str) -> str:
 def channel_label(guild: Optional[discord.Guild], cid: Optional[int]) -> str:
     """Return a human-friendly label for a guild channel or thread."""
 
-    if guild is None or cid is None:
+    if cid is None:
         return "#unknown"
+
+    mention = f"<#{cid}>"
+    if guild is None:
+        return mention
 
     channel = guild.get_channel(cid)
     thread: Optional[discord.Thread] = None
@@ -68,7 +73,7 @@ def channel_label(guild: Optional[discord.Guild], cid: Optional[int]) -> str:
         parent_name = _clean_name(getattr(parent, "name", None), "unknown")
         thread_name = _clean_name(channel.name, "thread")
         label = f"#{parent_name} › {thread_name}"
-        return label
+        return f"{mention} ({label})"
 
     if isinstance(channel, discord.abc.GuildChannel):
         name = _clean_name(getattr(channel, "name", None), "channel")
@@ -78,9 +83,9 @@ def channel_label(guild: Optional[discord.Guild], cid: Optional[int]) -> str:
             label = f"#{cat_name} › {name}"
         else:
             label = f"#{name}"
-        return label
+        return f"{mention} ({label})"
 
-    return "#unknown"
+    return mention
 
 
 def user_label(guild: Optional[discord.Guild], uid: Optional[int]) -> str:
@@ -88,14 +93,30 @@ def user_label(guild: Optional[discord.Guild], uid: Optional[int]) -> str:
 
     if uid is None:
         return "unknown"
+    mention = f"<@{uid}>"
     if guild is None:
-        return "unknown"
+        return mention
     getter = getattr(guild, "get_member", None)
     member = getter(uid) if callable(getter) else None
     if member is None:
-        return "unknown"
+        return mention
     display = _clean_name(getattr(member, "display_name", None), "unknown")
-    return display
+    return f"{mention} ({display})"
+
+
+def role_label(guild: Optional[discord.Guild], rid: Optional[int]) -> str:
+    """Return a human label for a guild role."""
+
+    if rid is None:
+        return "@unknown"
+    mention = f"<@&{rid}>"
+    if guild is None:
+        return mention
+    role = guild.get_role(rid)
+    if role is None:
+        return mention
+    name = _clean_name(getattr(role, "name", None), "role")
+    return f"{mention} ({name})"
 
 
 def guild_label(bot: discord.Client, gid: Optional[int]) -> str:
@@ -237,15 +258,14 @@ class LogTemplates:
     @staticmethod
     def scheduler(*, intervals: Mapping[str, str], upcoming: Mapping[str, str]) -> str:
         bucket_order = _ordered_scheduler_buckets(intervals, upcoming)
-        interval_pairs = _format_pairs(
-            [(bucket, intervals.get(bucket, "-")) for bucket in bucket_order]
-        )
-        cadence = " • ".join(interval_pairs) or "-"
-        lines = [f"{LOG_EMOJI['scheduler']} **Scheduler** — intervals: {cadence}"]
+        lines = [f"{LOG_EMOJI['scheduler']} **Scheduler**", "", "**Intervals:**"]
         for bucket in bucket_order:
-            next_value = upcoming.get(bucket)
-            text = str(next_value).strip() if next_value else "-"
-            lines.append(f"• {bucket}={text or '-'}")
+            every = str(intervals.get(bucket, "-")).strip() or "-"
+            lines.append(f"• {bucket}: {every}")
+        lines.extend(["", "**Next jobs scheduled:**"])
+        for bucket in bucket_order:
+            next_value = str(upcoming.get(bucket, "-")).strip() or "-"
+            lines.append(f"• {bucket}: {next_value}")
         return "\n".join(lines)
 
     @staticmethod
