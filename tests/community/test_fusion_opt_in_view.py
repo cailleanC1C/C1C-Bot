@@ -417,10 +417,10 @@ def test_reward_totals_and_selected_event_labels_are_data_driven():
         selected_event_id="e_done_bonus",
     )
 
-    fragments_field = next(field for field in embed.fields if field.name == "Fragments")
+    progress_field = next(field for field in embed.fields if field.name == "\u200b")
     summary_field = next(field for field in embed.fields if field.name == "Summary")
     selected_field = next(field for field in embed.fields if field.name == "Selected Event")
-    assert fragments_field.value == "80 / 450 fragments earned"
+    assert "80 acquired" in progress_field.value
     assert "✅ Done: 2" in summary_field.value
     assert "25 + 50 bonus fragments" in selected_field.value
 
@@ -433,8 +433,8 @@ def test_done_on_bonus_event_counts_base_only():
         progress_by_event={"e_bonus": "done"},
         selected_event_id="e_bonus",
     )
-    fragments_field = next(field for field in embed.fields if field.name == "Fragments")
-    assert fragments_field.value == "25 / 450 fragments earned"
+    progress_field = next(field for field in embed.fields if field.name == "\u200b")
+    assert "25 acquired" in progress_field.value
 
 
 def test_my_progress_uses_tracker_reward_type_for_titan():
@@ -447,12 +447,27 @@ def test_my_progress_uses_tracker_reward_type_for_titan():
         selected_event_id="e_points",
     )
 
-    points_field = next(field for field in embed.fields if field.name == "Points")
+    points_field = next(field for field in embed.fields if field.name == "\u200b")
     selected_field = next(field for field in embed.fields if field.name == "Selected Event")
-    assert points_field.value == "75 / 1750 points earned"
+    assert "**Points Progress**" in points_field.value
+    assert "75 acquired" in points_field.value
     assert "25 + 50 bonus points" in selected_field.value
 
 
+
+
+def test_progress_summary_field_uses_inline_heading_and_needed_copy():
+    embed = opt_in_view._build_progress_summary_embed(
+        target=replace(_fusion_row(opt_in_role_id=777), needed=100, available=115, reward_type="fragments"),
+        events=[replace(_event_row("e_done", event_name="Done"), reward_amount=35.0), replace(_event_row("e_skipped", event_name="Skipped"), reward_amount=5.0)],
+        progress_by_event={"e_done": "done", "e_skipped": "skipped"},
+    )
+
+    progress_field = next(field for field in embed.fields if field.name == "\u200b")
+    assert progress_field.value.startswith("**Fragment Progress**\n35 acquired\n5 skipped\n65 to go")
+    assert "100 / 115 needed" in progress_field.value
+    assert "still needed" not in progress_field.value
+    assert "required" not in progress_field.value
 def test_status_options_include_done_bonus_only_when_event_has_bonus():
     bonus_event = replace(_event_row("e_bonus"), bonus=10.0)
     plain_event = _event_row("e_plain")
