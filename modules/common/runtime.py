@@ -267,15 +267,6 @@ async def _startup_preload(bot: commands.Bot | None = None) -> None:
         log.info("Cache preloader completed with no rows")
         return
 
-    deduper = refresh_deduper()
-    bucket_names_for_key = [res.name or name for res, name in zip(refresh_results, bucket_names)]
-    key = refresh_dedupe_key("startup", None, bucket_names_for_key)
-    if refresh_results and deduper.should_emit(key):
-        buckets_for_message = refresh_bucket_results(refresh_results)
-        await send_log_message(
-            format_refresh_message("startup", buckets_for_message, total_s=total_ms / 1000.0)
-        )
-
     log.info("Cache preloader completed")
 
 
@@ -309,33 +300,14 @@ def schedule_startup_preload(bot: commands.Bot | None = None) -> None:
     )
 
 
-def _is_suppressed_startup_admin_message(message: str) -> bool:
-    text = str(message or "").strip().lower()
-    if not text:
-        return False
-    return any(
-        token in text
-        for token in (
-            "scope=startup",
-            "watchdog started",
-            "watchdog loop started",
-            "scheduler interval",
-            "scheduler intervals",
-        )
-    )
-
-
-async def send_log_message(message: str, *, bypass_startup_suppression: bool = False) -> None:
+async def send_log_message(message: str) -> None:
     """Proxy to the active runtime's log channel helper, if available."""
 
     runtime = get_active_runtime()
     if runtime is None:
         return
     try:
-        if bypass_startup_suppression:
-            await runtime.send_log_message(message, bypass_startup_suppression=True)
-        else:
-            await runtime.send_log_message(message)
+        await runtime.send_log_message(message)
     except Exception:
         log.warning("failed to send log message (non-fatal)", exc_info=True)
 
@@ -952,7 +924,6 @@ class Runtime:
         self._startup_scheduler_registered = False
         self._startup_scheduler_lock = asyncio.Lock()
         self._startup_diag: dict[str, Any] = {}
-        self.suppress_startup_admin_logs: bool = False
         set_active_runtime(self)
 
     def _reset_startup_diag(self, *, attempt: int) -> None:
@@ -1070,15 +1041,9 @@ class Runtime:
         await self.shutdown_webserver()
 
     async def send_log_message(
-        self, message: str, *, bypass_startup_suppression: bool = False
+        self, message: str
     ) -> None:
         try:
-            if (
-                self.suppress_startup_admin_logs
-                and not bypass_startup_suppression
-                and _is_suppressed_startup_admin_message(message)
-            ):
-                return
             channel_id = get_log_channel_id()
             if not channel_id:
                 return
