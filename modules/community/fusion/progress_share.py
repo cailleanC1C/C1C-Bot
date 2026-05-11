@@ -38,6 +38,7 @@ class ProgressShareSnapshot:
     counts: dict[str, int]
     display_status_by_event: dict[str, str]
     completed_reward_total: float
+    in_progress_partial_total: float
 
 
 def _event_bonus_amount(event: fusion_sheets.FusionEventRow) -> float:
@@ -48,6 +49,7 @@ def _effective_display_status(
     *,
     event: fusion_sheets.FusionEventRow,
     progress_by_event: Mapping[str, str],
+    partial_by_event: Mapping[str, float] | None = None,
     now: dt.datetime,
 ) -> str:
     status = progress_by_event.get(event.event_id, "not_started")
@@ -75,6 +77,8 @@ def build_share_snapshot(
     counts = {status: 0 for status in _DISPLAY_STATUS_ORDER}
     display_status_by_event: dict[str, str] = {}
     completed_reward_total = 0.0
+    in_progress_partial_total = 0.0
+    partial_map = partial_by_event or {}
 
     for event in events:
         status = _effective_display_status(event=event, progress_by_event=progress_by_event, now=current_time)
@@ -89,11 +93,14 @@ def build_share_snapshot(
         counts[status] += 1
         if status == "done":
             completed_reward_total += event.reward_amount
+        elif status == "in_progress":
+            in_progress_partial_total += max(0.0, float(partial_map.get(event.event_id, 0.0)))
 
     return ProgressShareSnapshot(
         counts=counts,
         display_status_by_event=display_status_by_event,
-        completed_reward_total=completed_reward_total,
+        completed_reward_total=completed_reward_total + in_progress_partial_total,
+        in_progress_partial_total=in_progress_partial_total,
     )
 
 

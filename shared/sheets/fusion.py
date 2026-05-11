@@ -39,6 +39,7 @@ _FUSION_PROGRESS_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "event_id": ("event_id", "event key", "eventkey"),
     "milestone_key": ("milestone_key", "milestone", "milestone key"),
     "status": ("status",),
+    "partial_amount": ("partial_amount", "partial progress", "partial", "earned_amount", "progress_amount"),
     "updated_at_utc": ("updated_at_utc", "updated at utc", "updatedat", "updated_at"),
 }
 
@@ -847,10 +848,17 @@ async def get_user_event_progress(fusion_id: str, user_id: str) -> dict[str, str
     event_idx = index_by_field["event_id"]
     milestone_idx = index_by_field["milestone_key"]
     status_idx = index_by_field["status"]
+    partial_idx = _resolve_header_index(
+        tab_name=tab_name,
+        header=header,
+        field="partial_amount",
+        aliases_by_field=_FUSION_PROGRESS_COLUMN_ALIASES,
+    ) if any(alias in header for alias in _FUSION_PROGRESS_COLUMN_ALIASES["partial_amount"]) else -1
     target_fusion = str(fusion_id or "").strip()
     target_user = str(user_id or "").strip()
 
     rows: dict[str, str] = {}
+    partials: dict[str, float] = {}
     for row in matrix[1:]:
         row_fusion = str(row[fusion_idx] if fusion_idx < len(row) else "").strip()
         row_user = str(row[user_idx] if user_idx < len(row) else "").strip()
@@ -863,7 +871,12 @@ async def get_user_event_progress(fusion_id: str, user_id: str) -> dict[str, str
         status = _normalize_progress_status(row[status_idx] if status_idx < len(row) else "")
         key = f"{event_id}:{milestone_key}" if milestone_key else event_id
         rows[key] = status
-    return rows
+        if partial_idx >= 0 and partial_idx < len(row):
+            try:
+                partials[key] = max(0.0, float(str(row[partial_idx]).strip() or "0"))
+            except ValueError:
+                continue
+    return {"progress": rows, "partials": partials}
 
 
 async def upsert_user_event_progress(
@@ -873,6 +886,7 @@ async def upsert_user_event_progress(
     status: str,
     updated_at: dt.datetime,
     milestone_key: str = "",
+    partial_amount: float | None = None,
 ) -> None:
     """Write user progress status for one fusion/user/event tuple."""
 
@@ -902,6 +916,12 @@ async def upsert_user_event_progress(
     milestone_idx = index_by_field["milestone_key"]
     status_idx = index_by_field["status"]
     updated_idx = index_by_field["updated_at_utc"]
+    partial_idx = _resolve_header_index(
+        tab_name=tab_name,
+        header=header,
+        field="partial_amount",
+        aliases_by_field=_FUSION_PROGRESS_COLUMN_ALIASES,
+    ) if any(alias in header for alias in _FUSION_PROGRESS_COLUMN_ALIASES["partial_amount"]) else -1
     target_fusion = str(fusion_id or "").strip()
     target_user = str(user_id or "").strip()
     target_event = str(event_id or "").strip()
@@ -928,6 +948,14 @@ async def upsert_user_event_progress(
             [[timestamp]],
             value_input_option="RAW",
         )
+        if partial_idx >= 0:
+            partial_token = "" if partial_amount is None else f"{max(0.0, partial_amount):g}"
+            await acall_with_backoff(
+                worksheet.update,
+                f"{_column_label(partial_idx)}{row_idx}",
+                [[partial_token]],
+                value_input_option="RAW",
+            )
         return
 
     row_values = [""] * len(header)
@@ -937,6 +965,8 @@ async def upsert_user_event_progress(
     row_values[milestone_idx] = target_milestone
     row_values[status_idx] = normalized_status
     row_values[updated_idx] = timestamp
+    if partial_idx >= 0:
+        row_values[partial_idx] = "" if partial_amount is None else f"{max(0.0, partial_amount):g}"
     await acall_with_backoff(
         worksheet.append_row,
         row_values,
