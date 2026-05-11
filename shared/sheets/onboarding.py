@@ -341,16 +341,23 @@ def repair_welcome_rows(ws) -> dict[str, int]:
         has_user_or_thread_id = _is_discord_id(user_id) or _is_discord_id(thread_id)
         status_value = str(row_values[status_idx] or "").strip().lower() if status_idx is not None else ""
         is_reservation = status_value in {"reserved", "reservation", "queued", "pending"}
+        has_welcome_shape = ticket_like or has_username or has_user_or_thread_id
         looks_like_current_welcome = ticket_like and has_username
 
         if is_reservation:
             reservation_rows += 1
         elif looks_like_current_welcome:
             welcome_rows += 1
-        elif not ticket_like and not has_user_or_thread_id and status_value in {"", "completed", "closed", "archived", "done"}:
+        elif not has_welcome_shape and status_value in {"", "completed", "closed", "archived", "done"}:
             legacy_rows += 1
         else:
-            malformed_rows += 1
+            # Legacy rows often carry partial data (username-only or stale IDs)
+            # that should not be counted as malformed unless they appear to be
+            # welcome-shaped records with inconsistent required fields.
+            if has_welcome_shape and not looks_like_current_welcome and not is_reservation:
+                malformed_rows += 1
+            else:
+                legacy_rows += 1
 
         invalid = looks_like_current_welcome and not has_user_or_thread_id
         if invalid and status_idx is not None:
@@ -388,8 +395,14 @@ def _queue_welcome_repair_alert(summary: dict[str, int]) -> None:
     if (now_ts - _WELCOME_REPAIR_ALERT_LAST_TS) < 3600:
         return
     _WELCOME_REPAIR_ALERT_LAST_TS = now_ts
+    legacy_rows = int(summary.get("legacy_rows", 0) or 0)
+    welcome_rows = int(summary.get("welcome_rows", 0) or 0)
+    reservation_rows = int(summary.get("reservation_rows", 0) or 0)
+    malformed_rows = int(summary.get("malformed_rows", 0) or 0)
     _WELCOME_REPAIR_ALERT_PENDING = (
-        f"Welcome ticket repair: {repaired} repaired, {flagged} flagged for review"
+        "Welcome ticket repair: "
+        f"{repaired} repaired, {flagged} flagged for review "
+        f"(welcome={welcome_rows}, reservations={reservation_rows}, legacy={legacy_rows}, malformed={malformed_rows})"
     )
 
 
