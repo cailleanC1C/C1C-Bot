@@ -61,7 +61,7 @@ def _supports_partial_fragments(event: fusion_sheets.FusionEventRow | None, *, s
     if event is None:
         return False
     return (
-        status == "in_progress"
+        status in {"in_progress", "done", "done_bonus"}
         and event.reward_amount > 0
         and str(event.reward_type or "").strip().lower() == "fragment"
         and bool(event.milestones)
@@ -307,13 +307,14 @@ def _build_progress_summary_embed(
         if selected is not None:
             current = snapshot.display_status_by_event.get(selected.event_id, "not_started")
             icon = _STATUS_ICONS.get(current, _STATUS_ICONS["not_started"])
+            partial_amount = max(0.0, float((partial_by_event or {}).get(selected.event_id, 0.0)))
             embed.add_field(
                 name="Selected Event",
                 value=(
                     f"{icon} {selected.event_name}\n{_event_reward_label(selected)}"
                     + (
-                        f"\nPartial logged: {float((partial_by_event or {}).get(selected.event_id, 0.0)):g} / {selected.reward_amount:g} fragments"
-                        if _supports_partial_fragments(selected, status=current)
+                        f"\nPartial logged: {partial_amount:g} / {selected.reward_amount:g} fragments"
+                        if _supports_partial_fragments(selected, status=current) and partial_amount > 0
                         else ""
                     )
                 ),
@@ -446,7 +447,9 @@ class _FusionProgressStatusSelect(discord.ui.Select):
             },
         )
         try:
-            partial_amount = view.partial_by_event.get(event.event_id) if status == "in_progress" else None
+            partial_amount = view.partial_by_event.get(event.event_id)
+            if status in {"not_started", "skipped"}:
+                partial_amount = None
             await fusion_sheets.upsert_user_event_progress(
                 view.fusion_id,
                 str(view.user_id),
@@ -474,7 +477,7 @@ class _FusionProgressStatusSelect(discord.ui.Select):
             return
 
         view.progress_by_event[event.event_id] = status
-        if status != "in_progress":
+        if status in {"not_started", "skipped"}:
             view.partial_by_event.pop(event.event_id, None)
         view.selected_event_id = event.event_id
         view.last_update = (event.event_name, status)
