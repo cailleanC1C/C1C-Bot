@@ -278,7 +278,18 @@ def _build_progress_summary_embed(
     last_update: tuple[str, str] | None = None,
 ) -> discord.Embed:
     snapshot = build_share_snapshot(events=events, progress_by_event=progress_by_event, partial_by_event=partial_by_event)
-    reward_unit = str(target.reward_type or "").strip() or "rewards"
+    raw_reward_type = str(target.reward_type or "").strip()
+    lowered_reward_type = raw_reward_type.lower()
+    if lowered_reward_type in {"fragment", "fragments"}:
+        reward_label = "Fragment"
+    elif raw_reward_type:
+        reward_label = raw_reward_type.title()
+    else:
+        reward_label = "Reward"
+    acquired = snapshot.completed_reward_total
+    skipped = snapshot.skipped_reward_total
+    still_needed = max(float(target.needed) - acquired, 0.0)
+    still_needed_line = "Fusion ready" if still_needed <= 0 else f"{still_needed:g} still needed"
 
     embed = discord.Embed(
         title=f"My Progress: {target.fusion_name}",
@@ -297,8 +308,13 @@ def _build_progress_summary_embed(
         inline=False,
     )
     embed.add_field(
-        name=reward_unit.title(),
-        value=f"{snapshot.completed_reward_total:g} / {target.available:g} {reward_unit} earned",
+        name=f"{reward_label} Progress",
+        value=(
+            f"{acquired:g} acquired\n"
+            f"{skipped:g} skipped\n"
+            f"{still_needed_line}\n\n"
+            f"{target.needed:g} / {target.available:g} required"
+        ),
         inline=False,
     )
 
