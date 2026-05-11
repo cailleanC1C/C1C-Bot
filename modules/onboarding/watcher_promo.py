@@ -46,6 +46,11 @@ _PROMO_TRIGGER_MAP: Dict[str, str] = {
     "<!-- trigger:promo.m -->": "promo.m",
     "<!-- trigger:promo.l -->": "promo.l",
 }
+_PROMO_TRIGGER_LABELS: Dict[str, str] = {
+    "promo.r": "Returning player",
+    "promo.m": "Player move request",
+    "promo.l": "Clan lead move request",
+}
 
 
 async def _send_runtime(message: str) -> None:
@@ -1008,7 +1013,7 @@ class PromoTicketWatcher(commands.Cog):
             return
 
         label = _channel_readable_label(self.bot, channel_id_int)
-        line = log_lifecycle(
+        log_lifecycle(
             log,
             "promo",
             "enabled",
@@ -1018,8 +1023,23 @@ class PromoTicketWatcher(commands.Cog):
             channel_id=channel_id_int,
             triggers=len(_PROMO_TRIGGER_MAP),
         )
-        if line:
-            asyncio.create_task(_send_runtime(line))
+        trigger_lines = [f"• {label}" for label in _PROMO_TRIGGER_LABELS.values()]
+        message = "\n".join(
+            [
+                "✅ Promo watcher",
+                "",
+                "Status:",
+                "• enabled",
+                "",
+                "Channel:",
+                f"• <#{channel_id_int}>",
+                f"• path: {label}",
+                "",
+                "Triggers:",
+                *trigger_lines,
+            ]
+        )
+        asyncio.create_task(_send_runtime(message))
 
 
 async def setup(bot: commands.Bot) -> None:

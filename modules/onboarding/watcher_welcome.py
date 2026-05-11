@@ -2023,7 +2023,7 @@ class WelcomeWatcher(commands.Cog):
 
         if self._onb_registered:
             label = _channel_readable_label(self.bot, self.channel_id)
-            line = log_lifecycle(
+            log_lifecycle(
                 log,
                 "welcome",
                 "enabled",
@@ -2032,8 +2032,19 @@ class WelcomeWatcher(commands.Cog):
                 channel=label,
                 channel_id=self.channel_id,
             )
-            if line:
-                asyncio.create_task(_send_runtime(line))
+            message = "\n".join(
+                [
+                    "✅ Welcome watcher",
+                    "",
+                    "Status:",
+                    "• enabled",
+                    "",
+                    "Channel:",
+                    f"• <#{self.channel_id}>",
+                    f"• path: {label}",
+                ]
+            )
+            asyncio.create_task(_send_runtime(message))
         else:
             reason = self._onb_reg_error or "unknown"
             line = log_lifecycle(

@@ -319,9 +319,6 @@ def _is_suppressed_startup_admin_message(message: str) -> bool:
             "scope=startup",
             "watchdog started",
             "watchdog loop started",
-            "watcher enabled",
-            "welcome watcher",
-            "promo watcher",
             "scheduler interval",
             "scheduler intervals",
         )
