@@ -131,3 +131,28 @@ def test_get_sent_reminder_keys_does_not_require_sent_at_header(monkeypatch: pyt
     sent = asyncio.run(fusion_sheets.get_sent_reminder_keys("f-1"))
 
     assert sent == {("e-1", "start")}
+
+
+def test_get_fusion_reminder_settings_reads_configured_tab(monkeypatch: pytest.MonkeyPatch):
+    _install_config(
+        monkeypatch,
+        {
+            "FUSION_REMINDER_SETTINGS_TAB": "FusionReminderSettings",
+        },
+    )
+    monkeypatch.setattr(fusion_sheets, "_sheet_id", lambda: "sheet-1")
+
+    async def _afetch_records(sheet_id: str, tab_name: str):
+        assert sheet_id == "sheet-1"
+        assert tab_name == "FusionReminderSettings"
+        return [
+            {"key": "group_events", "value": "TRUE"},
+            {"key": "upcoming_window_days", "value": "3"},
+            {"key": "include_upcoming_events", "value": "TRUE"},
+        ]
+
+    monkeypatch.setattr(fusion_sheets, "afetch_records", _afetch_records)
+    settings = asyncio.run(fusion_sheets.get_fusion_reminder_settings())
+    assert settings.group_events is True
+    assert settings.upcoming_window_days == 3
+    assert settings.include_upcoming_events is True

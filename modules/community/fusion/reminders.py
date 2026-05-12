@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import logging
 import os
 import time
@@ -18,7 +19,6 @@ from shared.sheets import fusion as fusion_sheets
 
 log = logging.getLogger("c1c.community.fusion.reminders")
 
-_PRESTART_HOURS = max(1, int(os.getenv("FUSION_PRESTART_REMINDER_HOURS", "6")))
 _LOOKBACK_MINUTES = max(5, int(os.getenv("FUSION_REMINDER_LOOKBACK_MIN", "30")))
 _DEDUP_TIMEOUT_BACKOFF_SEC = max(60, int(os.getenv("FUSION_REMINDER_DEDUPE_BACKOFF_SEC", "300")))
 _DEDUP_TIMEOUT_SEC = max(1.0, float(os.getenv("FUSION_REMINDER_DEDUPE_TIMEOUT_SEC", "10")))
@@ -51,6 +51,7 @@ def _build_reminder_embed(
     reward_unit: str,
 ) -> discord.Embed:
     jump_link = f"[Open Fusion Overview]({jump_url})"
+    prestart_hours = max(1, int(os.getenv("FUSION_PRESTART_REMINDER_HOURS", "6")))
     if reminder_type == "start":
         title = "Fusion Reminder"
         description = (
@@ -60,7 +61,7 @@ def _build_reminder_embed(
         )
     else:
         title = f"⏳ {event_name} starts soon"
-        description = f"Starts in {_PRESTART_HOURS}h. Plan accordingly."
+        description = f"Starts in {prestart_hours}h. Plan accordingly."
 
     embed = discord.Embed(
         title=title,
@@ -71,6 +72,60 @@ def _build_reminder_embed(
     if reminder_type != "start":
         embed.add_field(name="Fusion", value=jump_link, inline=False)
     return embed
+
+
+def _build_grouped_embed(
+    *,
+    jump_url: str,
+    live_events: list[fusion_sheets.FusionEventRow],
+    starting_soon_events: list[fusion_sheets.FusionEventRow],
+    upcoming_events: list[fusion_sheets.FusionEventRow],
+    ending_events: list[fusion_sheets.FusionEventRow],
+) -> discord.Embed:
+    embed = discord.Embed(
+        title="Fusion Reminder",
+        description=f"🔗 [Open Fusion Overview]({jump_url})",
+        color=discord.Color.blurple(),
+    )
+    if live_events:
+        embed.add_field(
+            name="Live now",
+            value="\n".join(f"• {event.event_name}" for event in live_events[:10]),
+            inline=False,
+        )
+    if starting_soon_events:
+        embed.add_field(
+            name="Starting soon",
+            value="\n".join(f"• {event.event_name}" for event in starting_soon_events[:10]),
+            inline=False,
+        )
+    if upcoming_events:
+        embed.add_field(
+            name="Upcoming / planning",
+            value="\n".join(f"• {event.event_name}" for event in upcoming_events[:10]),
+            inline=False,
+        )
+    if ending_events:
+        embed.add_field(
+            name="Ending soon",
+            value="\n".join(f"• {event.event_name}" for event in ending_events[:10]),
+            inline=False,
+        )
+    return embed
+
+
+def _grouped_event_bucket_key(
+    *,
+    live_events: list[fusion_sheets.FusionEventRow],
+    starting_soon_events: list[fusion_sheets.FusionEventRow],
+    ending_events: list[fusion_sheets.FusionEventRow],
+) -> str:
+    tokens: list[str] = []
+    tokens.extend(f"live:{event.event_id}" for event in sorted(live_events, key=lambda e: e.event_id))
+    tokens.extend(f"starting_soon:{event.event_id}" for event in sorted(starting_soon_events, key=lambda e: e.event_id))
+    tokens.extend(f"ending:{event.event_id}" for event in sorted(ending_events, key=lambda e: e.event_id))
+    digest = hashlib.sha1("|".join(tokens).encode("utf-8")).hexdigest()[:12] if tokens else "empty"
+    return f"grouped:{digest}"
 
 
 async def process_fusion_reminders(
@@ -196,14 +251,73 @@ async def process_fusion_reminders(
         )
         return
 
+    settings = await fusion_sheets.get_fusion_reminder_settings()
+    if settings.group_events:
+        live_events: list[fusion_sheets.FusionEventRow] = []
+        starting_soon_events: list[fusion_sheets.FusionEventRow] = []
+        upcoming_events: list[fusion_sheets.FusionEventRow] = []
+        ending_events: list[fusion_sheets.FusionEventRow] = []
+        for event in events:
+            timing = fusion_sheets.get_valid_event_timing(event, for_helper="fusion_reminders")
+            if timing is None:
+                continue
+            start_at, end_at = timing
+            if settings.include_start_events and start_at <= reference and (end_at is None or reference < end_at):
+                live_events.append(event)
+            if settings.include_upcoming_events:
+                start_due_at = start_at - dt.timedelta(minutes=settings.start_offset_minutes)
+                upcoming_horizon = reference + dt.timedelta(days=settings.upcoming_window_days)
+                if start_due_at <= reference < start_at:
+                    starting_soon_events.append(event)
+                elif reference < start_at <= upcoming_horizon:
+                    upcoming_events.append(event)
+            if settings.include_ending_events and end_at is not None:
+                if reference <= end_at <= reference + dt.timedelta(hours=settings.end_lookahead_hours):
+                    ending_events.append(event)
+        due_trigger_events = bool(live_events or starting_soon_events or ending_events)
+        if due_trigger_events:
+            reminder_type = "grouped"
+            group_event_key = _grouped_event_bucket_key(
+                live_events=live_events,
+                starting_soon_events=starting_soon_events,
+                ending_events=ending_events,
+            )
+            group_key = (group_event_key, reminder_type)
+            if group_key not in sent_keys:
+                announcement_message = await ensure_fusion_announcement(bot, target)
+                if announcement_message is not None:
+                    embed = _build_grouped_embed(
+                        jump_url=announcement_message.jump_url,
+                        live_events=live_events,
+                        starting_soon_events=starting_soon_events,
+                        upcoming_events=upcoming_events,
+                        ending_events=ending_events,
+                    )
+                    mention_content = f"<@&{target.opt_in_role_id}>" if target.opt_in_role_id else None
+                    await announcement_message.channel.send(
+                        content=mention_content,
+                        embed=embed,
+                        view=build_fusion_opt_in_view(target),
+                    )
+                    if durable_dedupe_available:
+                        await fusion_sheets.mark_reminder_sent(
+                            target.fusion_id,
+                            event_id=group_event_key,
+                            reminder_type=reminder_type,
+                            sent_at=reference,
+                        )
+                    sent_keys.add(group_key)
+        return
+
     for event in events:
         timing = fusion_sheets.get_valid_event_timing(event, for_helper="fusion_reminders")
         if timing is None:
             continue
         start_at, _ = timing
+        prestart_hours = max(1, int(os.getenv("FUSION_PRESTART_REMINDER_HOURS", "6")))
 
         triggers: list[tuple[str, dt.datetime]] = [
-            ("prestart_6h", start_at - dt.timedelta(hours=_PRESTART_HOURS)),
+            ("prestart_6h", start_at - dt.timedelta(hours=prestart_hours)),
             ("start", start_at),
         ]
 
