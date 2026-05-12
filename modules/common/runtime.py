@@ -1285,6 +1285,11 @@ class Runtime:
             log.info("modules: clan_profile enabled")
         else:
             log.info("modules: clan_profile disabled")
+
+        from cogs import clanrole_management
+
+        await clanrole_management.setup(self.bot)
+        log.info("modules: clanrole_management enabled")
         await _load_feature_module(
             "cogs.recruitment_welcome", ("recruitment_welcome",)
         )

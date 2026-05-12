@@ -6,8 +6,10 @@ from unittest.mock import AsyncMock
 import discord
 import asyncio
 import pytest
+from discord.ext import commands
 
-from cogs.clanrole_management import ClanRoleManagementCog, ClanRoleRemoveView, get_member_clan_roles, is_authorized_clan_role_manager
+from cogs import recruitment_clan_profile
+from cogs.clanrole_management import ClanRoleManagementCog, ClanRoleRemoveView, get_member_clan_roles, is_authorized_clan_role_manager, setup
 
 
 class DummyRole:
@@ -168,3 +170,32 @@ def test_missing_configured_roles_reported(roles, monkeypatch):
     msg = asyncio.run(cog.apply_clan_removal_cleanup(ctx, member, roles["clan1"]))
     assert "Configured Raid role could not be found" in msg
     assert "Configured Wandering Souls role could not be found" in msg
+
+
+def test_setup_registers_clanrole_commands():
+    async def _run():
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        try:
+            await setup(bot)
+            command = bot.get_command("clanrole")
+            assert command is not None
+            assert command.name == "clanrole"
+            assert command.get_command("remove") is not None
+        finally:
+            await bot.close()
+
+    asyncio.run(_run())
+
+
+def test_clan_command_unchanged_after_clanrole_setup():
+    async def _run():
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        try:
+            await recruitment_clan_profile.setup(bot)
+            await setup(bot)
+            assert bot.get_command("clan") is not None
+            assert bot.get_command("clanrole") is not None
+        finally:
+            await bot.close()
+
+    asyncio.run(_run())
