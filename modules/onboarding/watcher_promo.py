@@ -495,6 +495,8 @@ class PromoTicketWatcher(commands.Cog):
         prompt_message: Optional[discord.Message],
         view: Optional[PromoClanSelectView],
     ) -> None:
+        if context.state != "awaiting_clan":
+            return
         final_tag = (final_tag or "").strip().upper()
         if not final_tag:
             return
@@ -505,7 +507,6 @@ class PromoTicketWatcher(commands.Cog):
             return
 
         context.clan_tag = final_tag
-        context.state = "awaiting_details"
 
         if view is not None:
             view.stop()
@@ -515,11 +516,30 @@ class PromoTicketWatcher(commands.Cog):
             except Exception:
                 prompt_message = None
 
-        followup = (
-            f"Logged clan tag **{final_tag}**."
-            " Please reply with progression (e.g. `TH10`) and optional clan name in the format"
-            " `progression | clan name`, or type `skip` to leave them blank."
+        await self._complete_close(
+            thread,
+            context,
+            progression="",
+            clan_name="",
         )
+        if context.state != "closed":
+            return
+
+        updated_name = getattr(thread, "name", "") or ""
+        if updated_name and not updated_name.upper().endswith(f"-{final_tag}"):
+            renamed = f"{updated_name}-{final_tag}"
+            if len(renamed) > 100:
+                renamed = renamed[:100]
+            try:
+                await thread.edit(name=renamed)
+            except Exception:
+                log.debug(
+                    "promo watcher: failed to rename thread after clan finalization",
+                    exc_info=True,
+                    extra={"thread_id": getattr(thread, "id", None), "ticket": context.ticket_number},
+                )
+
+        followup = f"✅ Logged clan tag **{final_tag}** to Promo and closed this promo workflow."
         if prompt_message is not None:
             try:
                 await prompt_message.edit(content=followup, view=None)
@@ -773,7 +793,7 @@ class PromoTicketWatcher(commands.Cog):
         context = await self._ensure_context(after)
         if context is None:
             return
-        if context.state in {"awaiting_clan", "awaiting_details", "closed"}:
+        if context.state in {"awaiting_clan", "closed"}:
             return
         if getattr(after, "id", None) in self._auto_closed_threads:
             context.state = "closed"
@@ -894,11 +914,6 @@ class PromoTicketWatcher(commands.Cog):
                 prompt_message=None,
                 view=None,
             )
-            return
-
-        if context.state == "awaiting_details":
-            progression, clan_name = self._parse_progression_payload(message.content or "")
-            await self._complete_close(thread, context, progression, clan_name)
             return
 
         trigger_key, flow_key = _promo_trigger_from_content(message.content)
