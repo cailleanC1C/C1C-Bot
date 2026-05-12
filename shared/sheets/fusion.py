@@ -26,6 +26,7 @@ _FUSION_EVENTS_BUCKET = "fusion_events"
 _LAST_FUSION_PARSE_ERRORS: dict[str, str] = {}
 _FUSION_REMINDER_TAB_KEY = "FUSION_REMINDER_TAB"
 _FUSION_PROGRESS_TAB_KEY = "FUSION_USER_EVENT_PROGRESS_TAB"
+_FUSION_REMINDER_SETTINGS_TAB_KEY = "FUSION_REMINDER_SETTINGS_TAB"
 _PROGRESS_ALLOWED_STATUSES = {"not_started", "in_progress", "done", "done_bonus", "skipped"}
 _FUSION_REMINDER_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "fusion_id": ("fusion_id",),
@@ -98,6 +99,17 @@ class FusionUserEventProgressRow:
     milestone_key: str
     status: str
     updated_at: dt.datetime
+
+
+@dataclass(frozen=True, slots=True)
+class FusionReminderSettings:
+    start_offset_minutes: int = 360
+    end_lookahead_hours: int = 24
+    upcoming_window_days: int = 2
+    group_events: bool = False
+    include_start_events: bool = True
+    include_ending_events: bool = False
+    include_upcoming_events: bool = False
 
 
 def _resolve_tab_name(key: str) -> str:
@@ -201,6 +213,13 @@ def _parse_milestones(value: object, *, fusion_id: str, event_id: str) -> tuple[
 def _parse_bool(value: object) -> bool:
     text = str(value or "").strip().lower()
     return text in {"1", "true", "yes", "y"}
+
+
+def _parse_nonnegative_int(value: object, default: int) -> int:
+    parsed = _parse_int_optional(value)
+    if parsed is None or parsed < 0:
+        return default
+    return parsed
 
 
 def _parse_discord_id(value: object) -> int | None:
@@ -734,6 +753,27 @@ async def get_active_events(
     return [item[1] for item in active]
 
 
+async def get_fusion_reminder_settings() -> FusionReminderSettings:
+    tab_name = _resolve_tab_name(_FUSION_REMINDER_SETTINGS_TAB_KEY)
+    rows = await afetch_records(_sheet_id(), tab_name)
+    parsed: dict[str, object] = {}
+    for raw in rows or []:
+        row = _normalize(raw)
+        key = str(_pick(row, "key", "setting", "name") or "").strip().lower()
+        value = _pick(row, "value", "setting_value")
+        if key:
+            parsed[key] = value
+    return FusionReminderSettings(
+        start_offset_minutes=_parse_nonnegative_int(parsed.get("start_offset_minutes"), 360),
+        end_lookahead_hours=_parse_nonnegative_int(parsed.get("end_lookahead_hours"), 24),
+        upcoming_window_days=_parse_nonnegative_int(parsed.get("upcoming_window_days"), 2),
+        group_events=_parse_bool(parsed.get("group_events")),
+        include_start_events=_parse_bool(parsed.get("include_start_events", True)),
+        include_ending_events=_parse_bool(parsed.get("include_ending_events")),
+        include_upcoming_events=_parse_bool(parsed.get("include_upcoming_events")),
+    )
+
+
 def get_valid_event_timing(
     event: FusionEventRow,
     *,
@@ -1213,6 +1253,7 @@ __all__ = [
     "FusionEventRow",
     "FusionRow",
     "FusionUserEventProgressRow",
+    "FusionReminderSettings",
     "get_active_fusion",
     "get_ended_fusions",
     "get_published_fusions",
@@ -1226,6 +1267,7 @@ __all__ = [
     "reminder_dedupe_backend_metadata",
     "get_user_event_progress",
     "get_upcoming_events",
+    "get_fusion_reminder_settings",
     "mark_reminder_sent",
     "upsert_user_event_progress",
     "update_fusion_publication",
