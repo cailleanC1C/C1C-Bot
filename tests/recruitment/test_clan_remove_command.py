@@ -9,7 +9,7 @@ import pytest
 from discord.ext import commands
 
 from cogs import recruitment_clan_profile
-from cogs.clanrole_management import ClanRoleManagementCog, ClanRoleRemoveView, get_member_clan_roles, is_authorized_clan_role_manager, setup
+from cogs.clanrole_management import ClanRoleManagementCog, ClanRoleRemoveView, ClanRoleTargetView, get_member_clan_roles, is_authorized_clan_role_manager, setup
 
 
 class DummyRole:
@@ -20,11 +20,14 @@ class DummyRole:
 
 
 class DummyMember:
-    def __init__(self, mid: int, roles: list[DummyRole], guild, admin: bool = False):
+    def __init__(self, mid: int, roles: list[DummyRole], guild, admin: bool = False, *, display_name: str | None = None, name: str | None = None, global_name: str | None = None):
         self.id = mid
         self.roles = roles
         self.guild = guild
         self.mention = f"<@{mid}>"
+        self.display_name = display_name or f"display-{mid}"
+        self.name = name or f"user-{mid}"
+        self.global_name = global_name
         self.guild_permissions = SimpleNamespace(administrator=admin)
         self.remove_roles = AsyncMock(side_effect=self._remove)
         self.add_roles = AsyncMock(side_effect=self._add)
@@ -120,6 +123,141 @@ def test_multiple_roles_view_restricts_invoker(roles):
     interaction = SimpleNamespace(user=SimpleNamespace(id=99), response=SimpleNamespace(send_message=AsyncMock()))
     ok = asyncio.run(view.interaction_check(interaction))
     assert ok is False
+
+
+def test_target_view_restricts_invoker(roles):
+    cog = ClanRoleManagementCog()
+    guild = SimpleNamespace()
+    author = DummyMember(1, [roles["mgr"]], guild)
+    target = DummyMember(2, [roles["clan1"]], guild)
+    view = ClanRoleTargetView(cog, _ctx(author), [target])
+    interaction = SimpleNamespace(user=SimpleNamespace(id=99), response=SimpleNamespace(send_message=AsyncMock()))
+    ok = asyncio.run(view.interaction_check(interaction))
+    assert ok is False
+
+
+def test_resolve_member_query_exact_name_preferred_over_startswith(roles):
+    guild = SimpleNamespace(
+        members=[
+            DummyMember(1, [], None, display_name="Smurfette", name="smurfette"),
+            DummyMember(2, [], None, display_name="Smurf", name="smurf"),
+        ],
+        get_member=lambda mid: None,
+        fetch_member=AsyncMock(),
+    )
+    for member in guild.members:
+        member.guild = guild
+    ctx = SimpleNamespace(guild=guild)
+    found = asyncio.run(ClanRoleManagementCog().resolve_member_query(ctx, "smurf"))
+    assert [m.id for m in found] == [2]
+
+
+def test_resolve_member_query_exact_username(roles):
+    target = DummyMember(2, [], None, display_name="Foo", name="Caillean")
+    guild = SimpleNamespace(members=[target], get_member=lambda mid: None, fetch_member=AsyncMock())
+    target.guild = guild
+    found = asyncio.run(ClanRoleManagementCog().resolve_member_query(SimpleNamespace(guild=guild), "caillean"))
+    assert [m.id for m in found] == [2]
+
+
+def test_resolve_member_query_exact_global_name(roles):
+    target = DummyMember(2, [], None, display_name="Foo", name="bar", global_name="Smurf")
+    guild = SimpleNamespace(members=[target], get_member=lambda mid: None, fetch_member=AsyncMock())
+    target.guild = guild
+    found = asyncio.run(ClanRoleManagementCog().resolve_member_query(SimpleNamespace(guild=guild), "smurf"))
+    assert [m.id for m in found] == [2]
+
+
+def test_resolve_member_query_startswith_unique(roles):
+    target = DummyMember(2, [], None, display_name="Smurfy", name="bar")
+    guild = SimpleNamespace(members=[target], get_member=lambda mid: None, fetch_member=AsyncMock())
+    target.guild = guild
+    found = asyncio.run(ClanRoleManagementCog().resolve_member_query(SimpleNamespace(guild=guild), "smu"))
+    assert [m.id for m in found] == [2]
+
+
+def test_resolve_member_query_mention_and_id(roles):
+    target = DummyMember(42, [], None)
+    guild = SimpleNamespace(
+        members=[target],
+        get_member=lambda mid: target if mid == 42 else None,
+        fetch_member=AsyncMock(return_value=None),
+    )
+    target.guild = guild
+    cog = ClanRoleManagementCog()
+    assert [m.id for m in asyncio.run(cog.resolve_member_query(SimpleNamespace(guild=guild), "<@42>"))] == [42]
+    assert [m.id for m in asyncio.run(cog.resolve_member_query(SimpleNamespace(guild=guild), "42"))] == [42]
+
+
+def test_clanrole_remove_no_match_warning(roles, monkeypatch):
+    guild = SimpleNamespace(members=[], get_member=lambda _: None, fetch_member=AsyncMock())
+    author = DummyMember(1, [roles["mgr"]], guild)
+    ctx = SimpleNamespace(author=author, guild=guild, reply=AsyncMock())
+    monkeypatch.setattr("cogs.clanrole_management.is_authorized_clan_role_manager", lambda _: True)
+    asyncio.run(ClanRoleManagementCog().clanrole_remove.callback(ClanRoleManagementCog(), ctx, member_query="nobody"))
+    assert "No matching member found" in ctx.reply.await_args.kwargs["content"] if "content" in ctx.reply.await_args.kwargs else ctx.reply.await_args.args[0]
+
+
+def test_multiple_matches_shows_target_dropdown_and_no_mutation(roles, monkeypatch):
+    guild = SimpleNamespace(get_member=lambda _: None, fetch_member=AsyncMock())
+    t1 = DummyMember(2, [roles["clan1"]], guild, display_name="smurf-one", name="smurfone")
+    t2 = DummyMember(3, [roles["clan1"]], guild, display_name="smurf-two", name="smurftwo")
+    guild.members = [t1, t2]
+    author = DummyMember(1, [roles["mgr"]], guild)
+    ctx = SimpleNamespace(author=author, guild=guild, reply=AsyncMock())
+    monkeypatch.setattr("cogs.clanrole_management.is_authorized_clan_role_manager", lambda _: True)
+    cog = ClanRoleManagementCog()
+    asyncio.run(cog.clanrole_remove.callback(cog, ctx, member_query="smurf"))
+    assert ctx.reply.await_count == 1
+    assert t1.remove_roles.await_count == 0 and t2.remove_roles.await_count == 0
+
+
+def test_existing_multiclan_dropdown_after_text_resolution(roles, monkeypatch):
+    guild = SimpleNamespace(get_member=lambda _: None, fetch_member=AsyncMock())
+    target = DummyMember(2, [roles["clan1"], roles["clan2"]], guild, display_name="Caillean", name="caillean")
+    guild.members = [target]
+    author = DummyMember(1, [roles["mgr"]], guild)
+    ctx = SimpleNamespace(author=author, guild=guild, reply=AsyncMock())
+    monkeypatch.setattr("cogs.clanrole_management.is_authorized_clan_role_manager", lambda _: True)
+    monkeypatch.setattr("cogs.clanrole_management.config.get_clan_role_ids", lambda: {1, 2})
+    cog = ClanRoleManagementCog()
+    asyncio.run(cog.clanrole_remove.callback(cog, ctx, member_query="Caillean"))
+    assert ctx.reply.await_count == 1
+    assert target.remove_roles.await_count == 0
+
+
+def test_target_selection_with_multiclan_edits_interaction_without_ctx_reply(roles, monkeypatch):
+    guild = SimpleNamespace()
+    author = DummyMember(1, [roles["mgr"]], guild)
+    target = DummyMember(2, [roles["clan1"], roles["clan2"]], guild, display_name="Caillean", name="caillean")
+    guild.get_member = lambda mid: target if mid == 2 else None
+    guild.members = [target]
+    ctx = SimpleNamespace(author=author, guild=guild, reply=AsyncMock())
+    monkeypatch.setattr("cogs.clanrole_management.config.get_clan_role_ids", lambda: {1, 2})
+    cog = ClanRoleManagementCog()
+    view = ClanRoleTargetView(cog, ctx, [target])
+    interaction = SimpleNamespace(message=SimpleNamespace(id=101), response=SimpleNamespace(edit_message=AsyncMock()))
+    asyncio.run(view.handle_selection(interaction, 2))
+    assert ctx.reply.await_count == 0
+    assert interaction.response.edit_message.await_count == 1
+
+
+def test_target_selection_multiclan_sets_remove_view_message_reference(roles, monkeypatch):
+    guild = SimpleNamespace()
+    author = DummyMember(1, [roles["mgr"]], guild)
+    target = DummyMember(2, [roles["clan1"], roles["clan2"]], guild, display_name="Caillean", name="caillean")
+    guild.get_member = lambda mid: target if mid == 2 else None
+    guild.members = [target]
+    ctx = SimpleNamespace(author=author, guild=guild, reply=AsyncMock())
+    monkeypatch.setattr("cogs.clanrole_management.config.get_clan_role_ids", lambda: {1, 2})
+    cog = ClanRoleManagementCog()
+    view = ClanRoleTargetView(cog, ctx, [target])
+    interaction_message = SimpleNamespace(id=999)
+    interaction = SimpleNamespace(message=interaction_message, response=SimpleNamespace(edit_message=AsyncMock()))
+    asyncio.run(view.handle_selection(interaction, 2))
+    passed_view = interaction.response.edit_message.await_args.kwargs["view"]
+    assert isinstance(passed_view, ClanRoleRemoveView)
+    assert passed_view.message is interaction_message
 
 
 def test_remaining_clan_detection_excludes_removed_role_without_cache_refresh(roles, monkeypatch):
