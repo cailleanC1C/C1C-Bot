@@ -365,7 +365,10 @@ class LeaguesCog(commands.Cog):
 
         reaction_roles_attached: int | None = None
         try:
-            announcement_message = await announcement_channel.send(embed=announcement_embed)
+            announcement_message = await announcement_channel.send(
+                content=self._league_role_mention(),
+                embed=announcement_embed,
+            )
         except Exception as exc:
             log.exception("leagues announcement failed")
             await self._post_status(
@@ -511,34 +514,35 @@ class LeaguesCog(commands.Cog):
 
         return discord.File(fp=io.BytesIO(png_bytes), filename=filename)
 
+    def _league_role_mention(self) -> str:
+        role_id = self._parse_int_env("C1C_LEAGUE_ROLE_ID")
+        return f"<@&{role_id}>" if role_id else "@C1CLeague"
+
     def _build_announcement(
         self, bundles: Iterable[LeagueBundle], jump_links: Mapping[str, str]
     ) -> str:
         jump_map = {bundle.slug: jump_links[bundle.slug] for bundle in bundles}
-        role_id = self._parse_int_env("C1C_LEAGUE_ROLE_ID")
-        mention = f"<@&{role_id}>" if role_id else "@C1CLeague"
         return "\n".join(
             [
-                f"📊 Shifting Echoes from the {mention} …",
+                "# Shifting Echoes from the C1CLeague …",
                 "",
                 "The climb never truly stops. Each week, new names rise, old banners hold the line, and some records quietly fall in the dust behind you.",
                 "",
-                "🦅 Legendary League  ",
+                "🦅 **Legendary League**  ",
                 "The gates never close for long. New contenders keep pushing the limits, and the old guard keeps proving why they’re still on top.",
                 "",
-                "🌟 Rising Stars League  ",
+                "🌟 **Rising Stars League**  ",
                 "Not every victory is shouted from rooftops. Some of you are carving your place into the stone one quiet, relentless step at a time.",
                 "",
-                "⚡ Stormforged League  ",
+                "⚡ **Stormforged League**  ",
                 "Where clans clash, storms crackle, and every key, banner and fight adds another spark to the scoreboard.",
                 "",
                 "Want to see what stirred the rankings this time?",
                 "",
-                f"🔹 Legendary League – [Jump to this week’s update]({jump_map['legendary']})  ",
-                f"🔹 Rising Stars League – [Jump to this week’s update]({jump_map['rising']})  ",
-                f"🔹 Stormforged League – [Jump to this week’s update]({jump_map['storm']})",
+                f"🔹 **Legendary League** – [Jump to this week’s update]({jump_map['legendary']})  ",
+                f"🔹 **Rising Stars League** – [Jump to this week’s update]({jump_map['rising']})  ",
+                f"🔹 **Stormforged League** – [Jump to this week’s update]({jump_map['storm']})",
                 "",
-                mention,
             ]
         )
 
