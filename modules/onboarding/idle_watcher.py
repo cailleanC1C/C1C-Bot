@@ -112,7 +112,7 @@ async def _ticket_needs_onboarding_reminder(row: dict, thread: discord.Thread) -
         return False
     if _is_thread_archived_or_locked(thread):
         return False
-    if row.get("completed"):
+    if row.get("completed") or row.get("completed_at"):
         return False
 
     durable_summary_keys = (
@@ -253,7 +253,7 @@ async def _handle_row(
     if not user_id or not thread_id:
         return
 
-    if row.get("completed"):
+    if row.get("completed") or row.get("completed_at"):
         return
     if row.get("auto_closed_at"):
         return

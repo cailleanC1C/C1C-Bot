@@ -67,8 +67,8 @@ def load(user_id: int | None, thread_id: int) -> Optional[Dict[str, Any]]:
 
     panel_id = _safe_int(record.get("panel_message_id"))
     completed_token = str(record.get("completed", "")).strip().lower()
-    completed = completed_token in {"true", "1", "yes", "true"}
     completed_at = record.get("completed_at") or None
+    completed = completed_token in {"true", "1", "yes", "true"} or bool(completed_at)
     return {
         "thread_name": record.get("thread_name") or "",
         "user_id": str(record.get("user_id") or ""),
@@ -110,8 +110,8 @@ def load_all() -> list[Dict[str, Any]]:
 
         panel_id = _safe_int(record.get("panel_message_id"))
         completed_token = str(record.get("completed", "")).strip().lower()
-        completed = completed_token in {"true", "1", "yes", "true"}
         completed_at = record.get("completed_at") or None
+        completed = completed_token in {"true", "1", "yes", "true"} or bool(completed_at)
 
         sessions.append(
             {
@@ -329,14 +329,19 @@ def _record_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(completed_value, str):
         completed_value = completed_value.strip().lower() in {"true", "1", "yes"}
 
+    completed_at_value = payload.get("completed_at") or ""
+    completed_flag = bool(completed_value)
+    if completed_at_value and not completed_flag:
+        completed_flag = True
+
     return {
         "thread_name": str(payload.get("thread_name") or ""),
         "user_id": str(payload.get("user_id") or ""),
         "thread_id": str(payload.get("thread_id") or ""),
         "panel_message_id": _safe_int(payload.get("panel_message_id"), default="") or "",
         "step_index": _safe_int(payload.get("step_index"), default=0) or 0,
-        "completed": bool(completed_value),
-        "completed_at": payload.get("completed_at") or "",
+        "completed": completed_flag,
+        "completed_at": completed_at_value,
         "answers_json": answers_json,
         "answers": answers or {},
         "updated_at": updated_at,
@@ -472,14 +477,16 @@ def _session_from_record(record: Dict[str, Any]) -> Dict[str, Any]:
         answers = {}
     panel_id = _safe_int(record.get("panel_message_id"))
     completed_token = str(record.get("completed", "")).strip().lower()
+    completed_at = record.get("completed_at") or None
+    completed = completed_token in {"true", "1", "yes", "true"} or bool(completed_at)
     return {
         "thread_name": record.get("thread_name") or "",
         "user_id": str(record.get("user_id") or ""),
         "thread_id": str(record.get("thread_id") or ""),
         "panel_message_id": panel_id if panel_id not in (None, 0) else None,
         "step_index": _safe_int(record.get("step_index"), default=0),
-        "completed": completed_token in {"true", "1", "yes", "true"},
-        "completed_at": record.get("completed_at") or None,
+        "completed": completed,
+        "completed_at": completed_at,
         "updated_at": record.get("updated_at") or "",
         "first_reminder_at": record.get("first_reminder_at") or "",
         "warning_sent_at": record.get("warning_sent_at") or "",
