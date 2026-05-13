@@ -91,3 +91,22 @@ def test_thread_id_matching_uses_strings(monkeypatch, headers):
     assert len(sheet.appended) == 1
     record = sheet_module._record_from_row(sheet.appended[0], headers, sheet_module._header_index_map(headers))
     assert record["thread_id"] == payload["thread_id"]
+
+
+def test_completed_at_normalizes_completed_true_in_load(monkeypatch, headers):
+    payload = {
+        "thread_id": "555",
+        "thread_name": "W0555-user",
+        "user_id": "111",
+        "completed": False,
+        "completed_at": "2025-12-06T00:00:00Z",
+        "updated_at": "2025-12-06T00:00:00Z",
+    }
+    sheet = _RecordingSheet([headers, _row(payload, headers)])
+    monkeypatch.setattr(sheet_module, "_sheet", lambda: sheet)
+
+    loaded = sheet_module.load(user_id=111, thread_id=555)
+
+    assert loaded is not None
+    assert loaded["completed"] is True
+    assert loaded["completed_at"] == "2025-12-06T00:00:00Z"

@@ -165,6 +165,8 @@ class Session:
                 session.completed_at = datetime.fromisoformat(normalized)
             except Exception:
                 session.completed_at = None
+        if session.completed_at is not None and not session.completed:
+            session.completed = True
         reminder_token = row.get("first_reminder_at")
         reminder_at = _parse_iso(reminder_token) if reminder_token else None
         if reminder_at:

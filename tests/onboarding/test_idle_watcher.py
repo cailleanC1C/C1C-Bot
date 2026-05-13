@@ -27,6 +27,12 @@ class _DummyThread:
         if locked is not None:
             self.locked = locked
 
+    def history(self, *, limit=50):
+        async def _iter():
+            if False:
+                yield None
+        return _iter()
+
 
 class _DummyBot:
     def __init__(self, threads: dict[int, _DummyThread]):
@@ -40,6 +46,9 @@ class _DummyBot:
 
     async def fetch_channel(self, thread_id: int):
         return self._threads.get(thread_id)
+
+    def get_cog(self, _name: str):
+        return None
 
 
 def _fixed_now() -> datetime:
@@ -101,6 +110,34 @@ def test_idle_watcher_posts_first_reminder(monkeypatch):
     assert thread.sent
     assert "open questions" in thread.sent[0].lower()
     assert saves and saves[0].get("first_reminder_at")
+
+
+def test_idle_watcher_skips_when_completed_at_present(monkeypatch):
+    thread = _DummyThread(999)
+    bot = _DummyBot({999: thread})
+    saves: list[dict] = []
+
+    async def _resolve(_bot, _tid):
+        return thread
+
+    monkeypatch.setattr(idle_watcher, "_resolve_thread", _resolve)
+    monkeypatch.setattr(
+        idle_watcher.onboarding_sessions,
+        "load_all",
+        lambda: [_row(8.0, completed=False, completed_at="2025-01-01T10:00:00+00:00")],
+    )
+    monkeypatch.setattr(
+        idle_watcher.onboarding_sessions,
+        "update_existing",
+        lambda thread_id, payload: saves.append(payload),
+    )
+    monkeypatch.setattr(welcome_flow, "resolve_onboarding_flow", lambda t: welcome_flow.FlowResolution("welcome"))
+    monkeypatch.setattr(idle_watcher.reservation_jobs, "release_reservations_for_thread", lambda *_, **__: None)
+
+    asyncio.run(idle_watcher.run_idle_scan(bot, now=_fixed_now()))
+
+    assert thread.sent == []
+    assert saves == []
 
 
 def test_idle_watcher_posts_warning(monkeypatch):
@@ -206,3 +243,27 @@ def test_idle_watcher_autoclose_promo(monkeypatch):
     assert thread.sent and "promo ticket" in thread.sent[-1].lower()
     assert "remove the user" not in thread.sent[-1]
     assert saves and saves[0].get("auto_closed_at")
+
+
+def test_idle_watcher_skips_closed_ticket(monkeypatch):
+    thread = _DummyThread(999, name="Closed-W1234-user-NONE")
+    bot = _DummyBot({999: thread})
+    saves: list[dict] = []
+
+    async def _resolve(_bot, _tid):
+        return thread
+
+    monkeypatch.setattr(idle_watcher, "_resolve_thread", _resolve)
+    monkeypatch.setattr(idle_watcher.onboarding_sessions, "load_all", lambda: [_row(6.0)])
+    monkeypatch.setattr(
+        idle_watcher.onboarding_sessions,
+        "update_existing",
+        lambda thread_id, payload: saves.append(payload),
+    )
+    monkeypatch.setattr(welcome_flow, "resolve_onboarding_flow", lambda t: welcome_flow.FlowResolution("welcome"))
+    monkeypatch.setattr(idle_watcher.reservation_jobs, "release_reservations_for_thread", lambda *_, **__: None)
+
+    asyncio.run(idle_watcher.run_idle_scan(bot, now=_fixed_now()))
+
+    assert thread.sent == []
+    assert saves == []
