@@ -532,7 +532,7 @@ def test_share_mode_summary_posts_to_fusion_announcement_channel(monkeypatch):
 
         channel.send.assert_awaited_once()
         embed = channel.send.await_args.kwargs["embed"]
-        assert embed.title == "Progress Share — Mavara"
+        assert embed.title == "Progress Share: Mavara"
         summary_field = next(field for field in embed.fields if field.name == "Summary")
         assert "✅ Done: 1" in summary_field.value
 

@@ -30,7 +30,10 @@ def _humanize_type(value: str) -> str:
     if not text:
         return "Unknown"
     normalized = text.replace("_", " ").replace("-", " ")
-    return " ".join(token.capitalize() for token in normalized.split())
+    humanized = " ".join(token.capitalize() for token in normalized.split())
+    if str(value or "").strip().casefold() == "fragment":
+        return "Fragment Fusion"
+    return humanized
 
 
 def _status_icon(status: str) -> str:
@@ -47,7 +50,7 @@ def _format_event_line(event: FusionEventRow, *, status: str) -> str:
     reward_unit = str(event.reward_type or "").strip() or "rewards"
     bonus_text = f" (+{event.bonus:g} bonus {reward_unit})" if has_bonus else ""
     return (
-        f"{_status_icon(status)} {event.event_name} — "
+        f"{_status_icon(status)} {event.event_name} • "
         f"{points_text} for {event.reward_amount:g} {reward_unit}{bonus_text}"
     )
 
@@ -119,7 +122,7 @@ def _build_fusion_embed(
     reward_unit = str(fusion.reward_type or "").strip() or "rewards"
     fusion_type = str(fusion.fusion_type or "").strip().casefold()
     if fusion_type == "fragment":
-        goal_line = f"Goal: Collect 100 fragments to summon {fusion.champion}"
+        goal_line = f"Goal: {fusion.needed:g} fragments needed to summon {fusion.champion}"
     else:
         goal_line = f"Goal: Earn {fusion.needed:g} {reward_unit} for {fusion.champion}"
 
@@ -129,8 +132,6 @@ def _build_fusion_embed(
         f"Target: {fusion.needed:g} {reward_unit} needed / {fusion.available:g} available",
         f"Schedule: {len(events)} events" + (" • includes bonus rewards" if has_bonus else ""),
     ]
-    if fusion.fusion_structure.strip():
-        summary_lines.insert(1, fusion.fusion_structure.strip())
 
     milestones_lines = [
         f"First start: {_format_day_label(min(event_days))}" if event_days else "First start: TBA",
@@ -192,7 +193,7 @@ def _build_fusion_embed(
         if len(embed.fields) >= _EMBED_MAX_FIELDS:
             break
         lines = [
-            f"• {_format_event_line(event, status=status_by_event_id[event.event_id])}"
+            _format_event_line(event, status=status_by_event_id[event.event_id])
             for event in grouped_events[day]
         ]
         embed.add_field(
