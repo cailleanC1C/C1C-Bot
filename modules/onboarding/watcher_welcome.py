@@ -1835,10 +1835,8 @@ async def post_open_questions_panel(
             )
             if normalized_flow == "welcome":
                 try:
-                    ticket_number, username = (getattr(thread, "name", "") or "").split("-", 1)
-                    ticket_number = ticket_number.strip()
-                    username = username.strip()
-                    await welcome_tickets.save(ticket_number=ticket_number, username=username)
+                    ticket_username = (getattr(thread, "name", "") or "").split("-", 1)[1].strip()
+                    await welcome_tickets.save(ticket_number=ticket_code, username=ticket_username)
                 except Exception:
                     log.exception(
                         "failed to persist welcome ticket log", extra={"thread_id": getattr(thread, "id", None)}
@@ -3315,7 +3313,7 @@ class WelcomeTicketWatcher(commands.Cog):
             or previous_final_normalized != final_tag
         )
 
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(timezone.utc).date().isoformat()
 
         try:
             result = await log_sheet_write(

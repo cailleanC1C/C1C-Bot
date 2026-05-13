@@ -39,6 +39,7 @@ WELCOME_HEADERS: List[str] = [
     "thread_id",
     "panel_message_id",
     "status",
+    "review_reason",
     "created_at",
     "updated_at",
 ]
@@ -59,6 +60,7 @@ PROMO_HEADERS: List[str] = [
     "thread_id",
     "panel_message_id",
     "status",
+    "review_reason",
     "created_at",
     "updated_at",
 ]
@@ -67,6 +69,7 @@ WELCOME_CLAN_TAG_INDEX = 2
 WELCOME_DATE_CLOSED_INDEX = 3
 _DISCORD_ID_RE = re.compile(r"^\d{15,22}$")
 _WELCOME_TICKET_RE = re.compile(r"^[A-Z]+\d{2,}$")
+_CURRENT_TICKET_CUTOFF = datetime(2026, 4, 1, tzinfo=timezone.utc)
 
 
 def _sheet_id() -> str:
@@ -281,6 +284,30 @@ def _is_isoish(value: str) -> bool:
         return False
 
 
+def _to_iso_date(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text[:10] if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text[:10]) else text
+    return parsed.date().isoformat()
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _is_discord_id(value: str) -> bool:
     return bool(_DISCORD_ID_RE.match(str(value or "").strip()))
 
@@ -305,6 +332,20 @@ def repair_welcome_rows(ws) -> dict[str, int]:
     welcome_rows = 0
     reservation_rows = 0
     malformed_rows = 0
+    ticket_identity: dict[str, dict[str, set[str]]] = {}
+    for row in values[1:]:
+        row_values = list(row) + [""] * (len(header) - len(row))
+        ticket = _fmt_ticket(row_values[idx["ticketnumber"]].strip())
+        if not ticket:
+            continue
+        identity = ticket_identity.setdefault(ticket, {"user_ids": set(), "thread_ids": set()})
+        raw_user = row_values[idx.get("userid", -1)].strip() if idx.get("userid") is not None else ""
+        raw_thread = row_values[idx.get("threadid", -1)].strip() if idx.get("threadid") is not None else ""
+        if _is_discord_id(raw_user):
+            identity["user_ids"].add(raw_user)
+        if _is_discord_id(raw_thread):
+            identity["thread_ids"].add(raw_thread)
+
     for row_number, row in enumerate(values[1:], start=2):
         scanned += 1
         row_values = list(row) + [""] * (len(header) - len(row))
@@ -359,11 +400,42 @@ def repair_welcome_rows(ws) -> dict[str, int]:
             else:
                 legacy_rows += 1
 
-        invalid = looks_like_current_welcome and not has_user_or_thread_id
+        created_marker = _parse_dt(row_values[created_idx]) if created_idx is not None and created_idx < len(row_values) else None
+        is_current_ticket = created_marker is not None and created_marker >= _CURRENT_TICKET_CUTOFF
+        ticket_key = _fmt_ticket(ticket)
+        identity = ticket_identity.get(ticket_key, {"user_ids": set(), "thread_ids": set()})
+        review_idx = idx.get("reviewreason")
+        if is_current_ticket and looks_like_current_welcome:
+            if not _is_discord_id(user_id) and len(identity["user_ids"]) == 1 and user_id_idx is not None:
+                row_values[user_id_idx] = next(iter(identity["user_ids"]))
+                changed = True
+            if not _is_discord_id(thread_id) and len(identity["thread_ids"]) == 1 and thread_id_idx is not None:
+                row_values[thread_id_idx] = next(iter(identity["thread_ids"]))
+                changed = True
+            user_id = row_values[user_id_idx].strip() if user_id_idx is not None else ""
+            thread_id = row_values[thread_id_idx].strip() if thread_id_idx is not None else ""
+            has_user_or_thread_id = _is_discord_id(user_id) or _is_discord_id(thread_id)
+            if review_idx is not None and has_user_or_thread_id and str(row_values[review_idx] or "").strip():
+                row_values[review_idx] = ""
+                changed = True
+
+        invalid = is_current_ticket and looks_like_current_welcome and not has_user_or_thread_id
         if invalid and status_idx is not None:
             status_value = str(row_values[status_idx] or "").strip().lower()
-            if status_value not in {"invalid", "needs_review"}:
+            if len(identity["thread_ids"]) > 1:
                 row_values[status_idx] = "needs_review"
+                if review_idx is not None:
+                    row_values[review_idx] = "conflicting thread IDs"
+                changed = True
+            elif len(identity["user_ids"]) > 1:
+                row_values[status_idx] = "needs_review"
+                if review_idx is not None:
+                    row_values[review_idx] = "conflicting user IDs"
+                changed = True
+            elif status_value not in {"invalid", "needs_review", "closed"}:
+                row_values[status_idx] = "needs_review"
+                if review_idx is not None:
+                    row_values[review_idx] = "no matching ticket source found"
                 changed = True
             flagged += 1
         elif status_idx is not None and str(row_values[status_idx] or "").strip().lower() == "needs_review":
@@ -485,7 +557,7 @@ def _ticket_key_columns(
             search_values.append(ticket_value)
             break
 
-    if thread_id is not None:
+    if thread_id is not None and not _looks_like_ticket(ticket_value):
         for column, normalized in zip(header, normalized_header):
             if normalized in {"thread", "threadid"}:
                 key_columns.append((column, lambda value: str(value or "").strip()))
@@ -593,6 +665,7 @@ def append_welcome_ticket_row(
 
     clan_text = str(clan_tag or "").strip()
     closed_text = str(date_closed or "").strip()
+    closed_text = _to_iso_date(closed_text)
     if existing_match:
         try:
             clan_idx = normalized_header.index("clantag")
@@ -603,7 +676,7 @@ def append_welcome_ticket_row(
         try:
             closed_idx = normalized_header.index("dateclosed")
             if not closed_text and closed_idx < len(existing_match):
-                closed_text = str(existing_match[closed_idx] or "").strip()
+                closed_text = _to_iso_date(str(existing_match[closed_idx] or "").strip())
         except ValueError:
             pass
 
@@ -620,6 +693,7 @@ def append_welcome_ticket_row(
         "thread": str(thread_id) if thread_id is not None else "",
         "panelmessageid": str(panel_message_id or ""),
         "status": str(status or "").strip(),
+        "reviewreason": "",
         "createdat": created.isoformat(),
         "updatedat": updated.isoformat(),
     }
@@ -705,6 +779,7 @@ def append_promo_ticket_row(
         "thread": str(thread_id) if thread_id is not None else "",
         "panelmessageid": str(panel_message_id or ""),
         "status": str(status or "").strip(),
+        "reviewreason": "",
         "createdat": created.isoformat(),
         "updatedat": updated.isoformat(),
     }
