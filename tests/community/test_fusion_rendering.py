@@ -102,6 +102,7 @@ def test_build_fusion_embed_uses_dynamic_reward_labels_for_titan() -> None:
     assert "Goal: Earn 1750 points for Mavara" in (embed.description or "")
     assert "Target: 1750 points needed / 2000 available" in (embed.description or "")
     assert "for 25 points (+50 bonus points)" in embed.fields[-1].value
+    assert "—" not in embed.fields[-1].value
 
 
 def test_build_fusion_embed_fragment_goal_and_end_in_milestones() -> None:
@@ -110,6 +111,29 @@ def test_build_fusion_embed_fragment_goal_and_end_in_milestones() -> None:
 
     embed = build_fusion_announcement_embed(fragment, [event])
 
-    assert "Goal: Collect 100 fragments to summon Mavara" in (embed.description or "")
+    description = embed.description or ""
+    assert "Type: Fragment Fusion" in description
+    assert "Goal: 100 fragments needed to summon Mavara" in description
+    assert "get 100 fragments -> fuse the Champion" not in description
+    assert "—" not in description
     milestones = embed.fields[0].value or ""
     assert "End: 2026-04-22 00:00 UTC" in milestones
+
+
+def test_build_fusion_embed_event_rows_start_with_status_emoji_not_bullet() -> None:
+    events = [_event(9, 1), _event(9, 2)]
+
+    embed = build_fusion_announcement_embed(_fusion(), events, now=dt.datetime(2026, 4, 9, 10, tzinfo=dt.timezone.utc))
+
+    day_field = next(field for field in embed.fields if field.name == "Thu, Apr 9")
+    lines = (day_field.value or "").splitlines()
+    assert lines
+    for line in lines:
+        assert not line.startswith("• 🏁")
+        assert not line.startswith("• 🔥")
+        assert not line.startswith("• ⏳")
+        assert not line.startswith("• ✅")
+        assert line.startswith(("🏁 ", "🔥 ", "⏳ "))
+        assert "Event" in line
+        assert "—" not in line
+
