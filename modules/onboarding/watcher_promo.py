@@ -135,6 +135,10 @@ def _format_timestamp(value: dt.datetime) -> str:
     return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _format_date(value: dt.datetime) -> str:
+    return value.astimezone(UTC).date().isoformat()
+
+
 def _promo_trigger_from_content(content: str | None) -> Tuple[str | None, str | None]:
     text = content or ""
     for marker, flow in _PROMO_TRIGGER_MAP.items():
@@ -427,14 +431,11 @@ class PromoTicketWatcher(commands.Cog):
             )
             return
 
-        ticket_number = None
         ticket_username = None
         try:
-            ticket_number, ticket_username = (getattr(thread, "name", "") or "").split("-", 1)
-            ticket_number = ticket_number.strip()
+            _, ticket_username = (getattr(thread, "name", "") or "").split("-", 1)
             ticket_username = ticket_username.strip()
         except ValueError:
-            ticket_number = None
             ticket_username = None
 
         created_at = getattr(message, "created_at", None) or dt.datetime.now(UTC)
@@ -454,13 +455,13 @@ class PromoTicketWatcher(commands.Cog):
                 extra={"thread_id": getattr(thread, "id", None), "ticket": context.ticket_number},
             )
         else:
-            if ticket_number and ticket_username:
+            if context.ticket_number and ticket_username:
                 try:
-                    await promo_tickets.save(ticket_number, ticket_username)
+                    await promo_tickets.save(context.ticket_number, ticket_username)
                 except Exception:
                     log.exception(
                         "failed to persist promo ticket log",
-                        extra={"thread_id": getattr(thread, "id", None), "ticket": ticket_number},
+                        extra={"thread_id": getattr(thread, "id", None), "ticket": context.ticket_number},
                     )
 
     async def finalize_from_interaction(
@@ -557,7 +558,7 @@ class PromoTicketWatcher(commands.Cog):
         *,
         phase: str | None = None,
     ) -> None:
-        timestamp = _format_timestamp(dt.datetime.now(UTC))
+        timestamp = _format_date(dt.datetime.now(UTC))
         row = [
             context.ticket_number,
             context.username,

@@ -9,6 +9,8 @@ _REQUIRED_ENV_FOR_TESTS = {
     "DISCORD_TOKEN": "test-token",
     "GSPREAD_CREDENTIALS": "{}",
     "RECRUITMENT_SHEET_ID": "test-sheet",
+    "ONBOARDING_SHEET_ID": "test-onboarding-sheet",
+    "WELCOME_CHANNEL_ID": "123456789012345678",
     "COREOPS_ADMIN_BANG_ALLOWLIST": (
         "env,reload,health,digest,checksheet,config,help,ping,refresh,refresh all"
     ),

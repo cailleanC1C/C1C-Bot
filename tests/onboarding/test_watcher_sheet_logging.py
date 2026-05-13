@@ -203,7 +203,11 @@ def test_welcome_reminder_sheet_touch_logs(monkeypatch, caplog):
     thread = SimpleNamespace(id=777, name="W7777-loggy")
 
     monkeypatch.setattr(watcher_welcome.onboarding_sheets, "find_welcome_row", lambda ticket: None)
-    monkeypatch.setattr(watcher_welcome.onboarding_sheets, "upsert_welcome", lambda *_args, **_kwargs: "updated")
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "append_welcome_ticket_row",
+        lambda *_args, **_kwargs: "updated",
+    )
 
     with caplog.at_level("INFO", logger="c1c.onboarding.welcome_watcher"):
         asyncio.run(
@@ -287,7 +291,11 @@ def test_welcome_auto_close_logs_sheet_update(monkeypatch, caplog):
     thread = SimpleNamespace(id=999, name="W9999-closer", send=AsyncMock(), edit=AsyncMock())
 
     monkeypatch.setattr(watcher_welcome.onboarding_sheets, "find_welcome_row", lambda ticket: None)
-    monkeypatch.setattr(watcher_welcome.onboarding_sheets, "upsert_welcome", lambda *_args, **_kwargs: "updated")
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "append_welcome_ticket_row",
+        lambda *_args, **_kwargs: "updated",
+    )
     monkeypatch.setattr(watcher_welcome, "_log_finalize_summary", lambda *args, **kwargs: None)
     monkeypatch.setattr(watcher_welcome.reservations_sheets, "find_active_reservations_for_recruit", AsyncMock(return_value=[]))
     monkeypatch.setattr(watcher_welcome.recruitment_sheets, "find_clan_row", lambda *_: None)
