@@ -275,7 +275,7 @@ def test_finalize_reconciles_when_row_inserted(monkeypatch) -> None:
 
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
 
-    def fake_upsert(row, headers):  # type: ignore[no-untyped-def]
+    def fake_upsert(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         return "inserted"
 
     reservation_calls: list[str] = []
@@ -297,7 +297,7 @@ def test_finalize_reconciles_when_row_inserted(monkeypatch) -> None:
         return tag, ["", "", tag]
 
     monkeypatch.setattr(
-        "modules.onboarding.watcher_welcome.onboarding_sheets.upsert_welcome",
+        "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
         fake_upsert,
     )
     monkeypatch.setattr(
@@ -501,7 +501,7 @@ def test_ticket_open_without_mention_avoids_fallback_user(monkeypatch) -> None:
 
 
 def test_finalize_skips_when_upsert_unexpected(monkeypatch, caplog) -> None:
-    def fake_upsert(row, headers):  # type: ignore[no-untyped-def]
+    def fake_upsert(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         return "unknown"
 
     async def fail_async(*_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -511,7 +511,7 @@ def test_finalize_skips_when_upsert_unexpected(monkeypatch, caplog) -> None:
         raise AssertionError("should not read clan rows when row is unknown")
 
     monkeypatch.setattr(
-        "modules.onboarding.watcher_welcome.onboarding_sheets.upsert_welcome",
+        "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
         fake_upsert,
     )
     monkeypatch.setattr(
@@ -567,7 +567,7 @@ def test_finalize_no_reservation_consumes_open_spot(monkeypatch, caplog) -> None
 
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
 
-    def fake_upsert(row, headers):  # type: ignore[no-untyped-def]
+    def fake_upsert(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         return "updated"
 
     async def fake_find_reservations(*_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -586,7 +586,7 @@ def test_finalize_no_reservation_consumes_open_spot(monkeypatch, caplog) -> None
         return tag, ["", "", tag]
 
     monkeypatch.setattr(
-        "modules.onboarding.watcher_welcome.onboarding_sheets.upsert_welcome",
+        "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
         fake_upsert,
     )
     monkeypatch.setattr(
@@ -654,7 +654,7 @@ def test_finalize_manual_logs_manual_event(monkeypatch, caplog) -> None:
 
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
 
-    def fake_upsert(row, headers):  # type: ignore[no-untyped-def]
+    def fake_upsert(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         return "updated"
 
     async def fake_find_reservations(*_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -673,7 +673,7 @@ def test_finalize_manual_logs_manual_event(monkeypatch, caplog) -> None:
         return tag, ["", "", tag]
 
     monkeypatch.setattr(
-        "modules.onboarding.watcher_welcome.onboarding_sheets.upsert_welcome",
+        "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
         fake_upsert,
     )
     monkeypatch.setattr(
@@ -744,8 +744,8 @@ def test_finalize_manual_consumes_seat_without_reservation(monkeypatch) -> None:
 
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
 
-    def fake_upsert(row, headers):  # type: ignore[no-untyped-def]
-        rows.append(list(row))
+    def fake_upsert(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        rows.append(list(_args[:4]))
         return "inserted"
 
     async def fake_find_reservations(*_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -761,7 +761,7 @@ def test_finalize_manual_consumes_seat_without_reservation(monkeypatch) -> None:
         return tag, ["", "", tag]
 
     monkeypatch.setattr(
-        "modules.onboarding.watcher_welcome.onboarding_sheets.upsert_welcome",
+        "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
         fake_upsert,
     )
     monkeypatch.setattr(
@@ -850,7 +850,7 @@ def test_finalize_matching_reservation(monkeypatch) -> None:
 
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
 
-    def fake_upsert(row, headers):  # type: ignore[no-untyped-def]
+    def fake_upsert(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         return "updated"
 
     async def fake_find_reservations(*_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -869,7 +869,7 @@ def test_finalize_matching_reservation(monkeypatch) -> None:
         return tag, ["", "", tag]
 
     monkeypatch.setattr(
-        "modules.onboarding.watcher_welcome.onboarding_sheets.upsert_welcome",
+        "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
         fake_upsert,
     )
     monkeypatch.setattr(
@@ -935,7 +935,7 @@ def test_finalize_moved_reservation(monkeypatch) -> None:
 
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
 
-    def fake_upsert(row, headers):  # type: ignore[no-untyped-def]
+    def fake_upsert(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         return "updated"
 
     async def fake_find_reservations(*_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -954,7 +954,7 @@ def test_finalize_moved_reservation(monkeypatch) -> None:
         return tag, ["", "", tag]
 
     monkeypatch.setattr(
-        "modules.onboarding.watcher_welcome.onboarding_sheets.upsert_welcome",
+        "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
         fake_upsert,
     )
     monkeypatch.setattr(
@@ -1021,7 +1021,7 @@ def test_finalize_none_tag_cancels_reservation(monkeypatch) -> None:
 
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
 
-    def fake_upsert(row, headers):  # type: ignore[no-untyped-def]
+    def fake_upsert(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         return "updated"
 
     async def fake_find_reservations(*_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -1040,7 +1040,7 @@ def test_finalize_none_tag_cancels_reservation(monkeypatch) -> None:
         raise AssertionError("should not look up clan row for NONE")
 
     monkeypatch.setattr(
-        "modules.onboarding.watcher_welcome.onboarding_sheets.upsert_welcome",
+        "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
         fake_upsert,
     )
     monkeypatch.setattr(
@@ -1106,7 +1106,7 @@ def test_finalize_none_tag_without_reservation(monkeypatch) -> None:
 
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
 
-    def fake_upsert(row, headers):  # type: ignore[no-untyped-def]
+    def fake_upsert(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         return "updated"
 
     async def fake_find_reservations(*_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -1127,7 +1127,7 @@ def test_finalize_none_tag_without_reservation(monkeypatch) -> None:
         raise AssertionError("should not look up clan row for NONE")
 
     monkeypatch.setattr(
-        "modules.onboarding.watcher_welcome.onboarding_sheets.upsert_welcome",
+        "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
         fake_upsert,
     )
     monkeypatch.setattr(
@@ -1191,7 +1191,7 @@ def test_finalize_posts_clan_math_log(monkeypatch) -> None:
 
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
 
-    def fake_upsert(row, headers):  # type: ignore[no-untyped-def]
+    def fake_upsert(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         return "updated"
 
     async def fake_find_reservations(*_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -1239,7 +1239,7 @@ def test_finalize_posts_clan_math_log(monkeypatch) -> None:
         log_messages.append(message)
 
     monkeypatch.setattr(
-        "modules.onboarding.watcher_welcome.onboarding_sheets.upsert_welcome",
+        "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
         fake_upsert,
     )
     monkeypatch.setattr(
@@ -1317,7 +1317,7 @@ def test_finalize_error_pings_admins(monkeypatch) -> None:
 
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
 
-    def fake_upsert(row, headers):  # type: ignore[no-untyped-def]
+    def fake_upsert(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         return "updated"
 
     async def fake_find_reservations(*_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -1352,7 +1352,7 @@ def test_finalize_error_pings_admins(monkeypatch) -> None:
         log_messages.append(message)
 
     monkeypatch.setattr(
-        "modules.onboarding.watcher_welcome.onboarding_sheets.upsert_welcome",
+        "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
         fake_upsert,
     )
     monkeypatch.setattr(
@@ -1425,7 +1425,7 @@ def test_finalize_manual_path_logs_source(monkeypatch) -> None:
 
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
 
-    def fake_upsert(row, headers):  # type: ignore[no-untyped-def]
+    def fake_upsert(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         return "updated"
 
     reservation = _make_reservation("C1CE")
@@ -1474,7 +1474,7 @@ def test_finalize_manual_path_logs_source(monkeypatch) -> None:
         log_messages.append(message)
 
     monkeypatch.setattr(
-        "modules.onboarding.watcher_welcome.onboarding_sheets.upsert_welcome",
+        "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
         fake_upsert,
     )
     monkeypatch.setattr(
@@ -1555,7 +1555,7 @@ def test_finalize_non_real_tag_logs_skip_reason(monkeypatch) -> None:
 
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
     monkeypatch.setattr(
-        "modules.onboarding.watcher_welcome.onboarding_sheets.upsert_welcome",
+        "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
         lambda *_args, **_kwargs: "updated",
     )
 
@@ -1619,8 +1619,8 @@ def test_manual_close_missing_row_prompts(monkeypatch, caplog) -> None:
     def fake_find_row(ticket: str):  # type: ignore[no-untyped-def]
         return None
 
-    def fake_upsert(row, headers):  # type: ignore[no-untyped-def]
-        inserted_rows.append(list(row))
+    def fake_upsert(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        inserted_rows.append(list(_args[:4]))
         return "inserted"
 
     monkeypatch.setattr(
@@ -1628,7 +1628,7 @@ def test_manual_close_missing_row_prompts(monkeypatch, caplog) -> None:
         fake_find_row,
     )
     monkeypatch.setattr(
-        "modules.onboarding.watcher_welcome.onboarding_sheets.upsert_welcome",
+        "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
         fake_upsert,
     )
 
@@ -1674,7 +1674,7 @@ def test_manual_close_existing_clan_skips_prompt(monkeypatch) -> None:
         fake_find_row,
     )
     monkeypatch.setattr(
-        "modules.onboarding.watcher_welcome.onboarding_sheets.upsert_welcome",
+        "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
         fail_upsert,
     )
 

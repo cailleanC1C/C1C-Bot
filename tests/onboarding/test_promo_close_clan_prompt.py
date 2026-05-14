@@ -172,6 +172,10 @@ def test_promo_close_logs_open_spots_reconcile_skipped(monkeypatch, caplog):
     watcher = _setup_watcher(monkeypatch)
     ctx = _context(state="awaiting_clan")
     monkeypatch.setattr("modules.onboarding.watcher_promo.onboarding_sheets.upsert_promo", lambda *_: "updated")
+    monkeypatch.setattr("modules.onboarding.watcher_promo.onboarding_sheets.find_promo_row", lambda *_: (2, {"clantag": ""}))
+    monkeypatch.setattr("modules.onboarding.watcher_promo.recruitment_sheets.find_clan_row", lambda *_: (10, ["", "", "C1CE"]))
+    monkeypatch.setattr("modules.onboarding.watcher_promo.availability.adjust_manual_open_spots", AsyncMock())
+    monkeypatch.setattr("modules.onboarding.watcher_promo.availability.recompute_clan_availability", AsyncMock())
     watcher._load_clan_tags = AsyncMock(return_value=["C1CE"])
     thread = DummyThread(10, "closed-R1111-user")
     thread.edit = AsyncMock()
@@ -186,7 +190,8 @@ def test_promo_close_logs_open_spots_reconcile_skipped(monkeypatch, caplog):
                 view=None,
             )
         )
-    assert "reason=no_promo_open_spots_reconcile_currently" in caplog.text
+    assert "decision_result=applied_open_delta" in caplog.text
+    assert "reason=no_promo_open_spots_reconcile_currently" not in caplog.text
 
 
 def test_duplicate_close_signal_ignored_after_closed(monkeypatch):
