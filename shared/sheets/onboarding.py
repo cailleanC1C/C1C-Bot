@@ -472,9 +472,9 @@ def _queue_welcome_repair_alert(summary: dict[str, int]) -> None:
     reservation_rows = int(summary.get("reservation_rows", 0) or 0)
     malformed_rows = int(summary.get("malformed_rows", 0) or 0)
     _WELCOME_REPAIR_ALERT_PENDING = (
-        "Welcome ticket repair: "
+        "Welcome ticket metadata repair: "
         f"{repaired} repaired, {flagged} flagged for review "
-        f"(welcome={welcome_rows}, reservations={reservation_rows}, legacy={legacy_rows}, malformed={malformed_rows})"
+        f"(welcome={welcome_rows}, reservations={reservation_rows}, legacy={legacy_rows}, malformed={malformed_rows}, open_spots_repair=not_performed)"
     )
 
 

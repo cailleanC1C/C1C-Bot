@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -165,6 +166,27 @@ def test_finalize_never_enters_awaiting_details(monkeypatch):
         )
     )
     assert ctx.state == "closed"
+
+
+def test_promo_close_logs_open_spots_reconcile_skipped(monkeypatch, caplog):
+    watcher = _setup_watcher(monkeypatch)
+    ctx = _context(state="awaiting_clan")
+    monkeypatch.setattr("modules.onboarding.watcher_promo.onboarding_sheets.upsert_promo", lambda *_: "updated")
+    watcher._load_clan_tags = AsyncMock(return_value=["C1CE"])
+    thread = DummyThread(10, "closed-R1111-user")
+    thread.edit = AsyncMock()
+    with caplog.at_level(logging.INFO):
+        asyncio.run(
+            watcher._finalize_clan_tag(
+                thread,
+                ctx,
+                "C1CE",
+                actor=None,
+                prompt_message=None,
+                view=None,
+            )
+        )
+    assert "reason=no_promo_open_spots_reconcile_currently" in caplog.text
 
 
 def test_duplicate_close_signal_ignored_after_closed(monkeypatch):

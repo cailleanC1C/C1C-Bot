@@ -601,6 +601,14 @@ class PromoTicketWatcher(commands.Cog):
             context.username,
             result,
         )
+        source = "promo"
+        log.info(
+            "promo_open_spots_reconcile — ticket=%s • user=%s • clan=%s • source=%s • result=skipped • reason=no_promo_open_spots_reconcile_currently",
+            context.ticket_number,
+            context.username,
+            context.clan_tag or "-",
+            source,
+        )
         try:
             onboarding_sessions.mark_completed(getattr(thread, "id", 0))
         except Exception:

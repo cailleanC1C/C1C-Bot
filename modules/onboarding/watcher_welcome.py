@@ -1654,6 +1654,49 @@ async def _log_clan_math_event(
             "failed to send clan math log",
             extra={"ticket": context.ticket_number, "result": normalized_result},
         )
+
+
+def _decision_visibility_line(
+    *,
+    final_tag: str,
+    previous_final: str | None,
+    reservation_row: reservations_sheets.ReservationRow | None,
+    reservation_label: str,
+    consume_open_spot: bool,
+    final_is_real: bool,
+    open_deltas: Dict[str, int],
+) -> str:
+    previous_display = (previous_final or "").strip().upper() or "-"
+    reservation_state = (
+        f"matched_row={reservation_row.row_number}({reservation_label or 'unknown'})"
+        if reservation_row is not None
+        else "none"
+    )
+    if open_deltas:
+        delta_bits = ", ".join(f"{tag}:{delta:+d}" for tag, delta in sorted(open_deltas.items()))
+        return (
+            "decision: "
+            f"final_tag={final_tag or '-'} • previous_final={previous_display} • "
+            f"reservation={reservation_state} • consume_open_spot={consume_open_spot} • "
+            f"final_is_real={final_is_real} • decision_result=applied_open_delta • deltas={delta_bits}"
+        )
+
+    skip_reason = "unknown_noop"
+    if not final_is_real and final_tag and final_tag != _NO_PLACEMENT_TAG:
+        skip_reason = "non_real_final_tag"
+    elif reservation_row is not None and reservation_label in {"same", "cancelled"}:
+        skip_reason = "reservation_consumed_or_matched"
+    elif not consume_open_spot and previous_display == (final_tag or "").strip().upper():
+        skip_reason = "already_finalized_same_tag"
+    elif not consume_open_spot:
+        skip_reason = "consume_open_spot_false"
+
+    return (
+        "decision: "
+        f"final_tag={final_tag or '-'} • previous_final={previous_display} • "
+        f"reservation={reservation_state} • consume_open_spot={consume_open_spot} • "
+        f"final_is_real={final_is_real} • decision_result=skipped_open_delta • skip_reason={skip_reason}"
+    )
 async def _send_runtime(message: str) -> None:
     try:
         await rt.send_log_message(message)
@@ -3359,6 +3402,8 @@ class WelcomeTicketWatcher(commands.Cog):
         row_targets: "OrderedDict[str, str]" = OrderedDict()
         before_snapshots: Dict[str, _ClanMathRowSnapshot] = {}
         column_map: Dict[str, int] | None = None
+        final_is_real = False
+        decision_open_deltas: Dict[str, int] = {}
 
         if not row_missing:
             final_entry = (
@@ -3400,6 +3445,7 @@ class WelcomeTicketWatcher(commands.Cog):
                 previous_final=previous_final,
             )
             reservation_label = decision.label
+            decision_open_deltas = dict(decision.open_deltas)
 
             target_tags = _clan_tags_for_logging(
                 final_tag,
@@ -3462,6 +3508,17 @@ class WelcomeTicketWatcher(commands.Cog):
                 row_change_lines = _build_clan_math_row_lines(
                     row_targets, before_snapshots, after_snapshots
                 )
+
+        decision_line = _decision_visibility_line(
+            final_tag=final_tag,
+            previous_final=previous_final,
+            reservation_row=reservation_row,
+            reservation_label=reservation_label,
+            consume_open_spot=consume_open_spot,
+            final_is_real=final_is_real,
+            open_deltas=decision_open_deltas,
+        )
+        row_change_lines = [decision_line, *row_change_lines]
 
         final_display = final_tag if final_tag else _NO_PLACEMENT_TAG
         confirmation = (
