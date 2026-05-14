@@ -1304,6 +1304,7 @@ def test_finalize_posts_clan_math_log(monkeypatch) -> None:
     assert "source=ticket_tool" in message
     assert "reservation=none" in message
     assert "result=ok" in message
+    assert "decision_result=applied_open_delta" in message
     assert "- C1CE row 12" in message
     assert "open_spots: 3 → 2" in message
     assert "AF: 3 → 2" in message
@@ -1413,6 +1414,7 @@ def test_finalize_error_pings_admins(monkeypatch) -> None:
     message = log_messages[-1]
     assert "result=error" in message
     assert "reason=partial_actions" in message
+    assert "decision_result=applied_open_delta" in message
     assert "<@&111>" in message and "<@&222>" in message
     assert "open_spots: 4 → 4" in message
 
@@ -1539,10 +1541,72 @@ def test_finalize_manual_path_logs_source(monkeypatch) -> None:
     assert "source=manual_fallback" in message
     assert f"reservation=row{reservation.row_number}(same)" in message
     assert "result=ok" in message
+    assert "decision_result=skipped_open_delta" in message
+    assert "skip_reason=reservation_consumed_or_matched" in message
     assert "- C1CE row 9" in message
     assert "open_spots: 2 → 2" in message
     assert adjustments == []
     assert "<@&" not in message
+
+
+def test_finalize_non_real_tag_logs_skip_reason(monkeypatch) -> None:
+    async def fake_to_thread(func, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.onboarding_sheets.upsert_welcome",
+        lambda *_args, **_kwargs: "updated",
+    )
+
+    async def fake_find_reservations(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        return []
+
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.reservations_sheets.find_active_reservations_for_recruit",
+        fake_find_reservations,
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.recruitment_sheets.find_clan_row",
+        lambda _tag: None,
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.recruitment_sheets.get_clan_header_map",
+        lambda: {"open_spots": 4},
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.get_admin_role_ids", lambda: set()
+    )
+
+    log_messages: list[str] = []
+
+    async def fake_send_log(message: str) -> None:
+        log_messages.append(message)
+
+    monkeypatch.setattr("modules.onboarding.watcher_welcome.rt.send_log_message", fake_send_log)
+
+    async def runner() -> None:
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        watcher = WelcomeTicketWatcher(bot)
+        watcher._clan_tags = ["C1CZ", _NO_PLACEMENT_TAG]
+        watcher._clan_tag_set = set(watcher._clan_tags)
+        context = TicketContext(
+            thread_id=1,
+            ticket_number="W7777",
+            username="Tester",
+            recruit_id=12,
+            recruit_display="Tester",
+        )
+        context.state = "awaiting_clan"
+        await watcher._finalize_clan_tag(_DummyThread(), context, "C1CZ", actor=None, source="select", prompt_message=None, view=None)
+        await bot.close()
+
+    asyncio.run(runner())
+    assert log_messages
+    message = log_messages[-1]
+    assert "decision_result=skipped_open_delta" in message
+    assert "skip_reason=non_real_final_tag" in message
+    assert "open_spots" not in message or "open_spots: " not in message
 
 def test_manual_close_missing_row_prompts(monkeypatch, caplog) -> None:
     inserted_rows: list[list[str]] = []

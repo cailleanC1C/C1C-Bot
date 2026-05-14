@@ -63,3 +63,22 @@ def test_legacy_rows_not_flagged(monkeypatch):
     ws, summary = _run(values, monkeypatch)
     assert summary["flagged"] == 0
     assert ws.updated == []
+
+
+def test_repair_alert_mentions_open_spots_not_performed():
+    onboarding._WELCOME_REPAIR_ALERT_LAST_TS = 0
+    onboarding._WELCOME_REPAIR_ALERT_PENDING = None
+    onboarding._queue_welcome_repair_alert(
+        {
+            "repaired": 0,
+            "flagged": 1,
+            "welcome_rows": 1,
+            "reservation_rows": 0,
+            "legacy_rows": 0,
+            "malformed_rows": 0,
+        }
+    )
+    message = onboarding.consume_welcome_repair_alert()
+    assert message is not None
+    assert "metadata repair" in message
+    assert "open_spots_repair=not_performed" in message
