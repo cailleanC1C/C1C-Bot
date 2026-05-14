@@ -89,6 +89,9 @@ class FusionEventRow:
     milestones: tuple[FusionEventMilestone, ...] = tuple()
     is_estimated: bool = False
     sort_order: int = 0
+    embed_title: str = ""
+    embed_description: str = ""
+    embed_footer: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +113,13 @@ class FusionReminderSettings:
     include_start_events: bool = True
     include_ending_events: bool = False
     include_upcoming_events: bool = False
+    grouped_embed_title: str = ""
+    grouped_embed_description: str = ""
+    grouped_live_label: str = ""
+    grouped_upcoming_label: str = ""
+    grouped_ending_label: str = ""
+    grouped_empty_value: str = ""
+    grouped_jump_label: str = ""
 
 
 def _resolve_tab_name(key: str) -> str:
@@ -578,6 +588,9 @@ async def _load_fusion_events() -> tuple[FusionEventRow, ...]:
                     milestones=_parse_milestones(row.get("milestones"), fusion_id=str(row.get("fusion_id") or "").strip(), event_id=str(row.get("event_id") or "").strip()),
                     is_estimated=_parse_bool(row.get("is_estimated")),
                     sort_order=_parse_int(row.get("sort_order")),
+                    embed_title=str(row.get("embed_title") or "").strip(),
+                    embed_description=str(row.get("embed_description") or "").strip(),
+                    embed_footer=str(row.get("embed_footer") or "").strip(),
                 )
             )
         except Exception:
@@ -771,6 +784,13 @@ async def get_fusion_reminder_settings() -> FusionReminderSettings:
         include_start_events=_parse_bool(parsed.get("include_start_events", True)),
         include_ending_events=_parse_bool(parsed.get("include_ending_events")),
         include_upcoming_events=_parse_bool(parsed.get("include_upcoming_events")),
+        grouped_embed_title=str(parsed.get("grouped_embed_title") or "").strip(),
+        grouped_embed_description=str(parsed.get("grouped_embed_description") or "").strip(),
+        grouped_live_label=str(parsed.get("grouped_live_label") or "").strip(),
+        grouped_upcoming_label=str(parsed.get("grouped_upcoming_label") or "").strip(),
+        grouped_ending_label=str(parsed.get("grouped_ending_label") or "").strip(),
+        grouped_empty_value=str(parsed.get("grouped_empty_value") or "").strip(),
+        grouped_jump_label=str(parsed.get("grouped_jump_label") or "").strip(),
     )
 
 

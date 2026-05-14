@@ -24,7 +24,7 @@ _DEDUP_TIMEOUT_BACKOFF_SEC = max(60, int(os.getenv("FUSION_REMINDER_DEDUPE_BACKO
 _DEDUP_TIMEOUT_SEC = max(1.0, float(os.getenv("FUSION_REMINDER_DEDUPE_TIMEOUT_SEC", "10")))
 
 _DEDUP_BACKOFF_UNTIL_MONOTONIC: float = 0.0
-_FALLBACK_SENT_KEYS: set[tuple[str, str, str]] = set()
+_MEMORY_SENT_KEYS: set[tuple[str, str, str]] = set()
 _DEDUP_DEGRADED_SINCE_MONOTONIC: float = 0.0
 _DEDUP_DEGRADED_ALERTED_KEYS: set[tuple[str, str]] = set()
 _DEDUP_DEGRADED_ALERT_AFTER_SEC = 600.0
@@ -42,26 +42,92 @@ def _within_window(*, trigger_at: dt.datetime, now: dt.datetime, lookback: dt.ti
     return trigger_at <= now <= (trigger_at + lookback)
 
 
+
+
+def _format_starts_at(value: dt.datetime) -> str:
+    return value.astimezone(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _format_starts_in(*, start_at: dt.datetime, now: dt.datetime) -> str:
+    delta = start_at - now
+    total_seconds = max(0, int(delta.total_seconds()))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes = remainder // 60
+    if hours and minutes:
+        return f"{hours}h {minutes}m"
+    if hours:
+        return f"{hours}h"
+    return f"{minutes}m"
+
+
+def _interpolate_template(template: str, values: dict[str, str]) -> str:
+    text = str(template or "")
+    for key, value in values.items():
+        text = text.replace("{" + key + "}", value)
+    return text
+
+
+def _build_reminder_copy(
+    *,
+    fusion_id: str,
+    event: fusion_sheets.FusionEventRow,
+    start_at: dt.datetime,
+    now: dt.datetime,
+    fusion_title: str,
+    reward_unit: str,
+    jump_url: str,
+) -> tuple[str, str, str] | None:
+    placeholders = {
+        "event_label": event.event_name,
+        "fusion_title": fusion_title,
+        "starts_at": _format_starts_at(start_at),
+        "starts_in": _format_starts_in(start_at=start_at, now=now),
+        "reward_type": reward_unit,
+        "jump_url": jump_url,
+        "jump_link": jump_url,
+    }
+    title_template = (event.embed_title or "").strip()
+    description_template = (event.embed_description or "").strip()
+    footer_template = (event.embed_footer or "").strip()
+    if not title_template or not description_template or not footer_template:
+        log.warning(
+            "fusion reminder skipped; missing required sheet copy fields",
+            extra={
+                "fusion_id": fusion_id,
+                "event_id": event.event_id,
+                "has_embed_title": bool(title_template),
+                "has_embed_description": bool(description_template),
+                "has_embed_footer": bool(footer_template),
+            },
+        )
+        return None
+    title = _interpolate_template(title_template, placeholders)
+    description = _interpolate_template(description_template, placeholders)
+    footer = _interpolate_template(footer_template, placeholders)
+    return title, description, footer
+
 def _build_reminder_embed(
     *,
-    event_name: str,
-    reminder_type: str,
+    fusion_id: str,
+    event: fusion_sheets.FusionEventRow,
     start_at: dt.datetime,
     jump_url: str,
     reward_unit: str,
-) -> discord.Embed:
-    jump_link = f"[Open Fusion Overview]({jump_url})"
-    prestart_hours = max(1, int(os.getenv("FUSION_PRESTART_REMINDER_HOURS", "6")))
-    if reminder_type == "start":
-        title = "Fusion Reminder"
-        description = (
-            f"⚠️ **{event_name} is live**\n"
-            f"Time to put in some work — {reward_unit} won’t collect themselves.\n\n"
-            f"🔗 {jump_link}"
-        )
-    else:
-        title = f"⏳ {event_name} starts soon"
-        description = f"Starts in {prestart_hours}h. Plan accordingly."
+    now: dt.datetime,
+    fusion_title: str,
+) -> discord.Embed | None:
+    copy = _build_reminder_copy(
+        fusion_id=fusion_id,
+        event=event,
+        start_at=start_at,
+        now=now,
+        fusion_title=fusion_title,
+        reward_unit=reward_unit,
+        jump_url=jump_url,
+    )
+    if copy is None:
+        return None
+    title, description, footer = copy
 
     embed = discord.Embed(
         title=title,
@@ -69,60 +135,64 @@ def _build_reminder_embed(
         color=discord.Color.blurple(),
         timestamp=start_at,
     )
-    if reminder_type != "start":
-        embed.add_field(name="Fusion", value=jump_link, inline=False)
+    embed.set_footer(text=footer)
     return embed
 
 
 def _build_grouped_embed(
     *,
+    settings: fusion_sheets.FusionReminderSettings,
+    fusion_title: str,
     jump_url: str,
     live_events: list[fusion_sheets.FusionEventRow],
-    starting_soon_events: list[fusion_sheets.FusionEventRow],
     upcoming_events: list[fusion_sheets.FusionEventRow],
     ending_events: list[fusion_sheets.FusionEventRow],
-) -> discord.Embed:
+) -> discord.Embed | None:
+    jump_link = f"[{settings.grouped_jump_label}]({jump_url})"
+    placeholders = {
+        "fusion_title": fusion_title,
+        "jump_url": jump_url,
+        "jump_link": jump_link,
+        "live_count": str(len(live_events)),
+        "upcoming_count": str(len(upcoming_events)),
+        "ending_count": str(len(ending_events)),
+    }
     embed = discord.Embed(
-        title="Fusion Reminder",
-        description=f"🔗 [Open Fusion Overview]({jump_url})",
+        title=_interpolate_template(settings.grouped_embed_title, placeholders),
+        description=_interpolate_template(settings.grouped_embed_description, placeholders),
         color=discord.Color.blurple(),
     )
-    if live_events:
-        embed.add_field(
-            name="Live now",
-            value="\n".join(f"• {event.event_name}" for event in live_events[:10]),
-            inline=False,
-        )
-    if starting_soon_events:
-        embed.add_field(
-            name="Starting soon",
-            value="\n".join(f"• {event.event_name}" for event in starting_soon_events[:10]),
-            inline=False,
-        )
-    if upcoming_events:
-        embed.add_field(
-            name="Upcoming / planning",
-            value="\n".join(f"• {event.event_name}" for event in upcoming_events[:10]),
-            inline=False,
-        )
-    if ending_events:
-        embed.add_field(
-            name="Ending soon",
-            value="\n".join(f"• {event.event_name}" for event in ending_events[:10]),
-            inline=False,
-        )
+    def _section(events: list[fusion_sheets.FusionEventRow], label: str) -> None:
+        value = "\n".join(f"• {event.event_name}" for event in events[:10]) if events else settings.grouped_empty_value
+        embed.add_field(name=_interpolate_template(label, placeholders), value=_interpolate_template(value, placeholders), inline=False)
+    _section(live_events, settings.grouped_live_label)
+    _section(upcoming_events, settings.grouped_upcoming_label)
+    _section(ending_events, settings.grouped_ending_label)
     return embed
+
+
+def _missing_grouped_copy_fields(settings: fusion_sheets.FusionReminderSettings) -> list[str]:
+    required = {
+        "grouped_embed_title": settings.grouped_embed_title,
+        "grouped_embed_description": settings.grouped_embed_description,
+        "grouped_live_label": settings.grouped_live_label,
+        "grouped_upcoming_label": settings.grouped_upcoming_label,
+        "grouped_ending_label": settings.grouped_ending_label,
+        "grouped_empty_value": settings.grouped_empty_value,
+        "grouped_jump_label": settings.grouped_jump_label,
+    }
+    return [name for name, value in required.items() if not str(value or "").strip()]
 
 
 def _grouped_event_bucket_key(
     *,
     live_events: list[fusion_sheets.FusionEventRow],
-    starting_soon_events: list[fusion_sheets.FusionEventRow],
+    upcoming_events: list[fusion_sheets.FusionEventRow],
     ending_events: list[fusion_sheets.FusionEventRow],
 ) -> str:
     tokens: list[str] = []
     tokens.extend(f"live:{event.event_id}" for event in sorted(live_events, key=lambda e: e.event_id))
-    tokens.extend(f"starting_soon:{event.event_id}" for event in sorted(starting_soon_events, key=lambda e: e.event_id))
+    tokens.extend(f"upcoming:{event.event_id}" for event in sorted(upcoming_events, key=lambda e: e.event_id))
     tokens.extend(f"ending:{event.event_id}" for event in sorted(ending_events, key=lambda e: e.event_id))
     digest = hashlib.sha1("|".join(tokens).encode("utf-8")).hexdigest()[:12] if tokens else "empty"
     return f"grouped:{digest}"
@@ -254,7 +324,6 @@ async def process_fusion_reminders(
     settings = await fusion_sheets.get_fusion_reminder_settings()
     if settings.group_events:
         live_events: list[fusion_sheets.FusionEventRow] = []
-        starting_soon_events: list[fusion_sheets.FusionEventRow] = []
         upcoming_events: list[fusion_sheets.FusionEventRow] = []
         ending_events: list[fusion_sheets.FusionEventRow] = []
         for event in events:
@@ -268,44 +337,38 @@ async def process_fusion_reminders(
                 start_due_at = start_at - dt.timedelta(minutes=settings.start_offset_minutes)
                 upcoming_horizon = reference + dt.timedelta(days=settings.upcoming_window_days)
                 if start_due_at <= reference < start_at:
-                    starting_soon_events.append(event)
+                    upcoming_events.append(event)
                 elif reference < start_at <= upcoming_horizon:
                     upcoming_events.append(event)
-            if settings.include_ending_events and end_at is not None:
-                if reference <= end_at <= reference + dt.timedelta(hours=settings.end_lookahead_hours):
-                    ending_events.append(event)
-        due_trigger_events = bool(live_events or starting_soon_events or ending_events)
-        if due_trigger_events:
+            if settings.include_ending_events and end_at is not None and reference <= end_at <= reference + dt.timedelta(hours=settings.end_lookahead_hours):
+                ending_events.append(event)
+        if live_events or ending_events or upcoming_events:
             reminder_type = "grouped"
             group_event_key = _grouped_event_bucket_key(
                 live_events=live_events,
-                starting_soon_events=starting_soon_events,
+                upcoming_events=upcoming_events,
                 ending_events=ending_events,
             )
             group_key = (group_event_key, reminder_type)
             if group_key not in sent_keys:
                 announcement_message = await ensure_fusion_announcement(bot, target)
                 if announcement_message is not None:
+                    missing = _missing_grouped_copy_fields(settings)
+                    if missing:
+                        log.warning("fusion grouped reminder skipped; missing required sheet copy fields", extra={"fusion_id": target.fusion_id, "missing_fields": ",".join(missing)})
+                        return
                     embed = _build_grouped_embed(
+                        settings=settings,
+                        fusion_title=target.fusion_name,
                         jump_url=announcement_message.jump_url,
                         live_events=live_events,
-                        starting_soon_events=starting_soon_events,
                         upcoming_events=upcoming_events,
                         ending_events=ending_events,
                     )
                     mention_content = f"<@&{target.opt_in_role_id}>" if target.opt_in_role_id else None
-                    await announcement_message.channel.send(
-                        content=mention_content,
-                        embed=embed,
-                        view=build_fusion_opt_in_view(target),
-                    )
+                    await announcement_message.channel.send(content=mention_content, embed=embed, view=build_fusion_opt_in_view(target))
                     if durable_dedupe_available:
-                        await fusion_sheets.mark_reminder_sent(
-                            target.fusion_id,
-                            event_id=group_event_key,
-                            reminder_type=reminder_type,
-                            sent_at=reference,
-                        )
+                        await fusion_sheets.mark_reminder_sent(target.fusion_id, event_id=group_event_key, reminder_type=reminder_type, sent_at=reference)
                     sent_keys.add(group_key)
         return
 
@@ -331,7 +394,7 @@ async def process_fusion_reminders(
                 reminder_type=reminder_type,
                 backend=dedupe_backend,
             )
-            if memory_key in _FALLBACK_SENT_KEYS:
+            if memory_key in _MEMORY_SENT_KEYS:
                 continue
             if not _within_window(trigger_at=trigger_at, now=reference, lookback=lookback):
                 continue
@@ -351,12 +414,16 @@ async def process_fusion_reminders(
                     continue
 
                 embed = _build_reminder_embed(
-                    event_name=event.event_name,
-                    reminder_type=reminder_type,
+                    fusion_id=target.fusion_id,
+                    event=event,
                     start_at=start_at,
                     jump_url=announcement_message.jump_url,
-                    reward_unit=(str(target.reward_type or "").strip() or "rewards"),
+                    reward_unit=str(target.reward_type or "").strip(),
+                    now=reference,
+                    fusion_title=target.fusion_name,
                 )
+                if embed is None:
+                    continue
                 mention_content = f"<@&{target.opt_in_role_id}>" if target.opt_in_role_id else None
                 reminder_view = build_fusion_opt_in_view(target)
                 await announcement_message.channel.send(content=mention_content, embed=embed, view=reminder_view)
@@ -368,7 +435,7 @@ async def process_fusion_reminders(
                         sent_at=reference,
                     )
                 sent_keys.add(key)
-                _FALLBACK_SENT_KEYS.add(memory_key)
+                _MEMORY_SENT_KEYS.add(memory_key)
             except Exception as exc:
                 context = {
                     "fusion_id": target.fusion_id,
