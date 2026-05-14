@@ -13,6 +13,7 @@ from discord.ext import commands
 
 from modules.common import feature_flags
 from modules.common import runtime as rt
+from modules.recruitment import availability
 from modules.onboarding.constants import CLAN_TAG_PROMPT_HELPER
 from modules.onboarding import logs as onboarding_logs
 from modules.onboarding import thread_scopes
@@ -22,7 +23,10 @@ from modules.onboarding.controllers.welcome_controller import (
 )
 from modules.onboarding.sessions import ensure_session_for_thread
 from modules.onboarding.watcher_welcome import (
+    _NO_PLACEMENT_TAG,
     _channel_readable_label,
+    _decision_visibility_line,
+    _determine_reservation_decision,
     PanelOutcome,
     parse_promo_thread_name,
     persist_session_for_thread,
@@ -36,6 +40,7 @@ from shared.logs import log_lifecycle
 from shared.sheets import onboarding as onboarding_sheets
 from shared.sheets import onboarding_sessions
 from shared.sheets import promo_tickets
+from shared.sheets import recruitment as recruitment_sheets
 from shared.sheets.onboarding import PROMO_HEADERS
 
 UTC = dt.timezone.utc
@@ -517,11 +522,27 @@ class PromoTicketWatcher(commands.Cog):
             except Exception:
                 prompt_message = None
 
+        previous_final: str | None = ""
+        try:
+            existing_row = await asyncio.to_thread(
+                onboarding_sheets.find_promo_row, context.ticket_number
+            )
+            if existing_row:
+                row_values = existing_row[1]
+                previous_final = (row_values.get("clantag", "") or "").strip()
+        except Exception:
+            previous_final = None
+            log.exception(
+                "promo reconcile: failed to fetch promo row before close write",
+                extra={"ticket": context.ticket_number},
+            )
+
         await self._complete_close(
             thread,
             context,
             progression="",
             clan_name="",
+            previous_final=previous_final,
         )
         if context.state != "closed":
             return
@@ -557,6 +578,7 @@ class PromoTicketWatcher(commands.Cog):
         clan_name: str,
         *,
         phase: str | None = None,
+        previous_final: str | None = "",
     ) -> None:
         timestamp = _format_date(dt.datetime.now(UTC))
         row = [
@@ -602,12 +624,99 @@ class PromoTicketWatcher(commands.Cog):
             result,
         )
         source = "promo"
+        final_is_real = False
+        open_deltas: Dict[str, int] = {}
+        recompute_tags: List[str] = []
+        if previous_final is None:
+            decision_line = (
+                "decision: "
+                f"final_tag={(context.clan_tag or '').strip().upper() or '-'} • previous_final=- • "
+                "reservation=not_applicable • consume_open_spot=False • final_is_real=False • "
+                "decision_result=skipped_open_delta • skip_reason=previous_final_unavailable"
+            )
+            log.warning(
+                "promo_open_spots_reconcile — ticket=%s • user=%s • final_tag=%s • source=%s • reason=previous_final_unavailable • action_required=manual_open_spots_review • %s",
+                context.ticket_number,
+                context.username,
+                context.clan_tag or "-",
+                source,
+                decision_line,
+            )
+            try:
+                onboarding_sessions.mark_completed(getattr(thread, "id", 0))
+            except Exception:
+                log.exception(
+                    "promo watcher: failed to mark onboarding session complete",
+                    extra={"thread_id": getattr(thread, "id", None)},
+                )
+            return
+
+        try:
+            final_entry = await asyncio.to_thread(recruitment_sheets.find_clan_row, context.clan_tag)
+            final_is_real = final_entry is not None
+        except Exception:
+            log.exception(
+                "promo reconcile: failed to check final clan tag",
+                extra={"ticket": context.ticket_number, "clan_tag": context.clan_tag},
+            )
+            final_is_real = False
+
+        normalized_previous = (previous_final or "").strip().upper()
+        normalized_final = (context.clan_tag or "").strip().upper()
+        consume_open_spot = bool(
+            normalized_final
+            and normalized_final != _NO_PLACEMENT_TAG
+            and (
+                not normalized_previous
+                or normalized_previous == _NO_PLACEMENT_TAG
+                or normalized_previous != normalized_final
+            )
+        )
+        decision = _determine_reservation_decision(
+            normalized_final,
+            None,
+            no_placement_tag=_NO_PLACEMENT_TAG,
+            final_is_real=final_is_real,
+            consume_open_spot=consume_open_spot,
+            previous_final=previous_final or "",
+        )
+        open_deltas = dict(decision.open_deltas)
+        recompute_tags = list(decision.recompute_tags)
+
+        for tag, delta in open_deltas.items():
+            try:
+                await availability.adjust_manual_open_spots(tag, delta)
+            except Exception:
+                log.exception(
+                    "promo reconcile: failed to adjust manual open spots",
+                    extra={"ticket": context.ticket_number, "clan_tag": tag, "delta": delta},
+                )
+        for tag in recompute_tags:
+            try:
+                await availability.recompute_clan_availability(tag, guild=thread.guild)
+            except Exception:
+                log.exception(
+                    "promo reconcile: failed to recompute clan availability",
+                    extra={"ticket": context.ticket_number, "clan_tag": tag},
+                )
+
+        decision_line = _decision_visibility_line(
+            final_tag=normalized_final,
+            previous_final=previous_final,
+            reservation_row=None,
+            reservation_label="not_applicable",
+            consume_open_spot=consume_open_spot,
+            final_is_real=final_is_real,
+            open_deltas=open_deltas,
+            reservation_state_override="not_applicable",
+        )
         log.info(
-            "promo_open_spots_reconcile — ticket=%s • user=%s • clan=%s • source=%s • result=skipped • reason=no_promo_open_spots_reconcile_currently",
+            "promo_open_spots_reconcile — ticket=%s • user=%s • clan=%s • source=%s • %s",
             context.ticket_number,
             context.username,
             context.clan_tag or "-",
             source,
+            decision_line,
         )
         try:
             onboarding_sessions.mark_completed(getattr(thread, "id", 0))

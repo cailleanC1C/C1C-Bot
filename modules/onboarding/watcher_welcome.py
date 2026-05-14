@@ -1665,9 +1665,10 @@ def _decision_visibility_line(
     consume_open_spot: bool,
     final_is_real: bool,
     open_deltas: Dict[str, int],
+    reservation_state_override: str | None = None,
 ) -> str:
     previous_display = (previous_final or "").strip().upper() or "-"
-    reservation_state = (
+    reservation_state = reservation_state_override or (
         f"matched_row={reservation_row.row_number}({reservation_label or 'unknown'})"
         if reservation_row is not None
         else "none"
