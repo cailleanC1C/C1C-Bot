@@ -149,6 +149,13 @@ def test_get_fusion_reminder_settings_reads_configured_tab(monkeypatch: pytest.M
             {"key": "group_events", "value": "TRUE"},
             {"key": "upcoming_window_days", "value": "3"},
             {"key": "include_upcoming_events", "value": "TRUE"},
+            {"key": "grouped_embed_title", "value": "Title {fusion_title}"},
+            {"key": "grouped_embed_description", "value": "Desc {jump_link}"},
+            {"key": "grouped_live_label", "value": "Live"},
+            {"key": "grouped_upcoming_label", "value": "Up"},
+            {"key": "grouped_ending_label", "value": "End"},
+            {"key": "grouped_empty_value", "value": "None"},
+            {"key": "grouped_jump_label", "value": "Open"},
         ]
 
     monkeypatch.setattr(fusion_sheets, "afetch_records", _afetch_records)
@@ -156,3 +163,32 @@ def test_get_fusion_reminder_settings_reads_configured_tab(monkeypatch: pytest.M
     assert settings.group_events is True
     assert settings.upcoming_window_days == 3
     assert settings.include_upcoming_events is True
+    assert settings.grouped_embed_title == "Title {fusion_title}"
+    assert settings.grouped_empty_value == "None"
+    assert settings.grouped_jump_label == "Open"
+
+
+def test_load_fusion_events_reads_optional_embed_copy_columns(monkeypatch: pytest.MonkeyPatch):
+    _install_config(monkeypatch, {"FUSION_EVENT_TAB": "FusionEvents"})
+    async def _afetch_records(_sheet_id: str, tab_name: str):
+        assert tab_name == "FusionEvents"
+        return [{
+            "fusion_id": "f-1",
+            "event_id": "e-1",
+            "event_name": "Event 1",
+            "event_type": "tournament",
+            "category": "arena",
+            "start_at_utc": "2026-01-01T00:00:00+00:00",
+            "end_at_utc": "2026-01-01T01:00:00+00:00",
+            "reward_amount": "10",
+            "reward_type": "fragments",
+            "embed_title": "{event_label}",
+            "embed_description": "Begins {starts_in}",
+            "embed_footer": "Footer",
+        }]
+    monkeypatch.setattr(fusion_sheets, "_sheet_id", lambda: "sheet-1")
+    monkeypatch.setattr(fusion_sheets, "afetch_records", _afetch_records)
+    rows = asyncio.run(fusion_sheets._load_fusion_events())
+    assert rows[0].embed_title == "{event_label}"
+    assert rows[0].embed_description == "Begins {starts_in}"
+    assert rows[0].embed_footer == "Footer"
