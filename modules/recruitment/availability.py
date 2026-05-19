@@ -28,8 +28,10 @@ async def adjust_manual_open_spots(clan_tag: str, delta: int) -> int:
 
     sheet_row, row = entry
     header_map = recruitment.get_clan_header_map()
-    open_index = header_map.get("open_spots", recruitment.FALLBACK_OPEN_SPOTS_INDEX)
-    current = _parse_manual_open_spots(row)
+    open_index = header_map.get("open_spots")
+    if open_index is None:
+        raise ValueError("clan header missing required open_spots column")
+    current = _parse_manual_open_spots(row, open_index=open_index)
     new_value = max(current + delta, 0)
 
     updated_row = list(row)
@@ -117,10 +119,10 @@ async def recompute_clan_availability(
     )
 
 
-def _parse_manual_open_spots(row: Sequence[str]) -> int:
-    if len(row) <= 4:
+def _parse_manual_open_spots(row: Sequence[str], *, open_index: int = 4) -> int:
+    if open_index < 0 or len(row) <= open_index:
         return 0
-    return _to_int(row[4])
+    return _to_int(row[open_index])
 
 
 def _format_reservation_summary(count: int, names: Sequence[str]) -> str:
