@@ -16,40 +16,75 @@ log = logging.getLogger(__name__)
 async def adjust_manual_open_spots(clan_tag: str, delta: int) -> int:
     """Adjust manual open spots for ``clan_tag`` and return the new value."""
 
-    if delta == 0:
-        entry = recruitment.find_clan_row(clan_tag)
-        if entry is None:
-            raise ValueError(f"Unknown clan tag: {clan_tag}")
-        return _parse_manual_open_spots(entry[1])
-
     entry = recruitment.find_clan_row(clan_tag)
     if entry is None:
         raise ValueError(f"Unknown clan tag: {clan_tag}")
 
     sheet_row, row = entry
     header_map = recruitment.get_clan_header_map()
+    manual_open_index = header_map.get("manual_open_spots")
     open_index = header_map.get("open_spots")
-    if open_index is None:
-        raise ValueError("clan header missing required open_spots column")
-    current = _parse_manual_open_spots(row, open_index=open_index)
-    new_value = max(current + delta, 0)
+    seen_index = header_map.get("manual_open_spots_seen")
+    if manual_open_index is None or open_index is None or seen_index is None:
+        raise ValueError(
+            "clan header missing required manual_open_spots/open_spots/manual_open_spots_seen column"
+        )
+    manual_open = _parse_manual_open_spots(row, open_index=manual_open_index)
+    current_available = _parse_manual_open_spots(row, open_index=open_index)
+    seen_manual_open = _parse_manual_open_spots(row, open_index=seen_index)
+    rebase_manual_open_spots = manual_open != seen_manual_open
+    base_available = manual_open if rebase_manual_open_spots else current_available
+    new_value = max(base_available + delta, 0)
 
     updated_row = list(row)
-    _ensure_row_length(updated_row, open_index + 1)
+    _ensure_row_length(updated_row, max(open_index, seen_index) + 1)
     updated_row[open_index] = str(new_value)
+    updated_row[seen_index] = str(manual_open)
 
     sheet_id = recruitment.get_recruitment_sheet_id()
     tab_name = recruitment.get_clans_tab_name()
     worksheet = await async_core.aget_worksheet(sheet_id, tab_name)
-    column = _column_label(open_index)
-    await async_core.acall_with_backoff(
-        worksheet.update,
-        f"{column}{sheet_row}",
-        [[str(new_value)]],
-        value_input_option="RAW",
-    )
+    open_column = _column_label(open_index)
+    seen_column = _column_label(seen_index)
+    if abs(open_index - seen_index) == 1:
+        first_index = min(open_index, seen_index)
+        second_index = max(open_index, seen_index)
+        first_value = str(new_value) if first_index == open_index else str(manual_open)
+        second_value = str(manual_open) if second_index == seen_index else str(new_value)
+        await async_core.acall_with_backoff(
+            worksheet.update,
+            f"{_column_label(first_index)}{sheet_row}:{_column_label(second_index)}{sheet_row}",
+            [[first_value, second_value]],
+            value_input_option="RAW",
+        )
+    else:
+        await async_core.acall_with_backoff(
+            worksheet.update,
+            f"{open_column}{sheet_row}",
+            [[str(new_value)]],
+            value_input_option="RAW",
+        )
+        await async_core.acall_with_backoff(
+            worksheet.update,
+            f"{seen_column}{sheet_row}",
+            [[str(manual_open)]],
+            value_input_option="RAW",
+        )
 
     recruitment.update_cached_clan_row(sheet_row, updated_row)
+    log.info(
+        "adjusted clan availability",
+        extra={
+            "clan_tag": _normalize_tag(clan_tag),
+            "rebase_manual_open_spots": rebase_manual_open_spots,
+            "open_spots_e_before": manual_open,
+            "af_before": current_available,
+            "af_after": new_value,
+            "aj_before": seen_manual_open,
+            "aj_after": manual_open,
+            "delta": delta,
+        },
+    )
     return new_value
 
 
@@ -66,11 +101,33 @@ async def recompute_clan_availability(
         raise ValueError(f"Unknown clan tag: {clan_tag}")
 
     sheet_row, row = clan_entry
-    manual_open = _parse_manual_open_spots(row)
+    header_map = recruitment.get_clan_header_map()
+    manual_open_index = header_map.get("manual_open_spots")
+    open_index = header_map.get("open_spots")
+    seen_index = header_map.get("manual_open_spots_seen")
+    inactives_index = header_map.get("inactives")
+    reservation_count_index = header_map.get("reservation_count")
+    reservation_summary_index = header_map.get("reservation_summary")
+    if (
+        manual_open_index is None
+        or open_index is None
+        or seen_index is None
+        or inactives_index is None
+        or reservation_count_index is None
+        or reservation_summary_index is None
+    ):
+        raise ValueError(
+            "clan header missing required manual_open_spots/open_spots/manual_open_spots_seen/inactives/reservation_count/reservation_summary column"
+        )
+    manual_open = _parse_manual_open_spots(row, open_index=manual_open_index)
+    current_available = _parse_manual_open_spots(row, open_index=open_index)
+    seen_manual_open = _parse_manual_open_spots(row, open_index=seen_index)
+    rebase_manual_open_spots = manual_open != seen_manual_open
+    base_available = manual_open if rebase_manual_open_spots else current_available
 
     active_reservations = await reservations.get_active_reservations_for_clan(clan_tag)
     reservation_count = len(active_reservations)
-    available_after_reservations = max(manual_open - reservation_count, 0)
+    available_after_reservations = max(base_available - reservation_count, 0)
 
     names = await reservations.resolve_reservation_names(
         active_reservations,
@@ -80,29 +137,56 @@ async def recompute_clan_availability(
     reservation_summary = _format_reservation_summary(reservation_count, names)
 
     updated_row = list(row)
-    _ensure_row_length(updated_row, 35)
+    _ensure_row_length(
+        updated_row,
+        max(
+            open_index,
+            seen_index,
+            inactives_index,
+            reservation_count_index,
+            reservation_summary_index,
+        )
+        + 1,
+    )
 
-    ag_value = updated_row[32] if len(updated_row) > 32 else ""
-    updated_row[31] = str(available_after_reservations)
-    updated_row[33] = str(reservation_count)
-    updated_row[34] = reservation_summary
+    inactives_value = updated_row[inactives_index] if len(updated_row) > inactives_index else ""
+    updated_row[open_index] = str(available_after_reservations)
+    updated_row[seen_index] = str(manual_open)
+    updated_row[reservation_count_index] = str(reservation_count)
+    updated_row[reservation_summary_index] = reservation_summary
 
     sheet_id = recruitment.get_recruitment_sheet_id()
     tab_name = recruitment.get_clans_tab_name()
     worksheet = await async_core.aget_worksheet(sheet_id, tab_name)
 
-    payload = [
-        [
-            available_after_reservations,
-            ag_value,
-            reservation_count,
-            reservation_summary,
-        ]
-    ]
     await async_core.acall_with_backoff(
         worksheet.update,
-        f"AF{sheet_row}:AI{sheet_row}",
-        payload,
+        f"{_column_label(open_index)}{sheet_row}",
+        [[available_after_reservations]],
+        value_input_option="RAW",
+    )
+    await async_core.acall_with_backoff(
+        worksheet.update,
+        f"{_column_label(seen_index)}{sheet_row}",
+        [[manual_open]],
+        value_input_option="RAW",
+    )
+    await async_core.acall_with_backoff(
+        worksheet.update,
+        f"{_column_label(inactives_index)}{sheet_row}",
+        [[inactives_value]],
+        value_input_option="RAW",
+    )
+    await async_core.acall_with_backoff(
+        worksheet.update,
+        f"{_column_label(reservation_count_index)}{sheet_row}",
+        [[reservation_count]],
+        value_input_option="RAW",
+    )
+    await async_core.acall_with_backoff(
+        worksheet.update,
+        f"{_column_label(reservation_summary_index)}{sheet_row}",
+        [[reservation_summary]],
         value_input_option="RAW",
     )
 
@@ -113,8 +197,12 @@ async def recompute_clan_availability(
         extra={
             "clan_tag": _normalize_tag(clan_tag),
             "manual_open": manual_open,
+            "rebase_manual_open_spots": rebase_manual_open_spots,
+            "af_before": current_available,
             "active_reservations": reservation_count,
             "available_after_reservations": available_after_reservations,
+            "aj_before": seen_manual_open,
+            "aj_after": manual_open,
         },
     )
 
