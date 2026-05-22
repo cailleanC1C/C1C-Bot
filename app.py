@@ -328,7 +328,7 @@ async def on_ready():
     preload_report = None
     refresh_lines: list[str]
     try:
-        preload_task = runtime.schedule_startup_preload(bot)
+        preload_task = runtime.schedule_startup_preload()
         preload_report = await preload_task
     except Exception as exc:
         log.warning("startup preload task failed before summary render", exc_info=True)
