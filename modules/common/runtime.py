@@ -267,6 +267,25 @@ async def _startup_preload(bot: commands.Bot | None = None) -> None:
         log.info("Cache preloader completed with no rows")
         return
 
+    startup_rows: list[dict[str, object]] = []
+    for result in refresh_results:
+        snap = result.snapshot
+        state_raw = (snap.last_result or ("ok" if result.ok else "failed")).strip().lower()
+        state = "ok" if state_raw in {"ok", "success", "retry_ok"} else ("failed" if "fail" in state_raw or "error" in state_raw else state_raw)
+        marker = "stale" if snap.ttl_expired else "ttl"
+        startup_rows.append(
+            {
+                "name": result.name,
+                "state": state,
+                "duration_s": (result.duration_ms or 0) / 1000.0,
+                "count": snap.item_count,
+                "marker": marker,
+            }
+        )
+    if bot is not None:
+        setattr(bot, "_startup_refresh_rows", startup_rows)
+        setattr(bot, "_startup_refresh_total_s", total_ms / 1000.0)
+
     log.info("Cache preloader completed")
 
 
@@ -283,13 +302,13 @@ def get_active_runtime() -> "Runtime | None":
     return _ACTIVE_RUNTIME
 
 
-def schedule_startup_preload(bot: commands.Bot | None = None) -> None:
-    """Ensure the startup cache preload task has been scheduled."""
+def schedule_startup_preload(bot: commands.Bot | None = None) -> asyncio.Task[None]:
+    """Ensure the startup cache preload task has been scheduled and return it."""
 
     global _PRELOAD_TASK
     task = _PRELOAD_TASK
     if task is not None and not task.done():
-        return
+        return task
     if task is not None and task.done():
         try:  # pragma: no cover - defensive logging
             task.result()
@@ -298,6 +317,7 @@ def schedule_startup_preload(bot: commands.Bot | None = None) -> None:
     _PRELOAD_TASK = asyncio.create_task(
         _startup_preload(bot), name="cache_startup_preload"
     )
+    return _PRELOAD_TASK
 
 
 async def send_log_message(message: str) -> None:
@@ -1058,8 +1078,8 @@ class Runtime:
         except Exception:
             log.warning("failed to send log message (non-fatal)", exc_info=True)
 
-    def schedule_startup_preload(self) -> None:
-        schedule_startup_preload(self.bot)
+    def schedule_startup_preload(self) -> asyncio.Task[None]:
+        return schedule_startup_preload(self.bot)
 
     def watchdog(
         self,
