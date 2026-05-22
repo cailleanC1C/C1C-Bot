@@ -55,7 +55,14 @@ from modules.community import COMMUNITY_EXTENSIONS
 log = logging.getLogger("c1c.runtime")
 
 _ACTIVE_RUNTIME: "Runtime | None" = None
-_PRELOAD_TASK: asyncio.Task[None] | None = None
+@dataclass(slots=True)
+class StartupPreloadReport:
+    rows: list[dict[str, object]]
+    total_s: float
+    error: str | None = None
+
+
+_PRELOAD_TASK: asyncio.Task[StartupPreloadReport] | None = None
 _web_app: web.Application | None = None
 _CF_RAY_RE = re.compile(r"Ray ID:\s*([A-Za-z0-9-]+)", re.IGNORECASE)
 
@@ -183,7 +190,7 @@ async def create_app(*, runtime: "Runtime | None" = None) -> web.Application:
     return app
 
 
-async def _startup_preload(bot: commands.Bot | None = None) -> None:
+async def _startup_preload(bot: commands.Bot | None = None) -> StartupPreloadReport:
     await asyncio.sleep(15)
 
     runtime = get_active_runtime()
@@ -192,7 +199,7 @@ async def _startup_preload(bot: commands.Bot | None = None) -> None:
 
     if bot is None:  # pragma: no cover - defensive guard
         log.warning("Cache preloader aborted: bot unavailable")
-        return
+        return StartupPreloadReport(rows=[], total_s=0.0, error="bot unavailable")
 
     from shared.cache import telemetry as cache_telemetry
     from c1c_coreops.render import RefreshEmbedRow
@@ -200,7 +207,7 @@ async def _startup_preload(bot: commands.Bot | None = None) -> None:
     bucket_names = cache_telemetry.list_buckets()
     if not bucket_names:
         log.info("Cache preloader skipped: no cache buckets registered")
-        return
+        return StartupPreloadReport(rows=[], total_s=0.0, error="no cache buckets registered")
 
     rows: list[RefreshEmbedRow] = []
     total_ms = 0
@@ -265,7 +272,7 @@ async def _startup_preload(bot: commands.Bot | None = None) -> None:
 
     if not rows:
         log.info("Cache preloader completed with no rows")
-        return
+        return StartupPreloadReport(rows=[], total_s=0.0, error="no refresh rows")
 
     startup_rows: list[dict[str, object]] = []
     for result in refresh_results:
@@ -287,6 +294,7 @@ async def _startup_preload(bot: commands.Bot | None = None) -> None:
         setattr(bot, "_startup_refresh_total_s", total_ms / 1000.0)
 
     log.info("Cache preloader completed")
+    return StartupPreloadReport(rows=startup_rows, total_s=total_ms / 1000.0)
 
 
 def set_active_runtime(runtime: "Runtime | None") -> None:
@@ -302,7 +310,7 @@ def get_active_runtime() -> "Runtime | None":
     return _ACTIVE_RUNTIME
 
 
-def schedule_startup_preload(bot: commands.Bot | None = None) -> asyncio.Task[None]:
+def schedule_startup_preload(bot: commands.Bot | None = None) -> asyncio.Task[StartupPreloadReport]:
     """Ensure the startup cache preload task has been scheduled and return it."""
 
     global _PRELOAD_TASK
@@ -1078,7 +1086,7 @@ class Runtime:
         except Exception:
             log.warning("failed to send log message (non-fatal)", exc_info=True)
 
-    def schedule_startup_preload(self) -> asyncio.Task[None]:
+    def schedule_startup_preload(self) -> asyncio.Task[StartupPreloadReport]:
         return schedule_startup_preload(self.bot)
 
     def watchdog(

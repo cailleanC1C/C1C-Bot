@@ -1,126 +1,15 @@
 """Discord admin startup summary renderer."""
 from __future__ import annotations
 
-import datetime as dt
-import logging
-from typing import Iterable
 
-from discord.ext import commands
-
-from modules.common.runtime import Runtime
-from modules.onboarding.watcher_welcome import _channel_readable_label
-from shared.config import get_promo_channel_id, get_welcome_channel_id
-from modules.common import feature_flags
-
-log = logging.getLogger("c1c.ops.startup_summary")
-
-_SCHEDULER_MAP = {
-    "clans": "cache_refresh:clans",
-    "templates": "cache_refresh:templates",
-    "clan_tags": "cache_refresh:clan_tags",
-    "onboarding_questions": "cache_refresh:onboarding_questions",
-    "cleanup": "cleanup_watcher",
-    "housekeeping_keepalive": "housekeeping_keepalive",
-    "mirralith_overview": "mirralith_overview",
-    "shard_weekly_reminders": "shard_weekly_reminders",
-    "fusion_reminders": "fusion_reminders",
-    "reset_reminders": "reset_reminders",
-}
-def _safe_channel_id(value: object) -> int | None:
-    try:
-        parsed = int(value) if value is not None else 0
-        return parsed or None
-    except (TypeError, ValueError):
-        return None
-
-def _channel_line(bot_client: commands.Bot, channel_id: int | None) -> str:
-    if not channel_id:
-        return "not configured"
-    mention = f"<#{channel_id}>"
-    try:
-        channel = bot_client.get_channel(int(channel_id))
-    except Exception:
-        channel = None
-    if channel is None:
-        return mention
-    try:
-        return f"{mention} ({_channel_readable_label(bot_client, channel_id).lstrip('#')})"
-    except Exception:
-        return mention
-
-def _fmt_next(jobs: Iterable[object], name: str) -> str:
-    for job in jobs:
-        if getattr(job, 'name', None) != name:
-            continue
-        next_run = getattr(job, 'next_run', None)
-        if next_run is None:
-            return 'pending'
-        try:
-            return next_run.astimezone(dt.timezone.utc).replace(second=0, microsecond=0).strftime('%Y-%m-%d %H:%M UTC')
-        except Exception:
-            return 'pending'
-    return 'not scheduled'
-
-def render_startup_summary(*, bot_client: commands.Bot, runtime: Runtime, jobs: list[object]) -> str:
+def render_startup_summary(*, sections: dict[str, list[str]]) -> str:
+    ordered = ["allow_list", "watchers", "scheduler", "watchdog", "refresh"]
     lines = ["✅ Woadkeeper startup complete", ""]
-
-    try:
-        try:
-            promo_enabled = feature_flags.is_enabled("promo_enabled") and feature_flags.is_enabled("enable_promo_hook")
-            welcome_enabled = feature_flags.is_enabled("recruitment_welcome") and feature_flags.is_enabled("welcome_dialog")
-            promo_status = "enabled" if promo_enabled else "disabled"
-            welcome_status = "enabled" if welcome_enabled else "disabled"
-        except Exception:
-            promo_status = "configured" if _safe_channel_id(get_promo_channel_id()) else "not configured"
-            welcome_status = "configured" if _safe_channel_id(get_welcome_channel_id()) else "not configured"
-        watchers = [
-            "Watchers",
-            f"• Promo watcher: {promo_status} — {_channel_line(bot_client, _safe_channel_id(get_promo_channel_id()))}",
-            f"• Welcome watcher: {welcome_status} — {_channel_line(bot_client, _safe_channel_id(get_welcome_channel_id()))}",
-        ]
-        lines.extend(watchers)
-    except Exception:
-        log.exception('startup summary watchers section unavailable')
-        lines.extend(["Watchers", "• unavailable"])
-
-    try:
-        cache_lines=["Cache"]
-        startup_rows = getattr(bot_client, "_startup_refresh_rows", None)
-        startup_total = getattr(bot_client, "_startup_refresh_total_s", None)
-        if isinstance(startup_rows, list) and startup_rows:
-            for row in startup_rows:
-                cache_lines.append(
-                    f"• {row.get('name', '?')} {row.get('state', '?')} ({row.get('duration_s', 0):.1f}s, {row.get('count', '?')}, {row.get('marker', '?')})"
-                )
-            if isinstance(startup_total, (int, float)):
-                cache_lines.append(f"• total={startup_total:.1f}s")
-        else:
-            cache_lines.append("• cache refresh details unavailable")
-        lines.extend(["",*cache_lines])
-    except Exception:
-        log.exception('startup summary cache section unavailable')
-        lines.extend(["", "Cache", "• unavailable"])
-
-    try:
-        scheduler_lines=["Schedulers"]
-        for label, job_name in _SCHEDULER_MAP.items():
-            next_val = _fmt_next(jobs, job_name)
-            if next_val == 'not scheduled':
-                scheduler_lines.append(f"• {label}: not scheduled")
-            else:
-                scheduler_lines.append(f"• {label}: next {next_val}")
-        lines.extend(["",*scheduler_lines])
-    except Exception:
-        log.exception('startup summary scheduler section unavailable')
-        lines.extend(["", "Schedulers", "• unavailable"])
-
-    try:
-        interval = int(getattr(runtime, '_watchdog_check_sec', 300))
-        stall = int(getattr(runtime, '_watchdog_stall_sec', 1200))
-        grace = int(getattr(runtime, '_watchdog_disconnect_grace_sec', 6000))
-        lines.extend(["", "Watchdog", f"• interval {interval}s", f"• stall {stall}s", f"• disconnect grace {grace}s"])
-    except Exception:
-        log.exception('startup summary watchdog section unavailable')
-        lines.extend(["", "Watchdog", "• unavailable"])
-
+    first = True
+    for key in ordered:
+        block = sections.get(key) or ["❌ unknown section", "• missing data"]
+        if not first:
+            lines.append("")
+        lines.extend(block)
+        first = False
     return "\n".join(lines)

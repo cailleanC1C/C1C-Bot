@@ -126,6 +126,13 @@ def _normalize_admin_invocation(base: str, remainder: str | None) -> str:
     return normalize_command_text(" ".join(parts))
 
 
+def _fmt_next_utc(job: object) -> str:
+    next_run = getattr(job, "next_run", None)
+    if next_run is None:
+        return "not scheduled"
+    return next_run.astimezone(dt.timezone.utc).replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M UTC")
+
+
 async def _maybe_capture_onboarding_answer(message: discord.Message) -> bool:
     channel = getattr(message, "channel", None)
     if not isinstance(channel, discord.Thread):
@@ -258,6 +265,16 @@ async def on_ready():
         )
     bot._c1c_started_mono = _STARTED_MONO
 
+    allowed_guilds = sorted(get_allowed_guild_ids())
+    allowed_labels = [guild_label(bot, gid) for gid in allowed_guilds] if allowed_guilds else []
+    connected_labels = [guild_label(bot, g.id) for g in list(bot.guilds)]
+    allow_list_lines = [
+        "✅ Guild allow-list",
+        "• verified",
+        f"• allowed={allowed_labels}",
+        f"• connected={connected_labels}",
+    ]
+
     if not await _enforce_guild_allow_list(log_when_empty=True, log_success=False):
         return
 
@@ -280,8 +297,10 @@ async def on_ready():
     except Exception:
         log.exception("READY FAILURE: ensure_scheduler_started")
 
+    watchdog_tuple: tuple[bool, int, int, int] | None = None
     try:
         runtime.watchdog(delay_sec=5.0)
+        watchdog_tuple = runtime.watchdog(delay_sec=5.0)
 
         if not hasattr(bot, "_cron_summary_task"):
             async def _daily_summary_loop() -> None:
@@ -306,11 +325,54 @@ async def on_ready():
     except Exception:
         log.warning("non-critical ready task failed", exc_info=True)
 
+    preload_report = None
+    refresh_lines: list[str]
     try:
         preload_task = runtime.schedule_startup_preload(bot)
-        await preload_task
-    except Exception:
+        preload_report = await preload_task
+    except Exception as exc:
         log.warning("startup preload task failed before summary render", exc_info=True)
+        refresh_lines = ["♻️ Refresh", f"• failed: {exc}"]
+    else:
+        if preload_report.rows:
+            refresh_lines = ["♻️ Refresh"]
+            for row in preload_report.rows:
+                refresh_lines.append(
+                    f"• {row.get('name', '?')} {row.get('state', '?')} ({row.get('duration_s', 0):.1f}s, {row.get('count', '?')}, {row.get('marker', '?')})"
+                )
+            refresh_lines.append(f"• total={preload_report.total_s:.1f}s")
+        else:
+            refresh_lines = ["♻️ Refresh", f"• failed: {preload_report.error or 'unknown'}"]
+
+    jobs = {getattr(job, "name", ""): job for job in runtime.scheduler.jobs}
+    scheduler_lines = [
+        "🧭 Scheduler",
+        "• intervals: clans=3h • templates=7d • clan_tags=7d • onboarding_questions=7d • cleanup=24h • mirralith_overview=not scheduled",
+        f"• clans={_fmt_next_utc(jobs['cache_refresh:clans']) if 'cache_refresh:clans' in jobs else 'not scheduled'}",
+        f"• templates={_fmt_next_utc(jobs['cache_refresh:templates']) if 'cache_refresh:templates' in jobs else 'not scheduled'}",
+        f"• clan_tags={_fmt_next_utc(jobs['cache_refresh:clan_tags']) if 'cache_refresh:clan_tags' in jobs else 'not scheduled'}",
+        f"• onboarding_questions={_fmt_next_utc(jobs['cache_refresh:onboarding_questions']) if 'cache_refresh:onboarding_questions' in jobs else 'not scheduled'}",
+        f"• cleanup={_fmt_next_utc(jobs['cleanup_watcher']) if 'cleanup_watcher' in jobs else 'not scheduled'}",
+        f"• housekeeping_keepalive={_fmt_next_utc(jobs['housekeeping_keepalive']) if 'housekeeping_keepalive' in jobs else 'not scheduled'}",
+        f"• mirralith_overview={_fmt_next_utc(jobs['mirralith_overview']) if 'mirralith_overview' in jobs else 'not scheduled'}",
+    ]
+    watchers_lines = [
+        "✅ Watchers",
+        "• Promo watcher — event=enabled",
+        "  • channel=<#{}>".format(os.getenv("PROMO_CHANNEL_ID", "")),
+        f"  • channel_id={os.getenv('PROMO_CHANNEL_ID', '-')}",
+        "  • triggers=3",
+        "  • flow=promo",
+        "• Welcome watcher — event=enabled",
+        "  • channel=<#{}>".format(os.getenv("WELCOME_CHANNEL_ID", "")),
+        f"  • channel_id={os.getenv('WELCOME_CHANNEL_ID', '-')}",
+        "  • flow=welcome",
+    ]
+    if watchdog_tuple is None:
+        watchdog_lines = ["🐶 Watchdog started", "• failed: unavailable"]
+    else:
+        _, interval, stall, grace = watchdog_tuple
+        watchdog_lines = ["🐶 Watchdog started", f"• interval={interval}s", f"• stall={stall}s", f"• disconnect_grace={grace}s"]
 
     global _startup_summary_lock
     if _startup_summary_lock is None:
@@ -321,9 +383,13 @@ async def on_ready():
                 return
             bot._startup_summary_sent = True
             summary = render_startup_summary(
-                bot_client=bot,
-                runtime=runtime,
-                jobs=runtime.scheduler.jobs,
+                sections={
+                    "allow_list": allow_list_lines,
+                    "watchers": watchers_lines,
+                    "scheduler": scheduler_lines,
+                    "watchdog": watchdog_lines,
+                    "refresh": refresh_lines,
+                },
             )
             await runtime.send_log_message(summary)
     except Exception:
