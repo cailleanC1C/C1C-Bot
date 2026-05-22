@@ -9,13 +9,11 @@ from discord.ext import commands
 
 from modules.common.runtime import Runtime
 from modules.onboarding.watcher_welcome import _channel_readable_label
-from shared.cache import telemetry as cache_telemetry
 from shared.config import get_promo_channel_id, get_welcome_channel_id
 from modules.common import feature_flags
 
 log = logging.getLogger("c1c.ops.startup_summary")
 
-_CACHE_BUCKETS = ["clan_tags", "clans", "fusion", "fusion_events", "leagues", "onboarding_questions", "reaction_roles", "templates"]
 _SCHEDULER_MAP = {
     "clans": "cache_refresh:clans",
     "templates": "cache_refresh:templates",
@@ -87,16 +85,17 @@ def render_startup_summary(*, bot_client: commands.Bot, runtime: Runtime, jobs: 
 
     try:
         cache_lines=["Cache"]
-        for bucket in _CACHE_BUCKETS:
-            try:
-                snap = cache_telemetry.get_snapshot(bucket)
-                raw = str((getattr(snap,'last_result',None) or 'pending')).lower()
-                status = raw if raw in {'ok','pending','stale','error'} else ('ok' if raw in {'success','retry_ok'} else 'pending')
-                count = getattr(snap,'item_count',None)
-                cache_lines.append(f"• {bucket}: {status} ({count if count is not None else '?'})")
-            except Exception:
-                log.exception('startup summary cache item unavailable', extra={'bucket':bucket})
-                cache_lines.append(f"• {bucket}: pending (?)")
+        startup_rows = getattr(bot_client, "_startup_refresh_rows", None)
+        startup_total = getattr(bot_client, "_startup_refresh_total_s", None)
+        if isinstance(startup_rows, list) and startup_rows:
+            for row in startup_rows:
+                cache_lines.append(
+                    f"• {row.get('name', '?')} {row.get('state', '?')} ({row.get('duration_s', 0):.1f}s, {row.get('count', '?')}, {row.get('marker', '?')})"
+                )
+            if isinstance(startup_total, (int, float)):
+                cache_lines.append(f"• total={startup_total:.1f}s")
+        else:
+            cache_lines.append("• cache refresh details unavailable")
         lines.extend(["",*cache_lines])
     except Exception:
         log.exception('startup summary cache section unavailable')

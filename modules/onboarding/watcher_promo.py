@@ -1148,23 +1148,7 @@ class PromoTicketWatcher(commands.Cog):
             channel_id=channel_id_int,
             triggers=len(_PROMO_TRIGGER_MAP),
         )
-        trigger_lines = [f"• {label}" for label in _PROMO_TRIGGER_LABELS.values()]
-        message = "\n".join(
-            [
-                "✅ Promo watcher",
-                "",
-                "Status:",
-                "• enabled",
-                "",
-                "Channel:",
-                f"• <#{channel_id_int}>",
-                f"• path: {label}",
-                "",
-                "Triggers:",
-                *trigger_lines,
-            ]
-        )
-        asyncio.create_task(_send_runtime(message))
+        # Startup watcher status is included in the global startup summary.
 
 
 async def setup(bot: commands.Bot) -> None:

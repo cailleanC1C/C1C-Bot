@@ -68,6 +68,7 @@ bot.remove_command("help")
 runtime: Runtime
 _shutdown_lock: asyncio.Lock | None = None
 _shutdown_started = False
+_startup_summary_lock: asyncio.Lock | None = None
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -302,18 +303,31 @@ async def on_ready():
             log.info("[cron] summary scheduler started (00:05Z)")
 
         await keepalive.ensure_started(bot)
-        runtime.schedule_startup_preload()
     except Exception:
         log.warning("non-critical ready task failed", exc_info=True)
 
     try:
-        summary = render_startup_summary(
-            bot_client=bot,
-            runtime=runtime,
-            jobs=runtime.scheduler.jobs,
-        )
-        await runtime.send_log_message(summary)
+        preload_task = runtime.schedule_startup_preload(bot)
+        await preload_task
     except Exception:
+        log.warning("startup preload task failed before summary render", exc_info=True)
+
+    global _startup_summary_lock
+    if _startup_summary_lock is None:
+        _startup_summary_lock = asyncio.Lock()
+    try:
+        async with _startup_summary_lock:
+            if getattr(bot, "_startup_summary_sent", False):
+                return
+            bot._startup_summary_sent = True
+            summary = render_startup_summary(
+                bot_client=bot,
+                runtime=runtime,
+                jobs=runtime.scheduler.jobs,
+            )
+            await runtime.send_log_message(summary)
+    except Exception:
+        bot._startup_summary_sent = False
         log.exception("startup summary failed", exc_info=True)
 
 
