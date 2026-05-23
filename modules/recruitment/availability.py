@@ -17,7 +17,7 @@ async def adjust_manual_open_spots(clan_tag: str, delta: int) -> int:
     """Adjust manual open spots for ``clan_tag`` and return the new value."""
     try:
         log.info("adjust_manual_open_spots:start clan_tag=%s delta=%s", clan_tag, delta)
-        entry = recruitment.find_clan_row(clan_tag)
+        entry = recruitment.find_clan_row(clan_tag, force=True)
         if entry is None:
             raise ValueError(f"Unknown clan tag: {clan_tag}")
 
@@ -97,7 +97,7 @@ async def adjust_manual_open_spots(clan_tag: str, delta: int) -> int:
 
         cache_result = recruitment.update_cached_clan_row(sheet_row, updated_row)
         log.info("adjust_manual_open_spots:cache_update_result clan_tag=%s result=%r", clan_tag, cache_result)
-        refreshed = recruitment.find_clan_row(clan_tag)
+        refreshed = recruitment.find_clan_row(clan_tag, force=True)
         if refreshed is None:
             raise RuntimeError(f"clan cache refresh failed for {clan_tag}")
         _, refreshed_row = refreshed
@@ -130,7 +130,7 @@ async def recompute_clan_availability(
 ) -> None:
     """Recompute AF/AH/AI for ``clan_tag`` and refresh the in-memory cache."""
 
-    clan_entry = recruitment.find_clan_row(clan_tag)
+    clan_entry = recruitment.find_clan_row(clan_tag, force=True)
     if clan_entry is None:
         raise ValueError(f"Unknown clan tag: {clan_tag}")
 

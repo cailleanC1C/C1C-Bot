@@ -245,6 +245,8 @@ class BucketResult:
     retries: Optional[int] = None
     reason: Optional[str] = None
     metadata: Mapping[str, str] | None = None
+    cache_age_s: Optional[int] = None
+    ttl_s: Optional[int] = None
 
     @property
     def ok(self) -> bool:
@@ -313,6 +315,10 @@ class LogTemplates:
                 details.append("ttl")
             elif result.ttl_ok is False:
                 details.append("stale")
+            if result.cache_age_s is not None and (result.ttl_ok is False or result.status.lower().strip() == "cached"):
+                details.append(f"age={fmt_duration(result.cache_age_s)}")
+            if result.ttl_s is not None:
+                details.append(f"ttl={fmt_duration(result.ttl_s)}")
             if result.retries:
                 details.append(f"{result.retries}× retry")
             if result.reason and not result.ok:

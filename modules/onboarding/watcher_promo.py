@@ -37,6 +37,7 @@ from modules.onboarding.sheet_logging import log_sheet_write
 from modules.onboarding.ui import panels
 from shared.config import get_promo_channel_id, get_ticket_tool_bot_id
 from shared.logs import log_lifecycle
+from shared.cache import telemetry as cache_telemetry
 from shared.sheets import onboarding as onboarding_sheets
 from shared.sheets import onboarding_sessions
 from shared.sheets import promo_tickets
@@ -56,6 +57,22 @@ _PROMO_TRIGGER_LABELS: Dict[str, str] = {
     "promo.m": "Player move request",
     "promo.l": "Clan lead move request",
 }
+
+
+async def _ensure_fresh_clans_for_placement(*, actor: str, ticket: str, user: str) -> bool:
+    try:
+        await cache_telemetry.refresh_now("clans", actor=actor)
+    except Exception:
+        log.exception("promo reconcile: failed to refresh clans cache", extra={"ticket": ticket, "user": user})
+        return False
+    snapshot = cache_telemetry.get_snapshot("clans")
+    if (not snapshot.available) or snapshot.last_result not in {"ok", "retry_ok"}:
+        log.warning(
+            "promo reconcile: clans data not fresh; skipping seat math",
+            extra={"ticket": ticket, "user": user, "last_result": snapshot.last_result, "last_error": snapshot.last_error},
+        )
+        return False
+    return True
 
 
 async def _send_runtime(message: str) -> None:
@@ -653,8 +670,31 @@ class PromoTicketWatcher(commands.Cog):
                 )
             return
 
+        normalized_previous = (previous_final or "").strip().upper()
+        normalized_final = (context.clan_tag or "").strip().upper()
+        clans_fresh = await _ensure_fresh_clans_for_placement(
+            actor="promo_placement", ticket=context.ticket_number, user=context.username
+        )
+        if not clans_fresh:
+            decision_line = (
+                "decision: "
+                f"final_tag={normalized_final or '-'} • previous_final={normalized_previous or '-'} • "
+                "reservation=not_applicable • consume_open_spot=False • final_is_real=False • "
+                "decision_result=skipped_open_delta • skip_reason=fresh_clans_unavailable"
+            )
+            log.warning(
+                "promo_open_spots_reconcile — ticket=%s • user=%s • clan=%s • source=%s • %s",
+                context.ticket_number,
+                context.username,
+                context.clan_tag or "-",
+                source,
+                decision_line,
+            )
+            return
         try:
-            final_entry = await asyncio.to_thread(recruitment_sheets.find_clan_row, context.clan_tag)
+            final_entry = await asyncio.to_thread(
+                recruitment_sheets.find_clan_row, context.clan_tag, force=True
+            )
             final_is_real = final_entry is not None
         except Exception:
             log.exception(
@@ -662,9 +702,6 @@ class PromoTicketWatcher(commands.Cog):
                 extra={"ticket": context.ticket_number, "clan_tag": context.clan_tag},
             )
             final_is_real = False
-
-        normalized_previous = (previous_final or "").strip().upper()
-        normalized_final = (context.clan_tag or "").strip().upper()
         consume_open_spot = bool(
             normalized_final
             and normalized_final != _NO_PLACEMENT_TAG
