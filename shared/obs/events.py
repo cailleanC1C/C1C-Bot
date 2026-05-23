@@ -61,6 +61,7 @@ def refresh_bucket_results(results: Sequence["RefreshResult"]) -> list[BucketRes
                     metadata=None,
                     cache_age_s=None,
                     ttl_s=None,
+                    last_refresh_at=None,
                 )
             )
             continue
@@ -90,6 +91,7 @@ def refresh_bucket_results(results: Sequence["RefreshResult"]) -> list[BucketRes
                 metadata=metadata,
                 cache_age_s=snapshot.age_seconds,
                 ttl_s=snapshot.ttl_seconds,
+                last_refresh_at=snapshot.last_refresh_at,
             )
         )
     return buckets
