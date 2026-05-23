@@ -47,6 +47,7 @@ from shared.sheets import welcome_tickets
 from shared.sheets import reservations as reservations_sheets
 from shared.sheets import recruitment as recruitment_sheets
 from shared.sheets.cache_service import cache as sheets_cache
+from shared.cache import telemetry as cache_telemetry
 
 log = logging.getLogger("c1c.onboarding.welcome_watcher")
 
@@ -82,6 +83,32 @@ _PROMO_TYPE_MAP = {
     "M": "player move request",
     "L": "clan lead move request",
 }
+
+
+async def _ensure_fresh_clans_for_placement(*, actor: str, ticket: str, user: str) -> bool:
+    """Require a sync-fresh clans bucket before placement seat math."""
+    try:
+        await cache_telemetry.refresh_now("clans", actor=actor)
+    except Exception:
+        log.exception(
+            "failed to refresh clans cache for placement",
+            extra={"ticket": ticket, "user": user, "actor": actor},
+        )
+        return False
+    snapshot = cache_telemetry.get_snapshot("clans")
+    if (not snapshot.available) or snapshot.last_result not in {"ok", "retry_ok"}:
+        log.warning(
+            "placement blocked due to unavailable/failed clans cache refresh",
+            extra={
+                "ticket": ticket,
+                "user": user,
+                "actor": actor,
+                "last_result": snapshot.last_result,
+                "last_error": snapshot.last_error,
+            },
+        )
+        return False
+    return True
 
 
 
@@ -1497,28 +1524,36 @@ def _normalize_clan_math_targets(tags: set[str]) -> OrderedDict[str, str]:
 
 def _clan_math_column_indices() -> Dict[str, int]:
     header_map = recruitment_sheets.get_clan_header_map()
-    open_index = header_map.get(
-        "open_spots", recruitment_sheets.FALLBACK_OPEN_SPOTS_INDEX
-    )
+    required = ("open_spots", "inactives", "reservation_count", "reservation_summary")
+    missing = [key for key in required if header_map.get(key) is None]
+    if missing:
+        missing_text = ", ".join(missing)
+        raise ValueError(f"clan header missing required columns for logging: {missing_text}")
+    open_index = int(header_map["open_spots"])
+    inactives_index = int(header_map["inactives"])
+    reservation_count_index = int(header_map["reservation_count"])
+    reservation_summary_index = int(header_map["reservation_summary"])
     return {
         "open_spots": open_index,
-        "AF": 31,
-        "AG": 32,
-        "AH": 33,
-        "AI": 34,
+        "AF": open_index,
+        "AG": inactives_index,
+        "AH": reservation_count_index,
+        "AI": reservation_summary_index,
     }
 
 
 def _capture_clan_snapshots(
     targets: "OrderedDict[str, str]",
     column_map: Dict[str, int],
+    *,
+    force: bool = False,
 ) -> Dict[str, _ClanMathRowSnapshot]:
     snapshots: Dict[str, _ClanMathRowSnapshot] = {}
     for key, tag in targets.items():
         if not key:
             continue
         try:
-            entry = recruitment_sheets.find_clan_row(tag)
+            entry = recruitment_sheets.find_clan_row(tag, force=force)
         except Exception:
             log.exception(
                 "failed to capture clan row for logging",
@@ -3409,24 +3444,44 @@ class WelcomeTicketWatcher(commands.Cog):
         delta_failure_reason: str | None = None
 
         if not row_missing:
-            final_entry = (
-                recruitment_sheets.find_clan_row(final_tag)
-                if final_tag != _NO_PLACEMENT_TAG
-                else None
+            matches: List[reservations_sheets.ReservationRow] = []
+            clans_fresh = await _ensure_fresh_clans_for_placement(
+                actor="welcome_placement", ticket=context.ticket_number, user=context.username
             )
-            final_is_real = final_entry is not None
-
-            try:
-                matches = await reservations_sheets.find_active_reservations_for_recruit(
-                    context.recruit_id,
-                    context.recruit_display or context.username,
+            if not clans_fresh:
+                actions_ok = False
+                decision_line = (
+                    "decision: "
+                    f"final_tag={final_tag or '-'} • previous_final={(previous_final or '').strip().upper() or '-'} • "
+                    f"reservation={reservation_label or 'none'} • consume_open_spot={consume_open_spot} • "
+                    "final_is_real=False • decision_result=skipped_open_delta • "
+                    "skip_reason=fresh_clans_unavailable"
                 )
-            except Exception:
-                matches = []
-                log.exception(
-                    "failed to look up reservations for recruit",
+                row_change_lines = [decision_line]
+                log.warning(
+                    "welcome placement skipped seat math due to stale/unavailable clans data",
                     extra={"ticket": context.ticket_number, "user": context.username},
                 )
+                final_is_real = False
+            else:
+                final_entry = (
+                    recruitment_sheets.find_clan_row(final_tag, force=True)
+                    if final_tag != _NO_PLACEMENT_TAG
+                    else None
+                )
+                final_is_real = final_entry is not None
+
+                try:
+                    matches = await reservations_sheets.find_active_reservations_for_recruit(
+                        context.recruit_id,
+                        context.recruit_display or context.username,
+                    )
+                except Exception:
+                    matches = []
+                    log.exception(
+                        "failed to look up reservations for recruit",
+                        extra={"ticket": context.ticket_number, "user": context.username},
+                    )
             if matches:
                 reservation_row = matches[0]
                 if len(matches) > 1:
@@ -3439,37 +3494,40 @@ class WelcomeTicketWatcher(commands.Cog):
                         },
                     )
 
-            decision = _determine_reservation_decision(
-                final_tag,
-                reservation_row,
-                no_placement_tag=_NO_PLACEMENT_TAG,
-                final_is_real=final_is_real,
-                consume_open_spot=consume_open_spot,
-                previous_final=previous_final,
-            )
-            reservation_label = decision.label
-            decision_open_deltas = dict(decision.open_deltas)
+            if clans_fresh:
+                decision = _determine_reservation_decision(
+                    final_tag,
+                    reservation_row,
+                    no_placement_tag=_NO_PLACEMENT_TAG,
+                    final_is_real=final_is_real,
+                    consume_open_spot=consume_open_spot,
+                    previous_final=previous_final,
+                )
+                reservation_label = decision.label
+                decision_open_deltas = dict(decision.open_deltas)
 
-            target_tags = _clan_tags_for_logging(
-                final_tag,
-                decision,
-                no_placement_tag=_NO_PLACEMENT_TAG,
-                final_is_real=final_is_real,
-            )
-            if target_tags:
-                row_targets = _normalize_clan_math_targets(target_tags)
-                try:
-                    column_map = _clan_math_column_indices()
-                    before_snapshots = _capture_clan_snapshots(row_targets, column_map)
-                except Exception:
-                    column_map = None
-                    row_targets = OrderedDict()
-                    log.exception(
-                        "failed to capture clan math before-state",
-                        extra={"ticket": context.ticket_number},
-                    )
+                target_tags = _clan_tags_for_logging(
+                    final_tag,
+                    decision,
+                    no_placement_tag=_NO_PLACEMENT_TAG,
+                    final_is_real=final_is_real,
+                )
+                if target_tags:
+                    row_targets = _normalize_clan_math_targets(target_tags)
+                    try:
+                        column_map = _clan_math_column_indices()
+                        before_snapshots = _capture_clan_snapshots(
+                            row_targets, column_map, force=True
+                        )
+                    except Exception:
+                        column_map = None
+                        row_targets = OrderedDict()
+                        log.exception(
+                            "failed to capture clan math before-state",
+                            extra={"ticket": context.ticket_number},
+                        )
 
-            if reservation_row is not None and decision.status:
+            if clans_fresh and reservation_row is not None and decision.status:
                 try:
                     await reservations_sheets.update_reservation_status(
                         reservation_row.row_number, decision.status
@@ -3485,7 +3543,7 @@ class WelcomeTicketWatcher(commands.Cog):
                         },
                     )
 
-            for tag, delta in decision.open_deltas.items():
+            for tag, delta in (decision.open_deltas.items() if clans_fresh else ()):
                 try:
                     await availability.adjust_manual_open_spots(tag, delta)
                     applied_open_deltas[tag] = applied_open_deltas.get(tag, 0) + delta
@@ -3497,7 +3555,7 @@ class WelcomeTicketWatcher(commands.Cog):
                         extra={"clan_tag": tag, "delta": delta, "ticket": context.ticket_number},
                     )
 
-            recompute_tags = decision.recompute_tags
+            recompute_tags = decision.recompute_tags if clans_fresh else []
             for tag in recompute_tags:
                 try:
                     await availability.recompute_clan_availability(tag, guild=thread.guild)
@@ -3509,7 +3567,9 @@ class WelcomeTicketWatcher(commands.Cog):
                     )
 
             if row_targets and column_map is not None:
-                after_snapshots = _capture_clan_snapshots(row_targets, column_map)
+                after_snapshots = _capture_clan_snapshots(
+                    row_targets, column_map, force=True
+                )
                 row_change_lines = _build_clan_math_row_lines(
                     row_targets, before_snapshots, after_snapshots
                 )

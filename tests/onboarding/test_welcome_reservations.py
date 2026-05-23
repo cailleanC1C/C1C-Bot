@@ -15,6 +15,7 @@ from modules.onboarding.watcher_welcome import (
     build_closed_thread_name,
     parse_welcome_thread_name,
     rename_thread_to_reserved,
+    _clan_math_column_indices,
 )
 from shared.sheets import reservations as reservations_sheets
 
@@ -27,6 +28,21 @@ def _stub_find_welcome_row(monkeypatch):
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.onboarding_sheets.find_welcome_row",
         _fake_find_welcome_row,
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome._ensure_fresh_clans_for_placement",
+        lambda **_kwargs: asyncio.sleep(0, result=True),
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.recruitment_sheets.get_clan_header_map",
+        lambda: {
+            "open_spots": 31,
+            "inactives": 32,
+            "reservation_count": 33,
+            "reservation_summary": 34,
+            "manual_open_spots": 4,
+            "manual_open_spots_seen": 35,
+        },
     )
 
 
@@ -53,6 +69,29 @@ def test_parse_thread_name_open() -> None:
     assert parts.ticket_code == "W0298"
     assert parts.username == "Caillean AT"
     assert parts.state == "open"
+
+
+def test_clan_math_column_indices_resolve_by_header(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.recruitment_sheets.get_clan_header_map",
+        lambda: {
+            "open_spots": 22,
+            "inactives": 8,
+            "reservation_count": 41,
+            "reservation_summary": 3,
+        },
+    )
+    resolved = _clan_math_column_indices()
+    assert resolved == {"open_spots": 22, "AF": 22, "AG": 8, "AH": 41, "AI": 3}
+
+
+def test_clan_math_column_indices_missing_required_header_raises(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.recruitment_sheets.get_clan_header_map",
+        lambda: {"open_spots": 22, "inactives": 8, "reservation_count": 41},
+    )
+    with pytest.raises(ValueError, match="required columns"):
+        _clan_math_column_indices()
 
 
 def test_parse_thread_name_open_without_w_prefix() -> None:
@@ -293,7 +332,7 @@ def test_finalize_reconciles_when_row_inserted(monkeypatch) -> None:
     async def fake_recompute(tag: str, *, guild=None):  # type: ignore[no-untyped-def]
         recomputed.append(tag)
 
-    def fake_find_clan(tag: str):  # type: ignore[no-untyped-def]
+    def fake_find_clan(tag: str, *, force=False):  # type: ignore[no-untyped-def]
         return tag, ["", "", tag]
 
     monkeypatch.setattr(
@@ -582,7 +621,7 @@ def test_finalize_no_reservation_consumes_open_spot(monkeypatch, caplog) -> None
     async def fake_recompute(tag: str, guild=None):  # type: ignore[no-untyped-def]
         recomputed.append(tag)
 
-    def fake_find_clan(tag: str):  # type: ignore[no-untyped-def]
+    def fake_find_clan(tag: str, *, force=False):  # type: ignore[no-untyped-def]
         return tag, ["", "", tag]
 
     monkeypatch.setattr(
@@ -669,7 +708,7 @@ def test_finalize_manual_logs_manual_event(monkeypatch, caplog) -> None:
     async def fake_recompute(tag: str, guild=None):  # type: ignore[no-untyped-def]
         recomputed.append(tag)
 
-    def fake_find_clan(tag: str):  # type: ignore[no-untyped-def]
+    def fake_find_clan(tag: str, *, force=False):  # type: ignore[no-untyped-def]
         return tag, ["", "", tag]
 
     monkeypatch.setattr(
@@ -757,7 +796,7 @@ def test_finalize_manual_consumes_seat_without_reservation(monkeypatch) -> None:
     async def fake_recompute(tag: str, guild=None):  # type: ignore[no-untyped-def]
         recomputed.append(tag)
 
-    def fake_find_clan(tag: str):  # type: ignore[no-untyped-def]
+    def fake_find_clan(tag: str, *, force=False):  # type: ignore[no-untyped-def]
         return tag, ["", "", tag]
 
     monkeypatch.setattr(
@@ -865,7 +904,7 @@ def test_finalize_matching_reservation(monkeypatch) -> None:
     async def fake_recompute(tag: str, guild=None):  # type: ignore[no-untyped-def]
         pass
 
-    def fake_find_clan(tag: str):  # type: ignore[no-untyped-def]
+    def fake_find_clan(tag: str, *, force=False):  # type: ignore[no-untyped-def]
         return tag, ["", "", tag]
 
     monkeypatch.setattr(
@@ -950,7 +989,7 @@ def test_finalize_moved_reservation(monkeypatch) -> None:
     async def fake_recompute(tag: str, guild=None):  # type: ignore[no-untyped-def]
         pass
 
-    def fake_find_clan(tag: str):  # type: ignore[no-untyped-def]
+    def fake_find_clan(tag: str, *, force=False):  # type: ignore[no-untyped-def]
         return tag, ["", "", tag]
 
     monkeypatch.setattr(
@@ -1211,7 +1250,7 @@ def test_finalize_posts_clan_math_log(monkeypatch) -> None:
     def _normalize(tag: str) -> str:
         return "".join(ch for ch in tag.upper() if ch.isalnum())
 
-    def fake_find_clan_row(tag: str):  # type: ignore[no-untyped-def]
+    def fake_find_clan_row(tag: str, *, force=False):  # type: ignore[no-untyped-def]
         entry = clan_rows.get(_normalize(tag))
         if not entry:
             return None
@@ -1260,7 +1299,7 @@ def test_finalize_posts_clan_math_log(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.recruitment_sheets.get_clan_header_map",
-        lambda: {"open_spots": 4},
+        lambda: {"open_spots": 31, "inactives": 32, "reservation_count": 33, "reservation_summary": 34, "manual_open_spots": 4, "manual_open_spots_seen": 35},
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.rt.send_log_message", fake_send_log
@@ -1334,7 +1373,7 @@ def test_finalize_error_pings_admins(monkeypatch) -> None:
     def _normalize(tag: str) -> str:
         return "".join(ch for ch in tag.upper() if ch.isalnum())
 
-    def fake_find_clan_row(tag: str):  # type: ignore[no-untyped-def]
+    def fake_find_clan_row(tag: str, *, force=False):  # type: ignore[no-untyped-def]
         entry = clan_rows.get(_normalize(tag))
         if not entry:
             return None
@@ -1373,7 +1412,7 @@ def test_finalize_error_pings_admins(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.recruitment_sheets.get_clan_header_map",
-        lambda: {"open_spots": 4},
+        lambda: {"open_spots": 31, "inactives": 32, "reservation_count": 33, "reservation_summary": 34, "manual_open_spots": 4, "manual_open_spots_seen": 35},
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.rt.send_log_message", fake_send_log
@@ -1451,7 +1490,7 @@ def test_finalize_manual_path_logs_source(monkeypatch) -> None:
     def _normalize(tag: str) -> str:
         return "".join(ch for ch in tag.upper() if ch.isalnum())
 
-    def fake_find_clan_row(tag: str):  # type: ignore[no-untyped-def]
+    def fake_find_clan_row(tag: str, *, force=False):  # type: ignore[no-untyped-def]
         entry = clan_rows.get(_normalize(tag))
         if not entry:
             return None
@@ -1499,7 +1538,7 @@ def test_finalize_manual_path_logs_source(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.recruitment_sheets.get_clan_header_map",
-        lambda: {"open_spots": 4},
+        lambda: {"open_spots": 31, "inactives": 32, "reservation_count": 33, "reservation_summary": 34, "manual_open_spots": 4, "manual_open_spots_seen": 35},
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.rt.send_log_message", fake_send_log
@@ -1568,11 +1607,11 @@ def test_finalize_non_real_tag_logs_skip_reason(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.recruitment_sheets.find_clan_row",
-        lambda _tag: None,
+        lambda _tag, *, force=False: None,
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.recruitment_sheets.get_clan_header_map",
-        lambda: {"open_spots": 4},
+        lambda: {"open_spots": 31, "inactives": 32, "reservation_count": 33, "reservation_summary": 34, "manual_open_spots": 4, "manual_open_spots_seen": 35},
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.get_admin_role_ids", lambda: set()

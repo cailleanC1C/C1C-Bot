@@ -46,7 +46,7 @@ def test_recompute_clan_availability_updates_sheet(monkeypatch):
     monkeypatch.setattr(
         availability.recruitment,
         "find_clan_row",
-        lambda tag: (
+        lambda tag, *, force=False: (
             7,
             [
                 "",  # A
@@ -126,7 +126,7 @@ def test_recompute_clan_availability_zero_reservations(monkeypatch):
     monkeypatch.setattr(
         availability.recruitment,
         "find_clan_row",
-        lambda tag: (9, list(base_row)),
+        lambda tag, *, force=False: (9, list(base_row)),
     )
     monkeypatch.setattr(availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
     monkeypatch.setattr(availability.recruitment, "get_clans_tab_name", lambda: "bot_info")
@@ -191,7 +191,7 @@ def test_recompute_clan_availability_uses_reordered_reservation_columns(monkeypa
     monkeypatch.setattr(reservations, "get_active_reservations_for_clan", fake_get_active_reservations)
     monkeypatch.setattr(reservations, "resolve_reservation_names", fake_resolve_names)
     row = ["", "Clan", "#EEE", "", "4"] + [""] * 40
-    monkeypatch.setattr(availability.recruitment, "find_clan_row", lambda tag: (11, list(row)))
+    monkeypatch.setattr(availability.recruitment, "find_clan_row", lambda tag, *, force=False: (11, list(row)))
     monkeypatch.setattr(availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
     monkeypatch.setattr(availability.recruitment, "get_clans_tab_name", lambda: "bot_info")
     monkeypatch.setattr(
@@ -232,7 +232,7 @@ def test_recompute_clan_availability_requires_reservation_headers(monkeypatch):
     monkeypatch.setattr(
         availability.recruitment,
         "find_clan_row",
-        lambda tag: (10, ["", "Clan", "#AAA", "", "2"] + [""] * 40),
+        lambda tag, *, force=False: (10, ["", "Clan", "#AAA", "", "2"] + [""] * 40),
     )
     monkeypatch.setattr(
         availability.recruitment,
@@ -256,7 +256,7 @@ def test_recompute_clan_availability_keeps_runtime_af_when_manual_seen_matches(m
     monkeypatch.setattr(reservations, "get_active_reservations_for_clan", fake_get_active_reservations)
     monkeypatch.setattr(reservations, "resolve_reservation_names", fake_resolve_names)
     row = ["", "Clan", "#AAA", "", "3"] + [""] * 26 + ["2", "", "", "", "3"] + [""] * 4
-    monkeypatch.setattr(availability.recruitment, "find_clan_row", lambda tag: (12, list(row)))
+    monkeypatch.setattr(availability.recruitment, "find_clan_row", lambda tag, *, force=False: (12, list(row)))
     monkeypatch.setattr(availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
     monkeypatch.setattr(availability.recruitment, "get_clans_tab_name", lambda: "bot_info")
     monkeypatch.setattr(
@@ -306,7 +306,7 @@ def test_recompute_clan_availability_rebases_runtime_af_when_manual_changes(monk
     monkeypatch.setattr(reservations, "get_active_reservations_for_clan", fake_get_active_reservations)
     monkeypatch.setattr(reservations, "resolve_reservation_names", fake_resolve_names)
     row = ["", "Clan", "#AAA", "", "4"] + [""] * 26 + ["2", "", "", "", "3"] + [""] * 4
-    monkeypatch.setattr(availability.recruitment, "find_clan_row", lambda tag: (13, list(row)))
+    monkeypatch.setattr(availability.recruitment, "find_clan_row", lambda tag, *, force=False: (13, list(row)))
     monkeypatch.setattr(availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
     monkeypatch.setattr(availability.recruitment, "get_clans_tab_name", lambda: "bot_info")
     monkeypatch.setattr(
@@ -351,7 +351,7 @@ def test_adjust_manual_open_spots_applies_delta_to_resolved_column(monkeypatch):
     monkeypatch.setattr(
         availability.recruitment,
         "find_clan_row",
-        lambda tag: (12, list(row)),
+        lambda tag, *, force=False: (12, list(row)),
     )
     monkeypatch.setattr(
         availability.recruitment,
@@ -395,7 +395,7 @@ def test_adjust_manual_open_spots_requires_open_spots_header(monkeypatch):
     monkeypatch.setattr(
         availability.recruitment,
         "find_clan_row",
-        lambda tag: (12, ["", "Clan", "#CCC", "", "3"] + [""] * 30),
+        lambda tag, *, force=False: (12, ["", "Clan", "#CCC", "", "3"] + [""] * 30),
     )
     monkeypatch.setattr(availability.recruitment, "get_clan_header_map", lambda: {"manual_open_spots": 4, "open_spots": 20})
 
@@ -406,7 +406,7 @@ def test_adjust_manual_open_spots_requires_open_spots_header(monkeypatch):
 def test_adjust_manual_open_spots_rebases_when_manual_changes(monkeypatch):
     worksheet = StubWorksheet()
     row = ["", "Clan", "#DDD", "", "4"] + [""] * 15 + ["2"] + [""] * 16 + ["3"]
-    monkeypatch.setattr(availability.recruitment, "find_clan_row", lambda tag: (15, list(row)))
+    monkeypatch.setattr(availability.recruitment, "find_clan_row", lambda tag, *, force=False: (15, list(row)))
     monkeypatch.setattr(
         availability.recruitment,
         "get_clan_header_map",
@@ -436,7 +436,7 @@ def test_adjust_manual_open_spots_rebases_when_manual_changes(monkeypatch):
 def test_adjust_manual_open_spots_rebase_without_delta(monkeypatch):
     worksheet = StubWorksheet()
     row = ["", "Clan", "#DDD", "", "4"] + [""] * 15 + ["2"] + [""] * 16 + ["3"]
-    monkeypatch.setattr(availability.recruitment, "find_clan_row", lambda tag: (15, list(row)))
+    monkeypatch.setattr(availability.recruitment, "find_clan_row", lambda tag, *, force=False: (15, list(row)))
     monkeypatch.setattr(
         availability.recruitment,
         "get_clan_header_map",
