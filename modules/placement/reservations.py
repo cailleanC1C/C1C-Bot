@@ -28,6 +28,7 @@ from shared.config import (
     get_recruitment_interact_channel_id,
     get_welcome_channel_id,
 )
+from shared.cache import telemetry as cache_telemetry
 from shared.logfmt import channel_label
 from shared.sheets import recruitment, reservations
 
@@ -360,6 +361,39 @@ def _reservations_enabled() -> bool:
         except Exception:
             log.exception("feature toggle check failed", extra={"feature": key})
     return False
+
+
+async def _ensure_fresh_clans_for_reservations(*, actor: str, clan_tag: str, user: str, source: str) -> bool:
+    """Require a sync-fresh clans cache before reservation availability recompute."""
+    try:
+        await cache_telemetry.refresh_now("clans", actor=actor)
+    except Exception:
+        log.exception(
+            "failed to refresh clans cache for reservation availability recompute",
+            extra={
+                "actor": actor,
+                "clan_tag": _normalize_tag(clan_tag),
+                "user": user,
+                "source": source,
+            },
+        )
+        return False
+    snapshot = cache_telemetry.get_snapshot("clans")
+    if (not snapshot.available) or snapshot.last_result not in {"ok", "retry_ok"}:
+        log.warning(
+            "reservation availability recompute blocked due to unavailable/failed clans cache refresh",
+            extra={
+                "actor": actor,
+                "clan_tag": _normalize_tag(clan_tag),
+                "user": user,
+                "source": source,
+                "reason": "fresh_clans_unavailable",
+                "last_result": snapshot.last_result,
+                "last_error": snapshot.last_error,
+            },
+        )
+        return False
+    return True
 
 
 @dataclass(slots=True)
@@ -847,15 +881,48 @@ class ReservationCog(commands.Cog):
             )
             return
 
+        source = "reserve"
+        actor = "placement_reservation"
+        actor_user = channel_label(ctx.author)
+        clans_fresh = await _ensure_fresh_clans_for_reservations(
+            actor=actor,
+            clan_tag=sheet_tag,
+            user=actor_user,
+            source=source,
+        )
+        if not clans_fresh:
+            log.warning(
+                "skipped recompute clan availability",
+                extra={
+                    "reason": "fresh_clans_unavailable",
+                    "clan_tag": _normalize_tag(sheet_tag),
+                    "reservation_row": "append",
+                    "thread_id": getattr(ctx.channel, "id", None),
+                    "ticket_user_id": details.ticket_user_id,
+                    "user": actor_user,
+                    "source": source,
+                },
+            )
+            await ctx.send(
+                "Saved the reservation, but I couldn't refresh clan availability. Admin hint: clans cache refresh failed (fresh_clans_unavailable), so verify cache/headers and rerun recompute."
+            )
+            return
         try:
             await availability.recompute_clan_availability(sheet_tag, guild=ctx.guild)
         except Exception:
             log.exception(
                 "failed to recompute clan availability",
-                extra={"clan_tag": _normalize_tag(sheet_tag)},
+                extra={
+                    "clan_tag": _normalize_tag(sheet_tag),
+                    "reservation_row": "append",
+                    "thread_id": getattr(ctx.channel, "id", None),
+                    "ticket_user_id": details.ticket_user_id,
+                    "user": actor_user,
+                    "source": source,
+                },
             )
             await ctx.send(
-                "Saved the reservation, but I couldn't refresh clan availability. Please poke an admin to verify the sheet."
+                "Saved the reservation, but I couldn't refresh clan availability. Admin hint: check clan headers/cache config and see error logs for the exact exception."
             )
             return
 

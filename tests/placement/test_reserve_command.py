@@ -1,5 +1,6 @@
 import asyncio
 import datetime as dt
+import logging
 from typing import List
 
 import discord
@@ -327,6 +328,26 @@ def test_reserve_accepts_inline_recruit(monkeypatch):
     assert any("Reserving a spot for" in sent.content for sent in thread.sent[:1])
     if appended:
         assert appended[0][1] == str(recruit.id)
+
+
+def test_ensure_fresh_clans_for_reservations_unavailable(monkeypatch, caplog):
+    class _Snapshot:
+        available = False
+        last_result = "error"
+        last_error = "boom"
+
+    caplog.set_level(logging.WARNING, logger=reserve_module.log.name)
+    monkeypatch.setattr(reserve_module.cache_telemetry, "refresh_now", lambda *_, **__: asyncio.sleep(0))
+    monkeypatch.setattr(reserve_module.cache_telemetry, "get_snapshot", lambda *_: _Snapshot())
+
+    result = asyncio.run(
+        reserve_module._ensure_fresh_clans_for_reservations(
+            actor="placement_reservation", clan_tag="C1C9", user="u", source="reserve"
+        )
+    )
+
+    assert result is False
+    assert any(getattr(record, "reason", None) == "fresh_clans_unavailable" for record in caplog.records)
 
 
 def test_reserve_inline_recruit_validation_error(monkeypatch):
