@@ -626,6 +626,8 @@ class PromoTicketWatcher(commands.Cog):
         source = "promo"
         final_is_real = False
         open_deltas: Dict[str, int] = {}
+        applied_open_deltas: Dict[str, int] = {}
+        delta_failure_reason: str | None = None
         recompute_tags: List[str] = []
         if previous_final is None:
             decision_line = (
@@ -686,7 +688,9 @@ class PromoTicketWatcher(commands.Cog):
         for tag, delta in open_deltas.items():
             try:
                 await availability.adjust_manual_open_spots(tag, delta)
+                applied_open_deltas[tag] = applied_open_deltas.get(tag, 0) + delta
             except Exception:
+                delta_failure_reason = f"adjust_manual_open_spots_failed:{tag}:{delta}"
                 log.exception(
                     "promo reconcile: failed to adjust manual open spots",
                     extra={"ticket": context.ticket_number, "clan_tag": tag, "delta": delta},
@@ -707,9 +711,18 @@ class PromoTicketWatcher(commands.Cog):
             reservation_label="not_applicable",
             consume_open_spot=consume_open_spot,
             final_is_real=final_is_real,
-            open_deltas=open_deltas,
+            open_deltas=applied_open_deltas,
             reservation_state_override="not_applicable",
         )
+        if open_deltas and not applied_open_deltas:
+            failed_bits = ", ".join(f"{tag}:{delta:+d}" for tag, delta in sorted(open_deltas.items()))
+            decision_line = (
+                "decision: "
+                f"final_tag={normalized_final or '-'} • previous_final={(previous_final or '').strip().upper() or '-'} • "
+                "reservation=not_applicable • consume_open_spot="
+                f"{consume_open_spot} • final_is_real={final_is_real} • decision_result=failed_open_delta • "
+                f"deltas={failed_bits} • failure={delta_failure_reason or 'open_delta_write_failed'}"
+            )
         log.info(
             "promo_open_spots_reconcile — ticket=%s • user=%s • clan=%s • source=%s • %s",
             context.ticket_number,

@@ -1414,7 +1414,7 @@ def test_finalize_error_pings_admins(monkeypatch) -> None:
     message = log_messages[-1]
     assert "result=error" in message
     assert "reason=partial_actions" in message
-    assert "decision_result=applied_open_delta" in message
+    assert "decision_result=failed_open_delta" in message
     assert "<@&111>" in message and "<@&222>" in message
     assert "open_spots: 4 → 4" in message
 

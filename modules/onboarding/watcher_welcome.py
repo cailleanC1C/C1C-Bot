@@ -3405,6 +3405,8 @@ class WelcomeTicketWatcher(commands.Cog):
         column_map: Dict[str, int] | None = None
         final_is_real = False
         decision_open_deltas: Dict[str, int] = {}
+        applied_open_deltas: Dict[str, int] = {}
+        delta_failure_reason: str | None = None
 
         if not row_missing:
             final_entry = (
@@ -3486,8 +3488,10 @@ class WelcomeTicketWatcher(commands.Cog):
             for tag, delta in decision.open_deltas.items():
                 try:
                     await availability.adjust_manual_open_spots(tag, delta)
+                    applied_open_deltas[tag] = applied_open_deltas.get(tag, 0) + delta
                 except Exception:
                     actions_ok = False
+                    delta_failure_reason = f"adjust_manual_open_spots_failed:{tag}:{delta}"
                     log.exception(
                         "failed to adjust manual open spots",
                         extra={"clan_tag": tag, "delta": delta, "ticket": context.ticket_number},
@@ -3510,6 +3514,7 @@ class WelcomeTicketWatcher(commands.Cog):
                     row_targets, before_snapshots, after_snapshots
                 )
 
+        effective_open_deltas = applied_open_deltas if applied_open_deltas else {}
         decision_line = _decision_visibility_line(
             final_tag=final_tag,
             previous_final=previous_final,
@@ -3517,8 +3522,18 @@ class WelcomeTicketWatcher(commands.Cog):
             reservation_label=reservation_label,
             consume_open_spot=consume_open_spot,
             final_is_real=final_is_real,
-            open_deltas=decision_open_deltas,
+            open_deltas=effective_open_deltas,
         )
+        if decision_open_deltas and not applied_open_deltas:
+            failed_bits = ", ".join(f"{tag}:{delta:+d}" for tag, delta in sorted(decision_open_deltas.items()))
+            fail_reason = delta_failure_reason or "open_delta_write_failed"
+            decision_line = (
+                "decision: "
+                f"final_tag={final_tag or '-'} • previous_final={(previous_final or '').strip().upper() or '-'} • "
+                f"reservation={reservation_label or 'none'} • consume_open_spot={consume_open_spot} • "
+                f"final_is_real={final_is_real} • decision_result=failed_open_delta • deltas={failed_bits} • "
+                f"failure={fail_reason}"
+            )
         row_change_lines = [decision_line, *row_change_lines]
 
         final_display = final_tag if final_tag else _NO_PLACEMENT_TAG
