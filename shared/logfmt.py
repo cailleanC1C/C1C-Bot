@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import datetime as dt
 from typing import Mapping, Optional, Sequence
 
 import discord
@@ -247,6 +248,7 @@ class BucketResult:
     metadata: Mapping[str, str] | None = None
     cache_age_s: Optional[int] = None
     ttl_s: Optional[int] = None
+    last_refresh_at: Optional[dt.datetime] = None
 
     @property
     def ok(self) -> bool:
@@ -319,6 +321,10 @@ class LogTemplates:
                 details.append(f"age={fmt_duration(result.cache_age_s)}")
             if result.ttl_s is not None:
                 details.append(f"ttl={fmt_duration(result.ttl_s)}")
+            if result.last_refresh_at is not None:
+                details.append(f"last_refresh={result.last_refresh_at.astimezone(dt.timezone.utc):%H:%MZ}")
+            elif result.ttl_ok is False or result.status.lower().strip() == "cached":
+                details.append("last_refresh=never")
             if result.retries:
                 details.append(f"{result.retries}× retry")
             if result.reason and not result.ok:
