@@ -883,7 +883,7 @@ class ReservationCog(commands.Cog):
 
         source = "reserve"
         actor = "placement_reservation"
-        actor_user = channel_label(ctx.author)
+        actor_user = f"{ctx.author} ({getattr(ctx.author, 'id', '-')})"
         clans_fresh = await _ensure_fresh_clans_for_reservations(
             actor=actor,
             clan_tag=sheet_tag,
