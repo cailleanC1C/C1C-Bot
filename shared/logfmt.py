@@ -249,6 +249,8 @@ class BucketResult:
     cache_age_s: Optional[int] = None
     ttl_s: Optional[int] = None
     last_refresh_at: Optional[dt.datetime] = None
+    ttl_expired_before_refresh: Optional[bool] = None
+    currently_stale_after_refresh: Optional[bool] = None
 
     @property
     def ok(self) -> bool:
@@ -315,9 +317,17 @@ class LogTemplates:
                 details.append(fmt_count(result.item_count))
             if result.ttl_ok is True:
                 details.append("ttl")
-            elif result.ttl_ok is False:
+                if result.ttl_expired_before_refresh is True:
+                    details.append("ttl_expired")
+            elif result.currently_stale_after_refresh is True:
                 details.append("stale")
-            if result.cache_age_s is not None and (result.ttl_ok is False or result.status.lower().strip() == "cached"):
+            elif result.ttl_expired_before_refresh is True:
+                details.append("ttl_expired")
+            if result.cache_age_s is not None and (
+                result.currently_stale_after_refresh is True
+                or result.ttl_expired_before_refresh is True
+                or result.status.lower().strip() == "cached"
+            ):
                 details.append(f"age={fmt_duration(result.cache_age_s)}")
             if result.ttl_s is not None:
                 details.append(f"ttl={fmt_duration(result.ttl_s)}")

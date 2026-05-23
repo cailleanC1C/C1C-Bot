@@ -65,14 +65,23 @@ def refresh_bucket_results(results: Sequence["RefreshResult"]) -> list[BucketRes
                 )
             )
             continue
+        ttl_expired_before_refresh = snapshot.ttl_expired
+        currently_stale_after_refresh = bool(ttl_expired_before_refresh and not getattr(item, "ok", False))
         ttl_ok: bool | None = None
-        if snapshot.ttl_expired is True:
+        if currently_stale_after_refresh is True:
             ttl_ok = False
-        elif snapshot.ttl_expired is False:
+        elif ttl_expired_before_refresh is False or getattr(item, "ok", False):
             ttl_ok = True
         reason = None
         if not getattr(item, "ok", False):
             reason = human_reason(getattr(item, "error", None) or snapshot.last_error)
+        if getattr(item, "ok", False):
+            if ttl_expired_before_refresh is True:
+                status = "refreshed"
+            elif ttl_expired_before_refresh is False:
+                status = "fresh"
+        elif ttl_expired_before_refresh is True:
+            status = "stale"
         metadata = snapshot.metadata
         if snapshot.name == "onboarding_questions" and metadata:
             metadata = {k: v for k, v in metadata.items() if k not in {"sheet", "tab"}}
@@ -92,6 +101,8 @@ def refresh_bucket_results(results: Sequence["RefreshResult"]) -> list[BucketRes
                 cache_age_s=snapshot.age_seconds,
                 ttl_s=snapshot.ttl_seconds,
                 last_refresh_at=snapshot.last_refresh_at,
+                ttl_expired_before_refresh=ttl_expired_before_refresh,
+                currently_stale_after_refresh=currently_stale_after_refresh,
             )
         )
     return buckets
