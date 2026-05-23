@@ -279,7 +279,11 @@ async def _startup_preload(bot: commands.Bot | None = None) -> StartupPreloadRep
         snap = result.snapshot
         state_raw = (snap.last_result or ("ok" if result.ok else "failed")).strip().lower()
         state = "ok" if state_raw in {"ok", "success", "retry_ok"} else ("failed" if "fail" in state_raw or "error" in state_raw else state_raw)
-        marker = "stale" if snap.ttl_expired else "ttl"
+        marker: str | None = None
+        if snap.ttl_expired is True:
+            marker = "stale"
+        elif snap.ttl_expired is False:
+            marker = "ttl"
         startup_rows.append(
             {
                 "name": result.name,
@@ -287,6 +291,8 @@ async def _startup_preload(bot: commands.Bot | None = None) -> StartupPreloadRep
                 "duration_s": (result.duration_ms or 0) / 1000.0,
                 "count": snap.item_count,
                 "marker": marker,
+                "age_seconds": snap.age_seconds,
+                "ttl_seconds": snap.ttl_seconds,
             }
         )
     if bot is not None:
