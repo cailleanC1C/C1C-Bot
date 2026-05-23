@@ -337,8 +337,10 @@ async def on_ready():
         if preload_report.rows:
             refresh_lines = ["♻️ Refresh"]
             for row in preload_report.rows:
+                detail_parts = row.get("detail_parts") or ["?"]
+                detail_text = ", ".join(str(part) for part in detail_parts)
                 refresh_lines.append(
-                    f"• {row.get('name', '?')} {row.get('state', '?')} ({row.get('duration_s', 0):.1f}s, {row.get('count', '?')}, {row.get('marker', '?')})"
+                    f"• {row.get('name', '?')} {row.get('status', '?')} ({detail_text})"
                 )
             refresh_lines.append(f"• total={preload_report.total_s:.1f}s")
         else:

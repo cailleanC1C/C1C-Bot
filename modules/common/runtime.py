@@ -37,6 +37,7 @@ from shared.config import (
     get_refresh_timezone,
     get_strict_emoji_proxy,
 )
+from shared.logfmt import fmt_duration
 from shared.ports import get_port
 from shared.logging import get_trace_id, set_trace_id, setup_logging
 from shared.obs.events import (
@@ -275,24 +276,23 @@ async def _startup_preload(bot: commands.Bot | None = None) -> StartupPreloadRep
         return StartupPreloadReport(rows=[], total_s=0.0, error="no refresh rows")
 
     startup_rows: list[dict[str, object]] = []
-    for result in refresh_results:
-        snap = result.snapshot
-        state_raw = (snap.last_result or ("ok" if result.ok else "failed")).strip().lower()
-        state = "ok" if state_raw in {"ok", "success", "retry_ok"} else ("failed" if "fail" in state_raw or "error" in state_raw else state_raw)
-        marker: str | None = None
-        if snap.ttl_expired is True:
-            marker = "stale"
-        elif snap.ttl_expired is False:
-            marker = "ttl"
+    for bucket in refresh_bucket_results(refresh_results):
+        details: list[str] = [f"{bucket.duration_s:.1f}s", str(bucket.item_count if bucket.item_count is not None else "?")]
+        if bucket.ttl_ok is True:
+            details.append("ttl")
+        if bucket.ttl_expired_before_refresh is True:
+            details.append("ttl_expired")
+        if bucket.currently_stale_after_refresh is True:
+            details.append("refresh_failed")
+        if bucket.cache_age_s is not None:
+            details.append(f"age={fmt_duration(bucket.cache_age_s)}")
+        if bucket.ttl_s is not None:
+            details.append(f"ttl={fmt_duration(bucket.ttl_s)}")
         startup_rows.append(
             {
-                "name": result.name,
-                "state": state,
-                "duration_s": (result.duration_ms or 0) / 1000.0,
-                "count": snap.item_count,
-                "marker": marker,
-                "age_seconds": snap.age_seconds,
-                "ttl_seconds": snap.ttl_seconds,
+                "name": bucket.name,
+                "status": bucket.status,
+                "detail_parts": details,
             }
         )
     if bot is not None:
