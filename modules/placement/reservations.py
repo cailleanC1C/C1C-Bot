@@ -890,39 +890,66 @@ class ReservationCog(commands.Cog):
             user=actor_user,
             source=source,
         )
+        reservation_row_ref = f"append:{now.isoformat()}"
         if not clans_fresh:
             log.warning(
                 "skipped recompute clan availability",
                 extra={
                     "reason": "fresh_clans_unavailable",
                     "clan_tag": _normalize_tag(sheet_tag),
-                    "reservation_row": "append",
+                    "reservation_row": reservation_row_ref,
                     "thread_id": getattr(ctx.channel, "id", None),
                     "ticket_user_id": details.ticket_user_id,
                     "user": actor_user,
                     "source": source,
                 },
             )
+            human_log.human(
+                "warning",
+                "⚠️ reservation_partial_success — source=reserve • clan=%s • reservation_row=%s • thread=%s • ticket_user=%s • error_type=FreshClansUnavailable • error=fresh_clans_unavailable • action=rerun recompute/refresh for clan and verify recruiter-facing bot_info open spots"
+                % (
+                    _normalize_tag(sheet_tag),
+                    reservation_row_ref,
+                    getattr(ctx.channel, "id", "-"),
+                    details.ticket_user_id or "-",
+                ),
+            )
             await ctx.send(
-                "Saved the reservation, but I couldn't refresh clan availability. Admin hint: clans cache refresh failed (fresh_clans_unavailable), so verify cache/headers and rerun recompute."
+                "Reservation row was added, but recruiter-facing availability was NOT updated. Admin hint: rerun recompute/refresh for this clan and manually verify bot_info/open spots."
             )
             return
         try:
             await availability.recompute_clan_availability(sheet_tag, guild=ctx.guild)
-        except Exception:
+        except Exception as exc:
+            error_type = type(exc).__name__
+            error_text = str(exc) or repr(exc)
             log.exception(
                 "failed to recompute clan availability",
                 extra={
                     "clan_tag": _normalize_tag(sheet_tag),
-                    "reservation_row": "append",
+                    "reservation_row": reservation_row_ref,
                     "thread_id": getattr(ctx.channel, "id", None),
                     "ticket_user_id": details.ticket_user_id,
                     "user": actor_user,
                     "source": source,
+                    "error_type": error_type,
+                    "error": repr(exc),
                 },
             )
+            human_log.human(
+                "error",
+                "❌ reservation_partial_success — source=reserve • clan=%s • reservation_row=%s • thread=%s • ticket_user=%s • error_type=%s • error=%s • action=rerun recompute/refresh for clan and verify recruiter-facing bot_info open spots"
+                % (
+                    _normalize_tag(sheet_tag),
+                    reservation_row_ref,
+                    getattr(ctx.channel, "id", "-"),
+                    details.ticket_user_id or "-",
+                    error_type,
+                    error_text,
+                ),
+            )
             await ctx.send(
-                "Saved the reservation, but I couldn't refresh clan availability. Admin hint: check clan headers/cache config and see error logs for the exact exception."
+                "Reservation row was added, but recruiter-facing availability was NOT updated. Admin hint: rerun recompute/refresh for this clan and manually verify bot_info/open spots."
             )
             return
 

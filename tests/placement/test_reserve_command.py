@@ -269,6 +269,99 @@ def test_reserve_success(monkeypatch):
         assert recomputed["tag"] == "#ABC"
 
 
+
+
+def test_reserve_partial_success_when_recompute_fails(monkeypatch):
+    _enable_feature(monkeypatch, enabled=True)
+    _setup_parents(monkeypatch, parent_id=999)
+    _setup_permissions(monkeypatch, recruiter=True)
+    _setup_control_channels(monkeypatch)
+
+    recruit = FakeMember(333, "Recruit Partial")
+    guild = FakeGuild([recruit])
+    thread = FakeThread(thread_id=557, parent_id=999)
+    author = FakeMember(112, "Recruiter")
+    bot = FakeBot([])
+    ctx = FakeContext(bot, guild=guild, channel=thread, author=author)
+
+    clan_row = ["", "Clan", "#ABC", "", "3"] + [""] * 40
+    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag: (10, list(clan_row)))
+    monkeypatch.setattr(reserve_module.recruitment, "get_clan_by_tag", lambda tag: clan_row)
+
+    async def fake_count(*_args, **_kwargs):
+        return 0
+
+    async def fake_find_active(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(reserve_module.reservations, "count_active_reservations_for_clan", fake_count)
+    monkeypatch.setattr(reserve_module.reservations, "find_active_reservations_for_recruit", fake_find_active)
+
+    async def fake_flow_run(self):
+        return reserve_module.ReservationDetails(
+            ticket_user_id=recruit.id,
+            ticket_display=recruit.display_name,
+            ticket_username=recruit.display_name,
+            reserved_until=dt.date(2025, 12, 6),
+            notes="",
+        )
+
+    monkeypatch.setattr(reserve_module.ReservationConversation, "run", fake_flow_run)
+    monkeypatch.setattr(reserve_module.reservations, "append_reservation_row", lambda row: asyncio.sleep(0))
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("sheet update exploded")
+
+    monkeypatch.setattr(reserve_module.availability, "recompute_clan_availability", _boom)
+    monkeypatch.setattr(reserve_module, "_ensure_fresh_clans_for_reservations", lambda **_: asyncio.sleep(0, result=True))
+
+    runtime_logs: list[tuple[str, str]] = []
+    monkeypatch.setattr(reserve_module.human_log, "human", lambda level, message, **_: runtime_logs.append((level, message)))
+
+    cog = _make_cog(bot)
+    asyncio.run(cog.reserve.callback(cog, ctx, "ABC"))
+
+    assert any("Reservation row was added, but recruiter-facing availability was NOT updated." in m.content for m in thread.sent)
+    assert any(level == "error" and "error_type=RuntimeError" in message and "source=reserve" in message for level, message in runtime_logs)
+
+def test_recompute_updates_recruiter_facing_clans_tab(monkeypatch):
+    worksheet_calls: list[str] = []
+
+    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag, force=True: (7, ["", "", "#ABC", "", "4"] + [""] * 60))
+    monkeypatch.setattr(
+        reserve_module.recruitment,
+        "get_clan_header_map",
+        lambda: {
+            "manual_open_spots": 4,
+            "open_spots": 31,
+            "manual_open_spots_seen": 35,
+            "inactives": 32,
+            "reservation_count": 33,
+            "reservation_summary": 34,
+        },
+    )
+    monkeypatch.setattr(reserve_module.recruitment, "get_recruitment_sheet_id", lambda: "sheet-id")
+    monkeypatch.setattr(reserve_module.recruitment, "get_clans_tab_name", lambda: "bot_info")
+
+    class _Worksheet:
+        def update(self, cell_range, values, value_input_option="RAW"):
+            worksheet_calls.append(cell_range)
+            return {"ok": True}
+
+    async def _aget(sheet_id, tab_name):
+        assert sheet_id == "sheet-id"
+        assert tab_name == "bot_info"
+        return _Worksheet()
+
+    monkeypatch.setattr(reserve_module.availability.async_core, "aget_worksheet", _aget)
+    monkeypatch.setattr(reserve_module.availability.async_core, "acall_with_backoff", lambda fn, *a, **k: asyncio.sleep(0, result=fn(*a, **k)))
+    monkeypatch.setattr(reserve_module.availability.reservations, "get_active_reservations_for_clan", lambda *_: asyncio.sleep(0, result=[]))
+    monkeypatch.setattr(reserve_module.availability.reservations, "resolve_reservation_names", lambda *_a, **_k: asyncio.sleep(0, result=[]))
+    monkeypatch.setattr(reserve_module.recruitment, "update_cached_clan_row", lambda *_: True)
+
+    asyncio.run(reserve_module.availability.recompute_clan_availability("#ABC", guild=None))
+
+    assert worksheet_calls, "expected worksheet updates"
 def test_reserve_accepts_inline_recruit(monkeypatch):
     _enable_feature(monkeypatch, enabled=True)
     _setup_parents(monkeypatch, parent_id=999)
