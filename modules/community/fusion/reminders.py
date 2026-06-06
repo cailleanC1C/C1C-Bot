@@ -1,27 +1,27 @@
-"""Fusion reminder engine for pre-start and start notifications."""
+"""Fusion grouped daily reminder engine."""
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
-import hashlib
 import logging
 import os
 import time
-import asyncio
 
 import discord
 from discord.ext import commands
 
-from modules.community.fusion.announcements import ensure_fusion_announcement
 from modules.community.fusion import logs as fusion_logs
+from modules.community.fusion.announcements import ensure_fusion_announcement
 from modules.community.fusion.opt_in_view import build_fusion_opt_in_view
 from shared.sheets import fusion as fusion_sheets
 
 log = logging.getLogger("c1c.community.fusion.reminders")
 
-_LOOKBACK_MINUTES = max(5, int(os.getenv("FUSION_REMINDER_LOOKBACK_MIN", "30")))
 _DEDUP_TIMEOUT_BACKOFF_SEC = max(60, int(os.getenv("FUSION_REMINDER_DEDUPE_BACKOFF_SEC", "300")))
 _DEDUP_TIMEOUT_SEC = max(1.0, float(os.getenv("FUSION_REMINDER_DEDUPE_TIMEOUT_SEC", "10")))
+_GROUPED_REMINDER_TYPE = "grouped_daily"
+_GROUPED_EVENT_ID_PREFIX = "grouped_daily"
 
 _DEDUP_BACKOFF_UNTIL_MONOTONIC: float = 0.0
 _MEMORY_SENT_KEYS: set[tuple[str, str, str]] = set()
@@ -38,105 +38,11 @@ def _utc_now(now: dt.datetime | None = None) -> dt.datetime:
     return now.astimezone(dt.timezone.utc)
 
 
-def _within_window(*, trigger_at: dt.datetime, now: dt.datetime, lookback: dt.timedelta) -> bool:
-    return trigger_at <= now <= (trigger_at + lookback)
-
-
-
-
-def _format_starts_at(value: dt.datetime) -> str:
-    return value.astimezone(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-
-
-def _format_starts_in(*, start_at: dt.datetime, now: dt.datetime) -> str:
-    delta = start_at - now
-    total_seconds = max(0, int(delta.total_seconds()))
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes = remainder // 60
-    if hours and minutes:
-        return f"{hours}h {minutes}m"
-    if hours:
-        return f"{hours}h"
-    return f"{minutes}m"
-
-
 def _interpolate_template(template: str, values: dict[str, str]) -> str:
     text = str(template or "")
     for key, value in values.items():
         text = text.replace("{" + key + "}", value)
     return text
-
-
-def _build_reminder_copy(
-    *,
-    fusion_id: str,
-    event: fusion_sheets.FusionEventRow,
-    start_at: dt.datetime,
-    now: dt.datetime,
-    fusion_title: str,
-    reward_unit: str,
-    jump_url: str,
-) -> tuple[str, str, str] | None:
-    placeholders = {
-        "event_label": event.event_name,
-        "fusion_title": fusion_title,
-        "starts_at": _format_starts_at(start_at),
-        "starts_in": _format_starts_in(start_at=start_at, now=now),
-        "reward_type": reward_unit,
-        "jump_url": jump_url,
-        "jump_link": jump_url,
-    }
-    title_template = (event.embed_title or "").strip()
-    description_template = (event.embed_description or "").strip()
-    footer_template = (event.embed_footer or "").strip()
-    if not title_template or not description_template or not footer_template:
-        log.warning(
-            "fusion reminder skipped; missing required sheet copy fields",
-            extra={
-                "fusion_id": fusion_id,
-                "event_id": event.event_id,
-                "has_embed_title": bool(title_template),
-                "has_embed_description": bool(description_template),
-                "has_embed_footer": bool(footer_template),
-            },
-        )
-        return None
-    title = _interpolate_template(title_template, placeholders)
-    description = _interpolate_template(description_template, placeholders)
-    footer = _interpolate_template(footer_template, placeholders)
-    return title, description, footer
-
-def _build_reminder_embed(
-    *,
-    fusion_id: str,
-    event: fusion_sheets.FusionEventRow,
-    start_at: dt.datetime,
-    jump_url: str,
-    reward_unit: str,
-    now: dt.datetime,
-    fusion_title: str,
-) -> discord.Embed | None:
-    copy = _build_reminder_copy(
-        fusion_id=fusion_id,
-        event=event,
-        start_at=start_at,
-        now=now,
-        fusion_title=fusion_title,
-        reward_unit=reward_unit,
-        jump_url=jump_url,
-    )
-    if copy is None:
-        return None
-    title, description, footer = copy
-
-    embed = discord.Embed(
-        title=title,
-        description=description,
-        color=discord.Color.blurple(),
-        timestamp=start_at,
-    )
-    embed.set_footer(text=footer)
-    return embed
 
 
 def _build_grouped_embed(
@@ -147,7 +53,7 @@ def _build_grouped_embed(
     live_events: list[fusion_sheets.FusionEventRow],
     upcoming_events: list[fusion_sheets.FusionEventRow],
     ending_events: list[fusion_sheets.FusionEventRow],
-) -> discord.Embed | None:
+) -> discord.Embed:
     jump_link = f"[{settings.grouped_jump_label}]({jump_url})"
     placeholders = {
         "fusion_title": fusion_title,
@@ -162,9 +68,15 @@ def _build_grouped_embed(
         description=_interpolate_template(settings.grouped_embed_description, placeholders),
         color=discord.Color.blurple(),
     )
+
     def _section(events: list[fusion_sheets.FusionEventRow], label: str) -> None:
         value = "\n".join(f"• {event.event_name}" for event in events[:10]) if events else settings.grouped_empty_value
-        embed.add_field(name=_interpolate_template(label, placeholders), value=_interpolate_template(value, placeholders), inline=False)
+        embed.add_field(
+            name=_interpolate_template(label, placeholders),
+            value=_interpolate_template(value, placeholders),
+            inline=False,
+        )
+
     _section(live_events, settings.grouped_live_label)
     _section(upcoming_events, settings.grouped_upcoming_label)
     _section(ending_events, settings.grouped_ending_label)
@@ -184,18 +96,297 @@ def _missing_grouped_copy_fields(settings: fusion_sheets.FusionReminderSettings)
     return [name for name, value in required.items() if not str(value or "").strip()]
 
 
-def _grouped_event_bucket_key(
+def _parse_grouped_post_time_utc(raw: object) -> dt.time | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    for fmt in ("%H:%M", "%H:%M:%S"):
+        try:
+            parsed = dt.datetime.strptime(text, fmt).time()
+            return parsed.replace(tzinfo=dt.timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def _grouped_event_id_for_date(day: dt.date) -> str:
+    return f"{_GROUPED_EVENT_ID_PREFIX}:{day.isoformat()}"
+
+
+def _format_due(value: dt.datetime | None) -> str:
+    if value is None:
+        return "none"
+    return value.astimezone(dt.timezone.utc).replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _format_sent(value: dt.datetime | None) -> str:
+    return _format_due(value)
+
+
+def _grouped_due_for_day(day: dt.date, post_time: dt.time) -> dt.datetime:
+    return dt.datetime.combine(day, post_time, tzinfo=dt.timezone.utc)
+
+
+def _next_grouped_due(
     *,
-    live_events: list[fusion_sheets.FusionEventRow],
-    upcoming_events: list[fusion_sheets.FusionEventRow],
-    ending_events: list[fusion_sheets.FusionEventRow],
-) -> str:
-    tokens: list[str] = []
-    tokens.extend(f"live:{event.event_id}" for event in sorted(live_events, key=lambda e: e.event_id))
-    tokens.extend(f"upcoming:{event.event_id}" for event in sorted(upcoming_events, key=lambda e: e.event_id))
-    tokens.extend(f"ending:{event.event_id}" for event in sorted(ending_events, key=lambda e: e.event_id))
-    digest = hashlib.sha1("|".join(tokens).encode("utf-8")).hexdigest()[:12] if tokens else "empty"
-    return f"grouped:{digest}"
+    now: dt.datetime,
+    post_time: dt.time,
+    sent_keys: set[tuple[str, str]],
+) -> dt.datetime:
+    today_key = (_grouped_event_id_for_date(now.date()), _GROUPED_REMINDER_TYPE)
+    today_due = _grouped_due_for_day(now.date(), post_time)
+    if today_key not in sent_keys and now <= today_due:
+        return today_due
+    if today_key not in sent_keys and now > today_due:
+        return now
+    tomorrow = now.date() + dt.timedelta(days=1)
+    return _grouped_due_for_day(tomorrow, post_time)
+
+
+def _is_grouped_due(
+    *,
+    now: dt.datetime,
+    post_time: dt.time,
+    sent_keys: set[tuple[str, str]],
+) -> bool:
+    today_key = (_grouped_event_id_for_date(now.date()), _GROUPED_REMINDER_TYPE)
+    if today_key in sent_keys:
+        return False
+    return now >= _grouped_due_for_day(now.date(), post_time)
+
+
+def _append_skip(skipped: dict[str, int], reason: str) -> None:
+    skipped[reason] = skipped.get(reason, 0) + 1
+
+
+def _render_skips(skipped: dict[str, int]) -> str:
+    if not skipped:
+        return "none"
+    return ", ".join(f"{reason}={count}" for reason, count in sorted(skipped.items()))
+
+
+def _select_grouped_events(
+    *,
+    settings: fusion_sheets.FusionReminderSettings,
+    events: list[fusion_sheets.FusionEventRow],
+    reference: dt.datetime,
+) -> tuple[list[fusion_sheets.FusionEventRow], list[fusion_sheets.FusionEventRow], list[fusion_sheets.FusionEventRow], dict[str, int]]:
+    live_events: list[fusion_sheets.FusionEventRow] = []
+    upcoming_events: list[fusion_sheets.FusionEventRow] = []
+    ending_events: list[fusion_sheets.FusionEventRow] = []
+    skipped: dict[str, int] = {}
+    for event in events:
+        timing = fusion_sheets.get_valid_event_timing(event, for_helper="fusion_grouped_reminders")
+        if timing is None:
+            _append_skip(skipped, "invalid_timing")
+            continue
+        start_at, end_at = timing
+        if settings.include_start_events and start_at <= reference and (end_at is None or reference < end_at):
+            live_events.append(event)
+        if settings.include_upcoming_events:
+            upcoming_horizon = reference + dt.timedelta(days=settings.upcoming_window_days)
+            if reference < start_at <= upcoming_horizon:
+                upcoming_events.append(event)
+        if settings.include_ending_events and end_at is not None and reference <= end_at <= reference + dt.timedelta(hours=settings.end_lookahead_hours):
+            ending_events.append(event)
+    return live_events, upcoming_events, ending_events, skipped
+
+
+async def _load_grouped_sent_keys(target: fusion_sheets.FusionRow) -> tuple[set[tuple[str, str]], bool]:
+    dedupe_meta = fusion_sheets.reminder_dedupe_backend_metadata()
+    dedupe_backend = dedupe_meta.get("backend_type", "unknown")
+    dedupe_tab = dedupe_meta.get("tab_name", "")
+    dedupe_config_key = dedupe_meta.get("config_key", "")
+    durable_dedupe_available = time.monotonic() >= _DEDUP_BACKOFF_UNTIL_MONOTONIC
+    if not durable_dedupe_available:
+        _register_dedupe_degraded_mode()
+        log.warning(
+            "fusion grouped reminder durable dedupe in backoff window; using in-memory fallback",
+            extra={
+                "fusion_id": target.fusion_id,
+                "retry_backoff_sec": _DEDUP_TIMEOUT_BACKOFF_SEC,
+                "dedupe_backend": dedupe_backend,
+                "dedupe_tab": dedupe_tab,
+                "dedupe_config_key": dedupe_config_key,
+                "operation": "read_sent_reminder_keys",
+            },
+        )
+        return set(), False
+    try:
+        sent_keys = await asyncio.wait_for(
+            fusion_sheets.get_sent_reminder_keys(target.fusion_id),
+            timeout=_DEDUP_TIMEOUT_SEC,
+        )
+        _recover_from_dedupe_backoff()
+        return sent_keys, True
+    except TimeoutError as exc:
+        _register_dedupe_timeout_backoff()
+        context = {
+            "fusion_id": target.fusion_id,
+            "timeout_sec": _DEDUP_TIMEOUT_SEC,
+            "retry_backoff_sec": _DEDUP_TIMEOUT_BACKOFF_SEC,
+            "dedupe_backend": dedupe_backend,
+            "dedupe_tab": dedupe_tab,
+            "dedupe_config_key": dedupe_config_key,
+            "operation": "read_sent_reminder_keys",
+        }
+        log.exception("fusion grouped reminder durable dedupe timed out; using in-memory fallback", extra=context)
+        await fusion_logs.send_ops_alert(
+            component="reminders",
+            summary="grouped_dedupe_unavailable_degraded_mode",
+            dedupe_key=f"fusion:grouped_reminders:dedupe:{target.fusion_id}",
+            error=exc,
+            fields=context,
+        )
+        return set(), False
+    except Exception as exc:
+        _register_dedupe_degraded_mode()
+        context = {
+            "fusion_id": target.fusion_id,
+            "dedupe_backend": dedupe_backend,
+            "dedupe_tab": dedupe_tab,
+            "dedupe_config_key": dedupe_config_key,
+            "operation": "read_sent_reminder_keys",
+        }
+        log.exception("fusion grouped reminder failed to load durable dedupe; using in-memory fallback", extra=context)
+        await fusion_logs.send_ops_alert(
+            component="reminders",
+            summary="grouped_dedupe_unavailable_degraded_mode",
+            dedupe_key=f"fusion:grouped_reminders:dedupe:{target.fusion_id}",
+            error=exc,
+            fields=context,
+        )
+        return set(), False
+
+
+async def _resolve_channel_role_status(bot: commands.Bot, target: fusion_sheets.FusionRow) -> dict[str, object]:
+    channel_id = target.announcement_channel_id
+    role_id = target.opt_in_role_id
+    channel = None
+    if channel_id:
+        get_channel = getattr(bot, "get_channel", None)
+        if callable(get_channel):
+            channel = get_channel(int(channel_id))
+        if channel is None:
+            fetch_channel = getattr(bot, "fetch_channel", None)
+            if callable(fetch_channel):
+                try:
+                    channel = await fetch_channel(int(channel_id))
+                except Exception:
+                    channel = None
+    role_resolved = False
+    if role_id:
+        for guild in getattr(bot, "guilds", []) or []:
+            get_role = getattr(guild, "get_role", None)
+            if callable(get_role) and get_role(int(role_id)) is not None:
+                role_resolved = True
+                break
+    return {
+        "channel_id": channel_id,
+        "channel_resolved": channel is not None,
+        "thread_id": getattr(channel, "id", None) if isinstance(channel, discord.Thread) else None,
+        "thread_resolved": isinstance(channel, discord.Thread),
+        "role_id": role_id,
+        "role_resolved": role_resolved if role_id else None,
+    }
+
+
+async def collect_fusion_reminder_startup_summary(
+    bot: commands.Bot,
+    *,
+    scheduler_started: bool,
+    now: dt.datetime | None = None,
+) -> list[str]:
+    """Build non-secret grouped Fusion reminder scheduler diagnostics for startup logs."""
+
+    reference = _utc_now(now)
+    lines = ["🧬 Fusion grouped reminders"]
+    lines.append(f"• scheduler_started={'yes' if scheduler_started else 'no'}")
+    try:
+        target = await fusion_sheets.get_publishable_fusion()
+    except Exception as exc:
+        await fusion_logs.send_ops_alert(
+            component="grouped_reminders_startup",
+            summary="load_target_fusion_failed",
+            dedupe_key="fusion:grouped_reminders_startup:target",
+            error=exc,
+        )
+        lines.extend(["• enabled=no", "• skipped=load_target_failed"])
+        return lines
+    if target is None:
+        lines.extend(["• enabled=no", "• skipped=no_publishable_fusion"])
+        return lines
+
+    try:
+        settings = await fusion_sheets.get_fusion_reminder_settings()
+    except Exception as exc:
+        await fusion_logs.send_ops_alert(
+            component="grouped_reminders_startup",
+            summary="load_settings_failed",
+            dedupe_key=f"fusion:grouped_reminders_startup:settings:{target.fusion_id}",
+            error=exc,
+            fields={"fusion_id": target.fusion_id},
+        )
+        lines.extend(["• enabled=no", "• skipped=load_settings_failed"])
+        return lines
+
+    post_time = _parse_grouped_post_time_utc(settings.grouped_post_time_utc)
+    enabled = settings.group_events and post_time is not None
+    lines.append(f"• enabled={'yes' if enabled else 'no'}")
+    lines.append(f"• configured_post_time_utc={settings.grouped_post_time_utc or 'missing'}")
+    resolve_status = await _resolve_channel_role_status(bot, target)
+    lines.append(
+        "• channel_resolved={channel_resolved} channel_id={channel_id} thread_resolved={thread_resolved} thread_id={thread_id} role_resolved={role_resolved} role_id={role_id}".format(
+            **resolve_status
+        )
+    )
+
+    if not settings.group_events:
+        lines.append("• skipped=grouped_reminders_disabled")
+        return lines
+    if post_time is None:
+        lines.append("• skipped=missing_or_invalid_grouped_post_time_utc")
+        return lines
+
+    try:
+        sent_keys, _durable = await _load_grouped_sent_keys(target)
+        last_sent = await fusion_sheets.get_last_reminder_sent_at(target.fusion_id, reminder_type=_GROUPED_REMINDER_TYPE)
+    except Exception as exc:
+        await fusion_logs.send_ops_alert(
+            component="grouped_reminders_startup",
+            summary="load_dedupe_failed",
+            dedupe_key=f"fusion:grouped_reminders_startup:dedupe:{target.fusion_id}",
+            error=exc,
+            fields={"fusion_id": target.fusion_id},
+        )
+        sent_keys = set()
+        last_sent = None
+    next_due = _next_grouped_due(now=reference, post_time=post_time, sent_keys=sent_keys)
+
+    try:
+        events = await fusion_sheets.get_fusion_events(target.fusion_id)
+        live_events, upcoming_events, ending_events, skipped = _select_grouped_events(
+            settings=settings,
+            events=events,
+            reference=reference,
+        )
+        active_count = len(live_events) + len(upcoming_events) + len(ending_events)
+        skip_text = _render_skips(skipped) if active_count else "no_grouped_events"
+        lines.append(f"• rows_loaded={len(events)}")
+        lines.append(f"• grouped_events={active_count}")
+        lines.append(f"• next_grouped_due={_format_due(next_due)}")
+        lines.append(f"• last_grouped_sent={_format_sent(last_sent)}")
+        lines.append(f"• skipped={skip_text}")
+    except Exception as exc:
+        await fusion_logs.send_ops_alert(
+            component="grouped_reminders_startup",
+            summary="load_events_failed",
+            dedupe_key=f"fusion:grouped_reminders_startup:events:{target.fusion_id}",
+            error=exc,
+            fields={"fusion_id": target.fusion_id},
+        )
+        lines.append("• skipped=load_events_failed")
+    return lines
 
 
 async def process_fusion_reminders(
@@ -211,261 +402,191 @@ async def process_fusion_reminders(
         return
 
     reference = _utc_now(now)
-    lookback = dt.timedelta(minutes=_LOOKBACK_MINUTES)
 
     try:
         target = await fusion_sheets.get_publishable_fusion()
     except Exception as exc:
-        log.exception("fusion reminder failed to load target fusion")
+        log.exception("fusion grouped reminder failed to load target fusion")
         await fusion_logs.send_ops_alert(
             component="reminders",
-            summary="load_target_fusion_failed",
-            dedupe_key="fusion:reminders:load_target",
+            summary="grouped_load_target_fusion_failed",
+            dedupe_key="fusion:grouped_reminders:load_target",
             error=exc,
         )
         return
-
     if target is None:
         return
 
-    dedupe_meta = fusion_sheets.reminder_dedupe_backend_metadata()
-    dedupe_backend = dedupe_meta.get("backend_type", "unknown")
-    dedupe_tab = dedupe_meta.get("tab_name", "")
-    dedupe_config_key = dedupe_meta.get("config_key", "")
-    now_monotonic = time.monotonic()
-    durable_dedupe_available = now_monotonic >= _DEDUP_BACKOFF_UNTIL_MONOTONIC
-    sent_keys: set[tuple[str, str]] = set()
-    if durable_dedupe_available:
-        try:
-            sent_keys = await asyncio.wait_for(
-                fusion_sheets.get_sent_reminder_keys(target.fusion_id),
-                timeout=_DEDUP_TIMEOUT_SEC,
-            )
-            _recover_from_dedupe_backoff()
-        except TimeoutError as exc:
-            _register_dedupe_timeout_backoff()
-            durable_dedupe_available = False
-            context = {
-                "fusion_id": target.fusion_id,
-                "timeout_sec": _DEDUP_TIMEOUT_SEC,
-                "retry_backoff_sec": _DEDUP_TIMEOUT_BACKOFF_SEC,
-                "dedupe_backend": dedupe_backend,
-                "dedupe_tab": dedupe_tab,
-                "dedupe_config_key": dedupe_config_key,
-                "operation": "read_sent_reminder_keys",
-            }
-            log.exception(
-                "fusion reminder durable dedupe timed out; using in-memory single-send fallback",
-                extra=context,
-                exc_info=True,
-            )
-            await fusion_logs.send_ops_alert(
-                component="reminders",
-                summary="durable_dedupe_unavailable_degraded_mode",
-                dedupe_key=f"fusion:reminders:dedupe:{target.fusion_id}",
-                error=exc,
-                fields=context,
-            )
-        except Exception as exc:
-            _register_dedupe_degraded_mode()
-            log.exception(
-                "fusion reminder failed to load durable dedupe state; using in-memory single-send fallback",
-                extra={
-                    "fusion_id": target.fusion_id,
-                    "dedupe_backend": dedupe_backend,
-                    "dedupe_tab": dedupe_tab,
-                    "dedupe_config_key": dedupe_config_key,
-                    "operation": "read_sent_reminder_keys",
-                },
-                exc_info=True,
-            )
-            await fusion_logs.send_ops_alert(
-                component="reminders",
-                summary="durable_dedupe_unavailable_degraded_mode",
-                dedupe_key=f"fusion:reminders:dedupe:{target.fusion_id}",
-                error=exc,
-                fields={
-                    "fusion_id": target.fusion_id,
-                    "dedupe_backend": dedupe_backend,
-                    "dedupe_tab": dedupe_tab,
-                    "dedupe_config_key": dedupe_config_key,
-                    "operation": "read_sent_reminder_keys",
-                },
-            )
-            durable_dedupe_available = False
-    else:
-        _register_dedupe_degraded_mode()
-        log.warning(
-            "fusion reminder durable dedupe in backoff window; using in-memory single-send fallback",
-            extra={
-                "fusion_id": target.fusion_id,
-                "retry_backoff_sec": _DEDUP_TIMEOUT_BACKOFF_SEC,
-                "dedupe_backend": dedupe_backend,
-                "dedupe_tab": dedupe_tab,
-                "dedupe_config_key": dedupe_config_key,
-                "operation": "read_sent_reminder_keys",
-            },
-        )
-
     try:
-        events = await fusion_sheets.get_fusion_events(target.fusion_id)
+        settings = await fusion_sheets.get_fusion_reminder_settings()
     except Exception as exc:
         context = {"fusion_id": target.fusion_id}
-        log.exception("fusion reminder failed to load events", extra=context)
+        log.exception("fusion grouped reminder failed to load settings", extra=context)
         await fusion_logs.send_ops_alert(
             component="reminders",
-            summary="load_events_failed",
-            dedupe_key=f"fusion:reminders:events:{target.fusion_id}",
+            summary="grouped_load_settings_failed",
+            dedupe_key=f"fusion:grouped_reminders:settings:{target.fusion_id}",
             error=exc,
             fields=context,
         )
         return
 
-    settings = await fusion_sheets.get_fusion_reminder_settings()
-    if settings.group_events:
-        live_events: list[fusion_sheets.FusionEventRow] = []
-        upcoming_events: list[fusion_sheets.FusionEventRow] = []
-        ending_events: list[fusion_sheets.FusionEventRow] = []
-        for event in events:
-            timing = fusion_sheets.get_valid_event_timing(event, for_helper="fusion_reminders")
-            if timing is None:
-                continue
-            start_at, end_at = timing
-            if settings.include_start_events and start_at <= reference and (end_at is None or reference < end_at):
-                live_events.append(event)
-            if settings.include_upcoming_events:
-                start_due_at = start_at - dt.timedelta(minutes=settings.start_offset_minutes)
-                upcoming_horizon = reference + dt.timedelta(days=settings.upcoming_window_days)
-                if start_due_at <= reference < start_at:
-                    upcoming_events.append(event)
-                elif reference < start_at <= upcoming_horizon:
-                    upcoming_events.append(event)
-            if settings.include_ending_events and end_at is not None and reference <= end_at <= reference + dt.timedelta(hours=settings.end_lookahead_hours):
-                ending_events.append(event)
-        if live_events or ending_events or upcoming_events:
-            reminder_type = "grouped"
-            group_event_key = _grouped_event_bucket_key(
-                live_events=live_events,
-                upcoming_events=upcoming_events,
-                ending_events=ending_events,
-            )
-            group_key = (group_event_key, reminder_type)
-            if group_key not in sent_keys:
-                announcement_message = await ensure_fusion_announcement(bot, target)
-                if announcement_message is not None:
-                    missing = _missing_grouped_copy_fields(settings)
-                    if missing:
-                        log.warning("fusion grouped reminder skipped; missing required sheet copy fields", extra={"fusion_id": target.fusion_id, "missing_fields": ",".join(missing)})
-                        return
-                    embed = _build_grouped_embed(
-                        settings=settings,
-                        fusion_title=target.fusion_name,
-                        jump_url=announcement_message.jump_url,
-                        live_events=live_events,
-                        upcoming_events=upcoming_events,
-                        ending_events=ending_events,
-                    )
-                    mention_content = f"<@&{target.opt_in_role_id}>" if target.opt_in_role_id else None
-                    await announcement_message.channel.send(content=mention_content, embed=embed, view=build_fusion_opt_in_view(target))
-                    if durable_dedupe_available:
-                        await fusion_sheets.mark_reminder_sent(target.fusion_id, event_id=group_event_key, reminder_type=reminder_type, sent_at=reference)
-                    sent_keys.add(group_key)
+    if not settings.group_events:
+        await fusion_logs.send_ops_alert(
+            component="reminders",
+            summary="grouped_reminders_disabled",
+            dedupe_key=f"fusion:grouped_reminders:disabled:{target.fusion_id}",
+            fields={"fusion_id": target.fusion_id},
+        )
         return
 
-    for event in events:
-        timing = fusion_sheets.get_valid_event_timing(event, for_helper="fusion_reminders")
-        if timing is None:
-            continue
-        start_at, _ = timing
-        prestart_hours = max(1, int(os.getenv("FUSION_PRESTART_REMINDER_HOURS", "6")))
+    post_time = _parse_grouped_post_time_utc(settings.grouped_post_time_utc)
+    if post_time is None:
+        await fusion_logs.send_ops_alert(
+            component="reminders",
+            summary="grouped_post_time_missing_or_invalid",
+            dedupe_key=f"fusion:grouped_reminders:post_time:{target.fusion_id}",
+            fields={"fusion_id": target.fusion_id, "configured_post_time_utc": settings.grouped_post_time_utc or "missing"},
+        )
+        return
 
-        triggers: list[tuple[str, dt.datetime]] = [
-            ("prestart_6h", start_at - dt.timedelta(hours=prestart_hours)),
-            ("start", start_at),
-        ]
+    sent_keys, durable_dedupe_available = await _load_grouped_sent_keys(target)
+    grouped_event_id = _grouped_event_id_for_date(reference.date())
+    grouped_key = (grouped_event_id, _GROUPED_REMINDER_TYPE)
+    memory_key = (target.fusion_id, grouped_event_id, _GROUPED_REMINDER_TYPE)
+    await _maybe_alert_prolonged_dedupe_degradation(
+        target.fusion_id,
+        reminder_type=_GROUPED_REMINDER_TYPE,
+        backend=fusion_sheets.reminder_dedupe_backend_metadata().get("backend_type", "unknown"),
+    )
+    if grouped_key in sent_keys or memory_key in _MEMORY_SENT_KEYS:
+        return
+    if not _is_grouped_due(now=reference, post_time=post_time, sent_keys=sent_keys):
+        return
 
-        for reminder_type, trigger_at in triggers:
-            key = (event.event_id, reminder_type)
-            if key in sent_keys:
-                continue
-            memory_key = (target.fusion_id, event.event_id, reminder_type)
-            await _maybe_alert_prolonged_dedupe_degradation(
+    try:
+        events = await fusion_sheets.get_fusion_events(target.fusion_id)
+    except Exception as exc:
+        context = {"fusion_id": target.fusion_id}
+        log.exception("fusion grouped reminder failed to load events", extra=context)
+        await fusion_logs.send_ops_alert(
+            component="reminders",
+            summary="grouped_load_events_failed",
+            dedupe_key=f"fusion:grouped_reminders:events:{target.fusion_id}",
+            error=exc,
+            fields=context,
+        )
+        return
+
+    live_events, upcoming_events, ending_events, skipped = _select_grouped_events(
+        settings=settings,
+        events=events,
+        reference=reference,
+    )
+    if not (live_events or upcoming_events or ending_events):
+        context = {"fusion_id": target.fusion_id, "skipped": _render_skips(skipped) or "no_grouped_events"}
+        log.warning("fusion grouped reminder skipped; no grouped events selected", extra=context)
+        await fusion_logs.send_ops_alert(
+            component="reminders",
+            summary="grouped_no_events_selected",
+            dedupe_key=f"fusion:grouped_reminders:no_events:{target.fusion_id}:{grouped_event_id}",
+            fields=context,
+        )
+        return
+
+    missing = _missing_grouped_copy_fields(settings)
+    if missing:
+        context = {"fusion_id": target.fusion_id, "missing_fields": ",".join(missing)}
+        log.warning("fusion grouped reminder skipped; missing required sheet copy fields", extra=context)
+        await fusion_logs.send_ops_alert(
+            component="reminders",
+            summary="grouped_copy_missing",
+            dedupe_key=f"fusion:grouped_reminders:copy:{target.fusion_id}",
+            fields=context,
+        )
+        return
+
+    try:
+        announcement_message = await ensure_fusion_announcement(bot, target)
+    except Exception as exc:
+        context = {"fusion_id": target.fusion_id, "announcement_channel_id": target.announcement_channel_id}
+        log.exception("fusion grouped reminder failed to resolve announcement", extra=context)
+        await fusion_logs.send_ops_alert(
+            component="reminders",
+            summary="grouped_announcement_resolve_failed",
+            dedupe_key=f"fusion:grouped_reminders:announcement:{target.fusion_id}",
+            error=exc,
+            fields=context,
+        )
+        return
+    if announcement_message is None:
+        context = {"fusion_id": target.fusion_id, "announcement_channel_id": target.announcement_channel_id}
+        log.warning("fusion grouped reminder skipped; announcement unavailable", extra=context)
+        await fusion_logs.send_ops_alert(
+            component="reminders",
+            summary="grouped_announcement_unavailable",
+            dedupe_key=f"fusion:grouped_reminders:announcement_unavailable:{target.fusion_id}",
+            fields=context,
+        )
+        return
+
+    embed = _build_grouped_embed(
+        settings=settings,
+        fusion_title=target.fusion_name,
+        jump_url=announcement_message.jump_url,
+        live_events=live_events,
+        upcoming_events=upcoming_events,
+        ending_events=ending_events,
+    )
+    mention_content = f"<@&{target.opt_in_role_id}>" if target.opt_in_role_id else None
+    try:
+        await announcement_message.channel.send(content=mention_content, embed=embed, view=build_fusion_opt_in_view(target))
+    except Exception as exc:
+        context = {
+            "fusion_id": target.fusion_id,
+            "event_id": grouped_event_id,
+            "reminder_type": _GROUPED_REMINDER_TYPE,
+            "channel_id": getattr(getattr(announcement_message, "channel", None), "id", None),
+            "thread_id": getattr(getattr(announcement_message, "channel", None), "id", None)
+            if isinstance(getattr(announcement_message, "channel", None), discord.Thread)
+            else None,
+        }
+        log.exception("fusion grouped reminder send failed", extra=context)
+        await fusion_logs.send_ops_alert(
+            component="reminders",
+            summary="grouped_send_failed",
+            dedupe_key=f"fusion:grouped_reminders:send:{target.fusion_id}:{grouped_event_id}",
+            error=exc,
+            fields=context,
+        )
+        return
+
+    _MEMORY_SENT_KEYS.add(memory_key)
+    if durable_dedupe_available:
+        try:
+            await fusion_sheets.mark_reminder_sent(
                 target.fusion_id,
-                reminder_type=reminder_type,
-                backend=dedupe_backend,
+                event_id=grouped_event_id,
+                reminder_type=_GROUPED_REMINDER_TYPE,
+                sent_at=reference,
             )
-            if memory_key in _MEMORY_SENT_KEYS:
-                continue
-            if not _within_window(trigger_at=trigger_at, now=reference, lookback=lookback):
-                continue
-
-            try:
-                announcement_message = await ensure_fusion_announcement(bot, target)
-                if announcement_message is None:
-                    context = {
-                        "fusion_id": target.fusion_id,
-                        "event_id": event.event_id,
-                        "reminder_type": reminder_type,
-                    }
-                    log.warning(
-                        "fusion reminder skipped; announcement unavailable",
-                        extra=context,
-                    )
-                    continue
-
-                embed = _build_reminder_embed(
-                    fusion_id=target.fusion_id,
-                    event=event,
-                    start_at=start_at,
-                    jump_url=announcement_message.jump_url,
-                    reward_unit=str(target.reward_type or "").strip(),
-                    now=reference,
-                    fusion_title=target.fusion_name,
-                )
-                if embed is None:
-                    continue
-                mention_content = f"<@&{target.opt_in_role_id}>" if target.opt_in_role_id else None
-                reminder_view = build_fusion_opt_in_view(target)
-                await announcement_message.channel.send(content=mention_content, embed=embed, view=reminder_view)
-                if durable_dedupe_available:
-                    await fusion_sheets.mark_reminder_sent(
-                        target.fusion_id,
-                        event_id=event.event_id,
-                        reminder_type=reminder_type,
-                        sent_at=reference,
-                    )
-                sent_keys.add(key)
-                _MEMORY_SENT_KEYS.add(memory_key)
-            except Exception as exc:
-                context = {
-                    "fusion_id": target.fusion_id,
-                    "event_id": event.event_id,
-                    "reminder_type": reminder_type,
-                    "channel_id": getattr(getattr(announcement_message, "channel", None), "id", None)
-                    if "announcement_message" in locals()
-                    else None,
-                    "thread_id": getattr(getattr(announcement_message, "channel", None), "id", None)
-                    if "announcement_message" in locals()
-                    and isinstance(getattr(announcement_message, "channel", None), discord.Thread)
-                    else None,
-                }
-                log.exception(
-                    "fusion reminder send failed",
-                    extra=context,
-                    exc_info=True,
-                )
-                await fusion_logs.send_ops_alert(
-                    component="reminders",
-                    summary="send_failed",
-                    dedupe_key=(
-                        f"fusion:reminders:send:{target.fusion_id}:{event.event_id}:{reminder_type}"
-                    ),
-                    error=exc,
-                    fields=context,
-                )
+        except Exception as exc:
+            context = {
+                "fusion_id": target.fusion_id,
+                "event_id": grouped_event_id,
+                "reminder_type": _GROUPED_REMINDER_TYPE,
+            }
+            log.exception("fusion grouped reminder sent but dedupe write failed", extra=context)
+            await fusion_logs.send_ops_alert(
+                component="reminders",
+                summary="grouped_dedupe_write_failed_after_send",
+                dedupe_key=f"fusion:grouped_reminders:dedupe_write:{target.fusion_id}:{grouped_event_id}",
+                error=exc,
+                fields=context,
+            )
 
 
-__all__ = ["process_fusion_reminders"]
+__all__ = ["process_fusion_reminders", "collect_fusion_reminder_startup_summary"]
 
 
 def _register_dedupe_timeout_backoff() -> None:
@@ -506,8 +627,8 @@ async def _maybe_alert_prolonged_dedupe_degradation(
     _DEDUP_DEGRADED_ALERTED_KEYS.add(alert_key)
     await fusion_logs.send_ops_alert(
         component="reminders",
-        summary="durable_dedupe_unavailable_degraded_mode",
-        dedupe_key=f"fusion:reminders:dedupe_degraded:{fusion_id}:{reminder_type}",
+        summary="grouped_dedupe_unavailable_degraded_mode",
+        dedupe_key=f"fusion:grouped_reminders:dedupe_degraded:{fusion_id}:{reminder_type}",
         fields={
             "fusion_id": fusion_id,
             "reminder_type": reminder_type,

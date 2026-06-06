@@ -133,6 +133,35 @@ def test_get_sent_reminder_keys_does_not_require_sent_at_header(monkeypatch: pyt
     assert sent == {("e-1", "start")}
 
 
+def test_get_last_reminder_sent_at_reads_grouped_marker(monkeypatch: pytest.MonkeyPatch):
+    _install_config(
+        monkeypatch,
+        {
+            "FUSION_REMINDER_TAB": "FusionReminders",
+        },
+    )
+    monkeypatch.setattr(fusion_sheets, "_sheet_id", lambda: "sheet-1")
+
+    async def _afetch_values(sheet_id: str, tab_name: str):
+        assert sheet_id == "sheet-1"
+        assert tab_name == "FusionReminders"
+        return [
+            ["fusion_id", "event_id", "reminder_type", "sent_at_utc"],
+            ["f-1", "e-old", "start", "2026-04-09T01:00:00+00:00"],
+            ["f-1", "grouped_daily:2026-04-09", "grouped_daily", "2026-04-09T12:00:00+00:00"],
+            ["f-1", "grouped_daily:2026-04-10", "grouped_daily", "2026-04-10T12:00:00+00:00"],
+            ["f-2", "grouped_daily:2026-04-11", "grouped_daily", "2026-04-11T12:00:00+00:00"],
+        ]
+
+    monkeypatch.setattr(fusion_sheets, "afetch_values", _afetch_values)
+
+    sent_at = asyncio.run(
+        fusion_sheets.get_last_reminder_sent_at("f-1", reminder_type="grouped_daily")
+    )
+
+    assert sent_at == dt.datetime(2026, 4, 10, 12, tzinfo=dt.timezone.utc)
+
+
 def test_get_fusion_reminder_settings_reads_configured_tab(monkeypatch: pytest.MonkeyPatch):
     _install_config(
         monkeypatch,
@@ -147,6 +176,7 @@ def test_get_fusion_reminder_settings_reads_configured_tab(monkeypatch: pytest.M
         assert tab_name == "FusionReminderSettings"
         return [
             {"key": "group_events", "value": "TRUE"},
+            {"key": "grouped_post_time_utc", "value": "12:30"},
             {"key": "upcoming_window_days", "value": "3"},
             {"key": "include_upcoming_events", "value": "TRUE"},
             {"key": "grouped_embed_title", "value": "Title {fusion_title}"},
@@ -161,6 +191,7 @@ def test_get_fusion_reminder_settings_reads_configured_tab(monkeypatch: pytest.M
     monkeypatch.setattr(fusion_sheets, "afetch_records", _afetch_records)
     settings = asyncio.run(fusion_sheets.get_fusion_reminder_settings())
     assert settings.group_events is True
+    assert settings.grouped_post_time_utc == "12:30"
     assert settings.upcoming_window_days == 3
     assert settings.include_upcoming_events is True
     assert settings.grouped_embed_title == "Title {fusion_title}"

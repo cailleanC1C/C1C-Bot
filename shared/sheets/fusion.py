@@ -105,11 +105,27 @@ class FusionUserEventProgressRow:
 
 
 @dataclass(frozen=True, slots=True)
+class FusionProgressSaveResult:
+    fusion_id: str
+    event_id: str
+    user_id: str
+    selected_status: str
+    tab_name: str
+    headers: tuple[str, ...]
+    row_key: tuple[str, str, str, str]
+    row_number: int
+    operation: str
+    saved: bool
+    failure_reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class FusionReminderSettings:
     start_offset_minutes: int = 360
     end_lookahead_hours: int = 24
     upcoming_window_days: int = 2
     group_events: bool = False
+    grouped_post_time_utc: str = ""
     include_start_events: bool = True
     include_ending_events: bool = False
     include_upcoming_events: bool = False
@@ -781,6 +797,13 @@ async def get_fusion_reminder_settings() -> FusionReminderSettings:
         end_lookahead_hours=_parse_nonnegative_int(parsed.get("end_lookahead_hours"), 24),
         upcoming_window_days=_parse_nonnegative_int(parsed.get("upcoming_window_days"), 2),
         group_events=_parse_bool(parsed.get("group_events")),
+        grouped_post_time_utc=str(
+            parsed.get("grouped_post_time_utc")
+            or parsed.get("grouped_daily_post_time_utc")
+            or parsed.get("grouped_post_time")
+            or parsed.get("post_time_utc")
+            or ""
+        ).strip(),
         include_start_events=_parse_bool(parsed.get("include_start_events", True)),
         include_ending_events=_parse_bool(parsed.get("include_ending_events")),
         include_upcoming_events=_parse_bool(parsed.get("include_upcoming_events")),
@@ -855,6 +878,41 @@ async def get_sent_reminder_keys(fusion_id: str) -> set[tuple[str, str]]:
         if event_id and reminder_type:
             keys.add((event_id, reminder_type))
     return keys
+
+
+async def get_last_reminder_sent_at(
+    fusion_id: str,
+    *,
+    reminder_type: str,
+) -> dt.datetime | None:
+    """Return the latest sent_at marker for one fusion/reminder type."""
+
+    tab_name, required_fields = _resolve_reminder_sheet_schema(include_sent_at=True)
+    matrix = await afetch_values(_sheet_id(), tab_name)
+    if not matrix:
+        return None
+
+    header = [str(cell or "").strip().lower() for cell in matrix[0]]
+    index_by_field = {
+        field: _resolve_header_index(tab_name=tab_name, header=header, field=field)
+        for field in required_fields
+    }
+    fusion_idx = index_by_field["fusion_id"]
+    reminder_idx = index_by_field["reminder_type"]
+    sent_idx = index_by_field["sent_at_utc"]
+    target_fusion = str(fusion_id or "").strip()
+    target_type = str(reminder_type or "").strip()
+
+    latest: dt.datetime | None = None
+    for row in matrix[1:]:
+        row_fusion = str(row[fusion_idx] if fusion_idx < len(row) else "").strip()
+        row_type = str(row[reminder_idx] if reminder_idx < len(row) else "").strip()
+        if row_fusion != target_fusion or row_type != target_type:
+            continue
+        sent_at = _parse_iso_utc_optional(row[sent_idx] if sent_idx < len(row) else "")
+        if sent_at is not None and (latest is None or sent_at > latest):
+            latest = sent_at
+    return latest
 
 
 async def mark_reminder_sent(
@@ -975,6 +1033,88 @@ async def get_user_event_progress(fusion_id: str, user_id: str) -> dict[str, str
     return {"progress": rows, "partials": partials}
 
 
+def _progress_row_matches(
+    row: list[object],
+    *,
+    index_by_field: Mapping[str, int],
+    row_key: tuple[str, str, str, str],
+    status: str,
+    partial_idx: int,
+    partial_amount: float | None,
+) -> bool:
+    fusion_idx = index_by_field["fusion_id"]
+    user_idx = index_by_field["user_id"]
+    event_idx = index_by_field["event_id"]
+    milestone_idx = index_by_field["milestone_key"]
+    status_idx = index_by_field["status"]
+    current_key = (
+        str(row[fusion_idx] if fusion_idx < len(row) else "").strip(),
+        str(row[user_idx] if user_idx < len(row) else "").strip(),
+        str(row[event_idx] if event_idx < len(row) else "").strip(),
+        str(row[milestone_idx] if milestone_idx < len(row) else "").strip(),
+    )
+    if current_key != row_key:
+        return False
+    current_status = str(row[status_idx] if status_idx < len(row) else "").strip().lower()
+    if current_status != status:
+        return False
+    if partial_idx < 0:
+        return True
+    expected_partial = "" if partial_amount is None else f"{max(0.0, partial_amount):g}"
+    current_partial = str(row[partial_idx] if partial_idx < len(row) else "").strip()
+    return current_partial == expected_partial
+
+
+async def _verify_progress_save(
+    *,
+    tab_name: str,
+    index_by_field: Mapping[str, int],
+    row_key: tuple[str, str, str, str],
+    status: str,
+    partial_idx: int,
+    partial_amount: float | None,
+) -> None:
+    refreshed = await afetch_values(_sheet_id(), tab_name)
+    for row in refreshed[1:]:
+        if _progress_row_matches(
+            row,
+            index_by_field=index_by_field,
+            row_key=row_key,
+            status=status,
+            partial_idx=partial_idx,
+            partial_amount=partial_amount,
+        ):
+            return
+    raise RuntimeError(
+        "Fusion progress save verification failed "
+        f"(tab={tab_name}, row_key={'|'.join(row_key)}, status={status})"
+    )
+
+
+async def get_progress_sheet_diagnostics() -> dict[str, object]:
+    """Return non-secret progress-sheet schema details for failure logs."""
+
+    tab_name = ""
+    headers: list[str] = []
+    try:
+        tab_name, _aliases = _resolve_progress_sheet_schema()
+        matrix = await afetch_values(_sheet_id(), tab_name)
+        if matrix:
+            headers = [str(cell or "").strip().lower() for cell in matrix[0]]
+    except Exception as exc:
+        return {
+            "progress_config_key": _FUSION_PROGRESS_TAB_KEY,
+            "tab_name": tab_name or str(cfg.get(_FUSION_PROGRESS_TAB_KEY) or "").strip(),
+            "headers_resolved": ",".join(headers),
+            "diagnostics_error": str(exc),
+        }
+    return {
+        "progress_config_key": _FUSION_PROGRESS_TAB_KEY,
+        "tab_name": tab_name,
+        "headers_resolved": ",".join(headers),
+    }
+
+
 async def upsert_user_event_progress(
     fusion_id: str,
     user_id: str,
@@ -983,7 +1123,7 @@ async def upsert_user_event_progress(
     updated_at: dt.datetime,
     milestone_key: str = "",
     partial_amount: float | None = None,
-) -> None:
+) -> FusionProgressSaveResult:
     """Write user progress status for one fusion/user/event tuple."""
 
     normalized_status = str(status or "").strip().lower()
@@ -1018,6 +1158,7 @@ async def upsert_user_event_progress(
     target_event = str(event_id or "").strip()
     target_milestone = str(milestone_key or "").strip()
     timestamp = updated_at.astimezone(dt.timezone.utc).isoformat()
+    row_key = (target_fusion, target_user, target_event, target_milestone)
 
     worksheet = await aget_worksheet(_sheet_id(), tab_name)
     if partial_idx < 0:
@@ -1046,7 +1187,7 @@ async def upsert_user_event_progress(
         row_user = str(row[user_idx] if user_idx < len(row) else "").strip()
         row_event = str(row[event_idx] if event_idx < len(row) else "").strip()
         row_milestone = str(row[milestone_idx] if milestone_idx < len(row) else "").strip()
-        if (row_fusion, row_user, row_event, row_milestone) != (target_fusion, target_user, target_event, target_milestone):
+        if (row_fusion, row_user, row_event, row_milestone) != row_key:
             continue
         await acall_with_backoff(
             worksheet.update,
@@ -1068,7 +1209,28 @@ async def upsert_user_event_progress(
                 [[partial_token]],
                 value_input_option="RAW",
             )
-        return
+        await _verify_progress_save(
+            tab_name=tab_name,
+            index_by_field=index_by_field,
+            row_key=row_key,
+            status=normalized_status,
+            partial_idx=partial_idx,
+            partial_amount=partial_amount,
+        )
+        result = FusionProgressSaveResult(
+            fusion_id=target_fusion,
+            event_id=target_event,
+            user_id=target_user,
+            selected_status=normalized_status,
+            tab_name=tab_name,
+            headers=tuple(header),
+            row_key=row_key,
+            row_number=row_idx,
+            operation="updated",
+            saved=True,
+        )
+        log.info("fusion progress save succeeded", extra=_progress_save_log_fields(result))
+        return result
 
     row_values = [""] * len(header)
     row_values[fusion_idx] = target_fusion
@@ -1084,6 +1246,44 @@ async def upsert_user_event_progress(
         row_values,
         value_input_option="RAW",
     )
+    await _verify_progress_save(
+        tab_name=tab_name,
+        index_by_field=index_by_field,
+        row_key=row_key,
+        status=normalized_status,
+        partial_idx=partial_idx,
+        partial_amount=partial_amount,
+    )
+    result = FusionProgressSaveResult(
+        fusion_id=target_fusion,
+        event_id=target_event,
+        user_id=target_user,
+        selected_status=normalized_status,
+        tab_name=tab_name,
+        headers=tuple(header),
+        row_key=row_key,
+        row_number=len(matrix) + 1,
+        operation="inserted",
+        saved=True,
+    )
+    log.info("fusion progress save succeeded", extra=_progress_save_log_fields(result))
+    return result
+
+
+def _progress_save_log_fields(result: FusionProgressSaveResult) -> dict[str, object]:
+    return {
+        "fusion_id": result.fusion_id,
+        "event_id": result.event_id,
+        "user_id": result.user_id,
+        "selected_status": result.selected_status,
+        "tab_name": result.tab_name,
+        "headers_resolved": ",".join(result.headers),
+        "row_key": "|".join(result.row_key),
+        "row_number": result.row_number,
+        "row_operation": result.operation,
+        "save_success": result.saved,
+        "save_failure_reason": result.failure_reason,
+    }
 
 
 
@@ -1273,6 +1473,7 @@ __all__ = [
     "FusionEventRow",
     "FusionRow",
     "FusionUserEventProgressRow",
+    "FusionProgressSaveResult",
     "FusionReminderSettings",
     "get_active_fusion",
     "get_ended_fusions",
@@ -1286,8 +1487,10 @@ __all__ = [
     "get_sent_reminder_keys",
     "reminder_dedupe_backend_metadata",
     "get_user_event_progress",
+    "get_progress_sheet_diagnostics",
     "get_upcoming_events",
     "get_fusion_reminder_settings",
+    "get_last_reminder_sent_at",
     "mark_reminder_sent",
     "upsert_user_event_progress",
     "update_fusion_publication",
