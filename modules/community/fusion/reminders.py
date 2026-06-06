@@ -83,6 +83,33 @@ def _build_grouped_embed(
     return embed
 
 
+def _format_setting_value(value: object) -> str:
+    if isinstance(value, float):
+        return f"{value:.10g}"
+    text = str(value or "")
+    if len(text) > 80:
+        text = text[:77] + "..."
+    return repr(text)
+
+
+def _grouped_settings_diagnostic_lines(settings: fusion_sheets.FusionReminderSettings) -> list[str]:
+    raw_parts = []
+    for key in sorted(settings.settings_raw_values):
+        value = settings.settings_raw_values[key]
+        raw_type = settings.settings_raw_types.get(key, type(value).__name__)
+        raw_name = settings.settings_raw_key_names.get(key, key)
+        raw_parts.append(f"{raw_name}={_format_setting_value(value)} ({raw_type})")
+    raw_map = "; ".join(raw_parts) if raw_parts else "empty"
+    return [
+        f"• settings_sheet={settings.settings_sheet_id_tail or 'missing'}",
+        f"• settings_source_tab={settings.settings_source_tab or 'missing'}",
+        f"• settings_headers={','.join(settings.settings_headers) or 'missing'}",
+        f"• settings_resolved_headers key={settings.settings_key_header or 'missing'} value={settings.settings_value_header or 'missing'}",
+        f"• settings_cache={settings.settings_cache_status or 'unknown'}",
+        f"• raw_grouped_reminder_settings={raw_map}",
+    ]
+
+
 def _missing_grouped_copy_fields(settings: fusion_sheets.FusionReminderSettings) -> list[str]:
     required = {
         "grouped_embed_title": settings.grouped_embed_title,
@@ -333,7 +360,7 @@ async def collect_fusion_reminder_startup_summary(
         return lines
 
     try:
-        settings = await fusion_sheets.get_fusion_reminder_settings()
+        settings = await fusion_sheets.get_fusion_reminder_settings(now=reference)
     except Exception as exc:
         await fusion_logs.send_ops_alert(
             component="grouped_reminders_startup",
@@ -345,20 +372,15 @@ async def collect_fusion_reminder_startup_summary(
         lines.extend(["• enabled=no", "• skipped=load_settings_failed"])
         return lines
 
+    lines.extend(_grouped_settings_diagnostic_lines(settings))
     post_time = _parse_grouped_post_time_utc(settings.grouped_post_time_utc)
     enabled = settings.group_events and post_time is not None
+    raw_group_events = settings.settings_raw_values.get("group_events", "missing")
+    raw_daily_post_time = settings.settings_raw_values.get("grouped_daily_post_time", "missing")
     lines.append(f"• enabled={'yes' if enabled else 'no'}")
+    lines.append(f"• parsed_group_events={'yes' if settings.group_events else 'no'} raw={_format_setting_value(raw_group_events)}")
     lines.append(f"• configured_post_time_utc={settings.grouped_post_time_utc or 'missing'}")
-    source = settings.group_events_source
-    lines.append(
-        "• group_events_resolved={resolved} raw_value={raw_value} source_tab={source_tab} key_header={key_header} value_header={value_header}".format(
-            resolved="true" if settings.group_events else "false",
-            raw_value=source.raw_value or "missing",
-            source_tab=source.tab_name or "missing",
-            key_header=source.key_header or "missing",
-            value_header=source.value_header or "missing",
-        )
-    )
+    lines.append(f"• parsed_grouped_post_time={'ok' if post_time is not None else 'missing_or_invalid'} raw={_format_setting_value(raw_daily_post_time)}")
     resolve_status = await _resolve_channel_role_status(bot, target)
     lines.append(
         "• channel_resolved={channel_resolved} channel_id={channel_id} thread_resolved={thread_resolved} thread_id={thread_id} role_resolved={role_resolved} role_id={role_id}".format(
@@ -443,7 +465,7 @@ async def process_fusion_reminders(
         return
 
     try:
-        settings = await fusion_sheets.get_fusion_reminder_settings()
+        settings = await fusion_sheets.get_fusion_reminder_settings(now=reference)
     except Exception as exc:
         context = {"fusion_id": target.fusion_id}
         log.exception("fusion grouped reminder failed to load settings", extra=context)

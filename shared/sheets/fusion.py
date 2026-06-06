@@ -7,6 +7,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from shared.config import cfg, get_milestones_sheet_id
 from shared.sheets.async_core import (
@@ -27,6 +28,10 @@ _LAST_FUSION_PARSE_ERRORS: dict[str, str] = {}
 _FUSION_REMINDER_TAB_KEY = "FUSION_REMINDER_TAB"
 _FUSION_PROGRESS_TAB_KEY = "FUSION_USER_EVENT_PROGRESS_TAB"
 _FUSION_REMINDER_SETTINGS_TAB_KEY = "FUSION_REMINDER_SETTINGS_TAB"
+_FUSION_REMINDER_SETTINGS_COLUMN_HEADERS: dict[str, tuple[str, ...]] = {
+    "setting_key": ("setting_key",),
+    "value": ("value",),
+}
 _PROGRESS_ALLOWED_STATUSES = {"not_started", "in_progress", "done", "done_bonus", "skipped"}
 _FUSION_REMINDER_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "fusion_id": ("fusion_id",),
@@ -145,7 +150,15 @@ class FusionReminderSettings:
     grouped_ending_label: str = ""
     grouped_empty_value: str = ""
     grouped_jump_label: str = ""
-    group_events_source: FusionReminderSettingSource = field(default_factory=FusionReminderSettingSource)
+    settings_source_tab: str = ""
+    settings_sheet_id_tail: str = ""
+    settings_headers: tuple[str, ...] = tuple()
+    settings_key_header: str = ""
+    settings_value_header: str = ""
+    settings_raw_values: Mapping[str, object] = field(default_factory=dict)
+    settings_raw_types: Mapping[str, str] = field(default_factory=dict)
+    settings_raw_key_names: Mapping[str, str] = field(default_factory=dict)
+    settings_cache_status: str = "not_cached"
 
 
 def _resolve_tab_name(key: str) -> str:
@@ -177,6 +190,67 @@ def _pick(row: Mapping[str, object], *keys: str) -> object:
             if str(value or "").strip() != "":
                 return value
     return ""
+
+
+def _sheet_tail(sheet_id: object) -> str:
+    text = str(sheet_id or "").strip()
+    if not text:
+        return "missing"
+    tail = text[-6:] if len(text) >= 6 else text
+    return f"…{tail}" if len(text) > len(tail) else tail
+
+
+def _time_from_sheet_value(value: object) -> dt.time | None:
+    if value is None:
+        return None
+    if isinstance(value, dt.datetime):
+        return value.time().replace(tzinfo=None, microsecond=0)
+    if isinstance(value, dt.time):
+        return value.replace(tzinfo=None, microsecond=0)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        raw = float(value)
+        fraction = raw % 1
+        total_seconds = int(round(fraction * 24 * 60 * 60)) % (24 * 60 * 60)
+        return (dt.datetime.min + dt.timedelta(seconds=total_seconds)).time().replace(microsecond=0)
+
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        numeric = float(text)
+    except ValueError:
+        numeric = None
+    if numeric is not None and 0 <= numeric < 1:
+        return _time_from_sheet_value(numeric)
+    for fmt in ("%H:%M", "%H:%M:%S", "%I:%M %p", "%I:%M:%S %p"):
+        try:
+            parsed = dt.datetime.strptime(text, fmt).time()
+            return parsed.replace(tzinfo=None, microsecond=0)
+        except ValueError:
+            continue
+    return None
+
+
+def _configured_timezone() -> ZoneInfo:
+    raw = str(cfg.get("TIMEZONE") or "Europe/Vienna").strip() or "Europe/Vienna"
+    try:
+        return ZoneInfo(raw)
+    except ZoneInfoNotFoundError:
+        log.warning("fusion reminder settings timezone invalid; falling back to Europe/Vienna", extra={"timezone": raw})
+        return ZoneInfo("Europe/Vienna")
+
+
+def _local_time_to_utc_text(value: object, *, reference: dt.datetime | None = None) -> str:
+    parsed = _time_from_sheet_value(value)
+    if parsed is None:
+        return ""
+    ref = reference or dt.datetime.now(dt.timezone.utc)
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=dt.timezone.utc)
+    local_zone = _configured_timezone()
+    local_day = ref.astimezone(local_zone).date()
+    local_dt = dt.datetime.combine(local_day, parsed, tzinfo=local_zone)
+    return local_dt.astimezone(dt.timezone.utc).strftime("%H:%M")
 
 
 def _parse_int(value: object) -> int:
@@ -221,8 +295,6 @@ def _parse_float_optional(value: object) -> float | None:
         return float(text)
     except ValueError:
         return None
-
-
 
 
 def _parse_milestones(value: object, *, fusion_id: str, event_id: str) -> tuple[FusionEventMilestone, ...]:
@@ -798,84 +870,67 @@ async def get_active_events(
     return [item[1] for item in active]
 
 
-async def get_fusion_reminder_settings() -> FusionReminderSettings:
+async def get_fusion_reminder_settings(*, now: dt.datetime | None = None) -> FusionReminderSettings:
     tab_name = _resolve_tab_name(_FUSION_REMINDER_SETTINGS_TAB_KEY)
-    rows = await afetch_records(_sheet_id(), tab_name)
-
-    @dataclass(slots=True)
-    class _SettingEntry:
-        value: object
-        key_header: str
-        value_header: str
-        duplicate_count: int = 0
-
-    def _pick_setting_cell(row: Mapping[str, object], *headers: str) -> tuple[object, str]:
-        for header in headers:
-            if header in row:
-                value = row[header]
-                if ("" if value is None else str(value)).strip() != "":
-                    return value, header
-        return "", ""
-
-    parsed: dict[str, _SettingEntry] = {}
-    for raw in rows or []:
-        row = _normalize(raw)
-        key, key_header = _pick_setting_cell(row, "setting_key", "key", "setting", "name")
-        value, value_header = _pick_setting_cell(row, "setting_value", "value")
-        normalized_key = str(key or "").strip().casefold()
-        if normalized_key:
-            duplicate_count = parsed.get(normalized_key).duplicate_count + 1 if normalized_key in parsed else 0
-            parsed[normalized_key] = _SettingEntry(
-                value=value,
-                key_header=key_header,
-                value_header=value_header,
-                duplicate_count=duplicate_count,
-            )
-
-
-    def _value(key: str, default: object = None) -> object:
-        entry = parsed.get(key)
-        return entry.value if entry is not None else default
-
-    def _first_value(*keys: str) -> object:
-        for key in keys:
-            if key in parsed:
-                return parsed[key].value
-        return ""
-
-    group_events_entry = parsed.get("group_events")
-    group_events_source = FusionReminderSettingSource(
+    sheet_id, values, header = await _load_fusion_sheet_matrix(tab_name)
+    key_idx = _resolve_header_index(
         tab_name=tab_name,
-        key_header=group_events_entry.key_header if group_events_entry else "",
-        value_header=group_events_entry.value_header if group_events_entry else "",
-        raw_value=str(group_events_entry.value).strip() if group_events_entry else "",
-        duplicate_count=group_events_entry.duplicate_count if group_events_entry else 0,
+        header=header,
+        field="setting_key",
+        aliases_by_field=_FUSION_REMINDER_SETTINGS_COLUMN_HEADERS,
+    )
+    value_idx = _resolve_header_index(
+        tab_name=tab_name,
+        header=header,
+        field="value",
+        aliases_by_field=_FUSION_REMINDER_SETTINGS_COLUMN_HEADERS,
+    )
+    key_header = header[key_idx]
+    value_header = header[value_idx]
+
+    parsed: dict[str, object] = {}
+    raw_types: dict[str, str] = {}
+    raw_key_names: dict[str, str] = {}
+    for row in values[1:]:
+        key_value = row[key_idx] if key_idx < len(row) else ""
+        key = str(key_value or "").strip().lower()
+        if not key:
+            continue
+        value = row[value_idx] if value_idx < len(row) else ""
+        parsed[key] = value
+        raw_types[key] = type(value).__name__
+        raw_key_names[key] = str(key_value or "").strip()
+
+    grouped_post_time_utc = _local_time_to_utc_text(
+        parsed.get("grouped_daily_post_time"),
+        reference=now,
     )
 
     return FusionReminderSettings(
-        start_offset_minutes=_parse_nonnegative_int(_value("start_offset_minutes"), 360),
-        end_lookahead_hours=_parse_nonnegative_int(_value("end_lookahead_hours"), 24),
-        upcoming_window_days=_parse_nonnegative_int(_value("upcoming_window_days"), 2),
-        group_events=_parse_bool(group_events_entry.value if group_events_entry else None),
-        grouped_post_time_utc=str(
-            _first_value(
-                "grouped_post_time_utc",
-                "grouped_daily_post_time_utc",
-                "grouped_post_time",
-                "post_time_utc",
-            )
-        ).strip(),
-        include_start_events=_parse_bool(_value("include_start_events", True)),
-        include_ending_events=_parse_bool(_value("include_ending_events")),
-        include_upcoming_events=_parse_bool(_value("include_upcoming_events")),
-        grouped_embed_title=str(_value("grouped_embed_title") or "").strip(),
-        grouped_embed_description=str(_value("grouped_embed_description") or "").strip(),
-        grouped_live_label=str(_value("grouped_live_label") or "").strip(),
-        grouped_upcoming_label=str(_value("grouped_upcoming_label") or "").strip(),
-        grouped_ending_label=str(_value("grouped_ending_label") or "").strip(),
-        grouped_empty_value=str(_value("grouped_empty_value") or "").strip(),
-        grouped_jump_label=str(_value("grouped_jump_label") or "").strip(),
-        group_events_source=group_events_source,
+        start_offset_minutes=_parse_nonnegative_int(parsed.get("start_offset_minutes"), 360),
+        end_lookahead_hours=_parse_nonnegative_int(parsed.get("end_lookahead_hours"), 24),
+        upcoming_window_days=_parse_nonnegative_int(parsed.get("upcoming_window_days"), 2),
+        group_events=_parse_bool(parsed.get("group_events")),
+        grouped_post_time_utc=grouped_post_time_utc,
+        include_start_events=_parse_bool(parsed.get("include_start_events", True)),
+        include_ending_events=_parse_bool(parsed.get("include_ending_events")),
+        include_upcoming_events=_parse_bool(parsed.get("include_upcoming_events")),
+        grouped_embed_title=str(parsed.get("grouped_embed_title") or "").strip(),
+        grouped_embed_description=str(parsed.get("grouped_embed_description") or "").strip(),
+        grouped_live_label=str(parsed.get("grouped_live_label") or "").strip(),
+        grouped_upcoming_label=str(parsed.get("grouped_upcoming_label") or "").strip(),
+        grouped_ending_label=str(parsed.get("grouped_ending_label") or "").strip(),
+        grouped_empty_value=str(parsed.get("grouped_empty_value") or "").strip(),
+        grouped_jump_label=str(parsed.get("grouped_jump_label") or "").strip(),
+        settings_source_tab=tab_name,
+        settings_sheet_id_tail=_sheet_tail(sheet_id),
+        settings_headers=tuple(header),
+        settings_key_header=key_header,
+        settings_value_header=value_header,
+        settings_raw_values=parsed,
+        settings_raw_types=raw_types,
+        settings_raw_key_names=raw_key_names,
+        settings_cache_status="not_cached",
     )
 
 

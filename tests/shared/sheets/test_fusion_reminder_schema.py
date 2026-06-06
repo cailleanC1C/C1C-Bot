@@ -167,28 +167,30 @@ def test_get_fusion_reminder_settings_reads_configured_tab(monkeypatch: pytest.M
         monkeypatch,
         {
             "FUSION_REMINDER_SETTINGS_TAB": "FusionReminderSettings",
+            "TIMEZONE": "UTC",
         },
     )
     monkeypatch.setattr(fusion_sheets, "_sheet_id", lambda: "sheet-1")
 
-    async def _afetch_records(sheet_id: str, tab_name: str):
+    async def _afetch_values(sheet_id: str, tab_name: str):
         assert sheet_id == "sheet-1"
         assert tab_name == "FusionReminderSettings"
         return [
-            {"setting_key": "group_events", "setting_value": "TRUE"},
-            {"key": "grouped_post_time_utc", "value": "12:30"},
-            {"key": "upcoming_window_days", "value": "3"},
-            {"key": "include_upcoming_events", "value": "TRUE"},
-            {"key": "grouped_embed_title", "value": "Title {fusion_title}"},
-            {"key": "grouped_embed_description", "value": "Desc {jump_link}"},
-            {"key": "grouped_live_label", "value": "Live"},
-            {"key": "grouped_upcoming_label", "value": "Up"},
-            {"key": "grouped_ending_label", "value": "End"},
-            {"key": "grouped_empty_value", "value": "None"},
-            {"key": "grouped_jump_label", "value": "Open"},
+            ["setting_key", "value", "notes"],
+            ["group_events", "TRUE", "enable grouped reminders"],
+            ["grouped_daily_post_time", "12:30", "local daily post time"],
+            ["upcoming_window_days", "3", ""],
+            ["include_upcoming_events", "TRUE", ""],
+            ["grouped_embed_title", "Title {fusion_title}", ""],
+            ["grouped_embed_description", "Desc {jump_link}", ""],
+            ["grouped_live_label", "Live", ""],
+            ["grouped_upcoming_label", "Up", ""],
+            ["grouped_ending_label", "End", ""],
+            ["grouped_empty_value", "None", ""],
+            ["grouped_jump_label", "Open", ""],
         ]
 
-    monkeypatch.setattr(fusion_sheets, "afetch_records", _afetch_records)
+    monkeypatch.setattr(fusion_sheets, "afetch_values", _afetch_values)
     settings = asyncio.run(fusion_sheets.get_fusion_reminder_settings())
     assert settings.group_events is True
     assert settings.group_events_source.tab_name == "FusionReminderSettings"
@@ -201,6 +203,65 @@ def test_get_fusion_reminder_settings_reads_configured_tab(monkeypatch: pytest.M
     assert settings.grouped_embed_title == "Title {fusion_title}"
     assert settings.grouped_empty_value == "None"
     assert settings.grouped_jump_label == "Open"
+    assert settings.settings_headers == ("setting_key", "value", "notes")
+    assert settings.settings_key_header == "setting_key"
+    assert settings.settings_value_header == "value"
+
+
+def test_get_fusion_reminder_settings_reads_setting_key_and_local_sheet_time(monkeypatch: pytest.MonkeyPatch):
+    _install_config(
+        monkeypatch,
+        {
+            "FUSION_REMINDER_SETTINGS_TAB": "FusionReminderSettings",
+            "TIMEZONE": "Europe/Vienna",
+        },
+    )
+    monkeypatch.setattr(fusion_sheets, "_sheet_id", lambda: "milestones-sheet-123456")
+
+    async def _afetch_values(sheet_id: str, tab_name: str):
+        assert sheet_id == "milestones-sheet-123456"
+        assert tab_name == "FusionReminderSettings"
+        return [
+            ["setting_key", "value", "notes"],
+            ["group_events", "TRUE", "enable grouped reminders"],
+            ["grouped_daily_post_time", 10 / 24, "local daily post time"],
+        ]
+
+    monkeypatch.setattr(fusion_sheets, "afetch_values", _afetch_values)
+
+    settings = asyncio.run(
+        fusion_sheets.get_fusion_reminder_settings(
+            now=dt.datetime(2026, 6, 6, 12, tzinfo=dt.timezone.utc)
+        )
+    )
+
+    assert settings.group_events is True
+    assert settings.grouped_post_time_utc == "08:00"
+    assert settings.settings_source_tab == "FusionReminderSettings"
+    assert settings.settings_sheet_id_tail == "…123456"
+    assert settings.settings_headers == ("setting_key", "value", "notes")
+    assert settings.settings_key_header == "setting_key"
+    assert settings.settings_value_header == "value"
+    assert settings.settings_raw_values["grouped_daily_post_time"] == 10 / 24
+    assert settings.settings_raw_types["grouped_daily_post_time"] == "float"
+
+
+def test_get_fusion_reminder_settings_requires_production_headers(monkeypatch: pytest.MonkeyPatch):
+    _install_config(monkeypatch, {"FUSION_REMINDER_SETTINGS_TAB": "FusionReminderSettings"})
+    monkeypatch.setattr(fusion_sheets, "_sheet_id", lambda: "sheet-1")
+
+    async def _afetch_values(sheet_id: str, tab_name: str):
+        assert sheet_id == "sheet-1"
+        assert tab_name == "FusionReminderSettings"
+        return [
+            ["key", "setting_value"],
+            ["group_events", "TRUE"],
+        ]
+
+    monkeypatch.setattr(fusion_sheets, "afetch_values", _afetch_values)
+
+    with pytest.raises(RuntimeError, match="setting_key"):
+        asyncio.run(fusion_sheets.get_fusion_reminder_settings())
 
 
 def test_fusion_reminder_bool_parser_accepts_sheet_true_false_values():
