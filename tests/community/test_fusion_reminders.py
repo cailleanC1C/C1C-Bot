@@ -1,5 +1,6 @@
 import asyncio
 import datetime as dt
+from dataclasses import replace
 from unittest.mock import AsyncMock
 
 from modules.community.fusion import reminders
@@ -236,3 +237,40 @@ def test_non_grouped_config_does_not_send_per_event_reminders(monkeypatch):
 
     assert channel.sent == []
     fusion_sheets.mark_reminder_sent.assert_not_awaited()
+
+def test_disabled_grouped_config_logs_resolved_source(monkeypatch):
+    now = dt.datetime(2026, 4, 10, 12, 0, tzinfo=dt.timezone.utc)
+    source = fusion_sheets.FusionReminderSettingSource(
+        tab_name="FusionReminderSettings",
+        key_header="setting_key",
+        value_header="setting_value",
+        raw_value="FALSE",
+    )
+    settings = replace(_settings(group_events=False), group_events_source=source)
+    alerts = []
+
+    async def _send_ops_alert(**kwargs):
+        alerts.append(kwargs)
+
+    monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row()))
+    monkeypatch.setattr(fusion_sheets, "get_fusion_reminder_settings", AsyncMock(return_value=settings))
+    monkeypatch.setattr(reminders.fusion_logs, "send_ops_alert", _send_ops_alert)
+
+    asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now))
+
+    assert alerts == [
+        {
+            "component": "reminders",
+            "summary": "grouped_reminders_disabled",
+            "dedupe_key": "fusion:grouped_reminders:disabled:f-1",
+            "reason": "group_events_resolved_false",
+            "fields": {
+                "fusion_id": "f-1",
+                "group_events_resolved": "false",
+                "group_events_raw_value": "FALSE",
+                "group_events_source_tab": "FusionReminderSettings",
+                "group_events_key_header": "setting_key",
+                "group_events_value_header": "setting_value",
+            },
+        }
+    ]

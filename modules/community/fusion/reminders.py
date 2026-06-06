@@ -96,6 +96,21 @@ def _missing_grouped_copy_fields(settings: fusion_sheets.FusionReminderSettings)
     return [name for name, value in required.items() if not str(value or "").strip()]
 
 
+
+def _group_events_config_fields(settings: fusion_sheets.FusionReminderSettings) -> dict[str, object]:
+    source = settings.group_events_source
+    fields: dict[str, object] = {
+        "group_events_resolved": "true" if settings.group_events else "false",
+        "group_events_raw_value": source.raw_value or "missing",
+        "group_events_source_tab": source.tab_name or "missing",
+        "group_events_key_header": source.key_header or "missing",
+        "group_events_value_header": source.value_header or "missing",
+    }
+    if source.duplicate_count:
+        fields["group_events_duplicate_count"] = source.duplicate_count
+    return fields
+
+
 def _parse_grouped_post_time_utc(raw: object) -> dt.time | None:
     text = str(raw or "").strip()
     if not text:
@@ -334,6 +349,16 @@ async def collect_fusion_reminder_startup_summary(
     enabled = settings.group_events and post_time is not None
     lines.append(f"• enabled={'yes' if enabled else 'no'}")
     lines.append(f"• configured_post_time_utc={settings.grouped_post_time_utc or 'missing'}")
+    source = settings.group_events_source
+    lines.append(
+        "• group_events_resolved={resolved} raw_value={raw_value} source_tab={source_tab} key_header={key_header} value_header={value_header}".format(
+            resolved="true" if settings.group_events else "false",
+            raw_value=source.raw_value or "missing",
+            source_tab=source.tab_name or "missing",
+            key_header=source.key_header or "missing",
+            value_header=source.value_header or "missing",
+        )
+    )
     resolve_status = await _resolve_channel_role_status(bot, target)
     lines.append(
         "• channel_resolved={channel_resolved} channel_id={channel_id} thread_resolved={thread_resolved} thread_id={thread_id} role_resolved={role_resolved} role_id={role_id}".format(
@@ -342,7 +367,7 @@ async def collect_fusion_reminder_startup_summary(
     )
 
     if not settings.group_events:
-        lines.append("• skipped=grouped_reminders_disabled")
+        lines.append("• skipped=grouped_reminders_disabled reason=group_events_resolved_false")
         return lines
     if post_time is None:
         lines.append("• skipped=missing_or_invalid_grouped_post_time_utc")
@@ -436,7 +461,8 @@ async def process_fusion_reminders(
             component="reminders",
             summary="grouped_reminders_disabled",
             dedupe_key=f"fusion:grouped_reminders:disabled:{target.fusion_id}",
-            fields={"fusion_id": target.fusion_id},
+            reason="group_events_resolved_false",
+            fields={"fusion_id": target.fusion_id, **_group_events_config_fields(settings)},
         )
         return
 
