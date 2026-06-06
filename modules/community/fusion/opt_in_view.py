@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import time
 from collections.abc import Mapping, Sequence
 from typing import Literal
 
@@ -55,6 +56,7 @@ _STATUS_INDEX_TO_CANONICAL = {
     "4": "skipped",
 }
 _EVENT_DROPDOWN_STATUS_RANK = {status: idx for idx, status in enumerate(_EVENT_DROPDOWN_STATUS_ORDER)}
+_PROGRESS_EVENT_PAGE_SIZE = 10
 
 
 def _supports_partial_fragments(event: fusion_sheets.FusionEventRow | None, *, status: str | None) -> bool:
@@ -347,27 +349,38 @@ def _build_progress_summary_embed(
     return embed
 
 
+def _ordered_progress_events(
+    events: Sequence[fusion_sheets.FusionEventRow],
+    progress_by_event: Mapping[str, str],
+) -> list[fusion_sheets.FusionEventRow]:
+    now = dt.datetime.now(dt.timezone.utc)
+    event_rows = list(enumerate(events))
+    ordered_events = sorted(
+        event_rows,
+        key=lambda item: (
+            _EVENT_DROPDOWN_STATUS_RANK.get(
+                _effective_display_status(event=item[1], progress_by_event=progress_by_event, now=now),
+                len(_EVENT_DROPDOWN_STATUS_RANK),
+            ),
+            item[0],
+        ),
+    )
+    return [event for _, event in ordered_events]
+
+
 class _FusionProgressEventSelect(discord.ui.Select):
     def __init__(
         self,
         events: Sequence[fusion_sheets.FusionEventRow],
         selected_event_id: str | None,
         progress_by_event: Mapping[str, str],
+        *,
+        page_index: int = 0,
+        page_count: int = 1,
     ) -> None:
         now = dt.datetime.now(dt.timezone.utc)
-        event_rows = list(enumerate(events))
-        ordered_events = sorted(
-            event_rows,
-            key=lambda item: (
-                _EVENT_DROPDOWN_STATUS_RANK.get(
-                    _effective_display_status(event=item[1], progress_by_event=progress_by_event, now=now),
-                    len(_EVENT_DROPDOWN_STATUS_RANK),
-                ),
-                item[0],
-            ),
-        )
         options: list[discord.SelectOption] = []
-        for _, event in ordered_events[:25]:
+        for event in events[:_PROGRESS_EVENT_PAGE_SIZE]:
             status = _effective_display_status(event=event, progress_by_event=progress_by_event, now=now)
             icon = _STATUS_ICONS.get(status, _STATUS_ICONS["not_started"])
             options.append(
@@ -377,8 +390,11 @@ class _FusionProgressEventSelect(discord.ui.Select):
                     default=event.event_id == selected_event_id,
                 )
             )
+        placeholder = "Choose event"
+        if page_count > 1:
+            placeholder = f"Choose event (page {page_index + 1}/{page_count})"
         super().__init__(
-            placeholder="Choose event",
+            placeholder=placeholder,
             min_values=1,
             max_values=1,
             options=options,
@@ -632,6 +648,29 @@ class _FusionProgressMarkAllButton(discord.ui.Button):
         view.last_update = (event.event_name, "done")
         await _edit_progress_message(interaction, view=view)
 
+class _FusionProgressPageButton(discord.ui.Button):
+    def __init__(self, *, direction: Literal["previous", "next"], disabled: bool) -> None:
+        self.direction = direction
+        label = "Previous" if direction == "previous" else "Next"
+        custom_id = f"fusion:progress:page:{direction}"
+        super().__init__(label=label, style=discord.ButtonStyle.secondary, custom_id=custom_id, row=2, disabled=disabled)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, FusionProgressPanelView):
+            return
+        if interaction.user.id != view.user_id:
+            await _send_ephemeral(interaction, "This progress panel belongs to a different user.")
+            return
+        if self.direction == "previous":
+            view.event_page_index = max(view.event_page_index - 1, 0)
+        else:
+            view.event_page_index = min(view.event_page_index + 1, view.event_page_count - 1)
+        view.selected_event_id = view.first_event_id_on_current_page()
+        view.refresh_items()
+        await _edit_progress_message(interaction, view=view)
+
+
 class _FusionProgressShareButton(discord.ui.Button):
     def __init__(self) -> None:
         super().__init__(
@@ -763,17 +802,39 @@ class FusionProgressPanelView(discord.ui.View):
         self.events_by_id = {event.event_id: event for event in self.events}
         self.progress_by_event = dict(progress_by_event)
         self.partial_by_event = dict(partial_by_event or {})
+        self.event_page_index = 0
         self.selected_event_id = self.events[0].event_id if self.events else None
         self.last_update: tuple[str, str] | None = None
         self.refresh_items()
+
+    @property
+    def ordered_events(self) -> list[fusion_sheets.FusionEventRow]:
+        return _ordered_progress_events(self.events, self.progress_by_event)
+
+    @property
+    def event_page_count(self) -> int:
+        if not self.events:
+            return 1
+        return max(1, (len(self.events) + _PROGRESS_EVENT_PAGE_SIZE - 1) // _PROGRESS_EVENT_PAGE_SIZE)
+
+    def current_page_events(self) -> list[fusion_sheets.FusionEventRow]:
+        ordered = self.ordered_events
+        self.event_page_index = min(max(self.event_page_index, 0), self.event_page_count - 1)
+        start = self.event_page_index * _PROGRESS_EVENT_PAGE_SIZE
+        return ordered[start : start + _PROGRESS_EVENT_PAGE_SIZE]
+
+    def first_event_id_on_current_page(self) -> str | None:
+        current_events = self.current_page_events()
+        return current_events[0].event_id if current_events else None
 
     def _coerce_selected_event_id(self) -> None:
         if not self.events:
             self.selected_event_id = None
             return
-        if self.selected_event_id in self.events_by_id:
+        current_event_ids = {event.event_id for event in self.current_page_events()}
+        if self.selected_event_id in current_event_ids:
             return
-        self.selected_event_id = self.events[0].event_id
+        self.selected_event_id = self.first_event_id_on_current_page()
 
     def refresh_items(self) -> None:
         self.clear_items()
@@ -781,7 +842,16 @@ class FusionProgressPanelView(discord.ui.View):
             return
 
         self._coerce_selected_event_id()
-        self.add_item(_FusionProgressEventSelect(self.events, self.selected_event_id, self.progress_by_event))
+        current_events = self.current_page_events()
+        self.add_item(
+            _FusionProgressEventSelect(
+                current_events,
+                self.selected_event_id,
+                self.progress_by_event,
+                page_index=self.event_page_index,
+                page_count=self.event_page_count,
+            )
+        )
         selected_status = None
         selected_event = None
         if self.selected_event_id:
@@ -794,6 +864,9 @@ class FusionProgressPanelView(discord.ui.View):
             self.add_item(_FusionProgressUpdateButton())
         if selected_event is not None and selected_event.milestones:
             self.add_item(_FusionProgressMarkAllButton())
+        if self.event_page_count > 1:
+            self.add_item(_FusionProgressPageButton(direction="previous", disabled=self.event_page_index <= 0))
+            self.add_item(_FusionProgressPageButton(direction="next", disabled=self.event_page_index >= self.event_page_count - 1))
         self.add_item(_FusionProgressShareButton())
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -813,7 +886,60 @@ class FusionProgressPanelView(discord.ui.View):
         )
 
 
+def _progress_panel_diagnostics(
+    interaction: discord.Interaction,
+    *,
+    target: fusion_sheets.FusionRow | None = None,
+    events: Sequence[fusion_sheets.FusionEventRow] | None = None,
+    view: "FusionProgressPanelView" | None = None,
+    response_path: str,
+    elapsed_ms: int,
+) -> dict[str, object]:
+    context = fusion_logs.interaction_context(interaction, custom_id=_FUSION_MY_PROGRESS_CUSTOM_ID)
+    if target is not None:
+        context["fusion_id"] = target.fusion_id
+    if events is not None:
+        context["event_count"] = len(events)
+        context["event_page_size"] = _PROGRESS_EVENT_PAGE_SIZE
+        context["event_page_count"] = max(1, (len(events) + _PROGRESS_EVENT_PAGE_SIZE - 1) // _PROGRESS_EVENT_PAGE_SIZE)
+    if view is not None:
+        context["component_count"] = len(view.children)
+        context["event_options_visible"] = len(view.current_page_events())
+        context["selected_event_id"] = view.selected_event_id or ""
+        context["embed_field_count"] = len(view.build_embed().fields)
+    context["response_path"] = response_path
+    context["response_done_before_send"] = interaction.response.is_done()
+    context["elapsed_ms"] = elapsed_ms
+    return context
+
+
+async def _send_my_progress_panel(
+    interaction: discord.Interaction,
+    *,
+    target: fusion_sheets.FusionRow,
+    events: Sequence[fusion_sheets.FusionEventRow],
+    view: "FusionProgressPanelView",
+    started_at: float,
+) -> None:
+    embed = view.build_embed()
+    response_path = "followup_send_ephemeral" if interaction.response.is_done() else "direct_send_ephemeral"
+    diagnostics = _progress_panel_diagnostics(
+        interaction,
+        target=target,
+        events=events,
+        view=view,
+        response_path=response_path,
+        elapsed_ms=int((time.monotonic() - started_at) * 1000),
+    )
+    log.info("fusion my-progress response path selected", extra=diagnostics)
+    if interaction.response.is_done():
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        return
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
 async def _handle_my_progress(interaction: discord.Interaction) -> None:
+    started_at = time.monotonic()
     try:
         target = await fusion_sheets.get_publishable_fusion()
     except Exception as exc:
@@ -892,11 +1018,7 @@ async def _handle_my_progress(interaction: discord.Interaction) -> None:
         progress_by_event=progress_by_event,
         partial_by_event=partial_by_event,
     )
-    embed = view.build_embed()
-    if interaction.response.is_done():
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-        return
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    await _send_my_progress_panel(interaction, target=target, events=events, view=view, started_at=started_at)
 
 
 async def _safe_defer_progress_interaction(interaction: discord.Interaction) -> None:
@@ -913,6 +1035,15 @@ async def _safe_defer_progress_interaction(interaction: discord.Interaction) -> 
 
 
 async def _edit_progress_message(interaction: discord.Interaction, *, view: "FusionProgressPanelView") -> None:
+    diagnostics = _progress_panel_diagnostics(
+        interaction,
+        target=view.target,
+        events=view.events,
+        view=view,
+        response_path="edit_original_response" if interaction.response.is_done() else "response_edit_message",
+        elapsed_ms=0,
+    )
+    log.info("fusion progress panel edit path selected", extra=diagnostics)
     if interaction.response.is_done():
         edit_original = getattr(interaction, "edit_original_response", None)
         if callable(edit_original):
