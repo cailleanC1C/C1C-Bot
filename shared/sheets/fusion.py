@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from shared.config import cfg, get_milestones_sheet_id
@@ -120,6 +120,15 @@ class FusionProgressSaveResult:
 
 
 @dataclass(frozen=True, slots=True)
+class FusionReminderSettingSource:
+    tab_name: str = ""
+    key_header: str = ""
+    value_header: str = ""
+    raw_value: str = ""
+    duplicate_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class FusionReminderSettings:
     start_offset_minutes: int = 360
     end_lookahead_hours: int = 24
@@ -136,6 +145,7 @@ class FusionReminderSettings:
     grouped_ending_label: str = ""
     grouped_empty_value: str = ""
     grouped_jump_label: str = ""
+    group_events_source: FusionReminderSettingSource = field(default_factory=FusionReminderSettingSource)
 
 
 def _resolve_tab_name(key: str) -> str:
@@ -237,8 +247,14 @@ def _parse_milestones(value: object, *, fusion_id: str, event_id: str) -> tuple[
     return tuple(parsed)
 
 def _parse_bool(value: object) -> bool:
-    text = str(value or "").strip().lower()
-    return text in {"1", "true", "yes", "y"}
+    if isinstance(value, bool):
+        return value
+    text = ("" if value is None else str(value)).strip().casefold()
+    if text in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    return False
 
 
 def _parse_nonnegative_int(value: object, default: int) -> int:
@@ -785,35 +801,81 @@ async def get_active_events(
 async def get_fusion_reminder_settings() -> FusionReminderSettings:
     tab_name = _resolve_tab_name(_FUSION_REMINDER_SETTINGS_TAB_KEY)
     rows = await afetch_records(_sheet_id(), tab_name)
-    parsed: dict[str, object] = {}
+
+    @dataclass(slots=True)
+    class _SettingEntry:
+        value: object
+        key_header: str
+        value_header: str
+        duplicate_count: int = 0
+
+    def _pick_setting_cell(row: Mapping[str, object], *headers: str) -> tuple[object, str]:
+        for header in headers:
+            if header in row:
+                value = row[header]
+                if ("" if value is None else str(value)).strip() != "":
+                    return value, header
+        return "", ""
+
+    parsed: dict[str, _SettingEntry] = {}
     for raw in rows or []:
         row = _normalize(raw)
-        key = str(_pick(row, "key", "setting", "name") or "").strip().lower()
-        value = _pick(row, "value", "setting_value")
-        if key:
-            parsed[key] = value
+        key, key_header = _pick_setting_cell(row, "setting_key", "key", "setting", "name")
+        value, value_header = _pick_setting_cell(row, "setting_value", "value")
+        normalized_key = str(key or "").strip().casefold()
+        if normalized_key:
+            duplicate_count = parsed.get(normalized_key).duplicate_count + 1 if normalized_key in parsed else 0
+            parsed[normalized_key] = _SettingEntry(
+                value=value,
+                key_header=key_header,
+                value_header=value_header,
+                duplicate_count=duplicate_count,
+            )
+
+
+    def _value(key: str, default: object = None) -> object:
+        entry = parsed.get(key)
+        return entry.value if entry is not None else default
+
+    def _first_value(*keys: str) -> object:
+        for key in keys:
+            if key in parsed:
+                return parsed[key].value
+        return ""
+
+    group_events_entry = parsed.get("group_events")
+    group_events_source = FusionReminderSettingSource(
+        tab_name=tab_name,
+        key_header=group_events_entry.key_header if group_events_entry else "",
+        value_header=group_events_entry.value_header if group_events_entry else "",
+        raw_value=str(group_events_entry.value).strip() if group_events_entry else "",
+        duplicate_count=group_events_entry.duplicate_count if group_events_entry else 0,
+    )
+
     return FusionReminderSettings(
-        start_offset_minutes=_parse_nonnegative_int(parsed.get("start_offset_minutes"), 360),
-        end_lookahead_hours=_parse_nonnegative_int(parsed.get("end_lookahead_hours"), 24),
-        upcoming_window_days=_parse_nonnegative_int(parsed.get("upcoming_window_days"), 2),
-        group_events=_parse_bool(parsed.get("group_events")),
+        start_offset_minutes=_parse_nonnegative_int(_value("start_offset_minutes"), 360),
+        end_lookahead_hours=_parse_nonnegative_int(_value("end_lookahead_hours"), 24),
+        upcoming_window_days=_parse_nonnegative_int(_value("upcoming_window_days"), 2),
+        group_events=_parse_bool(group_events_entry.value if group_events_entry else None),
         grouped_post_time_utc=str(
-            parsed.get("grouped_post_time_utc")
-            or parsed.get("grouped_daily_post_time_utc")
-            or parsed.get("grouped_post_time")
-            or parsed.get("post_time_utc")
-            or ""
+            _first_value(
+                "grouped_post_time_utc",
+                "grouped_daily_post_time_utc",
+                "grouped_post_time",
+                "post_time_utc",
+            )
         ).strip(),
-        include_start_events=_parse_bool(parsed.get("include_start_events", True)),
-        include_ending_events=_parse_bool(parsed.get("include_ending_events")),
-        include_upcoming_events=_parse_bool(parsed.get("include_upcoming_events")),
-        grouped_embed_title=str(parsed.get("grouped_embed_title") or "").strip(),
-        grouped_embed_description=str(parsed.get("grouped_embed_description") or "").strip(),
-        grouped_live_label=str(parsed.get("grouped_live_label") or "").strip(),
-        grouped_upcoming_label=str(parsed.get("grouped_upcoming_label") or "").strip(),
-        grouped_ending_label=str(parsed.get("grouped_ending_label") or "").strip(),
-        grouped_empty_value=str(parsed.get("grouped_empty_value") or "").strip(),
-        grouped_jump_label=str(parsed.get("grouped_jump_label") or "").strip(),
+        include_start_events=_parse_bool(_value("include_start_events", True)),
+        include_ending_events=_parse_bool(_value("include_ending_events")),
+        include_upcoming_events=_parse_bool(_value("include_upcoming_events")),
+        grouped_embed_title=str(_value("grouped_embed_title") or "").strip(),
+        grouped_embed_description=str(_value("grouped_embed_description") or "").strip(),
+        grouped_live_label=str(_value("grouped_live_label") or "").strip(),
+        grouped_upcoming_label=str(_value("grouped_upcoming_label") or "").strip(),
+        grouped_ending_label=str(_value("grouped_ending_label") or "").strip(),
+        grouped_empty_value=str(_value("grouped_empty_value") or "").strip(),
+        grouped_jump_label=str(_value("grouped_jump_label") or "").strip(),
+        group_events_source=group_events_source,
     )
 
 

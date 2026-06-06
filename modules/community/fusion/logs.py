@@ -30,6 +30,7 @@ async def send_ops_alert(
     summary: str,
     dedupe_key: str | None = None,
     error: BaseException | None = None,
+    reason: str | None = None,
     fields: Mapping[str, Any] | None = None,
 ) -> None:
     """Emit a Fusion-focused alert to the configured internal log channel."""
@@ -39,8 +40,8 @@ async def send_ops_alert(
         return
 
     detail = _render_fields(fields or {})
-    reason = human_reason(error) if error is not None else "-"
-    message = f"❌ Fusion — component={component} • summary={summary} • reason={reason}"
+    resolved_reason = human_reason(error) if error is not None else (reason or "-")
+    message = f"❌ Fusion — component={component} • summary={summary} • reason={resolved_reason}"
     if detail:
         message = f"{message} • {detail}"
 
