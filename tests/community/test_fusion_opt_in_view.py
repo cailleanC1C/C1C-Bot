@@ -2,7 +2,7 @@ import asyncio
 import datetime as dt
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from modules.community.fusion import opt_in_view
 from shared.sheets import fusion as fusion_sheets
@@ -562,3 +562,70 @@ def test_mark_all_button_shown_for_milestone_event():
     )
     custom_ids = [item.custom_id for item in view.children]
     assert "fusion:progress:mark_all" in custom_ids
+
+
+def test_my_progress_direct_send_logs_mobile_diagnostics(monkeypatch):
+    async def _run() -> None:
+        member = _Member(role=None)
+        guild = _Guild(role=None, member=member)
+        interaction = _interaction(guild, member)
+        events = [_event_row("e1"), _event_row("e2")]
+        monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row(opt_in_role_id=777)))
+        monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=events))
+        monkeypatch.setattr(fusion_sheets, "get_user_event_progress", AsyncMock(return_value={}))
+        info_mock = Mock()
+        monkeypatch.setattr(opt_in_view.log, "info", info_mock)
+
+        await opt_in_view._handle_my_progress(interaction)
+
+        interaction.response.send_message.assert_awaited_once()
+        assert interaction.response.send_message.await_args.kwargs["ephemeral"] is True
+        interaction.followup.send.assert_not_awaited()
+        info_mock.assert_called()
+        diagnostics = info_mock.call_args.kwargs["extra"]
+        assert diagnostics["response_path"] == "direct_send_ephemeral"
+        assert diagnostics["event_count"] == 2
+        assert diagnostics["event_options_visible"] == 2
+        assert diagnostics["component_count"] == 3
+
+    asyncio.run(_run())
+
+
+def test_my_progress_event_select_is_paginated_for_mobile():
+    events = [_event_row(f"e{i:02d}", event_name=f"Event {i:02d}") for i in range(12)]
+    view = opt_in_view.FusionProgressPanelView(
+        user_id=10,
+        target=_fusion_row(opt_in_role_id=777),
+        events=events,
+        progress_by_event={},
+    )
+
+    event_select = next(item for item in view.children if item.custom_id == "fusion:progress:event")
+    custom_ids = [item.custom_id for item in view.children]
+    assert len(event_select.options) == 10
+    assert event_select.placeholder == "Choose event (page 1/2)"
+    assert "fusion:progress:page:previous" in custom_ids
+    assert "fusion:progress:page:next" in custom_ids
+
+
+def test_my_progress_next_page_rebuilds_smaller_event_options():
+    async def _run() -> None:
+        events = [_event_row(f"e{i:02d}", event_name=f"Event {i:02d}") for i in range(12)]
+        view = opt_in_view.FusionProgressPanelView(
+            user_id=10,
+            target=_fusion_row(opt_in_role_id=777),
+            events=events,
+            progress_by_event={},
+        )
+        interaction = _interaction(guild=None, member=SimpleNamespace(id=10))
+        next_button = next(item for item in view.children if item.custom_id == "fusion:progress:page:next")
+
+        await next_button.callback(interaction)
+
+        assert view.event_page_index == 1
+        assert view.selected_event_id == "e10"
+        event_select = next(item for item in view.children if item.custom_id == "fusion:progress:event")
+        assert [option.value for option in event_select.options] == ["e10", "e11"]
+        assert event_select.placeholder == "Choose event (page 2/2)"
+
+    asyncio.run(_run())
