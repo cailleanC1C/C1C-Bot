@@ -39,6 +39,7 @@ from c1c_coreops.rbac import (
 from c1c_coreops.cron_summary import emit_daily_summary
 from modules.recruitment.reporting.daily_recruiter_update import ensure_scheduler_started
 from modules.ops.startup_summary import render_startup_summary
+from modules.community.fusion.reminders import collect_fusion_reminder_startup_summary
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -58,6 +59,16 @@ COREOPS_COMMANDS = tuple(COREOPS_SETTINGS.admin_bang_base_commands)
 COREOPS_ADMIN_ALLOWLIST = {
     normalize_command_text(item) for item in COREOPS_SETTINGS.admin_bang_allowlist
 }
+CRON_JOB_NAMES = (
+    "cache_refresh:clans",
+    "cache_refresh:templates",
+    "cache_refresh:clan_tags",
+    "cache_refresh:onboarding_questions",
+    "cleanup_watcher",
+    "housekeeping_keepalive",
+    "mirralith_overview",
+    "fusion_reminders",
+)
 
 bot = commands.Bot(
     command_prefix=commands.when_mentioned_or(BANG_PREFIX),
@@ -347,6 +358,19 @@ async def on_ready():
             refresh_lines = ["♻️ Refresh", f"• failed: {preload_report.error or 'unknown'}"]
 
     jobs = {getattr(job, "name", ""): job for job in runtime.scheduler.jobs}
+    fusion_reminder_lines: list[str]
+    try:
+        fusion_reminder_lines = await collect_fusion_reminder_startup_summary(
+            bot,
+            scheduler_started="fusion_reminders" in jobs,
+        )
+    except Exception as exc:
+        log.exception("fusion reminder startup summary failed")
+        fusion_reminder_lines = [
+            "🧬 Fusion reminders",
+            f"• started={'yes' if 'fusion_reminders' in jobs else 'no'}",
+            f"• failed={type(exc).__name__}",
+        ]
     scheduler_lines = [
         "🧭 Scheduler",
         "• intervals: clans=3h • templates=7d • clan_tags=7d • onboarding_questions=7d • cleanup=24h • mirralith_overview=not scheduled",
@@ -357,6 +381,8 @@ async def on_ready():
         f"• cleanup={_fmt_next_utc(jobs['cleanup_watcher']) if 'cleanup_watcher' in jobs else 'not scheduled'}",
         f"• housekeeping_keepalive={_fmt_next_utc(jobs['housekeeping_keepalive']) if 'housekeeping_keepalive' in jobs else 'not scheduled'}",
         f"• mirralith_overview={_fmt_next_utc(jobs['mirralith_overview']) if 'mirralith_overview' in jobs else 'not scheduled'}",
+        f"• fusion_reminders={_fmt_next_utc(jobs['fusion_reminders']) if 'fusion_reminders' in jobs else 'not scheduled'}",
+        *fusion_reminder_lines,
     ]
     watchers_lines = [
         "✅ Watchers",

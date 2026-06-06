@@ -397,10 +397,7 @@ class _FusionProgressEventSelect(discord.ui.Select):
         selected_event_id = self.values[0] if self.values else ""
         view.selected_event_id = selected_event_id or None
         view.refresh_items()
-        await interaction.response.edit_message(
-            embed=view.build_embed(),
-            view=view,
-        )
+        await _edit_progress_message(interaction, view=view)
 
 
 class _FusionProgressStatusSelect(discord.ui.Select):
@@ -463,6 +460,7 @@ class _FusionProgressStatusSelect(discord.ui.Select):
                 "status": status,
             },
         )
+        await _safe_defer_progress_interaction(interaction)
         try:
             partial_amount = view.partial_by_event.get(event.event_id)
             if status in {"not_started", "skipped"}:
@@ -482,15 +480,13 @@ class _FusionProgressStatusSelect(discord.ui.Select):
                 "user_id": view.user_id,
                 "custom_id": _FUSION_PROGRESS_STATUS_CUSTOM_ID,
             }
-            log.exception("fusion progress status update failed", extra=context)
-            await fusion_logs.send_ops_alert(
+            await _send_progress_save_failure(
+                interaction,
                 component="my_progress",
-                summary="status_update_failed",
                 dedupe_key=f"fusion:progress:update:{view.fusion_id}:{event.event_id}",
                 error=exc,
                 fields=context,
             )
-            await _send_ephemeral(interaction, "Couldn’t save progress right now. Try again in a moment.")
             return
 
         view.progress_by_event[event.event_id] = status
@@ -499,10 +495,7 @@ class _FusionProgressStatusSelect(discord.ui.Select):
         view.selected_event_id = event.event_id
         view.last_update = (event.event_name, status)
         view.refresh_items()
-        await interaction.response.edit_message(
-            embed=view.build_embed(),
-            view=view,
-        )
+        await _edit_progress_message(interaction, view=view)
 
 
 class FusionProgressShareModeView(discord.ui.View):
@@ -604,12 +597,40 @@ class _FusionProgressMarkAllButton(discord.ui.Button):
             await _send_ephemeral(interaction, "Selected event has no milestones.")
             return
         now = dt.datetime.now(dt.timezone.utc)
-        for milestone in event.milestones:
-            milestone_key = str(milestone.points_needed)
-            await fusion_sheets.upsert_user_event_progress(view.fusion_id, str(view.user_id), event.event_id, "done", now, milestone_key=milestone_key)
+        await _safe_defer_progress_interaction(interaction)
+        pending_updates: list[str] = []
+        try:
+            for milestone in event.milestones:
+                milestone_key = str(milestone.points_needed)
+                await fusion_sheets.upsert_user_event_progress(
+                    view.fusion_id,
+                    str(view.user_id),
+                    event.event_id,
+                    "done",
+                    now,
+                    milestone_key=milestone_key,
+                )
+                pending_updates.append(milestone_key)
+        except Exception as exc:
+            await _send_progress_save_failure(
+                interaction,
+                component="my_progress",
+                dedupe_key=f"fusion:progress:mark_all:{view.fusion_id}:{event.event_id}",
+                error=exc,
+                fields={
+                    "fusion_id": view.fusion_id,
+                    "event_id": event.event_id,
+                    "user_id": view.user_id,
+                    "selected_status": "done",
+                    "custom_id": _FUSION_PROGRESS_MARK_ALL_CUSTOM_ID,
+                    "row_key": f"{view.fusion_id}|{view.user_id}|{event.event_id}|{pending_updates[-1] if pending_updates else ''}",
+                },
+            )
+            return
+        for milestone_key in pending_updates:
             view.progress_by_event[f"{event.event_id}:{milestone_key}"] = "done"
         view.last_update = (event.event_name, "done")
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+        await _edit_progress_message(interaction, view=view)
 
 class _FusionProgressShareButton(discord.ui.Button):
     def __init__(self) -> None:
@@ -688,19 +709,38 @@ class _FusionProgressModal(discord.ui.Modal, title="Log Partial Fragments"):
             await _send_ephemeral(interaction, f"Enter a value between 0 and {self.event.reward_amount:g}.")
             return
         now = dt.datetime.now(dt.timezone.utc)
-        await fusion_sheets.upsert_user_event_progress(
-            self.panel_view.fusion_id,
-            str(self.panel_view.user_id),
-            self.event.event_id,
-            "in_progress",
-            now,
-            partial_amount=amount,
-        )
+        await _safe_defer_progress_interaction(interaction)
+        try:
+            await fusion_sheets.upsert_user_event_progress(
+                self.panel_view.fusion_id,
+                str(self.panel_view.user_id),
+                self.event.event_id,
+                "in_progress",
+                now,
+                partial_amount=amount,
+            )
+        except Exception as exc:
+            await _send_progress_save_failure(
+                interaction,
+                component="my_progress",
+                dedupe_key=f"fusion:progress:partial:{self.panel_view.fusion_id}:{self.event.event_id}",
+                error=exc,
+                fields={
+                    "fusion_id": self.panel_view.fusion_id,
+                    "event_id": self.event.event_id,
+                    "user_id": self.panel_view.user_id,
+                    "selected_status": "in_progress",
+                    "custom_id": _FUSION_PROGRESS_UPDATE_CUSTOM_ID,
+                    "partial_amount": amount,
+                    "row_key": f"{self.panel_view.fusion_id}|{self.panel_view.user_id}|{self.event.event_id}|",
+                },
+            )
+            return
         self.panel_view.progress_by_event[self.event.event_id] = "in_progress"
         self.panel_view.partial_by_event[self.event.event_id] = amount
         self.panel_view.last_update = (self.event.event_name, "in_progress")
         self.panel_view.refresh_items()
-        await interaction.response.edit_message(embed=self.panel_view.build_embed(), view=self.panel_view)
+        await _edit_progress_message(interaction, view=self.panel_view)
 
 
 class FusionProgressPanelView(discord.ui.View):
@@ -857,6 +897,51 @@ async def _handle_my_progress(interaction: discord.Interaction) -> None:
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         return
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+async def _safe_defer_progress_interaction(interaction: discord.Interaction) -> None:
+    response = getattr(interaction, "response", None)
+    if response is None or response.is_done():
+        return
+    defer = getattr(response, "defer", None)
+    if not callable(defer):
+        return
+    try:
+        await defer(thinking=False)
+    except Exception:
+        log.debug("fusion progress interaction defer failed; continuing", exc_info=True)
+
+
+async def _edit_progress_message(interaction: discord.Interaction, *, view: "FusionProgressPanelView") -> None:
+    if interaction.response.is_done():
+        edit_original = getattr(interaction, "edit_original_response", None)
+        if callable(edit_original):
+            await edit_original(embed=view.build_embed(), view=view)
+            return
+    await interaction.response.edit_message(embed=view.build_embed(), view=view)
+
+
+async def _send_progress_save_failure(
+    interaction: discord.Interaction,
+    *,
+    component: str,
+    dedupe_key: str,
+    error: BaseException,
+    fields: dict[str, object],
+) -> None:
+    diagnostics = await fusion_sheets.get_progress_sheet_diagnostics()
+    fields.update(diagnostics)
+    fields.setdefault("save_success", False)
+    fields.setdefault("save_failure_reason", str(error) or type(error).__name__)
+    log.exception("fusion progress save failed", extra=fields)
+    await fusion_logs.send_ops_alert(
+        component=component,
+        summary="progress_save_failed",
+        dedupe_key=dedupe_key,
+        error=error,
+        fields=fields,
+    )
+    await _send_ephemeral(interaction, "Couldn’t save progress right now. Try again in a moment.")
 
 
 def _normalize_saved_progress(

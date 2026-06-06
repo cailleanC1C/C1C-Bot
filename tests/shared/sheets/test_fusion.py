@@ -432,3 +432,47 @@ def test_load_fusions_normalizes_fragment_fusion_type_case(
 
     assert len(rows) == 1
     assert rows[0].fusion_type == "fragment"
+
+
+def test_upsert_user_event_progress_returns_insert_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
+    matrix = [["fusion_id", "user_id", "event_id", "milestone_key", "status", "updated_at_utc", "partial_amount"]]
+
+    class _Worksheet:
+        async def append_row(self, *_args, **_kwargs):
+            return None
+
+    worksheet = _Worksheet()
+    appended: list[list[str]] = []
+
+    async def _afetch_values(_sheet_id: str, tab_name: str):
+        assert tab_name == "User Progress"
+        return matrix
+
+    async def _acall_with_backoff(func, *args, **kwargs):
+        if getattr(func, "__name__", "") == "append_row":
+            appended.append(args[0])
+            matrix.append(args[0])
+        return None
+
+    monkeypatch.setattr(fusion, "_resolve_tab_name", lambda key: "User Progress")
+    monkeypatch.setattr(fusion, "_sheet_id", lambda: "sheet-id")
+    monkeypatch.setattr(fusion, "afetch_values", _afetch_values)
+    monkeypatch.setattr(fusion, "aget_worksheet", AsyncMock(return_value=worksheet))
+    monkeypatch.setattr(fusion, "acall_with_backoff", _acall_with_backoff)
+
+    result = asyncio.run(
+        fusion.upsert_user_event_progress(
+            "f-1",
+            "10",
+            "e-1",
+            "done",
+            dt.datetime(2026, 4, 10, tzinfo=dt.timezone.utc),
+        )
+    )
+
+    assert result.tab_name == "User Progress"
+    assert result.headers == tuple(matrix[0])
+    assert result.row_key == ("f-1", "10", "e-1", "")
+    assert result.operation == "inserted"
+    assert result.saved is True
+    assert appended[0][4] == "done"

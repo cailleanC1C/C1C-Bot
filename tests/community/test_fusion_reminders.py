@@ -1,6 +1,5 @@
 import asyncio
 import datetime as dt
-from dataclasses import replace
 from unittest.mock import AsyncMock
 
 from modules.community.fusion import reminders
@@ -45,14 +44,12 @@ def _event(*, event_id: str, start_at: dt.datetime) -> fusion_sheets.FusionEvent
         points_needed=1000,
         is_estimated=False,
         sort_order=1,
-        embed_title="{fusion_title}: {event_label}",
-        embed_description="At {starts_at} ({starts_in}) {jump_link}",
-        embed_footer="Rewards: {reward_type}",
     )
 
 
 class _DummyChannel:
     def __init__(self) -> None:
+        self.id = 123
         self.sent = []
 
     async def send(self, *, content=None, embed=None, view=None):
@@ -70,27 +67,27 @@ def _settings(**overrides):
         start_offset_minutes=overrides.get("start_offset_minutes", 360),
         end_lookahead_hours=overrides.get("end_lookahead_hours", 24),
         upcoming_window_days=overrides.get("upcoming_window_days", 2),
-        group_events=overrides.get("group_events", False),
+        group_events=overrides.get("group_events", True),
+        grouped_post_time_utc=overrides.get("grouped_post_time_utc", "12:00"),
         include_start_events=overrides.get("include_start_events", True),
         include_ending_events=overrides.get("include_ending_events", False),
         include_upcoming_events=overrides.get("include_upcoming_events", False),
-        grouped_embed_title=overrides.get("grouped_embed_title", ""),
-        grouped_embed_description=overrides.get("grouped_embed_description", ""),
-        grouped_live_label=overrides.get("grouped_live_label", ""),
-        grouped_upcoming_label=overrides.get("grouped_upcoming_label", ""),
-        grouped_ending_label=overrides.get("grouped_ending_label", ""),
-        grouped_empty_value=overrides.get("grouped_empty_value", ""),
-        grouped_jump_label=overrides.get("grouped_jump_label", ""),
+        grouped_embed_title=overrides.get("grouped_embed_title", "{fusion_title} Summary"),
+        grouped_embed_description=overrides.get("grouped_embed_description", "Jump: {jump_link} | live={live_count} upcoming={upcoming_count}"),
+        grouped_live_label=overrides.get("grouped_live_label", "Live"),
+        grouped_upcoming_label=overrides.get("grouped_upcoming_label", "Upcoming"),
+        grouped_ending_label=overrides.get("grouped_ending_label", "Ending"),
+        grouped_empty_value=overrides.get("grouped_empty_value", "None"),
+        grouped_jump_label=overrides.get("grouped_jump_label", "Open"),
     )
 
 
-def test_start_reminder_fires_once_and_is_restart_safe(monkeypatch):
+def test_grouped_daily_reminder_posts_once_and_ignores_old_non_grouped_rows(monkeypatch):
     now = dt.datetime(2026, 4, 10, 12, 0, tzinfo=dt.timezone.utc)
     event = _event(event_id="e-start", start_at=now)
     channel = _DummyChannel()
     announcement = _DummyAnnouncementMessage("https://discord.test/jump", channel)
-
-    persisted: set[tuple[str, str, str]] = set()
+    persisted: set[tuple[str, str, str]] = {("f-1", "e-start", "start"), ("f-1", "e-pre", "prestart_6h")}
 
     async def _get_sent_keys(fusion_id: str):
         return {(event_id, reminder_type) for f_id, event_id, reminder_type in persisted if f_id == fusion_id}
@@ -98,50 +95,15 @@ def test_start_reminder_fires_once_and_is_restart_safe(monkeypatch):
     async def _mark_sent(fusion_id: str, *, event_id: str, reminder_type: str, sent_at: dt.datetime):
         persisted.add((fusion_id, event_id, reminder_type))
 
-    monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row()))
-    monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=[event]))
-    monkeypatch.setattr(fusion_sheets, "get_valid_event_timing", lambda *_args, **_kwargs: (now, now + dt.timedelta(hours=1)))
-    monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", _get_sent_keys)
-    monkeypatch.setattr(fusion_sheets, "mark_reminder_sent", _mark_sent)
-    monkeypatch.setattr(fusion_sheets, "get_fusion_reminder_settings", AsyncMock(return_value=_settings()))
-    monkeypatch.setattr(reminders, "ensure_fusion_announcement", AsyncMock(return_value=announcement))
-    monkeypatch.setattr(reminders, "build_fusion_opt_in_view", lambda _target: None)
-
-    asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now))
-    asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now))
-
-    assert len(channel.sent) == 1
-    assert channel.sent[0]["content"] is None
-    assert channel.sent[0]["view"] is None
-    embed = channel.sent[0]["embed"]
-    assert embed.title == "Mavara: Event e-start"
-    assert embed.description == "At 2026-04-10 12:00 UTC (0m) https://discord.test/jump"
-    assert embed.footer.text == "Rewards: fragments"
-    assert ("f-1", "e-start", "start") in persisted
-
-
-def test_prestart_reminder_fires_once(monkeypatch):
-    now = dt.datetime(2026, 4, 10, 6, 0, tzinfo=dt.timezone.utc)
-    event_start = now + dt.timedelta(hours=6)
-    event = _event(event_id="e-pre", start_at=event_start)
-    channel = _DummyChannel()
-    announcement = _DummyAnnouncementMessage("https://discord.test/jump", channel)
-    sent: set[tuple[str, str]] = set()
-
-    async def _get_sent_keys(_fusion_id: str):
-        return set(sent)
-
-    async def _mark_sent(_fusion_id: str, *, event_id: str, reminder_type: str, sent_at: dt.datetime):
-        sent.add((event_id, reminder_type))
-
     monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row(opt_in_role_id=777)))
     monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=[event]))
-    monkeypatch.setattr(fusion_sheets, "get_valid_event_timing", lambda *_args, **_kwargs: (event_start, event_start + dt.timedelta(hours=1)))
+    monkeypatch.setattr(fusion_sheets, "get_valid_event_timing", lambda event, **_kwargs: (event.start_at_utc, event.end_at_utc))
     monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", _get_sent_keys)
     monkeypatch.setattr(fusion_sheets, "mark_reminder_sent", _mark_sent)
     monkeypatch.setattr(fusion_sheets, "get_fusion_reminder_settings", AsyncMock(return_value=_settings()))
     monkeypatch.setattr(reminders, "ensure_fusion_announcement", AsyncMock(return_value=announcement))
     monkeypatch.setattr(reminders, "build_fusion_opt_in_view", lambda _target: "view")
+    reminders._MEMORY_SENT_KEYS.clear()
 
     asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now))
     asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now + dt.timedelta(minutes=1)))
@@ -150,178 +112,127 @@ def test_prestart_reminder_fires_once(monkeypatch):
     assert channel.sent[0]["content"] == "<@&777>"
     assert channel.sent[0]["view"] == "view"
     embed = channel.sent[0]["embed"]
-    assert embed.title == "Mavara: Event e-pre"
-    assert embed.description == "At 2026-04-10 12:00 UTC (6h) https://discord.test/jump"
-    assert embed.footer.text == "Rewards: fragments"
-    assert ("e-pre", "prestart_6h") in sent
-
-
-def test_invalid_events_skipped_and_no_role_mention_when_absent(monkeypatch):
-    now = dt.datetime(2026, 4, 10, 12, 0, tzinfo=dt.timezone.utc)
-    good = _event(event_id="good", start_at=now)
-    bad = _event(event_id="bad", start_at=now)
-    channel = _DummyChannel()
-    announcement = _DummyAnnouncementMessage("https://discord.test/jump", channel)
-
-    def _timing(event, **_kwargs):
-        if event.event_id == "bad":
-            return None
-        return (now, now + dt.timedelta(hours=1))
-
-    monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row(opt_in_role_id=None)))
-    monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=[bad, good]))
-    monkeypatch.setattr(fusion_sheets, "get_valid_event_timing", _timing)
-    monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", AsyncMock(return_value=set()))
-    monkeypatch.setattr(fusion_sheets, "mark_reminder_sent", AsyncMock())
-    monkeypatch.setattr(fusion_sheets, "get_fusion_reminder_settings", AsyncMock(return_value=_settings()))
-    monkeypatch.setattr(reminders, "ensure_fusion_announcement", AsyncMock(return_value=announcement))
-    monkeypatch.setattr(reminders, "build_fusion_opt_in_view", lambda _target: None)
-
-    asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now))
-
-    assert len(channel.sent) == 1
-    assert channel.sent[0]["content"] is None
-    assert channel.sent[0]["view"] is None
-
-
-def test_announcement_self_heals_before_sending(monkeypatch):
-    now = dt.datetime(2026, 4, 10, 12, 0, tzinfo=dt.timezone.utc)
-    event = _event(event_id="heal", start_at=now)
-    channel = _DummyChannel()
-    announcement = _DummyAnnouncementMessage("https://discord.test/jump", channel)
-    ensure = AsyncMock(return_value=announcement)
-
-    monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row()))
-    monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=[event]))
-    monkeypatch.setattr(fusion_sheets, "get_valid_event_timing", lambda *_args, **_kwargs: (now, now + dt.timedelta(hours=1)))
-    monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", AsyncMock(return_value=set()))
-    monkeypatch.setattr(fusion_sheets, "mark_reminder_sent", AsyncMock())
-    monkeypatch.setattr(fusion_sheets, "get_fusion_reminder_settings", AsyncMock(return_value=_settings()))
-    monkeypatch.setattr(reminders, "ensure_fusion_announcement", ensure)
-
-    asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now))
-
-    ensure.assert_awaited_once()
-    assert channel.sent
-
-
-def test_group_events_true_sends_one_grouped_message_with_sheet_copy(monkeypatch):
-    now = dt.datetime(2026, 4, 10, 12, 0, tzinfo=dt.timezone.utc)
-    e1 = _event(event_id="a", start_at=now)
-    channel = _DummyChannel()
-    announcement = _DummyAnnouncementMessage("https://discord.test/jump", channel)
-    monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row()))
-    monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=[e1]))
-    monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", AsyncMock(return_value=set()))
-    monkeypatch.setattr(fusion_sheets, "mark_reminder_sent", AsyncMock())
-    monkeypatch.setattr(reminders, "ensure_fusion_announcement", AsyncMock(return_value=announcement))
-    monkeypatch.setattr(reminders, "build_fusion_opt_in_view", lambda _target: None)
-    settings = _settings(
-        group_events=True,
-        include_upcoming_events=True,
-        grouped_embed_title="{fusion_title} Summary",
-        grouped_embed_description="Jump: {jump_link} | live={live_count} upcoming={upcoming_count}",
-        grouped_live_label="Sheet Live",
-        grouped_upcoming_label="Sheet Upcoming",
-        grouped_ending_label="Sheet Ending",
-        grouped_empty_value="None",
-        grouped_jump_label="Jump Label",
-    )
-    monkeypatch.setattr(fusion_sheets, "get_fusion_reminder_settings", AsyncMock(return_value=settings))
-
-    asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now))
-
-    assert len(channel.sent) == 1
-    embed = channel.sent[0]["embed"]
     assert embed.title == "Mavara Summary"
-    assert "[Jump Label](https://discord.test/jump)" in embed.description
-    names = [field.name for field in embed.fields]
-    assert names == ["Sheet Live", "Sheet Upcoming", "Sheet Ending"]
+    assert "[Open](https://discord.test/jump)" in embed.description
+    assert any(field.name == "Live" and "Event e-start" in field.value for field in embed.fields)
+    assert ("f-1", "grouped_daily:2026-04-10", "grouped_daily") in persisted
 
 
-def test_grouped_missing_grouped_jump_label_logs_and_skips(monkeypatch, caplog):
-    now = dt.datetime(2026, 4, 10, 12, 0, tzinfo=dt.timezone.utc)
-    e1 = _event(event_id="a", start_at=now)
+def test_grouped_daily_reminder_waits_until_configured_post_time(monkeypatch):
+    now = dt.datetime(2026, 4, 10, 11, 59, tzinfo=dt.timezone.utc)
+    event = _event(event_id="e-live", start_at=now - dt.timedelta(hours=1))
     channel = _DummyChannel()
     announcement = _DummyAnnouncementMessage("https://discord.test/jump", channel)
     monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row()))
-    monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=[e1]))
+    monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=[event]))
+    monkeypatch.setattr(fusion_sheets, "get_valid_event_timing", lambda event, **_kwargs: (event.start_at_utc, event.end_at_utc))
     monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", AsyncMock(return_value=set()))
     monkeypatch.setattr(fusion_sheets, "mark_reminder_sent", AsyncMock())
+    monkeypatch.setattr(fusion_sheets, "get_fusion_reminder_settings", AsyncMock(return_value=_settings(grouped_post_time_utc="12:00")))
     monkeypatch.setattr(reminders, "ensure_fusion_announcement", AsyncMock(return_value=announcement))
-    monkeypatch.setattr(reminders, "build_fusion_opt_in_view", lambda _target: None)
-    monkeypatch.setattr(
-        fusion_sheets,
-        "get_fusion_reminder_settings",
-        AsyncMock(return_value=_settings(group_events=True, grouped_embed_title="x", grouped_embed_description="y", grouped_live_label="a", grouped_upcoming_label="c", grouped_ending_label="d", grouped_empty_value="e", grouped_jump_label="")),
-    )
+    reminders._MEMORY_SENT_KEYS.clear()
+
     asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now))
+
     assert channel.sent == []
-    assert "grouped reminder skipped; missing required sheet copy fields" in caplog.text
+    fusion_sheets.mark_reminder_sent.assert_not_awaited()
 
 
-def test_grouped_event_bucket_key_changes_when_only_upcoming_changes():
-    now = dt.datetime(2026, 4, 10, 12, 0, tzinfo=dt.timezone.utc)
-    live = _event(event_id="live", start_at=now)
-    upcoming_a = _event(event_id="u-a", start_at=now + dt.timedelta(hours=2))
-    upcoming_b = _event(event_id="u-b", start_at=now + dt.timedelta(hours=3))
-
-    key_a = reminders._grouped_event_bucket_key(
-        live_events=[live],
-        upcoming_events=[upcoming_a],
-        ending_events=[],
-    )
-    key_b = reminders._grouped_event_bucket_key(
-        live_events=[live],
-        upcoming_events=[upcoming_b],
-        ending_events=[],
-    )
-
-    assert key_a != key_b
-
-
-def test_custom_reminder_copy_wins_and_interpolates(monkeypatch):
-    now = dt.datetime(2026, 4, 10, 6, 0, tzinfo=dt.timezone.utc)
-    event_start = now + dt.timedelta(hours=6)
-    event = _event(event_id="e-custom", start_at=event_start)
-    event = replace(event, embed_title="{fusion_title}: {event_label}", embed_description="Starts at {starts_at} ({starts_in}) for {reward_type}", embed_footer="Footer {event_label}")
+def test_grouped_daily_reminder_posts_again_next_day(monkeypatch):
+    first = dt.datetime(2026, 4, 10, 12, 0, tzinfo=dt.timezone.utc)
+    second = first + dt.timedelta(days=1)
+    event = _event(event_id="e-live", start_at=first)
     channel = _DummyChannel()
     announcement = _DummyAnnouncementMessage("https://discord.test/jump", channel)
+    persisted: set[tuple[str, str]] = set()
 
-    monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row(opt_in_role_id=777)))
+    async def _get_sent_keys(_fusion_id: str):
+        return set(persisted)
+
+    async def _mark_sent(_fusion_id: str, *, event_id: str, reminder_type: str, sent_at: dt.datetime):
+        persisted.add((event_id, reminder_type))
+
+    monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row()))
     monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=[event]))
-    monkeypatch.setattr(fusion_sheets, "get_valid_event_timing", lambda *_args, **_kwargs: (event_start, event_start + dt.timedelta(hours=1)))
-    monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", AsyncMock(return_value=set()))
-    monkeypatch.setattr(fusion_sheets, "mark_reminder_sent", AsyncMock())
+    monkeypatch.setattr(fusion_sheets, "get_valid_event_timing", lambda _event, **_kwargs: (first, second + dt.timedelta(hours=2)))
+    monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", _get_sent_keys)
+    monkeypatch.setattr(fusion_sheets, "mark_reminder_sent", _mark_sent)
     monkeypatch.setattr(fusion_sheets, "get_fusion_reminder_settings", AsyncMock(return_value=_settings()))
     monkeypatch.setattr(reminders, "ensure_fusion_announcement", AsyncMock(return_value=announcement))
-    monkeypatch.setattr(reminders, "build_fusion_opt_in_view", lambda _target: "view")
+    monkeypatch.setattr(reminders, "build_fusion_opt_in_view", lambda _target: None)
+    reminders._MEMORY_SENT_KEYS.clear()
 
-    asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now))
+    asyncio.run(reminders.process_fusion_reminders(bot=object(), now=first))
+    asyncio.run(reminders.process_fusion_reminders(bot=object(), now=second))
 
-    embed = channel.sent[0]["embed"]
-    assert embed.title == "Mavara: Event e-custom"
-    assert embed.description == "Starts at 2026-04-10 12:00 UTC (6h) for fragments"
-    assert embed.footer.text == "Footer Event e-custom"
+    assert len(channel.sent) == 2
+    assert ("grouped_daily:2026-04-10", "grouped_daily") in persisted
+    assert ("grouped_daily:2026-04-11", "grouped_daily") in persisted
 
 
-def test_missing_required_copy_skips_reminder_and_logs_warning(monkeypatch, caplog):
-    now = dt.datetime(2026, 4, 10, 6, 0, tzinfo=dt.timezone.utc)
-    event_start = now + dt.timedelta(hours=6)
-    event = _event(event_id="e-empty", start_at=event_start)
-    event = replace(event, embed_title="", embed_description="", embed_footer="")
+def test_grouped_missing_copy_logs_and_skips(monkeypatch, caplog):
+    now = dt.datetime(2026, 4, 10, 12, 0, tzinfo=dt.timezone.utc)
+    event = _event(event_id="e-empty", start_at=now)
     channel = _DummyChannel()
     announcement = _DummyAnnouncementMessage("https://discord.test/jump", channel)
     monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row()))
     monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=[event]))
-    monkeypatch.setattr(fusion_sheets, "get_valid_event_timing", lambda *_args, **_kwargs: (event_start, event_start + dt.timedelta(hours=1)))
+    monkeypatch.setattr(fusion_sheets, "get_valid_event_timing", lambda event, **_kwargs: (event.start_at_utc, event.end_at_utc))
     monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", AsyncMock(return_value=set()))
     monkeypatch.setattr(fusion_sheets, "mark_reminder_sent", AsyncMock())
-    monkeypatch.setattr(fusion_sheets, "get_fusion_reminder_settings", AsyncMock(return_value=_settings()))
+    monkeypatch.setattr(fusion_sheets, "get_fusion_reminder_settings", AsyncMock(return_value=_settings(grouped_embed_title="")))
     monkeypatch.setattr(reminders, "ensure_fusion_announcement", AsyncMock(return_value=announcement))
     monkeypatch.setattr(reminders, "build_fusion_opt_in_view", lambda _target: None)
+    reminders._MEMORY_SENT_KEYS.clear()
 
     asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now))
 
     assert channel.sent == []
     assert "missing required sheet copy fields" in caplog.text
+
+
+def test_startup_summary_reports_grouped_daily_status(monkeypatch):
+    now = dt.datetime(2026, 4, 10, 11, 30, tzinfo=dt.timezone.utc)
+    due_event = _event(event_id="due", start_at=now)
+
+    monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row()))
+    monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=[due_event]))
+    monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", AsyncMock(return_value=set()))
+    monkeypatch.setattr(fusion_sheets, "get_last_reminder_sent_at", AsyncMock(return_value=dt.datetime(2026, 4, 9, 12, tzinfo=dt.timezone.utc)))
+    monkeypatch.setattr(fusion_sheets, "get_fusion_reminder_settings", AsyncMock(return_value=_settings(grouped_post_time_utc="12:00")))
+    monkeypatch.setattr(
+        fusion_sheets,
+        "get_valid_event_timing",
+        lambda event, **_kwargs: (event.start_at_utc, event.end_at_utc),
+    )
+
+    lines = asyncio.run(
+        reminders.collect_fusion_reminder_startup_summary(object(), scheduler_started=True, now=now)
+    )
+
+    assert "• scheduler_started=yes" in lines
+    assert "• enabled=yes" in lines
+    assert "• configured_post_time_utc=12:00" in lines
+    assert any(line.startswith("• next_grouped_due=2026-04-10 12:00 UTC") for line in lines)
+    assert "• last_grouped_sent=2026-04-09 12:00 UTC" in lines
+    assert "• grouped_events=1" in lines
+
+
+def test_non_grouped_config_does_not_send_per_event_reminders(monkeypatch):
+    now = dt.datetime(2026, 4, 10, 12, 0, tzinfo=dt.timezone.utc)
+    event = _event(event_id="e-start", start_at=now)
+    channel = _DummyChannel()
+    announcement = _DummyAnnouncementMessage("https://discord.test/jump", channel)
+    monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row()))
+    monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=[event]))
+    monkeypatch.setattr(fusion_sheets, "get_valid_event_timing", lambda event, **_kwargs: (event.start_at_utc, event.end_at_utc))
+    monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", AsyncMock(return_value=set()))
+    monkeypatch.setattr(fusion_sheets, "mark_reminder_sent", AsyncMock())
+    monkeypatch.setattr(fusion_sheets, "get_fusion_reminder_settings", AsyncMock(return_value=_settings(group_events=False)))
+    monkeypatch.setattr(reminders, "ensure_fusion_announcement", AsyncMock(return_value=announcement))
+    reminders._MEMORY_SENT_KEYS.clear()
+
+    asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now))
+
+    assert channel.sent == []
+    fusion_sheets.mark_reminder_sent.assert_not_awaited()
