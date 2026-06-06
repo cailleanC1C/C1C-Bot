@@ -125,6 +125,15 @@ class FusionProgressSaveResult:
 
 
 @dataclass(frozen=True, slots=True)
+class FusionReminderSettingSource:
+    tab_name: str = ""
+    key_header: str = ""
+    value_header: str = ""
+    raw_value: str = ""
+    duplicate_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class FusionReminderSettings:
     start_offset_minutes: int = 360
     end_lookahead_hours: int = 24
@@ -310,8 +319,14 @@ def _parse_milestones(value: object, *, fusion_id: str, event_id: str) -> tuple[
     return tuple(parsed)
 
 def _parse_bool(value: object) -> bool:
-    text = str(value or "").strip().lower()
-    return text in {"1", "true", "yes", "y"}
+    if isinstance(value, bool):
+        return value
+    text = ("" if value is None else str(value)).strip().casefold()
+    if text in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    return False
 
 
 def _parse_nonnegative_int(value: object, default: int) -> int:

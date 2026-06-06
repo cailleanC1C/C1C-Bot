@@ -193,6 +193,10 @@ def test_get_fusion_reminder_settings_reads_configured_tab(monkeypatch: pytest.M
     monkeypatch.setattr(fusion_sheets, "afetch_values", _afetch_values)
     settings = asyncio.run(fusion_sheets.get_fusion_reminder_settings())
     assert settings.group_events is True
+    assert settings.group_events_source.tab_name == "FusionReminderSettings"
+    assert settings.group_events_source.key_header == "setting_key"
+    assert settings.group_events_source.value_header == "setting_value"
+    assert settings.group_events_source.raw_value == "TRUE"
     assert settings.grouped_post_time_utc == "12:30"
     assert settings.upcoming_window_days == 3
     assert settings.include_upcoming_events is True
@@ -258,6 +262,17 @@ def test_get_fusion_reminder_settings_requires_production_headers(monkeypatch: p
 
     with pytest.raises(RuntimeError, match="setting_key"):
         asyncio.run(fusion_sheets.get_fusion_reminder_settings())
+
+
+def test_fusion_reminder_bool_parser_accepts_sheet_true_false_values():
+    assert fusion_sheets._parse_bool(True) is True
+    assert fusion_sheets._parse_bool(False) is False
+    assert fusion_sheets._parse_bool("TRUE") is True
+    assert fusion_sheets._parse_bool("FALSE") is False
+    assert fusion_sheets._parse_bool("yes") is True
+    assert fusion_sheets._parse_bool("1") is True
+    assert fusion_sheets._parse_bool("0") is False
+    assert fusion_sheets._parse_bool("") is False
 
 
 def test_load_fusion_events_reads_optional_embed_copy_columns(monkeypatch: pytest.MonkeyPatch):
