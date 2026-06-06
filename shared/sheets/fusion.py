@@ -159,6 +159,7 @@ class FusionReminderSettings:
     settings_raw_types: Mapping[str, str] = field(default_factory=dict)
     settings_raw_key_names: Mapping[str, str] = field(default_factory=dict)
     settings_cache_status: str = "not_cached"
+    group_events_source: FusionReminderSettingSource = field(default_factory=FusionReminderSettingSource)
 
 
 def _resolve_tab_name(key: str) -> str:
@@ -931,6 +932,12 @@ async def get_fusion_reminder_settings(*, now: dt.datetime | None = None) -> Fus
         settings_raw_types=raw_types,
         settings_raw_key_names=raw_key_names,
         settings_cache_status="not_cached",
+        group_events_source=FusionReminderSettingSource(
+            tab_name=tab_name,
+            key_header=key_header,
+            value_header=value_header,
+            raw_value=str(parsed.get("group_events") or ""),
+        ),
     )
 
 

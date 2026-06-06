@@ -80,6 +80,21 @@ def _settings(**overrides):
         grouped_ending_label=overrides.get("grouped_ending_label", "Ending"),
         grouped_empty_value=overrides.get("grouped_empty_value", "None"),
         grouped_jump_label=overrides.get("grouped_jump_label", "Open"),
+        settings_raw_values=overrides.get(
+            "settings_raw_values",
+            {
+                "group_events": "TRUE" if overrides.get("group_events", True) else "FALSE",
+                "grouped_daily_post_time": overrides.get("grouped_daily_post_time", "13:00"),
+            },
+        ),
+        settings_raw_types=overrides.get(
+            "settings_raw_types",
+            {"group_events": "str", "grouped_daily_post_time": "str"},
+        ),
+        settings_raw_key_names=overrides.get(
+            "settings_raw_key_names",
+            {"group_events": "group_events", "grouped_daily_post_time": "grouped_daily_post_time"},
+        ),
     )
 
 
@@ -213,10 +228,13 @@ def test_startup_summary_reports_grouped_daily_status(monkeypatch):
 
     assert "• scheduler_started=yes" in lines
     assert "• enabled=yes" in lines
-    assert "• configured_post_time_utc=12:00" in lines
-    assert any(line.startswith("• next_grouped_due=2026-04-10 12:00 UTC") for line in lines)
-    assert "• last_grouped_sent=2026-04-09 12:00 UTC" in lines
-    assert "• grouped_events=1" in lines
+    assert "• configured_local_post_time=13:00 Europe/Vienna" in lines
+    assert "• parsed_utc_post_time=12:00" in lines
+    assert "• resolved channel=no thread=no role=n/a" in lines
+    assert any(line.startswith("• next_due=2026-04-10 12:00 UTC") for line in lines)
+    assert not any(line.startswith("• settings_") for line in lines)
+    assert not any(line.startswith("• raw_grouped_reminder_settings=") for line in lines)
+    assert not any(line.startswith("• skipped=") for line in lines)
 
 
 def test_non_grouped_config_does_not_send_per_event_reminders(monkeypatch):
