@@ -44,6 +44,7 @@ _REQUIRED_COLUMNS: tuple[str, ...] = (
     "button_label_opt_in",
     "button_label_opt_out",
     "last_sent_for_reset_utc",
+    "next_scheduled_post_utc",
     "last_message_id",
 )
 
@@ -170,6 +171,7 @@ async def _load_reset_reminder_records(*, active_only: bool) -> tuple[str, dict[
                 button_label_opt_in=_cell(row, header_map["button_label_opt_in"]),
                 button_label_opt_out=_cell(row, header_map["button_label_opt_out"]),
                 last_sent_for_reset_utc=_parse_dt_optional(_cell(row, header_map["last_sent_for_reset_utc"])),
+                next_scheduled_post_utc=_parse_dt_optional(_cell(row, header_map["next_scheduled_post_utc"])),
                 last_message_id=_parse_optional_int(_cell(row, header_map["last_message_id"])),
             )
             records.append(_ResetReminderRecord(row_number=row_number, reminder=reminder))
@@ -221,18 +223,37 @@ def _utc_now(now: dt.datetime | None = None) -> dt.datetime:
     return now.astimezone(dt.timezone.utc)
 
 
-def _next_reset(reference_date_utc: dt.datetime, cycle_days: int, now_utc: dt.datetime) -> dt.datetime:
+def _reminder_time(reset_time_utc: dt.datetime, lead_minutes: int) -> dt.datetime:
+    return reset_time_utc - dt.timedelta(minutes=lead_minutes)
+
+
+def _reset_cycle_for_reminder(
+    reference_date_utc: dt.datetime,
+    cycle_days: int,
+    lead_minutes: int,
+    now_utc: dt.datetime,
+) -> dt.datetime:
     cycle = dt.timedelta(days=cycle_days)
-    delta = now_utc - reference_date_utc
-    cycles_passed = math.floor(delta / cycle)
-    return reference_date_utc + (cycles_passed + 1) * cycle
+    first_reminder_time = _reminder_time(reference_date_utc, lead_minutes)
+    if now_utc < first_reminder_time:
+        return reference_date_utc
+    cycles_passed = math.floor((now_utc - first_reminder_time) / cycle)
+    return reference_date_utc + cycles_passed * cycle
+
+
+def _following_reset(reset_time_utc: dt.datetime, cycle_days: int) -> dt.datetime:
+    return reset_time_utc + dt.timedelta(days=cycle_days)
 
 
 async def register_persistent_reset_views(bot: commands.Bot) -> None:
     if not _is_feature_enabled():
         log.info("reset reminders disabled via feature toggle; skipping persistent view registration")
         return
-    _, _, records = await _load_reset_reminder_records(active_only=True)
+    try:
+        _, _, records = await _load_reset_reminder_records(active_only=True)
+    except Exception:
+        log.exception("failed to load reset reminders for persistent views; skipping reset reminder views")
+        return
     for record in records:
         reminder = record.reminder
         bot.add_view(
@@ -244,12 +265,27 @@ async def register_persistent_reset_views(bot: commands.Bot) -> None:
         )
 
 
+async def _send_ops_log(message: str) -> None:
+    try:
+        await rt.send_log_message(message)
+    except Exception:
+        log.warning("failed to send reset reminder ops alert", exc_info=True)
+
+
 async def _resolve_target_channel(bot: commands.Bot, reminder: ResetReminder) -> discord.abc.Messageable | None:
     base_channel = bot.get_channel(reminder.channel_id)
     if base_channel is None:
         try:
             base_channel = await bot.fetch_channel(reminder.channel_id)
-        except Exception:
+        except Exception as exc:
+            log.exception(
+                "reset reminder target channel fetch failed",
+                extra={"reset_id": reminder.reset_id, "channel_id": reminder.channel_id},
+            )
+            await _send_ops_log(
+                "⚠️ Reset reminder target fetch failed "
+                f"• reset_id={reminder.reset_id} • channel_id={reminder.channel_id} • error={type(exc).__name__}"
+            )
             return None
 
     if reminder.thread_id:
@@ -257,15 +293,61 @@ async def _resolve_target_channel(bot: commands.Bot, reminder: ResetReminder) ->
         if thread is None:
             try:
                 thread = await bot.fetch_channel(reminder.thread_id)
-            except Exception:
+            except Exception as exc:
+                log.exception(
+                    "reset reminder target thread fetch failed",
+                    extra={
+                        "reset_id": reminder.reset_id,
+                        "channel_id": reminder.channel_id,
+                        "thread_id": reminder.thread_id,
+                    },
+                )
+                await _send_ops_log(
+                    "⚠️ Reset reminder thread fetch failed "
+                    f"• reset_id={reminder.reset_id} • channel_id={reminder.channel_id} "
+                    f"• thread_id={reminder.thread_id} • error={type(exc).__name__}"
+                )
                 return None
         if isinstance(thread, discord.abc.Messageable):
             return thread
+        log.warning(
+            "reset reminder target thread is not messageable",
+            extra={"reset_id": reminder.reset_id, "channel_id": reminder.channel_id, "thread_id": reminder.thread_id},
+        )
+        await _send_ops_log(
+            "⚠️ Reset reminder thread is not messageable "
+            f"• reset_id={reminder.reset_id} • channel_id={reminder.channel_id} • thread_id={reminder.thread_id}"
+        )
         return None
 
     if isinstance(base_channel, discord.abc.Messageable):
         return base_channel
+    log.warning(
+        "reset reminder target channel is not messageable",
+        extra={"reset_id": reminder.reset_id, "channel_id": reminder.channel_id},
+    )
+    await _send_ops_log(
+        "⚠️ Reset reminder channel is not messageable "
+        f"• reset_id={reminder.reset_id} • channel_id={reminder.channel_id}"
+    )
     return None
+
+
+async def _update_next_scheduled_post(
+    *,
+    tab_name: str,
+    header_map: dict[str, int],
+    row_number: int,
+    reminder_time: dt.datetime,
+) -> None:
+    worksheet = await aget_worksheet(_sheet_id(), tab_name)
+    next_col = _column_label(header_map["next_scheduled_post_utc"])
+    await acall_with_backoff(
+        worksheet.update,
+        f"{next_col}{row_number}",
+        [[reminder_time.astimezone(dt.timezone.utc).isoformat()]],
+        value_input_option="RAW",
+    )
 
 
 async def _update_row_after_send(
@@ -273,18 +355,32 @@ async def _update_row_after_send(
     tab_name: str,
     header_map: dict[str, int],
     row_number: int,
-    next_reset: dt.datetime,
+    reset_time: dt.datetime,
+    next_scheduled_post: dt.datetime,
     message_id: int,
 ) -> None:
     worksheet = await aget_worksheet(_sheet_id(), tab_name)
 
     sent_col = _column_label(header_map["last_sent_for_reset_utc"])
+    next_col = _column_label(header_map["next_scheduled_post_utc"])
     message_col = _column_label(header_map["last_message_id"])
 
     await acall_with_backoff(
         worksheet.update,
-        f"{sent_col}{row_number}:{message_col}{row_number}",
-        [[next_reset.astimezone(dt.timezone.utc).isoformat(), str(message_id)]],
+        f"{sent_col}{row_number}",
+        [[reset_time.astimezone(dt.timezone.utc).isoformat()]],
+        value_input_option="RAW",
+    )
+    await acall_with_backoff(
+        worksheet.update,
+        f"{next_col}{row_number}",
+        [[next_scheduled_post.astimezone(dt.timezone.utc).isoformat()]],
+        value_input_option="RAW",
+    )
+    await acall_with_backoff(
+        worksheet.update,
+        f"{message_col}{row_number}",
+        [[str(message_id)]],
         value_input_option="RAW",
     )
 
@@ -310,8 +406,12 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
 
         try:
             tab_name, header_map, records = await _load_reset_reminder_records(active_only=True)
-        except Exception:
-            log.exception("failed to load reset reminders")
+        except Exception as exc:
+            log.exception("failed to load reset reminders; scheduler tick skipped")
+            await _send_ops_log(
+                "⚠️ Reset reminders failed to load; scheduler tick skipped "
+                f"• error={type(exc).__name__}: {str(exc)[:180]}"
+            )
             return
 
         if not records:
@@ -324,9 +424,6 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                 log.warning("reset reminder skipped; cycle_days must be > 0", extra={"reset_id": reminder.reset_id})
                 continue
 
-            if reminder.reference_date_utc > now_utc:
-                continue
-
             if reminder.role_id <= 0 or reminder.channel_id <= 0:
                 log.warning(
                     "reset reminder skipped; missing role/channel",
@@ -335,21 +432,68 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                 continue
 
             try:
-                next_reset = _next_reset(reminder.reference_date_utc, reminder.cycle_days, now_utc)
+                reset_time = _reset_cycle_for_reminder(
+                    reminder.reference_date_utc,
+                    reminder.cycle_days,
+                    reminder.lead_minutes,
+                    now_utc,
+                )
+                reminder_time = _reminder_time(reset_time, reminder.lead_minutes)
             except Exception:
                 log.exception("reset reminder skipped; failed to compute cycle", extra={"reset_id": reminder.reset_id})
                 continue
 
-            trigger_time = next_reset - dt.timedelta(minutes=reminder.lead_minutes)
-            if now_utc < trigger_time:
+            if reminder.last_sent_for_reset_utc == reset_time:
+                following_reminder_time = _reminder_time(
+                    _following_reset(reset_time, reminder.cycle_days),
+                    reminder.lead_minutes,
+                )
+                if reminder.next_scheduled_post_utc != following_reminder_time:
+                    try:
+                        await _update_next_scheduled_post(
+                            tab_name=tab_name,
+                            header_map=header_map,
+                            row_number=record.row_number,
+                            reminder_time=following_reminder_time,
+                        )
+                    except Exception:
+                        log.exception(
+                            "reset reminder next scheduled update failed",
+                            extra={"reset_id": reminder.reset_id, "row_number": record.row_number},
+                        )
                 continue
 
-            if reminder.last_sent_for_reset_utc == next_reset:
+            if reminder.next_scheduled_post_utc != reminder_time:
+                try:
+                    await _update_next_scheduled_post(
+                        tab_name=tab_name,
+                        header_map=header_map,
+                        row_number=record.row_number,
+                        reminder_time=reminder_time,
+                    )
+                except Exception:
+                    log.exception(
+                        "reset reminder next scheduled update failed",
+                        extra={"reset_id": reminder.reset_id, "row_number": record.row_number},
+                    )
+
+            if now_utc < reminder_time:
                 continue
 
             target = await _resolve_target_channel(bot, reminder)
             if target is None:
-                log.warning("reset reminder skipped; target channel not found", extra={"reset_id": reminder.reset_id})
+                log.warning(
+                    "reset reminder skipped; target channel/thread not found",
+                    extra={
+                        "reset_id": reminder.reset_id,
+                        "channel_id": reminder.channel_id,
+                        "thread_id": reminder.thread_id,
+                    },
+                )
+                await _send_ops_log(
+                    "⚠️ Reset reminder target unavailable "
+                    f"• reset_id={reminder.reset_id} • channel_id={reminder.channel_id} • thread_id={reminder.thread_id or '-'}"
+                )
                 continue
 
             if reminder.last_message_id:
@@ -366,7 +510,7 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                 title=reminder.embed_title or reminder.label,
                 description=reminder.embed_description,
                 color=get_embed_colour("community"),
-                timestamp=next_reset,
+                timestamp=reset_time,
             )
             if reminder.embed_footer:
                 embed.set_footer(text=reminder.embed_footer)
@@ -383,16 +527,33 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                     embed=embed,
                     view=view,
                 )
-            except Exception:
-                log.exception("reset reminder send failed", extra={"reset_id": reminder.reset_id})
+            except Exception as exc:
+                log.exception(
+                    "reset reminder send failed",
+                    extra={
+                        "reset_id": reminder.reset_id,
+                        "channel_id": reminder.channel_id,
+                        "thread_id": reminder.thread_id,
+                        "reset_time": reset_time.isoformat(),
+                    },
+                )
+                await _send_ops_log(
+                    "⚠️ Reset reminder send failed "
+                    f"• reset_id={reminder.reset_id} • channel_id={reminder.channel_id} "
+                    f"• thread_id={reminder.thread_id or '-'} • reset_time={reset_time.isoformat()} "
+                    f"• error={type(exc).__name__}"
+                )
                 continue
 
+            following_reset = _following_reset(reset_time, reminder.cycle_days)
+            following_reminder_time = _reminder_time(following_reset, reminder.lead_minutes)
             try:
                 await _update_row_after_send(
                     tab_name=tab_name,
                     header_map=header_map,
                     row_number=record.row_number,
-                    next_reset=next_reset,
+                    reset_time=reset_time,
+                    next_scheduled_post=following_reminder_time,
                     message_id=message.id,
                 )
             except Exception:

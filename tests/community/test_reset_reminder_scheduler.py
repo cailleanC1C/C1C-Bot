@@ -109,19 +109,21 @@ def test_process_reset_reminder_sends_once_and_updates_sheet(monkeypatch) -> Non
         button_label_opt_in="Opt in",
         button_label_opt_out="Opt out",
         last_sent_for_reset_utc=None,
+        next_scheduled_post_utc=None,
         last_message_id=111,
     )
     record = scheduler._ResetReminderRecord(row_number=7, reminder=reminder)
     updates = []
 
     async def _load(*, active_only: bool):
-        return "ResetTab", {"last_sent_for_reset_utc": 14, "last_message_id": 15}, [record]
+        return "ResetTab", {"last_sent_for_reset_utc": 14, "next_scheduled_post_utc": 15, "last_message_id": 16}, [record]
 
     async def _update(**kwargs):
         updates.append(kwargs)
 
     monkeypatch.setattr(scheduler, "_load_reset_reminder_records", _load)
     monkeypatch.setattr(scheduler, "_update_row_after_send", _update)
+    monkeypatch.setattr(scheduler, "_update_next_scheduled_post", _update)
     monkeypatch.setattr(scheduler, "_is_feature_enabled", lambda: True)
 
     channel = _DummyChannel()
@@ -137,8 +139,9 @@ def test_process_reset_reminder_sends_once_and_updates_sheet(monkeypatch) -> Non
     assert channel.last_message.deleted is True
     assert len(channel.sent) == 1
     assert channel.sent[0]["content"] == "<@&999>"
-    assert len(updates) == 1
+    assert len(updates) == 2
     assert updates[0]["row_number"] == 7
+    assert updates[-1]["row_number"] == 7
 
 
 def test_process_reset_reminder_dedupes_by_last_sent(monkeypatch) -> None:
@@ -160,16 +163,20 @@ def test_process_reset_reminder_dedupes_by_last_sent(monkeypatch) -> None:
         button_label_opt_in="Opt in",
         button_label_opt_out="Opt out",
         last_sent_for_reset_utc=next_reset,
+        next_scheduled_post_utc=dt.datetime(2026, 6, 21, 23, 0, tzinfo=dt.timezone.utc),
         last_message_id=111,
     )
     record = scheduler._ResetReminderRecord(row_number=7, reminder=reminder)
     channel = _DummyChannel()
     updates = []
     monkeypatch.setattr(scheduler, "_is_feature_enabled", lambda: True)
-    monkeypatch.setattr(scheduler, "_next_reset", lambda *_args: next_reset)
-    monkeypatch.setattr(scheduler, "_load_reset_reminder_records", lambda *, active_only: asyncio.sleep(0, result=("ResetTab", {"last_sent_for_reset_utc": 14, "last_message_id": 15}, [record])))
+    monkeypatch.setattr(scheduler, "_load_reset_reminder_records", lambda *, active_only: asyncio.sleep(0, result=("ResetTab", {"last_sent_for_reset_utc": 14, "next_scheduled_post_utc": 15, "last_message_id": 16}, [record])))
     monkeypatch.setattr(scheduler, "_resolve_target_channel", lambda *_args: asyncio.sleep(0, result=channel))
-    monkeypatch.setattr(scheduler, "_update_row_after_send", lambda **kwargs: updates.append(kwargs))
+    async def _update(**kwargs):
+        updates.append(kwargs)
+
+    monkeypatch.setattr(scheduler, "_update_row_after_send", _update)
+    monkeypatch.setattr(scheduler, "_update_next_scheduled_post", _update)
     bot = _DummyBot(channel)
     asyncio.run(scheduler.process_reset_reminders(bot, now=now))
     assert channel.sent == []
@@ -204,27 +211,32 @@ def test_process_reset_reminder_delete_failure_does_not_block_send(monkeypatch) 
         button_label_opt_in="Opt in",
         button_label_opt_out="Opt out",
         last_sent_for_reset_utc=None,
+        next_scheduled_post_utc=None,
         last_message_id=111,
     )
     record = scheduler._ResetReminderRecord(row_number=7, reminder=reminder)
     updates = []
     monkeypatch.setattr(scheduler, "_is_feature_enabled", lambda: True)
-    monkeypatch.setattr(scheduler, "_load_reset_reminder_records", lambda *, active_only: asyncio.sleep(0, result=("ResetTab", {"last_sent_for_reset_utc": 14, "last_message_id": 15}, [record])))
-    monkeypatch.setattr(scheduler, "_update_row_after_send", lambda **kwargs: updates.append(kwargs))
+    monkeypatch.setattr(scheduler, "_load_reset_reminder_records", lambda *, active_only: asyncio.sleep(0, result=("ResetTab", {"last_sent_for_reset_utc": 14, "next_scheduled_post_utc": 15, "last_message_id": 16}, [record])))
+    async def _update(**kwargs):
+        updates.append(kwargs)
+
+    monkeypatch.setattr(scheduler, "_update_row_after_send", _update)
+    monkeypatch.setattr(scheduler, "_update_next_scheduled_post", _update)
     channel = _DeleteFailChannel()
     monkeypatch.setattr(scheduler, "_resolve_target_channel", lambda *_args: asyncio.sleep(0, result=channel))
     bot = _DummyBot(channel)
     asyncio.run(scheduler.process_reset_reminders(bot, now=now))
     assert len(channel.sent) == 1
-    assert len(updates) == 1
+    assert len(updates) == 2
 
 
 def test_invalid_rows_skipped_without_crash(monkeypatch) -> None:
     async def _fetch_values(_sheet_id, _tab):
         return [
-            ["reset_id", "label", "status", "reference_date_utc", "cycle_days", "lead_minutes", "role_id", "channel_id", "thread_id", "embed_title", "embed_description", "embed_footer", "button_label_opt_in", "button_label_opt_out", "last_sent_for_reset_utc", "last_message_id"],
-            ["doom", "Doom", "active", "not-a-date", "30", "60", "1", "2", "", "", "", "", "Opt in", "Opt out", "", ""],
-            ["grim", "Grim", "active", "2026-01-01T00:00:00Z", "30", "60", "1", "2", "", "", "", "", "Opt in", "Opt out", "", ""],
+            ["reset_id", "label", "status", "reference_date_utc", "cycle_days", "lead_minutes", "role_id", "channel_id", "thread_id", "embed_title", "embed_description", "embed_footer", "button_label_opt_in", "button_label_opt_out", "last_sent_for_reset_utc", "next_scheduled_post_utc", "last_message_id"],
+            ["doom", "Doom", "active", "not-a-date", "30", "60", "1", "2", "", "", "", "", "Opt in", "Opt out", "", "", ""],
+            ["grim", "Grim", "active", "2026-01-01T00:00:00Z", "30", "60", "1", "2", "", "", "", "", "Opt in", "Opt out", "", "", ""],
         ]
 
     monkeypatch.setattr(scheduler, "afetch_values", _fetch_values)
@@ -274,6 +286,7 @@ def test_register_persistent_views_active_rows(monkeypatch) -> None:
         button_label_opt_in="Opt in",
         button_label_opt_out="Opt out",
         last_sent_for_reset_utc=None,
+        next_scheduled_post_utc=None,
         last_message_id=None,
     )
     record = scheduler._ResetReminderRecord(row_number=2, reminder=reminder)
@@ -291,3 +304,168 @@ def test_register_persistent_views_active_rows(monkeypatch) -> None:
     assert view.timeout is None
     custom_ids = [child.custom_id for child in view.children]
     assert custom_ids == ["reset_reminder:999:in", "reset_reminder:999:out"]
+
+
+def _make_reset_reminder(**overrides):
+    values = {
+        "reset_id": "cursed_city",
+        "label": "Cursed City",
+        "status": "active",
+        "reference_date_utc": dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc),
+        "cycle_days": 28,
+        "lead_minutes": 0,
+        "role_id": 999,
+        "channel_id": 123,
+        "thread_id": None,
+        "embed_title": "",
+        "embed_description": "Reset incoming",
+        "embed_footer": "footer",
+        "button_label_opt_in": "Opt in",
+        "button_label_opt_out": "Opt out",
+        "last_sent_for_reset_utc": None,
+        "next_scheduled_post_utc": None,
+        "last_message_id": None,
+    }
+    values.update(overrides)
+    return scheduler.ResetReminder(**values)
+
+
+def _run_reset_process(monkeypatch, reminder, now):
+    record = scheduler._ResetReminderRecord(row_number=7, reminder=reminder)
+    channel = _DummyChannel()
+    updates = []
+
+    async def _load(*, active_only: bool):
+        return (
+            "ResetTab",
+            {"last_sent_for_reset_utc": 14, "next_scheduled_post_utc": 15, "last_message_id": 16},
+            [record],
+        )
+
+    async def _update(**kwargs):
+        updates.append(kwargs)
+
+    async def _resolve_target(_bot, resolved_reminder):
+        assert resolved_reminder.thread_id is reminder.thread_id
+        return channel
+
+    monkeypatch.setattr(scheduler, "_is_feature_enabled", lambda: True)
+    monkeypatch.setattr(scheduler, "_load_reset_reminder_records", _load)
+    monkeypatch.setattr(scheduler, "_update_next_scheduled_post", _update)
+    monkeypatch.setattr(scheduler, "_update_row_after_send", _update)
+    monkeypatch.setattr(scheduler, "_resolve_target_channel", _resolve_target)
+    bot = _DummyBot(channel)
+    asyncio.run(scheduler.process_reset_reminders(bot, now=now))
+    return channel, updates
+
+
+def test_next_scheduled_post_written_from_reference_minus_lead(monkeypatch) -> None:
+    reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=60)
+
+    channel, updates = _run_reset_process(
+        monkeypatch,
+        reminder,
+        dt.datetime(2026, 5, 29, 8, 0, tzinfo=dt.timezone.utc),
+    )
+
+    assert channel.sent == []
+    assert updates == [
+        {
+            "tab_name": "ResetTab",
+            "header_map": {"last_sent_for_reset_utc": 14, "next_scheduled_post_utc": 15, "last_message_id": 16},
+            "row_number": 7,
+            "reminder_time": dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc),
+        }
+    ]
+
+
+def test_lead_zero_posts_at_reset_time(monkeypatch) -> None:
+    reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=0)
+
+    channel, updates = _run_reset_process(monkeypatch, reminder, reference)
+
+    assert len(channel.sent) == 1
+    assert updates[-1]["reset_time"] == reference
+    assert updates[-1]["next_scheduled_post"] == dt.datetime(2026, 6, 26, 10, 0, tzinfo=dt.timezone.utc)
+
+
+def test_lead_zero_posts_after_reset_time_when_not_already_sent(monkeypatch) -> None:
+    reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=0)
+
+    channel, updates = _run_reset_process(
+        monkeypatch,
+        reminder,
+        dt.datetime(2026, 5, 29, 10, 5, tzinfo=dt.timezone.utc),
+    )
+
+    assert len(channel.sent) == 1
+    assert updates[-1]["reset_time"] == reference
+
+
+def test_positive_lead_posts_before_reset_time(monkeypatch) -> None:
+    reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=60)
+
+    channel, updates = _run_reset_process(
+        monkeypatch,
+        reminder,
+        dt.datetime(2026, 5, 29, 9, 30, tzinfo=dt.timezone.utc),
+    )
+
+    assert len(channel.sent) == 1
+    assert updates[-1]["reset_time"] == reference
+    assert updates[-1]["next_scheduled_post"] == dt.datetime(2026, 6, 26, 9, 0, tzinfo=dt.timezone.utc)
+
+
+def test_successful_post_updates_last_sent_and_next_scheduled(monkeypatch) -> None:
+    reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=0)
+
+    _channel, updates = _run_reset_process(monkeypatch, reminder, reference)
+
+    assert updates[-1]["reset_time"] == reference
+    assert updates[-1]["next_scheduled_post"] == dt.datetime(2026, 6, 26, 10, 0, tzinfo=dt.timezone.utc)
+    assert updates[-1]["message_id"] == 222
+
+
+def test_same_last_sent_suppresses_duplicate(monkeypatch) -> None:
+    reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
+    following = dt.datetime(2026, 6, 26, 10, 0, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(
+        reference_date_utc=reference,
+        lead_minutes=0,
+        last_sent_for_reset_utc=reference,
+        next_scheduled_post_utc=following,
+    )
+
+    channel, updates = _run_reset_process(monkeypatch, reminder, reference)
+
+    assert channel.sent == []
+    assert updates == []
+
+
+def test_older_last_sent_does_not_suppress_current_reset(monkeypatch) -> None:
+    reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(
+        reference_date_utc=reference,
+        lead_minutes=0,
+        last_sent_for_reset_utc=dt.datetime(2026, 5, 1, 10, 0, tzinfo=dt.timezone.utc),
+    )
+
+    channel, updates = _run_reset_process(monkeypatch, reminder, reference)
+
+    assert len(channel.sent) == 1
+    assert updates[-1]["reset_time"] == reference
+
+
+def test_empty_thread_id_posts_to_channel_id(monkeypatch) -> None:
+    reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(reference_date_utc=reference, thread_id=None)
+
+    channel, updates = _run_reset_process(monkeypatch, reminder, reference)
+
+    assert len(channel.sent) == 1
+    assert updates[-1]["reset_time"] == reference
