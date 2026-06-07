@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from modules.onboarding.watcher_promo import PromoTicketContext, PromoTicketWatcher
+from shared.sheets.reservations import ReservationRow
 
 
 class DummyThread:
@@ -15,6 +16,7 @@ class DummyThread:
         self.locked = False
         self.parent_id = 123
         self.sent = []
+        self.guild = SimpleNamespace(id=999)
 
     async def send(self, content=None, **kwargs):
         msg = SimpleNamespace(id=999, content=content or "", created_at=datetime.now(timezone.utc))
@@ -52,6 +54,7 @@ def _setup_watcher(monkeypatch):
     monkeypatch.setattr("modules.onboarding.watcher_promo.get_ticket_tool_bot_id", lambda: 555)
     monkeypatch.setattr("modules.onboarding.watcher_promo.thread_scopes.is_promo_parent", lambda *_: True)
     monkeypatch.setattr("modules.onboarding.watcher_promo.onboarding_sessions.get_by_thread_id", lambda *_: None)
+    monkeypatch.setattr("modules.onboarding.watcher_promo.onboarding_sessions.mark_completed", lambda *_: True)
     monkeypatch.setattr("modules.onboarding.watcher_promo.discord.Thread", DummyThread)
     return PromoTicketWatcher(bot=DummyBot())
 
@@ -168,59 +171,117 @@ def test_finalize_never_enters_awaiting_details(monkeypatch):
     assert ctx.state == "closed"
 
 
-def test_promo_close_logs_open_spots_reconcile_skipped(monkeypatch, caplog):
+def test_promo_close_with_no_active_reservation_skips_cleanup(monkeypatch, caplog):
     watcher = _setup_watcher(monkeypatch)
     ctx = _context(state="awaiting_clan")
     monkeypatch.setattr("modules.onboarding.watcher_promo.onboarding_sheets.upsert_promo", lambda *_: "updated")
     monkeypatch.setattr("modules.onboarding.watcher_promo.onboarding_sheets.find_promo_row", lambda *_: (2, {"clantag": ""}))
     monkeypatch.setattr("modules.onboarding.watcher_promo.recruitment_sheets.find_clan_row", lambda *_: (10, ["", "", "C1CE"]))
+    adjust = AsyncMock()
+    recompute = AsyncMock()
+    monkeypatch.setattr("modules.onboarding.watcher_promo._ensure_fresh_clans_for_placement", AsyncMock(return_value=True))
+    monkeypatch.setattr("modules.onboarding.watcher_promo.reservations_sheets.find_active_reservations_for_recruit", AsyncMock(return_value=[]))
+    monkeypatch.setattr("modules.onboarding.watcher_promo.availability.adjust_manual_open_spots", adjust)
+    monkeypatch.setattr("modules.onboarding.watcher_promo.availability.recompute_clan_availability", recompute)
+    watcher._load_clan_tags = AsyncMock(return_value=["C1CE"])
+    thread = DummyThread(10, "closed-R1111-user")
+    thread.edit = AsyncMock()
+    with caplog.at_level(logging.INFO):
+        asyncio.run(
+            watcher._finalize_clan_tag(
+                thread,
+                ctx,
+                "C1CE",
+                actor=None,
+                prompt_message=None,
+                view=None,
+            )
+        )
+    assert "scope=promo" in caplog.text
+    assert "skip_reason=no_active_reservation" in caplog.text
+    assert "promo_reservation_cleanup" in caplog.text
+    adjust.assert_not_awaited()
+    recompute.assert_not_awaited()
+    thread.edit.assert_awaited()
+    assert any("Logged clan tag" in (content or "") for content, _ in thread.sent)
+
+
+def test_promo_close_with_active_reservation_releases_and_recomputes(monkeypatch, caplog):
+    watcher = _setup_watcher(monkeypatch)
+    ctx = _context(state="awaiting_clan")
+    ctx.user_id = 4242
+    row = ReservationRow(
+        row_number=7,
+        thread_id="10",
+        ticket_user_id=4242,
+        recruiter_id=None,
+        clan_tag="C1CE",
+        reserved_until=None,
+        created_at=None,
+        status="active",
+        notes="",
+        username_snapshot="user",
+        raw=[],
+    )
+    updates = []
+    recomputed = []
+    sync_clan_lookups = []
+    monkeypatch.setattr("modules.onboarding.watcher_promo.onboarding_sheets.upsert_promo", lambda *_: "updated")
+    monkeypatch.setattr("modules.onboarding.watcher_promo.onboarding_sheets.find_promo_row", lambda *_: (2, {"clantag": ""}))
+    monkeypatch.setattr("modules.onboarding.watcher_promo._ensure_fresh_clans_for_placement", AsyncMock(return_value=True))
+    monkeypatch.setattr("modules.onboarding.watcher_promo.reservations_sheets.find_active_reservations_for_recruit", AsyncMock(return_value=[row]))
+    monkeypatch.setattr("modules.onboarding.watcher_promo.reservations_sheets.update_reservation_status", AsyncMock(side_effect=lambda row_number, status: updates.append((row_number, status))))
+
+    def sync_find_clan_row(*_args, **_kwargs):
+        sync_clan_lookups.append((_args, _kwargs))
+        return 10, ["", "", "C1CE"]
+
+    monkeypatch.setattr("modules.onboarding.watcher_promo.recruitment_sheets.find_clan_row", sync_find_clan_row)
     monkeypatch.setattr("modules.onboarding.watcher_promo.availability.adjust_manual_open_spots", AsyncMock())
-    monkeypatch.setattr("modules.onboarding.watcher_promo.availability.recompute_clan_availability", AsyncMock())
+    monkeypatch.setattr("modules.onboarding.watcher_promo.availability.recompute_clan_availability", AsyncMock(side_effect=lambda tag, guild=None: recomputed.append(tag)))
     watcher._load_clan_tags = AsyncMock(return_value=["C1CE"])
     thread = DummyThread(10, "closed-R1111-user")
     thread.edit = AsyncMock()
     with caplog.at_level(logging.INFO):
-        asyncio.run(
-            watcher._finalize_clan_tag(
-                thread,
-                ctx,
-                "C1CE",
-                actor=None,
-                prompt_message=None,
-                view=None,
-            )
-        )
-    assert "decision_result=applied_open_delta" in caplog.text
-    assert "reason=no_promo_open_spots_reconcile_currently" not in caplog.text
+        asyncio.run(watcher._finalize_clan_tag(thread, ctx, "C1CE", actor=None, prompt_message=None, view=None))
+    assert updates == [(7, "closed_same_clan")]
+    assert sync_clan_lookups
+    assert recomputed == ["C1CE"]
+    assert "scope=promo" in caplog.text
+    assert "reservation=row7" in caplog.text
+    assert "old_status=active" in caplog.text
+    assert "new_status=closed_same_clan" in caplog.text
+    assert "recomputed:C1CE" in caplog.text
+    thread.edit.assert_awaited()
+    assert any("Logged clan tag" in (content or "") for content, _ in thread.sent)
 
 
-def test_promo_close_logs_failed_open_delta_when_adjust_raises(monkeypatch, caplog):
+def test_promo_close_active_other_clan_recalculates_summary_clans(monkeypatch, caplog):
     watcher = _setup_watcher(monkeypatch)
     ctx = _context(state="awaiting_clan")
+    row = ReservationRow(
+        row_number=8, thread_id="10", ticket_user_id=None, recruiter_id=None,
+        clan_tag="C1CK", reserved_until=None, created_at=None, status="active",
+        notes="", username_snapshot="user", raw=[],
+    )
+    updates = []
+    adjustments = []
+    recomputed = []
     monkeypatch.setattr("modules.onboarding.watcher_promo.onboarding_sheets.upsert_promo", lambda *_: "updated")
     monkeypatch.setattr("modules.onboarding.watcher_promo.onboarding_sheets.find_promo_row", lambda *_: (2, {"clantag": ""}))
-    monkeypatch.setattr("modules.onboarding.watcher_promo.recruitment_sheets.find_clan_row", lambda *_: (10, ["", "", "C1CE"]))
-
-    async def _raise_adjust(*_args, **_kwargs):
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr("modules.onboarding.watcher_promo.availability.adjust_manual_open_spots", _raise_adjust)
-    monkeypatch.setattr("modules.onboarding.watcher_promo.availability.recompute_clan_availability", AsyncMock())
-    watcher._load_clan_tags = AsyncMock(return_value=["C1CE"])
-    thread = DummyThread(10, "closed-R1111-user")
-    thread.edit = AsyncMock()
+    monkeypatch.setattr("modules.onboarding.watcher_promo._ensure_fresh_clans_for_placement", AsyncMock(return_value=True))
+    monkeypatch.setattr("modules.onboarding.watcher_promo.reservations_sheets.find_active_reservations_for_recruit", AsyncMock(return_value=[row]))
+    monkeypatch.setattr("modules.onboarding.watcher_promo.reservations_sheets.update_reservation_status", AsyncMock(side_effect=lambda row_number, status: updates.append((row_number, status))))
+    monkeypatch.setattr("modules.onboarding.watcher_promo.recruitment_sheets.find_clan_row", lambda *_args, **_kwargs: (10, ["", "", "C1CE"]))
+    monkeypatch.setattr("modules.onboarding.watcher_promo.availability.adjust_manual_open_spots", AsyncMock(side_effect=lambda tag, delta: adjustments.append((tag, delta))))
+    monkeypatch.setattr("modules.onboarding.watcher_promo.availability.recompute_clan_availability", AsyncMock(side_effect=lambda tag, guild=None: recomputed.append(tag)))
+    watcher._load_clan_tags = AsyncMock(return_value=["C1CE", "C1CK"])
     with caplog.at_level(logging.INFO):
-        asyncio.run(
-            watcher._finalize_clan_tag(
-                thread,
-                ctx,
-                "C1CE",
-                actor=None,
-                prompt_message=None,
-                view=None,
-            )
-        )
-    assert "decision_result=failed_open_delta" in caplog.text
+        asyncio.run(watcher._finalize_clan_tag(DummyThread(10), ctx, "C1CE", actor=None, prompt_message=None, view=None))
+    assert updates == [(8, "closed_other_clan")]
+    assert sorted(adjustments) == [("C1CE", -1), ("C1CK", 1)]
+    assert recomputed == ["C1CK", "C1CE"]
+    assert "reservation=row8" in caplog.text
 
 
 def test_duplicate_close_signal_ignored_after_closed(monkeypatch):
