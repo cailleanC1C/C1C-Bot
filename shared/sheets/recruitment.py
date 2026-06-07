@@ -136,15 +136,22 @@ def _normalize_header(cell: Any) -> str:
     return " ".join(text.split())
 
 
-def _find_header_row(raw_rows: Sequence[Sequence[Any]]) -> List[str]:
+def _find_header_row_with_index(
+    raw_rows: Sequence[Sequence[Any]],
+) -> tuple[List[str], int]:
     if len(raw_rows) >= 3:
         candidate = raw_rows[2]
         if any(str(cell or "").strip() for cell in candidate):
-            return list(candidate)
-    for row in raw_rows:
+            return list(candidate), 3
+    for idx, row in enumerate(raw_rows, start=1):
         if any(str(cell or "").strip() for cell in row):
-            return list(row)
-    return []
+            return list(row), idx
+    return [], 0
+
+
+def _find_header_row(raw_rows: Sequence[Sequence[Any]]) -> List[str]:
+    header_row, _row_index = _find_header_row_with_index(raw_rows)
+    return header_row
 
 
 def _index_to_column_letter(index: int) -> str:
@@ -161,6 +168,69 @@ def _index_to_column_letter(index: int) -> str:
             break
         value -= 1
     return label
+
+
+def _mask_sheet_id(sheet_id: str | None) -> str:
+    text = (sheet_id or "").strip()
+    if not text:
+        return "<unset>"
+    if len(text) <= 8:
+        return f"{text[:2]}…{text[-2:]}" if len(text) > 4 else "****"
+    return f"{text[:4]}…{text[-4:]}"
+
+
+def _diagnostic_header_values(header_row: Sequence[Any]) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    for idx in (4, *range(31, 37)):
+        values[_index_to_column_letter(idx)] = str(_cell_value(header_row, idx) or "")
+    return values
+
+
+def _normalize_header_values(values: Dict[str, str]) -> Dict[str, str]:
+    return {column: _normalize_header(value) for column, value in values.items()}
+
+
+def _header_map_columns(header_map: Dict[str, int]) -> Dict[str, str]:
+    return {
+        key: _index_to_column_letter(index)
+        for key, index in sorted(header_map.items(), key=lambda item: item[0])
+    }
+
+
+def _log_clan_header_diagnostics(
+    *,
+    sheet_id: str | None,
+    tab: str,
+    header_row_index: int,
+    header_row: Sequence[Any],
+    header_map: Dict[str, int],
+) -> None:
+    raw_values = _diagnostic_header_values(header_row)
+    normalized_values = _normalize_header_values(raw_values)
+    header_map_columns = _header_map_columns(header_map)
+    missing_required_keys = [key for key in HEADER_MAP if key not in header_map]
+
+    log.info(
+        "recruitment clan header diagnostics: sheet_id=%s tab=%r "
+        "header_row_index=%s raw_header_values=%s normalized_header_values=%s "
+        "header_map_columns=%s missing_required_keys=%s",
+        _mask_sheet_id(sheet_id),
+        tab,
+        header_row_index,
+        raw_values,
+        normalized_values,
+        header_map_columns,
+        missing_required_keys,
+        extra={
+            "sheet_id_masked": _mask_sheet_id(sheet_id),
+            "tab": tab,
+            "header_row_index": header_row_index,
+            "raw_header_values": raw_values,
+            "normalized_header_values": normalized_values,
+            "header_map_columns": header_map_columns,
+            "missing_required_keys": missing_required_keys,
+        },
+    )
 
 
 def _build_header_map(header_row: Sequence[Any], tab: str) -> Dict[str, int]:
@@ -256,13 +326,20 @@ def _make_clan_record(
 
 
 def _process_clan_sheet(
-    raw_rows: List[List[str]], now: float, tab: str
+    raw_rows: List[List[str]], now: float, tab: str, sheet_id: str | None = None
 ) -> List[List[str]]:
     global _CLAN_HEADER_ROW, _CLAN_HEADER_MAP, _CLAN_HEADER_TS
     global _CLAN_RECORDS, _CLAN_RECORDS_TS
 
-    header_row = _find_header_row(raw_rows)
+    header_row, header_row_index = _find_header_row_with_index(raw_rows)
     header_map = _build_header_map(header_row, tab)
+    _log_clan_header_diagnostics(
+        sheet_id=sheet_id,
+        tab=tab,
+        header_row_index=header_row_index,
+        header_row=header_row,
+        header_map=header_map,
+    )
     sanitized = _sanitize_clan_rows(raw_rows, header_map.get("roster"))
 
     records = [_make_clan_record(row, header_map) for row in sanitized]
@@ -480,9 +557,10 @@ def fetch_clans(force: bool = False) -> List[List[str]]:
             _CLAN_TAG_INDEX_TS = _CLAN_ROWS_TS
         return _CLAN_ROWS
 
+    sheet_id = _sheet_id()
     tab = _clans_tab()
-    rows = core.fetch_values(_sheet_id(), tab)
-    sanitized = _process_clan_sheet(rows, now, tab)
+    rows = core.fetch_values(sheet_id, tab)
+    sanitized = _process_clan_sheet(rows, now, tab, sheet_id=sheet_id)
     _CLAN_ROWS = sanitized
     _CLAN_ROWS_TS = now
     _CLAN_TAG_INDEX = _build_tag_index(sanitized)
@@ -571,7 +649,7 @@ async def _load_clans_async() -> List[List[str]]:
     tab = _clans_tab()
     rows = await afetch_values(sheet_id, tab)
     now = time.time()
-    sanitized = _process_clan_sheet(rows, now, tab)
+    sanitized = _process_clan_sheet(rows, now, tab, sheet_id=sheet_id)
 
     global _CLAN_ROWS, _CLAN_ROWS_TS, _CLAN_TAG_INDEX, _CLAN_TAG_INDEX_TS
     _CLAN_ROWS = sanitized
