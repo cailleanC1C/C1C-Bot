@@ -74,6 +74,12 @@ def promo_setup(monkeypatch: pytest.MonkeyPatch):
         return None
 
     monkeypatch.setattr(onboarding_sheets, "upsert_promo", _fake_upsert)
+
+    def _fake_append(ticket, username, clan_tag, promo_type, thread_created, year, month, join_month, clan_name, progression, **_kwargs):
+        row = [ticket, username, clan_tag, "", promo_type, thread_created, year, month, join_month, clan_name, progression]
+        return _fake_upsert(row, onboarding_sheets.PROMO_HEADERS)
+
+    monkeypatch.setattr(onboarding_sheets, "append_promo_ticket_row", _fake_append)
     monkeypatch.setattr(onboarding_sheets, "find_promo_row", _fake_find)
     monkeypatch.setattr(onboarding_sheets, "load_clan_tags", lambda force=False: calls["tags"][0])
 
@@ -234,8 +240,8 @@ def test_promo_watcher_close_flow_updates_sheet(promo_setup, monkeypatch: pytest
     assert len(calls["upserts"]) >= 2, "expected additional upsert after closure"
     final_row = calls["upserts"][-1][0]
     assert final_row[2] == "C1CE"
-    assert final_row[-1] == "TH10"
-    assert final_row[-2] == "Clan Name"
+    assert final_row[-1] == ""
+    assert final_row[-2] == ""
 
 
 def test_promo_watcher_respects_feature_flags(monkeypatch: pytest.MonkeyPatch):

@@ -21,12 +21,9 @@ from modules.onboarding.controllers.welcome_controller import (
     extract_target_from_message,
     locate_welcome_message,
 )
-from modules.onboarding.sessions import ensure_session_for_thread
 from modules.onboarding.watcher_welcome import (
-    _NO_PLACEMENT_TAG,
     _channel_readable_label,
-    _decision_visibility_line,
-    _determine_reservation_decision,
+    cleanup_reservation_for_ticket_close,
     PanelOutcome,
     parse_promo_thread_name,
     persist_session_for_thread,
@@ -42,6 +39,7 @@ from shared.sheets import onboarding as onboarding_sheets
 from shared.sheets import onboarding_sessions
 from shared.sheets import promo_tickets
 from shared.sheets import recruitment as recruitment_sheets
+from shared.sheets import reservations as reservations_sheets
 from shared.sheets.onboarding import PROMO_HEADERS
 
 UTC = dt.timezone.utc
@@ -640,133 +638,52 @@ class PromoTicketWatcher(commands.Cog):
             context.username,
             result,
         )
-        source = "promo"
-        final_is_real = False
-        open_deltas: Dict[str, int] = {}
-        applied_open_deltas: Dict[str, int] = {}
-        delta_failure_reason: str | None = None
-        recompute_tags: List[str] = []
-        if previous_final is None:
-            decision_line = (
-                "decision: "
-                f"final_tag={(context.clan_tag or '').strip().upper() or '-'} • previous_final=- • "
-                "reservation=not_applicable • consume_open_spot=False • final_is_real=False • "
-                "decision_result=skipped_open_delta • skip_reason=previous_final_unavailable"
-            )
-            log.warning(
-                "promo_open_spots_reconcile — ticket=%s • user=%s • final_tag=%s • source=%s • reason=previous_final_unavailable • action_required=manual_open_spots_review • %s",
-                context.ticket_number,
-                context.username,
-                context.clan_tag or "-",
-                source,
-                decision_line,
-            )
-            try:
-                onboarding_sessions.mark_completed(getattr(thread, "id", 0))
-            except Exception:
-                log.exception(
-                    "promo watcher: failed to mark onboarding session complete",
-                    extra={"thread_id": getattr(thread, "id", None)},
-                )
-            return
-
-        normalized_previous = (previous_final or "").strip().upper()
-        normalized_final = (context.clan_tag or "").strip().upper()
-        clans_fresh = await _ensure_fresh_clans_for_placement(
-            actor="promo_placement", ticket=context.ticket_number, user=context.username
-        )
-        if not clans_fresh:
-            decision_line = (
-                "decision: "
-                f"final_tag={normalized_final or '-'} • previous_final={normalized_previous or '-'} • "
-                "reservation=not_applicable • consume_open_spot=False • final_is_real=False • "
-                "decision_result=skipped_open_delta • skip_reason=fresh_clans_unavailable"
-            )
-            log.warning(
-                "promo_open_spots_reconcile — ticket=%s • user=%s • clan=%s • source=%s • %s",
-                context.ticket_number,
-                context.username,
-                context.clan_tag or "-",
-                source,
-                decision_line,
-            )
-            return
-        try:
-            final_entry = await asyncio.to_thread(
-                recruitment_sheets.find_clan_row, context.clan_tag, force=True
-            )
-            final_is_real = final_entry is not None
-        except Exception:
-            log.exception(
-                "promo reconcile: failed to check final clan tag",
-                extra={"ticket": context.ticket_number, "clan_tag": context.clan_tag},
-            )
-            final_is_real = False
-        consume_open_spot = bool(
-            normalized_final
-            and normalized_final != _NO_PLACEMENT_TAG
-            and (
-                not normalized_previous
-                or normalized_previous == _NO_PLACEMENT_TAG
-                or normalized_previous != normalized_final
-            )
-        )
-        decision = _determine_reservation_decision(
-            normalized_final,
-            None,
-            no_placement_tag=_NO_PLACEMENT_TAG,
-            final_is_real=final_is_real,
-            consume_open_spot=consume_open_spot,
+        cleanup = await cleanup_reservation_for_ticket_close(
+            scope="promo",
+            ticket=context.ticket_number,
+            user=context.username,
+            user_id=context.user_id,
+            final_tag=context.clan_tag,
             previous_final=previous_final or "",
+            guild=getattr(thread, "guild", None),
+            require_active_reservation=True,
+            logger=log,
+            ensure_fresh_fn=_ensure_fresh_clans_for_placement,
+            find_active_reservations_fn=reservations_sheets.find_active_reservations_for_recruit,
+            find_clan_row_fn=recruitment_sheets.find_clan_row,
+            update_reservation_status_fn=reservations_sheets.update_reservation_status,
+            adjust_manual_open_spots_fn=availability.adjust_manual_open_spots,
+            recompute_clan_availability_fn=availability.recompute_clan_availability,
         )
-        open_deltas = dict(decision.open_deltas)
-        recompute_tags = list(decision.recompute_tags)
-
-        for tag, delta in open_deltas.items():
-            try:
-                await availability.adjust_manual_open_spots(tag, delta)
-                applied_open_deltas[tag] = applied_open_deltas.get(tag, 0) + delta
-            except Exception:
-                delta_failure_reason = f"adjust_manual_open_spots_failed:{tag}:{delta}"
-                log.exception(
-                    "promo reconcile: failed to adjust manual open spots",
-                    extra={"ticket": context.ticket_number, "clan_tag": tag, "delta": delta},
-                )
-        for tag in recompute_tags:
-            try:
-                await availability.recompute_clan_availability(tag, guild=thread.guild)
-            except Exception:
-                log.exception(
-                    "promo reconcile: failed to recompute clan availability",
-                    extra={"ticket": context.ticket_number, "clan_tag": tag},
-                )
-
-        decision_line = _decision_visibility_line(
-            final_tag=normalized_final,
-            previous_final=previous_final,
-            reservation_row=None,
-            reservation_label="not_applicable",
-            consume_open_spot=consume_open_spot,
-            final_is_real=final_is_real,
-            open_deltas=applied_open_deltas,
-            reservation_state_override="not_applicable",
-        )
-        if open_deltas and not applied_open_deltas:
-            failed_bits = ", ".join(f"{tag}:{delta:+d}" for tag, delta in sorted(open_deltas.items()))
-            decision_line = (
-                "decision: "
-                f"final_tag={normalized_final or '-'} • previous_final={(previous_final or '').strip().upper() or '-'} • "
-                "reservation=not_applicable • consume_open_spot="
-                f"{consume_open_spot} • final_is_real={final_is_real} • decision_result=failed_open_delta • "
-                f"deltas={failed_bits} • failure={delta_failure_reason or 'open_delta_write_failed'}"
+        if cleanup.skipped:
+            log.info(
+                "promo_reservation_cleanup — scope=promo • ticket=%s • user=%s • user_id=%s • clan_tag=%s • reservation=none • result=skip • reason=%s",
+                context.ticket_number,
+                context.username,
+                context.user_id or "-",
+                context.clan_tag or "-",
+                cleanup.reason or "no_cleanup_needed",
+            )
+        else:
+            log.info(
+                "promo_reservation_cleanup — scope=promo • ticket=%s • user=%s • user_id=%s • clan_tag=%s • reservation=%s • old_status=%s • new_status=%s • recalculation=%s • result=%s%s",
+                context.ticket_number,
+                context.username,
+                context.user_id or "-",
+                context.clan_tag or "-",
+                f"row{cleanup.reservation_row.row_number}" if cleanup.reservation_row is not None else "none",
+                cleanup.old_status or "-",
+                cleanup.new_status or "-",
+                f"recomputed:{','.join(cleanup.recomputed_tags) if cleanup.recomputed_tags else 'none'}",
+                "ok" if cleanup.ok else "partial",
+                f" • reason={cleanup.reason}" if cleanup.reason else "",
             )
         log.info(
-            "promo_open_spots_reconcile — ticket=%s • user=%s • clan=%s • source=%s • %s",
+            "promo_open_spots_reconcile — ticket=%s • user=%s • clan=%s • source=promo • %s",
             context.ticket_number,
             context.username,
             context.clan_tag or "-",
-            source,
-            decision_line,
+            cleanup.decision_line,
         )
         try:
             onboarding_sessions.mark_completed(getattr(thread, "id", 0))
