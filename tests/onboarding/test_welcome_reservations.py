@@ -45,6 +45,14 @@ def _stub_find_welcome_row(monkeypatch):
         },
     )
 
+    async def _fake_preflight(_tag, *, delta=0):
+        return None
+
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.availability.preflight_clan_availability_update",
+        _fake_preflight,
+    )
+
 
 def _make_reservation(
     tag: str, *, created: dt.datetime | None = None
@@ -1337,6 +1345,14 @@ def test_finalize_posts_clan_math_log(monkeypatch) -> None:
             "manual_open_spots_seen": 35,
         },
     )
+
+    async def _fake_preflight(_tag, *, delta=0):
+        return None
+
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.availability.preflight_clan_availability_update",
+        _fake_preflight,
+    )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.rt.send_log_message", fake_send_log
     )
@@ -1456,6 +1472,14 @@ def test_finalize_error_pings_admins(monkeypatch) -> None:
             "manual_open_spots": 4,
             "manual_open_spots_seen": 35,
         },
+    )
+
+    async def _fake_preflight(_tag, *, delta=0):
+        return None
+
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.availability.preflight_clan_availability_update",
+        _fake_preflight,
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.rt.send_log_message", fake_send_log
@@ -1590,6 +1614,14 @@ def test_finalize_manual_path_logs_source(monkeypatch) -> None:
             "manual_open_spots_seen": 35,
         },
     )
+
+    async def _fake_preflight(_tag, *, delta=0):
+        return None
+
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.availability.preflight_clan_availability_update",
+        _fake_preflight,
+    )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.rt.send_log_message", fake_send_log
     )
@@ -1669,6 +1701,14 @@ def test_finalize_non_real_tag_logs_skip_reason(monkeypatch) -> None:
             "manual_open_spots": 4,
             "manual_open_spots_seen": 35,
         },
+    )
+
+    async def _fake_preflight(_tag, *, delta=0):
+        return None
+
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.availability.preflight_clan_availability_update",
+        _fake_preflight,
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.get_admin_role_ids", lambda: set()
@@ -1909,12 +1949,12 @@ def test_finalize_preflight_failure_applies_no_discord_actions(monkeypatch) -> N
         },
     )
 
-    async def failing_preflight(tag: str, delta: int):
+    async def failing_preflight(tag: str, *, delta=0):
         raise ValueError("non_numeric_manual_open_spots_value")
 
     adjust_calls: list[tuple[str, int]] = []
     monkeypatch.setattr(
-        "modules.onboarding.watcher_welcome.availability.preflight_manual_open_spots_adjustment",
+        "modules.onboarding.watcher_welcome.availability.preflight_clan_availability_update",
         failing_preflight,
     )
     monkeypatch.setattr(

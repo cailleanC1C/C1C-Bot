@@ -4,9 +4,62 @@ import logging
 from typing import List
 
 import discord
+import pytest
 
 from modules.placement import reservations as reserve_module
 from shared.sheets import reservations as reservations_sheet
+
+
+@pytest.fixture(autouse=True)
+def _stub_availability_preflight(monkeypatch):
+    header_map = {
+        "clan_tag": 2,
+        "manual_open_spots": 4,
+        "open_spots": 31,
+        "inactives": 32,
+        "reservation_count": 33,
+        "reservation_summary": 34,
+        "manual_open_spots_seen": 35,
+    }
+
+    class Plan:
+        sheet_row = 7
+        row = (
+            ("", "Clan", "#ABC", "", "3")
+            + ("",) * 26
+            + ("3", "0", "0", "", "3")
+            + ("",) * 10
+        )
+        numeric_values = {
+            "manual_open_spots": 3,
+            "open_spots": 3,
+            "inactives": 0,
+            "reservation_count": 0,
+            "manual_open_spots_seen": 3,
+        }
+        write_ranges = {
+            "open_spots": "AF7",
+            "inactives": "AG7",
+            "reservation_count": "AH7",
+            "reservation_summary": "AI7",
+            "manual_open_spots_seen": "AJ7",
+            "manual_open_spots": "E7",
+        }
+        headers = type(
+            "Headers", (), {"header_map": header_map, "tab_name": "bot_info"}
+        )()
+
+    async def fake_preflight(_tag, *, delta=0):
+        return Plan()
+
+    monkeypatch.setattr(
+        reserve_module.availability,
+        "preflight_clan_availability_update",
+        fake_preflight,
+    )
+    monkeypatch.setattr(
+        reserve_module, "_resolve_configured_reservation_clan_tag", lambda tag: tag
+    )
 
 
 class FakeMember:
@@ -76,7 +129,12 @@ class FakeMessage:
 
 
 class FakeBot:
-    def __init__(self, messages: List[FakeMessage], *, channels: dict[int, FakeThread] | None = None) -> None:
+    def __init__(
+        self,
+        messages: List[FakeMessage],
+        *,
+        channels: dict[int, FakeThread] | None = None,
+    ) -> None:
         self._messages = list(messages)
         self._channels = dict(channels or {})
 
@@ -92,7 +150,9 @@ class FakeBot:
 
 
 class FakeContext:
-    def __init__(self, bot: FakeBot, guild: FakeGuild, channel: FakeThread, author) -> None:
+    def __init__(
+        self, bot: FakeBot, guild: FakeGuild, channel: FakeThread, author
+    ) -> None:
         self.bot = bot
         self.guild = guild
         self.channel = channel
@@ -133,7 +193,9 @@ def _setup_control_channels(
     recruiters_thread: int | None = None,
     interact_channel: int | None = None,
 ) -> None:
-    monkeypatch.setattr(reserve_module, "get_recruiters_thread_id", lambda: recruiters_thread)
+    monkeypatch.setattr(
+        reserve_module, "get_recruiters_thread_id", lambda: recruiters_thread
+    )
     monkeypatch.setattr(
         reserve_module,
         "get_recruitment_interact_channel_id",
@@ -198,7 +260,9 @@ def test_reserve_success(monkeypatch):
     guild = FakeGuild([recruit])
     thread = FakeThread(thread_id=555, parent_id=999)
 
-    mention_message = FakeMessage("reserve user", author=None, channel=thread, mentions=[recruit])
+    mention_message = FakeMessage(
+        "reserve user", author=None, channel=thread, mentions=[recruit]
+    )
     date_message = FakeMessage("2025-12-01", author=None, channel=thread)
     confirm_message = FakeMessage("yes", author=None, channel=thread)
 
@@ -210,7 +274,9 @@ def test_reserve_success(monkeypatch):
     ctx = FakeContext(bot, guild=guild, channel=thread, author=author)
 
     clan_row = ["", "Clan", "#ABC", "", "3"] + [""] * 40
-    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag: (10, list(clan_row)))
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (10, list(clan_row))
+    )
 
     def fake_updated_row(tag):
         updated = list(clan_row)
@@ -245,14 +311,18 @@ def test_reserve_success(monkeypatch):
     async def fake_append(row_values):
         appended.append(list(row_values))
 
-    monkeypatch.setattr(reserve_module.reservations, "append_reservation_row", fake_append)
+    monkeypatch.setattr(
+        reserve_module.reservations, "append_reservation_row", fake_append
+    )
 
     recomputed = {}
 
     async def fake_recompute(clan_tag, *, guild=None, resolver=None):
         recomputed["tag"] = clan_tag
 
-    monkeypatch.setattr(reserve_module.availability, "recompute_clan_availability", fake_recompute)
+    monkeypatch.setattr(
+        reserve_module.availability, "recompute_clan_availability", fake_recompute
+    )
 
     cog = _make_cog(bot)
     asyncio.run(cog.reserve.callback(cog, ctx, "ABC"))
@@ -269,8 +339,6 @@ def test_reserve_success(monkeypatch):
         assert recomputed["tag"] == "#ABC"
 
 
-
-
 def test_reserve_partial_success_when_recompute_fails(monkeypatch):
     _enable_feature(monkeypatch, enabled=True)
     _setup_parents(monkeypatch, parent_id=999)
@@ -285,8 +353,12 @@ def test_reserve_partial_success_when_recompute_fails(monkeypatch):
     ctx = FakeContext(bot, guild=guild, channel=thread, author=author)
 
     clan_row = ["", "Clan", "#ABC", "", "3"] + [""] * 40
-    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag: (10, list(clan_row)))
-    monkeypatch.setattr(reserve_module.recruitment, "get_clan_by_tag", lambda tag: clan_row)
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (10, list(clan_row))
+    )
+    monkeypatch.setattr(
+        reserve_module.recruitment, "get_clan_by_tag", lambda tag: clan_row
+    )
 
     async def fake_count(*_args, **_kwargs):
         return 0
@@ -294,8 +366,14 @@ def test_reserve_partial_success_when_recompute_fails(monkeypatch):
     async def fake_find_active(*_args, **_kwargs):
         return []
 
-    monkeypatch.setattr(reserve_module.reservations, "count_active_reservations_for_clan", fake_count)
-    monkeypatch.setattr(reserve_module.reservations, "find_active_reservations_for_recruit", fake_find_active)
+    monkeypatch.setattr(
+        reserve_module.reservations, "count_active_reservations_for_clan", fake_count
+    )
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "find_active_reservations_for_recruit",
+        fake_find_active,
+    )
 
     async def fake_flow_run(self):
         return reserve_module.ReservationDetails(
@@ -307,27 +385,55 @@ def test_reserve_partial_success_when_recompute_fails(monkeypatch):
         )
 
     monkeypatch.setattr(reserve_module.ReservationConversation, "run", fake_flow_run)
-    monkeypatch.setattr(reserve_module.reservations, "append_reservation_row", lambda row: asyncio.sleep(0))
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "append_reservation_row",
+        lambda row: asyncio.sleep(0),
+    )
 
     async def _boom(*_args, **_kwargs):
         raise RuntimeError("sheet update exploded")
 
-    monkeypatch.setattr(reserve_module.availability, "recompute_clan_availability", _boom)
-    monkeypatch.setattr(reserve_module, "_ensure_fresh_clans_for_reservations", lambda **_: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(
+        reserve_module.availability, "recompute_clan_availability", _boom
+    )
+    monkeypatch.setattr(
+        reserve_module,
+        "_ensure_fresh_clans_for_reservations",
+        lambda **_: asyncio.sleep(0, result=True),
+    )
 
     runtime_logs: list[tuple[str, str]] = []
-    monkeypatch.setattr(reserve_module.human_log, "human", lambda level, message, **_: runtime_logs.append((level, message)))
+    monkeypatch.setattr(
+        reserve_module.human_log,
+        "human",
+        lambda level, message, **_: runtime_logs.append((level, message)),
+    )
 
     cog = _make_cog(bot)
     asyncio.run(cog.reserve.callback(cog, ctx, "ABC"))
 
-    assert any("Reservation row was added, but recruiter-facing availability was NOT updated." in m.content for m in thread.sent)
-    assert any(level == "error" and "error_type=RuntimeError" in message and "source=reserve" in message for level, message in runtime_logs)
+    assert any(
+        "Reservation row was added, but recruiter-facing availability was NOT updated."
+        in m.content
+        for m in thread.sent
+    )
+    assert any(
+        level == "error"
+        and "error_type=RuntimeError" in message
+        and "source=reserve" in message
+        for level, message in runtime_logs
+    )
+
 
 def test_recompute_updates_recruiter_facing_clans_tab(monkeypatch):
     worksheet_calls: list[str] = []
 
-    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag, force=True: (7, ["", "", "#ABC", "", "4"] + [""] * 60))
+    monkeypatch.setattr(
+        reserve_module.recruitment,
+        "find_clan_row",
+        lambda tag, force=True: (7, ["", "", "#ABC", "", "4"] + [""] * 60),
+    )
     monkeypatch.setattr(
         reserve_module.recruitment,
         "get_clan_header_map",
@@ -340,8 +446,12 @@ def test_recompute_updates_recruiter_facing_clans_tab(monkeypatch):
             "reservation_summary": 34,
         },
     )
-    monkeypatch.setattr(reserve_module.recruitment, "get_recruitment_sheet_id", lambda: "sheet-id")
-    monkeypatch.setattr(reserve_module.recruitment, "get_clans_tab_name", lambda: "bot_info")
+    monkeypatch.setattr(
+        reserve_module.recruitment, "get_recruitment_sheet_id", lambda: "sheet-id"
+    )
+    monkeypatch.setattr(
+        reserve_module.recruitment, "get_clans_tab_name", lambda: "bot_info"
+    )
 
     class _Worksheet:
         def update(self, cell_range, values, value_input_option="RAW"):
@@ -354,14 +464,32 @@ def test_recompute_updates_recruiter_facing_clans_tab(monkeypatch):
         return _Worksheet()
 
     monkeypatch.setattr(reserve_module.availability.async_core, "aget_worksheet", _aget)
-    monkeypatch.setattr(reserve_module.availability.async_core, "acall_with_backoff", lambda fn, *a, **k: asyncio.sleep(0, result=fn(*a, **k)))
-    monkeypatch.setattr(reserve_module.availability.reservations, "get_active_reservations_for_clan", lambda *_: asyncio.sleep(0, result=[]))
-    monkeypatch.setattr(reserve_module.availability.reservations, "resolve_reservation_names", lambda *_a, **_k: asyncio.sleep(0, result=[]))
-    monkeypatch.setattr(reserve_module.recruitment, "update_cached_clan_row", lambda *_: True)
+    monkeypatch.setattr(
+        reserve_module.availability.async_core,
+        "acall_with_backoff",
+        lambda fn, *a, **k: asyncio.sleep(0, result=fn(*a, **k)),
+    )
+    monkeypatch.setattr(
+        reserve_module.availability.reservations,
+        "get_active_reservations_for_clan",
+        lambda *_: asyncio.sleep(0, result=[]),
+    )
+    monkeypatch.setattr(
+        reserve_module.availability.reservations,
+        "resolve_reservation_names",
+        lambda *_a, **_k: asyncio.sleep(0, result=[]),
+    )
+    monkeypatch.setattr(
+        reserve_module.recruitment, "update_cached_clan_row", lambda *_: True
+    )
 
-    asyncio.run(reserve_module.availability.recompute_clan_availability("#ABC", guild=None))
+    asyncio.run(
+        reserve_module.availability.recompute_clan_availability("#ABC", guild=None)
+    )
 
     assert worksheet_calls, "expected worksheet updates"
+
+
 def test_reserve_accepts_inline_recruit(monkeypatch):
     _enable_feature(monkeypatch, enabled=True)
     _setup_parents(monkeypatch, parent_id=999)
@@ -382,8 +510,12 @@ def test_reserve_accepts_inline_recruit(monkeypatch):
     ctx = FakeContext(bot, guild=guild, channel=thread, author=author)
 
     clan_row = ["", "Clan", "#ABC", "", "3"] + [""] * 40
-    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag: (10, list(clan_row)))
-    monkeypatch.setattr(reserve_module.recruitment, "get_clan_by_tag", lambda tag: clan_row)
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (10, list(clan_row))
+    )
+    monkeypatch.setattr(
+        reserve_module.recruitment, "get_clan_by_tag", lambda tag: clan_row
+    )
 
     async def fake_count(tag):
         return 0
@@ -408,7 +540,9 @@ def test_reserve_accepts_inline_recruit(monkeypatch):
     async def fake_append(row_values):
         appended.append(list(row_values))
 
-    monkeypatch.setattr(reserve_module.reservations, "append_reservation_row", fake_append)
+    monkeypatch.setattr(
+        reserve_module.reservations, "append_reservation_row", fake_append
+    )
     monkeypatch.setattr(
         reserve_module.availability,
         "recompute_clan_availability",
@@ -430,8 +564,12 @@ def test_ensure_fresh_clans_for_reservations_unavailable(monkeypatch, caplog):
         last_error = "boom"
 
     caplog.set_level(logging.WARNING, logger=reserve_module.log.name)
-    monkeypatch.setattr(reserve_module.cache_telemetry, "refresh_now", lambda *_, **__: asyncio.sleep(0))
-    monkeypatch.setattr(reserve_module.cache_telemetry, "get_snapshot", lambda *_: _Snapshot())
+    monkeypatch.setattr(
+        reserve_module.cache_telemetry, "refresh_now", lambda *_, **__: asyncio.sleep(0)
+    )
+    monkeypatch.setattr(
+        reserve_module.cache_telemetry, "get_snapshot", lambda *_: _Snapshot()
+    )
 
     result = asyncio.run(
         reserve_module._ensure_fresh_clans_for_reservations(
@@ -440,7 +578,10 @@ def test_ensure_fresh_clans_for_reservations_unavailable(monkeypatch, caplog):
     )
 
     assert result is False
-    assert any(getattr(record, "reason", None) == "fresh_clans_unavailable" for record in caplog.records)
+    assert any(
+        getattr(record, "reason", None) == "fresh_clans_unavailable"
+        for record in caplog.records
+    )
 
 
 def test_reserve_inline_recruit_validation_error(monkeypatch):
@@ -479,7 +620,9 @@ def test_reserve_duplicate_blocked(monkeypatch):
     )
     author = FakeMember(3001)
 
-    mention_message = FakeMessage("reserve user", author=author, channel=thread, mentions=[recruit])
+    mention_message = FakeMessage(
+        "reserve user", author=author, channel=thread, mentions=[recruit]
+    )
     date_message = FakeMessage("2025-12-01", author=author, channel=thread)
     confirm_message = FakeMessage("yes", author=author, channel=thread)
 
@@ -487,8 +630,13 @@ def test_reserve_duplicate_blocked(monkeypatch):
     ctx = FakeContext(bot, guild=guild, channel=thread, author=author)
 
     clan_row = ["", "Clan", "#ZZZ", "", "5"] + [""] * 40
-    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag: (12, list(clan_row)))
-    monkeypatch.setattr(reserve_module.recruitment, "get_clan_by_tag", lambda tag: clan_row)
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (12, list(clan_row))
+    )
+    monkeypatch.setattr(
+        reserve_module.recruitment, "get_clan_by_tag", lambda tag: clan_row
+    )
+
     async def fake_count(*_args, **_kwargs):
         return 0
 
@@ -517,7 +665,12 @@ def test_reserve_duplicate_blocked(monkeypatch):
     )
 
     async def fake_resolve(bot, thread_id):
-        return FakeThread(thread_id=int(thread_id), parent_id=1000, name="Res-W0499-Other-C1CM", owner_id=recruit.id)
+        return FakeThread(
+            thread_id=int(thread_id),
+            parent_id=1000,
+            name="Res-W0499-Other-C1CM",
+            owner_id=recruit.id,
+        )
 
     monkeypatch.setattr(reserve_module, "_resolve_thread", fake_resolve)
 
@@ -526,7 +679,9 @@ def test_reserve_duplicate_blocked(monkeypatch):
     async def fake_append(row_values):
         appended.append(list(row_values))
 
-    monkeypatch.setattr(reserve_module.reservations, "append_reservation_row", fake_append)
+    monkeypatch.setattr(
+        reserve_module.reservations, "append_reservation_row", fake_append
+    )
 
     cog = _make_cog(bot)
     asyncio.run(cog.reserve.callback(cog, ctx, "ZZZ"))
@@ -549,7 +704,9 @@ def test_reserve_requires_reason(monkeypatch):
     messages = [
         FakeMessage("who", author=author, channel=thread, mentions=[recruit]),
         FakeMessage("2025-11-30", author=author, channel=thread),
-        FakeMessage("Because they confirmed a start date", author=author, channel=thread),
+        FakeMessage(
+            "Because they confirmed a start date", author=author, channel=thread
+        ),
         FakeMessage("yes", author=author, channel=thread),
     ]
 
@@ -557,8 +714,13 @@ def test_reserve_requires_reason(monkeypatch):
     ctx = FakeContext(bot, guild=guild, channel=thread, author=author)
 
     clan_row = ["", "Clan", "#DEF", "", "1"] + [""] * 40
-    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag: (11, list(clan_row)))
-    monkeypatch.setattr(reserve_module.recruitment, "get_clan_by_tag", lambda tag: clan_row)
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (11, list(clan_row))
+    )
+    monkeypatch.setattr(
+        reserve_module.recruitment, "get_clan_by_tag", lambda tag: clan_row
+    )
+
     async def fake_count(tag):
         return 1
 
@@ -582,7 +744,9 @@ def test_reserve_requires_reason(monkeypatch):
     async def fake_append(row_values):
         appended.append(list(row_values))
 
-    monkeypatch.setattr(reserve_module.reservations, "append_reservation_row", fake_append)
+    monkeypatch.setattr(
+        reserve_module.reservations, "append_reservation_row", fake_append
+    )
     monkeypatch.setattr(
         reserve_module.availability,
         "recompute_clan_availability",
@@ -644,7 +808,9 @@ def test_reserve_requires_ticket_thread(monkeypatch):
 
     recruit = FakeMember(888)
     guild = FakeGuild([recruit])
-    thread = FakeThread(thread_id=999, parent_id=123)  # parent does not match configured id
+    thread = FakeThread(
+        thread_id=999, parent_id=123
+    )  # parent does not match configured id
     author = FakeMember(889)
 
     bot = FakeBot([])
@@ -696,7 +862,9 @@ def test_reservations_thread_no_matches(monkeypatch):
     asyncio.run(cog.reservations_command.callback(cog, ctx))
 
     assert thread.sent and "No active reservations" in thread.sent[0].content
-    assert logs and "thread=W0455-Recruit Thread" in logs[0] and "result=empty" in logs[0]
+    assert (
+        logs and "thread=W0455-Recruit Thread" in logs[0] and "result=empty" in logs[0]
+    )
 
 
 def test_reservations_thread_lists_matches(monkeypatch):
@@ -754,7 +922,9 @@ def test_reservations_thread_lists_matches(monkeypatch):
     lines = content.splitlines()
     assert lines[0].startswith("Active reservation for")
     assert "`ABC`" in lines[1]
-    assert any("thread=W0460-Thread User" in entry and "result=ok" in entry for entry in logs)
+    assert any(
+        "thread=W0460-Thread User" in entry and "result=ok" in entry for entry in logs
+    )
 
 
 def test_reservations_thread_mismatch(monkeypatch):
@@ -806,7 +976,9 @@ def test_reservations_thread_mismatch(monkeypatch):
     asyncio.run(cog.reservations_command.callback(cog, ctx))
 
     assert thread.sent and "ledger shows" in thread.sent[0].content
-    assert any("result=error" in entry and "reason=tag_mismatch" in entry for entry in logs)
+    assert any(
+        "result=error" in entry and "reason=tag_mismatch" in entry for entry in logs
+    )
 
 
 def test_reservations_thread_multiple_rows(monkeypatch):
@@ -928,8 +1100,12 @@ def test_reservations_global_listing_recent(monkeypatch):
     )
 
     thread_lookup = {
-        3100: FakeThread(3100, parent_id=0, name="W0500-Recent Recruit-C1CE", owner_id=None),
-        3200: FakeThread(3200, parent_id=0, name="W0499-Old Recruit-C1CM", owner_id=None),
+        3100: FakeThread(
+            3100, parent_id=0, name="W0500-Recent Recruit-C1CE", owner_id=None
+        ),
+        3200: FakeThread(
+            3200, parent_id=0, name="W0499-Old Recruit-C1CM", owner_id=None
+        ),
     }
 
     async def fake_resolve(bot, thread_id):
@@ -977,7 +1153,9 @@ def test_reservations_clan_listing(monkeypatch):
 
     clan_row = ["", "Clan", "C1CE", ""] + [""] * 10
 
-    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag: (5, clan_row))
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (5, clan_row)
+    )
 
     rows = [
         _reservation_row(
@@ -1009,8 +1187,12 @@ def test_reservations_clan_listing(monkeypatch):
     )
 
     thread_lookup = {
-        1300: FakeThread(1300, parent_id=700, name="W0471-User One-C1CE", owner_id=recruit.id),
-        1400: FakeThread(1400, parent_id=700, name="W0472-User Two-C1CE", owner_id=None),
+        1300: FakeThread(
+            1300, parent_id=700, name="W0471-User One-C1CE", owner_id=recruit.id
+        ),
+        1400: FakeThread(
+            1400, parent_id=700, name="W0472-User Two-C1CE", owner_id=None
+        ),
     }
 
     logs: list[str] = []
@@ -1039,7 +1221,9 @@ def test_reservations_clan_listing_requires_channel(monkeypatch):
     _setup_control_channels(monkeypatch, interact_channel=5555)
 
     guild = FakeGuild([])
-    channel = FakeThread(thread_id=4444, parent_id=0, name="general", owner_id=None, guild=guild)
+    channel = FakeThread(
+        thread_id=4444, parent_id=0, name="general", owner_id=None, guild=guild
+    )
     author = FakeMember(950)
 
     bot = FakeBot([], channels={channel.id: channel})
@@ -1062,7 +1246,9 @@ def test_reservations_clan_listing_allows_lead(monkeypatch):
     monkeypatch.setattr(reserve_module, "get_clan_lead_ids", lambda: {author.id})
 
     clan_row = ["", "Clan", "C1CM", ""] + [""] * 10
-    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag: (7, clan_row))
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (7, clan_row)
+    )
 
     rows = [
         _reservation_row(
@@ -1137,7 +1323,6 @@ def test_reservations_clan_listing_denies_non_lead(monkeypatch):
     assert "Only Recruiters (or Admins)" in ctx.replies[-1].content
 
 
-
 def test_reserve_release_global_success(monkeypatch):
     _enable_feature(monkeypatch, enabled=True)
     _setup_permissions(monkeypatch, recruiter=True)
@@ -1190,16 +1375,22 @@ def test_reserve_release_global_success(monkeypatch):
     async def fake_adjust(tag: str, delta: int):
         adjustments.append((tag, delta))
 
-    monkeypatch.setattr(reserve_module.availability, "adjust_manual_open_spots", fake_adjust)
+    monkeypatch.setattr(
+        reserve_module.availability, "adjust_manual_open_spots", fake_adjust
+    )
 
     recomputed: list[str] = []
 
     async def fake_recompute(tag: str, *, guild=None):
         recomputed.append(tag)
 
-    monkeypatch.setattr(reserve_module.availability, "recompute_clan_availability", fake_recompute)
+    monkeypatch.setattr(
+        reserve_module.availability, "recompute_clan_availability", fake_recompute
+    )
 
-    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag: (9, ["", "", tag, ""]))
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (9, ["", "", tag, ""])
+    )
 
     logs: list[str] = []
 
@@ -1228,7 +1419,9 @@ def test_reserve_release_allowed_outside_control(monkeypatch):
 
     recruit = FakeMember(940, "Release User")
     guild = FakeGuild([recruit])
-    thread = FakeThread(thread_id=8000, parent_id=600, name="W0001-Test", owner_id=recruit.id)
+    thread = FakeThread(
+        thread_id=8000, parent_id=600, name="W0001-Test", owner_id=recruit.id
+    )
     author = FakeMember(941)
 
     row = _reservation_row(
@@ -1266,16 +1459,22 @@ def test_reserve_release_allowed_outside_control(monkeypatch):
     async def fake_adjust(tag: str, delta: int):
         adjustments.append((tag, delta))
 
-    monkeypatch.setattr(reserve_module.availability, "adjust_manual_open_spots", fake_adjust)
+    monkeypatch.setattr(
+        reserve_module.availability, "adjust_manual_open_spots", fake_adjust
+    )
 
     recomputed: list[str] = []
 
     async def fake_recompute(tag: str, *, guild=None):
         recomputed.append(tag)
 
-    monkeypatch.setattr(reserve_module.availability, "recompute_clan_availability", fake_recompute)
+    monkeypatch.setattr(
+        reserve_module.availability, "recompute_clan_availability", fake_recompute
+    )
 
-    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag: (9, ["", "", tag, ""]))
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (9, ["", "", tag, ""])
+    )
 
     logs: list[str] = []
 
@@ -1314,7 +1513,9 @@ def test_reserve_release_global_not_found(monkeypatch):
     )
     author = FakeMember(932)
 
-    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag: (9, ["", "", tag, ""]))
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (9, ["", "", tag, ""])
+    )
 
     async def fake_lookup(*_, **__):
         return []
@@ -1351,7 +1552,13 @@ def test_reserve_release_global_multiple_rows(monkeypatch):
 
     recruit = FakeMember(932, "Release Multi")
     guild = FakeGuild([recruit])
-    channel = FakeThread(control_thread_id, parent_id=0, name="recruiters-control", owner_id=None, guild=guild)
+    channel = FakeThread(
+        control_thread_id,
+        parent_id=0,
+        name="recruiters-control",
+        owner_id=None,
+        guild=guild,
+    )
     author = FakeMember(933)
 
     rows = [
@@ -1382,7 +1589,9 @@ def test_reserve_release_global_multiple_rows(monkeypatch):
         fake_lookup,
     )
 
-    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag: (9, ["", "", tag, ""]))
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (9, ["", "", tag, ""])
+    )
 
     logs: list[str] = []
 
@@ -1408,7 +1617,9 @@ def test_reserve_extend_allowed_outside_control(monkeypatch):
 
     recruit = FakeMember(960, "Extend User")
     guild = FakeGuild([recruit])
-    thread = FakeThread(thread_id=9000, parent_id=600, name="W0002-Test", owner_id=recruit.id)
+    thread = FakeThread(
+        thread_id=9000, parent_id=600, name="W0002-Test", owner_id=recruit.id
+    )
     author = FakeMember(961)
 
     row = _reservation_row(
@@ -1441,7 +1652,9 @@ def test_reserve_extend_allowed_outside_control(monkeypatch):
         fake_extend,
     )
 
-    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag: (9, ["", "", tag, ""]))
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (9, ["", "", tag, ""])
+    )
 
     logs: list[str] = []
 
@@ -1454,7 +1667,11 @@ def test_reserve_extend_allowed_outside_control(monkeypatch):
     ctx = FakeContext(bot, guild=guild, channel=thread, author=author)
 
     cog = _make_cog(bot)
-    asyncio.run(cog.reserve.callback(cog, ctx, "extend", f"<@{recruit.id}>", "C1CE", "2999-01-01"))
+    asyncio.run(
+        cog.reserve.callback(
+            cog, ctx, "extend", f"<@{recruit.id}>", "C1CE", "2999-01-01"
+        )
+    )
 
     assert updated == [(19, dt.date(2999, 1, 1))]
     assert thread.sent and "Extended the reservation" in thread.sent[-1].content
@@ -1469,7 +1686,13 @@ def test_reserve_extend_global_success(monkeypatch):
 
     recruit = FakeMember(970, "Extend User")
     guild = FakeGuild([recruit])
-    channel = FakeThread(control_thread_id, parent_id=0, name="recruiters-control", owner_id=None, guild=guild)
+    channel = FakeThread(
+        control_thread_id,
+        parent_id=0,
+        name="recruiters-control",
+        owner_id=None,
+        guild=guild,
+    )
     author = FakeMember(971)
 
     row = _reservation_row(
@@ -1508,14 +1731,18 @@ def test_reserve_extend_global_success(monkeypatch):
         logs.append(message)
 
     monkeypatch.setattr(reserve_module.human_log, "human", fake_log)
-    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag: (9, ["", "", tag, ""]))
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (9, ["", "", tag, ""])
+    )
 
     bot = FakeBot([])
     ctx = FakeContext(bot, guild=guild, channel=channel, author=author)
 
     cog = _make_cog(bot)
     asyncio.run(
-        cog.reserve.callback(cog, ctx, "extend", f"<@{recruit.id}>", "C1CE", "2999-01-01")
+        cog.reserve.callback(
+            cog, ctx, "extend", f"<@{recruit.id}>", "C1CE", "2999-01-01"
+        )
     )
 
     assert updates == [(14, dt.date(2999, 1, 1))]
@@ -1531,7 +1758,13 @@ def test_reserve_extend_global_invalid_date(monkeypatch):
 
     recruit = FakeMember(980, "Extend Fail")
     guild = FakeGuild([recruit])
-    channel = FakeThread(control_thread_id, parent_id=0, name="recruiters-control", owner_id=None, guild=guild)
+    channel = FakeThread(
+        control_thread_id,
+        parent_id=0,
+        name="recruiters-control",
+        owner_id=None,
+        guild=guild,
+    )
     author = FakeMember(981)
 
     row = _reservation_row(
@@ -1559,13 +1792,19 @@ def test_reserve_extend_global_invalid_date(monkeypatch):
         logs.append(message)
 
     monkeypatch.setattr(reserve_module.human_log, "human", fake_log)
-    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag: (9, ["", "", tag, ""]))
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (9, ["", "", tag, ""])
+    )
 
     bot = FakeBot([])
     ctx = FakeContext(bot, guild=guild, channel=channel, author=author)
 
     cog = _make_cog(bot)
-    asyncio.run(cog.reserve.callback(cog, ctx, "extend", f"<@{recruit.id}>", "C1CE", "2020-01-01"))
+    asyncio.run(
+        cog.reserve.callback(
+            cog, ctx, "extend", f"<@{recruit.id}>", "C1CE", "2020-01-01"
+        )
+    )
 
     assert ctx.replies, "expected invalid date message"
     assert "valid date" in ctx.replies[-1].content
@@ -1580,7 +1819,13 @@ def test_reserve_extend_global_not_found(monkeypatch):
 
     recruit = FakeMember(981, "Extend Missing")
     guild = FakeGuild([recruit])
-    channel = FakeThread(control_thread_id, parent_id=0, name="recruiters-control", owner_id=None, guild=guild)
+    channel = FakeThread(
+        control_thread_id,
+        parent_id=0,
+        name="recruiters-control",
+        owner_id=None,
+        guild=guild,
+    )
     author = FakeMember(982)
 
     async def fake_lookup(*_, **__):
@@ -1592,7 +1837,9 @@ def test_reserve_extend_global_not_found(monkeypatch):
         fake_lookup,
     )
 
-    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag: (9, ["", "", tag, ""]))
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (9, ["", "", tag, ""])
+    )
 
     logs: list[str] = []
 
@@ -1605,7 +1852,11 @@ def test_reserve_extend_global_not_found(monkeypatch):
     ctx = FakeContext(bot, guild=guild, channel=channel, author=author)
 
     cog = _make_cog(bot)
-    asyncio.run(cog.reserve.callback(cog, ctx, "extend", f"<@{recruit.id}>", "C1CE", "2030-01-01"))
+    asyncio.run(
+        cog.reserve.callback(
+            cog, ctx, "extend", f"<@{recruit.id}>", "C1CE", "2030-01-01"
+        )
+    )
 
     assert ctx.replies and "No active reservation" in ctx.replies[-1].content
     assert any("result=not_found" in entry for entry in logs)
@@ -1619,7 +1870,13 @@ def test_reserve_extend_global_multiple_rows(monkeypatch):
 
     recruit = FakeMember(982, "Extend Multi")
     guild = FakeGuild([recruit])
-    channel = FakeThread(control_thread_id, parent_id=0, name="recruiters-control", owner_id=None, guild=guild)
+    channel = FakeThread(
+        control_thread_id,
+        parent_id=0,
+        name="recruiters-control",
+        owner_id=None,
+        guild=guild,
+    )
     author = FakeMember(983)
 
     rows = [
@@ -1650,7 +1907,9 @@ def test_reserve_extend_global_multiple_rows(monkeypatch):
         fake_lookup,
     )
 
-    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", lambda tag: (9, ["", "", tag, ""]))
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (9, ["", "", tag, ""])
+    )
 
     logs: list[str] = []
 
@@ -1663,7 +1922,235 @@ def test_reserve_extend_global_multiple_rows(monkeypatch):
     ctx = FakeContext(bot, guild=guild, channel=channel, author=author)
 
     cog = _make_cog(bot)
-    asyncio.run(cog.reserve.callback(cog, ctx, "extend", f"<@{recruit.id}>", "C1CE", "2030-01-01"))
+    asyncio.run(
+        cog.reserve.callback(
+            cog, ctx, "extend", f"<@{recruit.id}>", "C1CE", "2030-01-01"
+        )
+    )
 
     assert ctx.replies and "Multiple reservations" in ctx.replies[-1].content
     assert any("reason=multiple_rows" in entry for entry in logs)
+
+
+def test_reservation_preflight_failure_does_not_append(monkeypatch):
+    _enable_feature(monkeypatch, enabled=True)
+    _setup_parents(monkeypatch, parent_id=999)
+    _setup_permissions(monkeypatch, recruiter=True)
+    _setup_control_channels(monkeypatch)
+
+    recruit = FakeMember(333, "Recruit Blocked")
+    guild = FakeGuild([recruit])
+    thread = FakeThread(thread_id=557, parent_id=999)
+    author = FakeMember(112, "Recruiter")
+    bot = FakeBot([])
+    ctx = FakeContext(bot, guild=guild, channel=thread, author=author)
+
+    appended: list[list[str]] = []
+
+    async def failing_preflight(_tag, *, delta=0):
+        raise ValueError("configured bot_info header not found for open_spots: missing")
+
+    monkeypatch.setattr(
+        reserve_module.availability,
+        "preflight_clan_availability_update",
+        failing_preflight,
+    )
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "append_reservation_row",
+        lambda row: appended.append(row),
+    )
+
+    cog = _make_cog(bot)
+    asyncio.run(cog.reserve.callback(cog, ctx, "ABC"))
+
+    assert appended == []
+    assert any(
+        "no reservation was created" in (reply.content or "") for reply in ctx.replies
+    )
+
+
+def _use_configured_ak_clan_tag(monkeypatch):
+    header = [""] * 37
+    header[4] = "manual_open_spots"
+    header[31] = "open_spots"
+    header[32] = "inactives"
+    header[33] = "reservation_count"
+    header[34] = "reservation_summary"
+    header[35] = "manual_open_spots_seen"
+    header[36] = "clan_tag"
+    row = [""] * 37
+    row[4] = "3"
+    row[31] = "3"
+    row[32] = "0"
+    row[33] = "0"
+    row[35] = "3"
+    row[36] = "C1CE"
+    config = {
+        f"clans_header_{field}": field
+        for field in reserve_module.availability.AVAILABILITY_FIELDS
+    }
+    monkeypatch.setattr(
+        reserve_module.recruitment, "get_clans_tab_name", lambda: "bot_info"
+    )
+    monkeypatch.setattr(
+        reserve_module.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
+    )
+    monkeypatch.setattr(
+        reserve_module.recruitment, "get_clan_header_row", lambda force=False: header
+    )
+    monkeypatch.setattr(
+        reserve_module.recruitment,
+        "get_config_value",
+        lambda key, default=None: config.get(key, default),
+    )
+    monkeypatch.setattr(
+        reserve_module.recruitment, "fetch_clans", lambda force=False: [list(row)]
+    )
+    monkeypatch.setattr(
+        reserve_module.recruitment,
+        "find_clan_row",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("column C lookup should not be used")
+        ),
+    )
+    monkeypatch.setattr(
+        reserve_module,
+        "_resolve_configured_reservation_clan_tag",
+        reserve_module.availability.resolve_configured_clan_tag,
+    )
+
+
+def test_reserve_release_uses_configured_clan_tag_header_not_column_c(monkeypatch):
+    _enable_feature(monkeypatch, enabled=True)
+    _setup_permissions(monkeypatch, recruiter=True)
+    _setup_control_channels(monkeypatch, recruiters_thread=2500)
+    _use_configured_ak_clan_tag(monkeypatch)
+
+    recruit = FakeMember(3001, "Release AK")
+    guild = FakeGuild([recruit])
+    channel = FakeThread(2500, parent_id=0, name="recruiters-control", guild=guild)
+    author = FakeMember(3002)
+    row = _reservation_row(21, clan_tag="C1CE", ticket_user_id=recruit.id)
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "find_active_reservations_for_recruit",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=[row]),
+    )
+    updated: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "update_reservation_status",
+        lambda row_number, status: asyncio.sleep(
+            0, result=updated.append((row_number, status))
+        ),
+    )
+    monkeypatch.setattr(
+        reserve_module.availability,
+        "adjust_manual_open_spots",
+        lambda *_args, **_kwargs: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        reserve_module.availability,
+        "recompute_clan_availability",
+        lambda *_args, **_kwargs: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        reserve_module.human_log, "human", lambda *_args, **_kwargs: None
+    )
+
+    bot = FakeBot([])
+    ctx = FakeContext(bot, guild=guild, channel=channel, author=author)
+    cog = _make_cog(bot)
+    asyncio.run(cog.reserve.callback(cog, ctx, "release", f"<@{recruit.id}>", "C1CE"))
+
+    assert updated == [(21, "released")]
+    assert channel.sent and "Released the reserved seat" in channel.sent[-1].content
+
+
+def test_reserve_extend_uses_configured_clan_tag_header_not_column_c(monkeypatch):
+    _enable_feature(monkeypatch, enabled=True)
+    _setup_permissions(monkeypatch, recruiter=True)
+    _setup_control_channels(monkeypatch, recruiters_thread=2600)
+    _use_configured_ak_clan_tag(monkeypatch)
+
+    recruit = FakeMember(3011, "Extend AK")
+    guild = FakeGuild([recruit])
+    channel = FakeThread(2600, parent_id=0, name="recruiters-control", guild=guild)
+    author = FakeMember(3012)
+    row = _reservation_row(22, clan_tag="C1CE", ticket_user_id=recruit.id)
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "find_active_reservations_for_recruit",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=[row]),
+    )
+    updated: list[tuple[int, dt.date]] = []
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "update_reservation_expiry",
+        lambda row_number, new_date: asyncio.sleep(
+            0, result=updated.append((row_number, new_date))
+        ),
+    )
+    monkeypatch.setattr(
+        reserve_module.human_log, "human", lambda *_args, **_kwargs: None
+    )
+
+    bot = FakeBot([])
+    ctx = FakeContext(bot, guild=guild, channel=channel, author=author)
+    cog = _make_cog(bot)
+    asyncio.run(
+        cog.reserve.callback(
+            cog, ctx, "extend", f"<@{recruit.id}>", "C1CE", "2999-01-01"
+        )
+    )
+
+    assert updated == [(22, dt.date(2999, 1, 1))]
+    assert channel.sent and "Extended the reservation" in channel.sent[-1].content
+
+
+def test_reservations_clan_listing_uses_configured_clan_tag_header_not_column_c(
+    monkeypatch,
+):
+    _enable_feature(monkeypatch, enabled=True)
+    _setup_permissions(monkeypatch, recruiter=True)
+    _setup_parents(monkeypatch, parent_id=700)
+    _setup_control_channels(monkeypatch, interact_channel=1200)
+    _use_configured_ak_clan_tag(monkeypatch)
+
+    recruit = FakeMember(3021, "List AK")
+    guild = FakeGuild([recruit])
+    channel = FakeThread(1200, parent_id=0, name="recruitment-interact", guild=guild)
+    rows = [
+        _reservation_row(
+            23,
+            clan_tag="C1CE",
+            thread_id=1300,
+            ticket_user_id=recruit.id,
+            username_snapshot="List AK",
+        )
+    ]
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "get_active_reservations_for_clan",
+        lambda tag: asyncio.sleep(0, result=list(rows)),
+    )
+    monkeypatch.setattr(
+        reserve_module.human_log, "human", lambda *_args, **_kwargs: None
+    )
+    bot = FakeBot(
+        [],
+        channels={
+            1300: FakeThread(
+                1300, parent_id=700, name="W3021-List AK-C1CE", owner_id=recruit.id
+            ),
+            1200: channel,
+        },
+    )
+    ctx = FakeContext(bot, guild=guild, channel=channel, author=FakeMember(3022))
+
+    cog = _make_cog(bot)
+    asyncio.run(cog.reservations_command.callback(cog, ctx, "C1CE"))
+
+    assert channel.sent, "expected clan reservation listing"
+    assert "ticket W3021" in channel.sent[0].content

@@ -3761,31 +3761,24 @@ class WelcomeTicketWatcher(commands.Cog):
             decision_open_deltas = dict(decision.open_deltas)
 
             preflight_failed = False
-            should_preflight_open_deltas = (
-                getattr(availability.adjust_manual_open_spots, "__module__", "")
-                == "modules.recruitment.availability"
-                or getattr(
-                    availability.preflight_manual_open_spots_adjustment,
-                    "__module__",
-                    "",
-                )
-                != "modules.recruitment.availability"
-            )
-            for tag, delta in (
-                decision_open_deltas.items() if should_preflight_open_deltas else ()
-            ):
+            preflight_targets: "OrderedDict[str, int]" = OrderedDict()
+            for tag, delta in decision_open_deltas.items():
+                preflight_targets[tag] = delta
+            for tag in decision.recompute_tags:
+                preflight_targets.setdefault(tag, 0)
+            for tag, delta in preflight_targets.items():
                 try:
-                    await availability.preflight_manual_open_spots_adjustment(
-                        tag, delta
+                    await availability.preflight_clan_availability_update(
+                        tag, delta=delta
                     )
                 except Exception:
                     preflight_failed = True
                     actions_ok = False
                     delta_failure_reason = (
-                        f"preflight_manual_open_spots_failed:{tag}:{delta}"
+                        f"preflight_availability_failed:{tag}:{delta}"
                     )
                     log.exception(
-                        "welcome placement blocked before Discord/member actions because open spot adjustment preflight failed",
+                        "welcome placement blocked before Discord/member actions because availability preflight failed",
                         extra={
                             "clan_tag": tag,
                             "delta": delta,

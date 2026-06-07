@@ -143,7 +143,9 @@ class ReservationConversation:
 
             mention = next(iter(getattr(message, "mentions", []) or []), None)
             if mention is not None:
-                display = getattr(mention, "mention", f"<@{getattr(mention, 'id', '???')}>")
+                display = getattr(
+                    mention, "mention", f"<@{getattr(mention, 'id', '???')}>"
+                )
                 ticket_username = _display_name(mention)
                 return getattr(mention, "id", None), display, ticket_username
 
@@ -211,17 +213,19 @@ class ReservationConversation:
                 raise ReservationFlowAbort("cancelled")
             if content:
                 return content
-            await self.ctx.send("Please add a short reason (or type `cancel` to abort).")
+            await self.ctx.send(
+                "Please add a short reason (or type `cancel` to abort)."
+            )
 
-    async def _confirm(
-        self, display: str, reserved_until: dt.date, notes: str
-    ) -> str:
+    async def _confirm(self, display: str, reserved_until: dt.date, notes: str) -> str:
         lines = [
             f"Reserve 1 spot in `{self._clan_label}` for {display} until `{reserved_until.isoformat()}`.",
         ]
         if notes:
             lines.append(f"Reason: {notes}")
-        lines.append("Type `yes` to save, `no` to cancel, or `change` to edit the recruit/date.")
+        lines.append(
+            "Type `yes` to save, `no` to cancel, or `change` to edit the recruit/date."
+        )
         await self.ctx.send("\n".join(lines))
 
         while True:
@@ -233,7 +237,9 @@ class ReservationConversation:
             if content in {"yes", "y"}:
                 return "yes"
             if content in {"change", "c"}:
-                await self.ctx.send("Type `user` to change the recruit or `date` to change the end date.")
+                await self.ctx.send(
+                    "Type `user` to change the recruit or `date` to change the end date."
+                )
                 while True:
                     followup = await self._next_message()
                     follow_content = (followup.content or "").strip().lower()
@@ -244,9 +250,13 @@ class ReservationConversation:
                         return "user"
                     if "date" in follow_content:
                         return "date"
-                    await self.ctx.send("Please type `user` or `date`, or `cancel` to abort.")
+                    await self.ctx.send(
+                        "Please type `user` or `date`, or `cancel` to abort."
+                    )
                 continue
-            await self.ctx.send("Please reply with `yes`, `no`, or `change` (or type `cancel`).")
+            await self.ctx.send(
+                "Please reply with `yes`, `no`, or `change` (or type `cancel`)."
+            )
 
     async def _next_message(self) -> discord.Message:
         if self._wait_for is None:
@@ -290,6 +300,11 @@ def _resolve_member(guild: object, member_id: int):
                 extra={"member_id": member_id},
             )
     return None
+
+
+def _resolve_configured_reservation_clan_tag(clan_tag: str) -> str:
+    """Resolve the sheet clan tag through the availability Config clan_tag header."""
+    return availability.resolve_configured_clan_tag(clan_tag)
 
 
 def _normalize_tag(tag: str | None) -> str:
@@ -354,7 +369,11 @@ def _is_ticket_thread(channel: object) -> bool:
 
 
 def _reservations_enabled() -> bool:
-    for key in ("FEATURE_RESERVATIONS", "feature_reservations", "placement_reservations"):
+    for key in (
+        "FEATURE_RESERVATIONS",
+        "feature_reservations",
+        "placement_reservations",
+    ):
         try:
             if feature_flags.is_enabled(key):
                 return True
@@ -363,7 +382,9 @@ def _reservations_enabled() -> bool:
     return False
 
 
-async def _ensure_fresh_clans_for_reservations(*, actor: str, clan_tag: str, user: str, source: str) -> bool:
+async def _ensure_fresh_clans_for_reservations(
+    *, actor: str, clan_tag: str, user: str, source: str
+) -> bool:
     """Require a sync-fresh clans cache before reservation availability recompute."""
     try:
         await cache_telemetry.refresh_now("clans", actor=actor)
@@ -430,7 +451,9 @@ def _reservation_display_date(reserved_until: dt.date | None) -> str:
     return reserved_until.isoformat()
 
 
-def _reservation_creator_display(guild: discord.Guild | None, recruiter_id: Optional[int]) -> str:
+def _reservation_creator_display(
+    guild: discord.Guild | None, recruiter_id: Optional[int]
+) -> str:
     if recruiter_id is None:
         return "unknown recruiter"
     if guild is not None:
@@ -478,7 +501,9 @@ def _thread_recruit_display(
     parsed_username: str,
 ) -> str:
     for row in rows:
-        display = _reservation_user_display(guild, row, fallback_username=parsed_username)
+        display = _reservation_user_display(
+            guild, row, fallback_username=parsed_username
+        )
         if display:
             return display
     return parsed_username
@@ -757,20 +782,50 @@ class ReservationCog(commands.Cog):
             mention_text = getattr(member, "mention", f"<@{member_id}>")
             preset_user = (member_id, mention_text, _display_name(member))
 
-        clan_entry = recruitment.find_clan_row(clan_tag)
-        if clan_entry is None:
+        try:
+            preflight_plan = await availability.preflight_clan_availability_update(
+                clan_tag
+            )
+        except ValueError as exc:
+            reason = str(exc)
+            if reason.startswith("Unknown clan tag"):
+                await ctx.reply(
+                    f"I don’t know the clan tag `{clan_tag}`. Please check the tag and try again.",
+                    mention_author=False,
+                )
+            else:
+                log.exception(
+                    "reservation availability preflight failed before prompt",
+                    extra={"clan_tag": _normalize_tag(clan_tag), "reason": reason},
+                )
+                await ctx.reply(
+                    "I could not verify the clan availability sheet configuration/value, so no reservation was created. Please contact an admin and try again after it is fixed.",
+                    mention_author=False,
+                )
+            return
+        except Exception as exc:
+            log.exception(
+                "reservation availability preflight failed before prompt",
+                extra={"clan_tag": _normalize_tag(clan_tag), "reason": repr(exc)},
+            )
             await ctx.reply(
-                f"I don’t know the clan tag `{clan_tag}`. Please check the tag and try again.",
+                "I could not verify the clan availability sheet configuration/value, so no reservation was created. Please contact an admin and try again after it is fixed.",
                 mention_author=False,
             )
             return
 
-        _, row = clan_entry
-        sheet_tag = row[2] if len(row) > 2 and row[2] else clan_tag
-        manual_open = _parse_manual_open(row)
+        tag_index = preflight_plan.headers.header_map["clan_tag"]
+        sheet_tag = (
+            preflight_plan.row[tag_index]
+            if tag_index < len(preflight_plan.row) and preflight_plan.row[tag_index]
+            else clan_tag
+        )
+        manual_open = preflight_plan.numeric_values["manual_open_spots"]
 
         try:
-            active_reservations = await reservations.count_active_reservations_for_clan(sheet_tag)
+            active_reservations = await reservations.count_active_reservations_for_clan(
+                sheet_tag
+            )
         except Exception:
             log.exception(
                 "failed to count active reservations",
@@ -824,11 +879,21 @@ class ReservationCog(commands.Cog):
         if existing_matches:
             existing_matches.sort(key=_reservation_sort_key)
             blocker = existing_matches[0]
-            blocker_tag = blocker.normalized_clan_tag or (blocker.clan_tag or "unknown clan")
+            blocker_tag = blocker.normalized_clan_tag or (
+                blocker.clan_tag or "unknown clan"
+            )
             ticket_label = "unknown"
             blocker_thread = await _resolve_thread(self.bot, blocker.thread_id)
-            thread_label = _thread_name(blocker_thread) if blocker_thread is not None else "unknown thread"
-            parts = parse_welcome_thread_name(getattr(blocker_thread, "name", None)) if blocker_thread else None
+            thread_label = (
+                _thread_name(blocker_thread)
+                if blocker_thread is not None
+                else "unknown thread"
+            )
+            parts = (
+                parse_welcome_thread_name(getattr(blocker_thread, "name", None))
+                if blocker_thread
+                else None
+            )
             if parts and parts.ticket_code:
                 ticket_label = parts.ticket_code
             control_hint = _control_thread_hint()
@@ -865,6 +930,26 @@ class ReservationCog(commands.Cog):
             details.notes,
             username_snapshot or "",
         ]
+
+        try:
+            preflight_plan = await availability.preflight_clan_availability_update(
+                sheet_tag
+            )
+        except Exception as exc:
+            log.exception(
+                "reservation availability preflight failed before append",
+                extra={
+                    "clan_tag": _normalize_tag(sheet_tag),
+                    "thread_id": getattr(ctx.channel, "id", None),
+                    "ticket_user_id": details.ticket_user_id,
+                    "error_type": type(exc).__name__,
+                    "error": repr(exc),
+                },
+            )
+            await ctx.send(
+                "I could not verify the clan availability sheet configuration/value, so no reservation row was added. Please fix the sheet configuration/value and try again."
+            )
+            return
 
         try:
             await reservations.append_reservation_row(row_values)
@@ -998,7 +1083,6 @@ class ReservationCog(commands.Cog):
             },
         )
 
-
     async def _handle_release(self, ctx: commands.Context, args: list[str]) -> None:
         if not _reservations_enabled():
             await ctx.reply(
@@ -1016,7 +1100,9 @@ class ReservationCog(commands.Cog):
 
         await self._handle_global_release(ctx, args)
 
-    async def _handle_global_release(self, ctx: commands.Context, args: list[str]) -> None:
+    async def _handle_global_release(
+        self, ctx: commands.Context, args: list[str]
+    ) -> None:
         if len(args) < 2:
             await ctx.reply(
                 "Usage: `!reserve release @user <clan_tag>`.",
@@ -1041,15 +1127,15 @@ class ReservationCog(commands.Cog):
             return
 
         clan_tag = args[1]
-        clan_entry = recruitment.find_clan_row(clan_tag)
-        if clan_entry is None:
+        try:
+            sheet_tag = _resolve_configured_reservation_clan_tag(clan_tag)
+        except ValueError:
             await ctx.reply(
                 f"I don’t know the clan tag `{clan_tag}`. Please check the tag and try again.",
                 mention_author=False,
             )
             return
 
-        sheet_tag = clan_entry[1][2] if len(clan_entry[1]) > 2 and clan_entry[1][2] else clan_tag
         normalized_tag = _normalize_tag(sheet_tag)
         display_member = getattr(member, "mention", f"<@{member_id}>")
         member_name = _display_name(member)
@@ -1150,7 +1236,9 @@ class ReservationCog(commands.Cog):
                     },
                 )
             try:
-                await availability.recompute_clan_availability(sheet_tag, guild=ctx.guild)
+                await availability.recompute_clan_availability(
+                    sheet_tag, guild=ctx.guild
+                )
             except Exception:
                 log.exception(
                     "failed to recompute availability after global release",
@@ -1175,7 +1263,6 @@ class ReservationCog(commands.Cog):
             ),
         )
 
-
     async def _handle_extend(self, ctx: commands.Context, args: list[str]) -> None:
         if not _reservations_enabled():
             await ctx.reply(
@@ -1193,7 +1280,9 @@ class ReservationCog(commands.Cog):
 
         await self._handle_global_extend(ctx, args)
 
-    async def _handle_global_extend(self, ctx: commands.Context, args: list[str]) -> None:
+    async def _handle_global_extend(
+        self, ctx: commands.Context, args: list[str]
+    ) -> None:
         if len(args) < 3:
             await ctx.reply(
                 "Usage: `!reserve extend @user <clan_tag> <YYYY-MM-DD>`.",
@@ -1218,15 +1307,15 @@ class ReservationCog(commands.Cog):
             return
 
         clan_tag = args[1]
-        clan_entry = recruitment.find_clan_row(clan_tag)
-        if clan_entry is None:
+        try:
+            sheet_tag = _resolve_configured_reservation_clan_tag(clan_tag)
+        except ValueError:
             await ctx.reply(
                 f"I don’t know the clan tag `{clan_tag}`. Please check the tag and try again.",
                 mention_author=False,
             )
             return
 
-        sheet_tag = clan_entry[1][2] if len(clan_entry[1]) > 2 and clan_entry[1][2] else clan_tag
         normalized_tag = _normalize_tag(sheet_tag)
         display_member = getattr(member, "mention", f"<@{member_id}>")
         member_name = _display_name(member)
@@ -1361,7 +1450,6 @@ class ReservationCog(commands.Cog):
             ),
         )
 
-
     @tier("staff")
     @help_metadata(
         function_group="recruitment",
@@ -1373,7 +1461,9 @@ class ReservationCog(commands.Cog):
         help="List active reservations for a recruit or clan.",
         brief="Show active reservation details.",
     )
-    async def reservations_command(self, ctx: commands.Context, clan_tag: str | None = None) -> None:
+    async def reservations_command(
+        self, ctx: commands.Context, clan_tag: str | None = None
+    ) -> None:
         if not _reservations_enabled():
             await ctx.reply(
                 "Reservations are currently disabled. Please poke an admin if you think this is wrong.",
@@ -1447,7 +1537,9 @@ class ReservationCog(commands.Cog):
             if stamp is not None and stamp.tzinfo is None:
                 stamp = stamp.replace(tzinfo=dt.timezone.utc)
             if stamp is None and row.reserved_until is not None:
-                stamp = dt.datetime.combine(row.reserved_until, dt.time.min, dt.timezone.utc)
+                stamp = dt.datetime.combine(
+                    row.reserved_until, dt.time.min, dt.timezone.utc
+                )
             return stamp
 
         recent: list[tuple[dt.datetime, reservations.ReservationRow]] = []
@@ -1458,7 +1550,9 @@ class ReservationCog(commands.Cog):
             recent.append((stamp, row))
 
         if not recent:
-            await ctx.send("No reservations have been created or updated in the last 28 days.")
+            await ctx.send(
+                "No reservations have been created or updated in the last 28 days."
+            )
             human_log.human(
                 "info",
                 "🧭 reservations_global — channel=%s • count=0 • window=28d • result=empty"
@@ -1512,9 +1606,11 @@ class ReservationCog(commands.Cog):
         human_log.human(
             "info",
             "🧭 reservations_global — channel=%s • count=%d • window=28d • result=ok"
-            % (channel_label(ctx.guild, getattr(ctx.channel, "id", None)), len(entries)),
+            % (
+                channel_label(ctx.guild, getattr(ctx.channel, "id", None)),
+                len(entries),
+            ),
         )
-
 
     async def _handle_thread_reservations(self, ctx: commands.Context) -> None:
         if not _is_ticket_thread(ctx.channel):
@@ -1574,7 +1670,9 @@ class ReservationCog(commands.Cog):
             return
 
         if view.status == "mismatch" and view.reservation is not None:
-            ledger_tag = view.reservation.normalized_clan_tag or (view.reservation.clan_tag or "unknown")
+            ledger_tag = view.reservation.normalized_clan_tag or (
+                view.reservation.clan_tag or "unknown"
+            )
             thread_tag = view.thread_tag_display or "unknown"
             await ctx.send(
                 (
@@ -1624,10 +1722,12 @@ class ReservationCog(commands.Cog):
             % (view.context.ticket_code, view.context.username, thread_label),
         )
 
-
-    async def _handle_clan_reservations(self, ctx: commands.Context, clan_tag: str) -> None:
-        entry = recruitment.find_clan_row(clan_tag)
-        if entry is None:
+    async def _handle_clan_reservations(
+        self, ctx: commands.Context, clan_tag: str
+    ) -> None:
+        try:
+            sheet_tag = _resolve_configured_reservation_clan_tag(clan_tag)
+        except ValueError:
             await ctx.reply(
                 f"I don’t know the clan tag `{clan_tag}`. Please check the tag and try again.",
                 mention_author=False,
@@ -1638,8 +1738,6 @@ class ReservationCog(commands.Cog):
                 % clan_tag,
             )
             return
-
-        sheet_tag = entry[1][2] if len(entry[1]) > 2 and entry[1][2] else clan_tag
 
         try:
             rows = await reservations.get_active_reservations_for_clan(sheet_tag)
@@ -1666,7 +1764,8 @@ class ReservationCog(commands.Cog):
             await ctx.send(f"No active reservations for `{sheet_tag}`.")
             human_log.human(
                 "info",
-                "🧭 reservations_list — clan=%s • count=0 • scope=clan • result=empty" % sheet_tag,
+                "🧭 reservations_list — clan=%s • count=0 • scope=clan • result=empty"
+                % sheet_tag,
             )
             return
 
@@ -1681,12 +1780,12 @@ class ReservationCog(commands.Cog):
                     ticket_code = parts.ticket_code
                     if parts.username:
                         username = parts.username
-            user_display = _reservation_user_display(ctx.guild, row, fallback_username=username)
+            user_display = _reservation_user_display(
+                ctx.guild, row, fallback_username=username
+            )
             expiry = _reservation_display_date(row.reserved_until)
             ticket_label = ticket_code or "unknown"
-            lines.append(
-                f"• {user_display} — expires {expiry} (ticket {ticket_label})"
-            )
+            lines.append(f"• {user_display} — expires {expiry} (ticket {ticket_label})")
 
         await ctx.send("\n".join(lines))
 
@@ -1697,7 +1796,9 @@ class ReservationCog(commands.Cog):
         )
 
 
-async def _resolve_thread(bot: commands.Bot, thread_id: str | int | None) -> Optional[object]:
+async def _resolve_thread(
+    bot: commands.Bot, thread_id: str | int | None
+) -> Optional[object]:
     if thread_id is None:
         return None
     try:
