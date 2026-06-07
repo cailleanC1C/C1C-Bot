@@ -22,4 +22,5 @@ class ResetReminder:
     button_label_opt_in: str
     button_label_opt_out: str
     last_sent_for_reset_utc: Optional[datetime]
+    next_scheduled_post_utc: Optional[datetime]
     last_message_id: Optional[int]
