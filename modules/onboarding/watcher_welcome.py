@@ -24,7 +24,6 @@ from modules.onboarding.ui import panels
 from modules.onboarding.controllers.welcome_controller import (
     extract_target_from_message,
     locate_welcome_message,
-    locate_welcome_trigger_message,
 )
 from modules.onboarding.sheet_logging import log_sheet_write
 from modules.onboarding.sessions import Session, ensure_session_for_thread
@@ -125,8 +124,6 @@ def _inspect_stable_welcome_intro_message(
     if "welcome to c1c" not in content:
         return False, "missing_welcome_phrase"
 
-    author = getattr(message, "author", None)
-    author_name = (getattr(author, "name", "") or "").strip()
     # Ticket Tool author remains a strong operational hint, but is not required for a match.
 
     if index >= 5:
@@ -1413,25 +1410,60 @@ async def _process_promo_thread(
         )
 
 
+def _parse_reservable_ticket_thread_name(name: str | None) -> Optional[ThreadNameParts]:
+    """Parse welcome or promo ticket thread names for reservation renames."""
+
+    parts = parse_welcome_thread_name(name)
+    if parts is not None:
+        return parts
+
+    normalized = (name or "").strip()
+    prefix_match = re.match(
+        r"^(?P<prefix>res|closed)[-_\s]+", normalized, re.IGNORECASE
+    )
+    state_prefix = prefix_match.group("prefix") if prefix_match else None
+    promo_name = normalized[prefix_match.end() :] if prefix_match else normalized
+    promo_parts = parse_promo_thread_name(promo_name)
+    if promo_parts is None:
+        return None
+    username = promo_parts.username
+    clan_tag = promo_parts.clan_tag
+    if state_prefix and clan_tag is None:
+        username_parts = re.split(r"[-_\s]+", username)
+        possible_tag = username_parts[-1] if len(username_parts) > 1 else ""
+        if re.fullmatch(r"[A-Z0-9]+", possible_tag or ""):
+            clan_tag = possible_tag
+            username = "-".join(part for part in username_parts[:-1] if part)
+    return ThreadNameParts(
+        ticket_code=promo_parts.ticket_code,
+        username=username,
+        prefix=state_prefix,
+        clan_tag=clan_tag,
+    )
+
+
 async def rename_thread_to_reserved(thread: discord.Thread, clan_tag: str) -> bool:
     """Rename ``thread`` to the reserved naming pattern if applicable."""
 
-    parts = parse_welcome_thread_name(getattr(thread, "name", None))
+    parts = _parse_reservable_ticket_thread_name(getattr(thread, "name", None))
     normalized_tag = (clan_tag or "").strip().upper()
 
     if parts is None:
         thread_name = getattr(thread, "name", "unknown")
         log.error(
-            "❌ welcome_reserve_rename_error — ticket=unknown • tag=%s • thread=%s • result=skipped_unparsed",
-            normalized_tag,
-            thread_name,
+            "reservation thread rename skipped",
+            extra={
+                "current_thread_name": thread_name,
+                "clan_tag": normalized_tag,
+                "reason": "parse_failed",
+            },
         )
         human_log.human(
             "error",
             (
-                "❌ welcome_reserve_rename_error — scope=welcome "
-                f"• ticket=unknown • tag={normalized_tag} • thread={thread_name} "
-                "• reason=thread_name_unparsed"
+                "❌ reservation_thread_rename — result=skipped "
+                f"• thread={thread_name} • tag={normalized_tag} "
+                "• reason=parse_failed"
             ),
         )
         return False
@@ -1459,13 +1491,16 @@ async def rename_thread_to_reserved(thread: discord.Thread, clan_tag: str) -> bo
 
     try:
         await thread.edit(name=new_name)
-    except Exception:
+    except Exception as exc:
         log.exception(
-            "failed to rename welcome thread for reservation",
+            "failed to rename reservation thread",
             extra={
                 "thread_id": getattr(thread, "id", None),
+                "old_name": getattr(thread, "name", None),
+                "attempted_new_name": new_name,
+                "clan_tag": normalized_tag,
+                "exception": repr(exc),
                 "ticket": parts.ticket_code,
-                "tag": normalized_tag,
             },
         )
         log.warning(
@@ -2202,7 +2237,7 @@ class WelcomeWatcher(commands.Cog):
 
         channel_id = get_welcome_channel_id()
         if not channel_id:
-            line = log_lifecycle(
+            log_lifecycle(
                 log,
                 "welcome",
                 "enabled",
@@ -2217,7 +2252,7 @@ class WelcomeWatcher(commands.Cog):
             channel_id_int = int(channel_id)
         except (TypeError, ValueError):
             self.channel_id = None
-            line = log_lifecycle(
+            log_lifecycle(
                 log,
                 "welcome",
                 "enabled",
@@ -2232,7 +2267,7 @@ class WelcomeWatcher(commands.Cog):
         self.channel_id = channel_id_int
 
         if not feature_flags.is_enabled("welcome_dialog"):
-            line = log_lifecycle(
+            log_lifecycle(
                 log,
                 "welcome",
                 "enabled",
@@ -2244,7 +2279,7 @@ class WelcomeWatcher(commands.Cog):
             return
 
         if not feature_flags.is_enabled("recruitment_welcome"):
-            line = log_lifecycle(
+            log_lifecycle(
                 log,
                 "welcome",
                 "enabled",
@@ -2279,7 +2314,7 @@ class WelcomeWatcher(commands.Cog):
             )
         else:
             reason = self._onb_reg_error or "unknown"
-            line = log_lifecycle(
+            log_lifecycle(
                 log,
                 "welcome",
                 "enabled",
