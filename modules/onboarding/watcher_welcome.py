@@ -85,7 +85,9 @@ _PROMO_TYPE_MAP = {
 }
 
 
-async def _ensure_fresh_clans_for_placement(*, actor: str, ticket: str, user: str) -> bool:
+async def _ensure_fresh_clans_for_placement(
+    *, actor: str, ticket: str, user: str
+) -> bool:
     """Require a sync-fresh clans bucket before placement seat math."""
     try:
         await cache_telemetry.refresh_now("clans", actor=actor)
@@ -111,7 +113,6 @@ async def _ensure_fresh_clans_for_placement(*, actor: str, ticket: str, user: st
     return True
 
 
-
 def _inspect_stable_welcome_intro_message(
     message: discord.Message | None,
     *,
@@ -134,7 +135,9 @@ def _inspect_stable_welcome_intro_message(
     return True, None
 
 
-async def _find_newest_stable_welcome_intro(thread: discord.Thread) -> tuple[discord.Message | None, list[int], int]:
+async def _find_newest_stable_welcome_intro(
+    thread: discord.Thread,
+) -> tuple[discord.Message | None, list[int], int]:
     history = getattr(thread, "history", None)
     if not callable(history):
         return None, [], 0
@@ -150,7 +153,9 @@ async def _find_newest_stable_welcome_intro(thread: discord.Thread) -> tuple[dis
         matched, reason = _inspect_stable_welcome_intro_message(message, index=idx)
         if matched:
             matched_messages.append(message)
-        content_preview = (getattr(message, "content", "") or "")[:80].replace("\n", " ")
+        content_preview = (getattr(message, "content", "") or "")[:80].replace(
+            "\n", " "
+        )
         log.info(
             "fallback_reaction_auto_add inspect_message — thread=%s • message_id=%s • content_preview=%r • matched=%s • reason=%s",
             getattr(thread, "id", None),
@@ -160,7 +165,11 @@ async def _find_newest_stable_welcome_intro(thread: discord.Thread) -> tuple[dis
             reason or "matched",
         )
 
-    matched_ids = [int(getattr(m, "id", 0)) for m in matched_messages if getattr(m, "id", None) is not None]
+    matched_ids = [
+        int(getattr(m, "id", 0))
+        for m in matched_messages
+        if getattr(m, "id", None) is not None
+    ]
     target = matched_messages[-1] if matched_messages else None
     return target, matched_ids, len(ordered_messages)
 
@@ -205,7 +214,9 @@ def parse_welcome_thread_name(name: str | None) -> Optional[ThreadNameParts]:
         return None
 
     normalized = (name or "").strip()
-    match = re.search(r"(?<![A-Za-z0-9])(?P<code>W?\d{4})(?!\d)", normalized, re.IGNORECASE)
+    match = re.search(
+        r"(?<![A-Za-z0-9])(?P<code>W?\d{4})(?!\d)", normalized, re.IGNORECASE
+    )
     if not match:
         return None
 
@@ -215,11 +226,14 @@ def parse_welcome_thread_name(name: str | None) -> Optional[ThreadNameParts]:
 
     separator_chars = " -_–—"
     prefix = normalized[: match.start()].strip(separator_chars) or None
-    suffix = normalized[match.end():].strip(separator_chars)
+    suffix = normalized[match.end() :].strip(separator_chars)
     if not suffix:
         return None
 
-    tokens = [token.strip(separator_chars) for token in re.split(r"[-_–—]+", suffix, maxsplit=1)]
+    tokens = [
+        token.strip(separator_chars)
+        for token in re.split(r"[-_–—]+", suffix, maxsplit=1)
+    ]
     username = (tokens[0] if tokens else "").strip(separator_chars)
     clan_tag = (tokens[1] if len(tokens) > 1 else "").strip(separator_chars) or None
 
@@ -257,7 +271,11 @@ def parse_promo_thread_name(name: str | None) -> Optional["PromoThreadNameParts"
     clan_tag = (match.group("tag") or "").strip(" -_") or None
     if clan_tag is None:
         slug_parts = re.split(r"[-_\s]+", slug)
-        if len(slug_parts) > 1 and slug_parts[-1].isalpha() and slug_parts[-1].isupper():
+        if (
+            len(slug_parts) > 1
+            and slug_parts[-1].isalpha()
+            and slug_parts[-1].isupper()
+        ):
             clan_tag = slug_parts.pop().strip() or None
             slug = "-".join(part for part in slug_parts if part)
 
@@ -340,12 +358,16 @@ async def resolve_subject_user_id(
     if bot_user_id is None:
         bot_candidate = getattr(getattr(thread, "guild", None), "me", None)
         try:
-            bot_user_id = int(getattr(bot_candidate, "id", None)) if bot_candidate else None
+            bot_user_id = (
+                int(getattr(bot_candidate, "id", None)) if bot_candidate else None
+            )
         except (TypeError, ValueError):
             bot_user_id = None
 
     if starter is not None:
-        member = _get_subject_user_from_welcome_message(starter, bot_user_id=bot_user_id)
+        member = _get_subject_user_from_welcome_message(
+            starter, bot_user_id=bot_user_id
+        )
         if member is not None:
             candidate = getattr(member, "id", None)
         if candidate is None:
@@ -404,7 +426,8 @@ async def persist_session_for_thread(
         )
     except Exception:
         log.exception(
-            "failed to persist onboarding session", extra={"thread_id": thread_id, "user_id": user_id}
+            "failed to persist onboarding session",
+            extra={"thread_id": thread_id, "user_id": user_id},
         )
 
     numeric_user_id: int | None = None
@@ -460,7 +483,8 @@ async def persist_session_for_thread(
                     )
         except Exception:
             log.exception(
-                "failed to ensure onboarding session", extra={"thread_id": thread_id, "user_id": numeric_user_id}
+                "failed to ensure onboarding session",
+                extra={"thread_id": thread_id, "user_id": numeric_user_id},
             )
 
 
@@ -541,7 +565,9 @@ async def _scan_incomplete_threads(bot: commands.Bot) -> None:
     except Exception:
         log.exception("failed to load onboarding sessions for scan", exc_info=True)
 
-    if feature_flags.is_enabled("welcome_dialog") and feature_flags.is_enabled("recruitment_welcome"):
+    if feature_flags.is_enabled("welcome_dialog") and feature_flags.is_enabled(
+        "recruitment_welcome"
+    ):
         channel_id = get_welcome_channel_id()
         try:
             channel_int = int(channel_id) if channel_id is not None else None
@@ -549,30 +575,42 @@ async def _scan_incomplete_threads(bot: commands.Bot) -> None:
             channel_int = None
 
         if channel_int is not None:
-            threads = await _collect_threads(bot, channel_int, scope_check=thread_scopes.is_welcome_parent)
+            threads = await _collect_threads(
+                bot, channel_int, scope_check=thread_scopes.is_welcome_parent
+            )
             for thread in threads:
                 await _process_incomplete_thread(
                     bot,
                     thread,
                     now,
-                    session_row=session_rows_by_thread_id.get(int(getattr(thread, "id", 0))),
+                    session_row=session_rows_by_thread_id.get(
+                        int(getattr(thread, "id", 0))
+                    ),
                 )
 
-    if feature_flags.is_enabled("promo_enabled") and feature_flags.is_enabled("enable_promo_hook"):
+    if feature_flags.is_enabled("promo_enabled") and feature_flags.is_enabled(
+        "enable_promo_hook"
+    ):
         promo_channel = get_promo_channel_id()
         try:
-            promo_channel_int = int(promo_channel) if promo_channel is not None else None
+            promo_channel_int = (
+                int(promo_channel) if promo_channel is not None else None
+            )
         except (TypeError, ValueError):
             promo_channel_int = None
 
         if promo_channel_int is not None:
-            threads = await _collect_threads(bot, promo_channel_int, scope_check=thread_scopes.is_promo_parent)
+            threads = await _collect_threads(
+                bot, promo_channel_int, scope_check=thread_scopes.is_promo_parent
+            )
             for thread in threads:
                 await _process_promo_thread(
                     bot,
                     thread,
                     now,
-                    session_row=session_rows_by_thread_id.get(int(getattr(thread, "id", 0))),
+                    session_row=session_rows_by_thread_id.get(
+                        int(getattr(thread, "id", 0))
+                    ),
                 )
 
 
@@ -610,7 +648,9 @@ async def _collect_threads(
     return [thread for thread in threads.values() if scope_check(thread)]
 
 
-async def _resolve_target_user(thread: discord.Thread, parts: ThreadNameParts) -> tuple[int | None, str]:
+async def _resolve_target_user(
+    thread: discord.Thread, parts: ThreadNameParts
+) -> tuple[int | None, str]:
     cached = _TARGET_CACHE.get(getattr(thread, "id", 0))
     if cached is not None:
         return cached, parts.username
@@ -621,7 +661,9 @@ async def _resolve_target_user(thread: discord.Thread, parts: ThreadNameParts) -
     return target_id, parts.username
 
 
-async def _persist_reminder_state(session: Session | None, *, action: str, timestamp: datetime) -> None:
+async def _persist_reminder_state(
+    session: Session | None, *, action: str, timestamp: datetime
+) -> None:
     if session is None:
         return
 
@@ -652,7 +694,9 @@ async def _persist_reminder_state(session: Session | None, *, action: str, times
         )
 
 
-async def _resolve_onboarding_log_channel(bot: commands.Bot) -> discord.abc.Messageable | None:
+async def _resolve_onboarding_log_channel(
+    bot: commands.Bot,
+) -> discord.abc.Messageable | None:
     global _ONBOARDING_LOG_CHANNEL, _ONBOARDING_LOG_CHANNEL_FETCHED
 
     if _ONBOARDING_LOG_CHANNEL_FETCHED:
@@ -687,13 +731,17 @@ async def _resolve_onboarding_log_channel(bot: commands.Bot) -> discord.abc.Mess
 def _recruiter_ping() -> str:
     role_ids: set[int] = set()
     role_ids.update(int(rid) for rid in get_recruiter_role_ids() or [] if rid)
-    role_ids.update(int(rid) for rid in get_recruitment_coordinator_role_ids() or [] if rid)
+    role_ids.update(
+        int(rid) for rid in get_recruitment_coordinator_role_ids() or [] if rid
+    )
     role_ids.update(int(rid) for rid in get_guardian_knight_role_ids() or [] if rid)
     mentions = [f"<@&{rid}>" for rid in sorted(role_ids)]
     return " ".join(mentions).strip()
 
 
-def _format_inactivity_log(scope: str, case: str, stage: str, ticket: str, user: str) -> str:
+def _format_inactivity_log(
+    scope: str, case: str, stage: str, ticket: str, user: str
+) -> str:
     emoji = "⚠️" if stage == "warning" else "❌"
     return f"{emoji} Onboarding {stage} — {scope} • case={case} • ticket={ticket} • user={user}"
 
@@ -718,7 +766,11 @@ async def _post_inactivity_log(
 
 
 async def _process_incomplete_thread(
-    bot: commands.Bot, thread: discord.Thread, now: datetime, *, session_row: dict[str, object] | None = None
+    bot: commands.Bot,
+    thread: discord.Thread,
+    now: datetime,
+    *,
+    session_row: dict[str, object] | None = None,
 ) -> None:
     parsed = parse_welcome_thread_name(getattr(thread, "name", None))
     if parsed is None or parsed.state == "closed":
@@ -736,15 +788,18 @@ async def _process_incomplete_thread(
                 updated_at=created_at,
                 thread_name=getattr(thread, "name", ""),
                 create_if_missing=True,
-                preloaded_session_row=session_row, 
+                preloaded_session_row=session_row,
             )
         except Exception:
             log.exception(
-                "failed to ensure welcome session", extra={"thread_id": getattr(thread, "id", None)}
+                "failed to ensure welcome session",
+                extra={"thread_id": getattr(thread, "id", None)},
             )
 
     has_answers = _session_has_answers(session)
-    action = _determine_reminder_action(now, created_at, session, has_answers=has_answers)
+    action = _determine_reminder_action(
+        now, created_at, session, has_answers=has_answers
+    )
     if action is None:
         return
 
@@ -765,14 +820,20 @@ async def _process_incomplete_thread(
     if applicant_id is None:
         log.debug(
             "welcome reminder skipped (no target)",
-            extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+            extra={
+                "thread_id": getattr(thread, "id", None),
+                "ticket": parsed.ticket_code,
+            },
         )
         return
 
     if session is None:
         log.debug(
             "welcome reminder skipped (no session)",
-            extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+            extra={
+                "thread_id": getattr(thread, "id", None),
+                "ticket": parsed.ticket_code,
+            },
         )
         return
 
@@ -803,7 +864,10 @@ async def _process_incomplete_thread(
             )
         log.info(
             "welcome empty reminder posted",
-            extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+            extra={
+                "thread_id": getattr(thread, "id", None),
+                "ticket": parsed.ticket_code,
+            },
         )
         return
 
@@ -832,7 +896,10 @@ async def _process_incomplete_thread(
             )
         log.info(
             "welcome incomplete reminder posted",
-            extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+            extra={
+                "thread_id": getattr(thread, "id", None),
+                "ticket": parsed.ticket_code,
+            },
         )
         return
 
@@ -871,7 +938,10 @@ async def _process_incomplete_thread(
         )
         log.info(
             "welcome empty warning posted",
-            extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+            extra={
+                "thread_id": getattr(thread, "id", None),
+                "ticket": parsed.ticket_code,
+            },
         )
         return
 
@@ -909,7 +979,10 @@ async def _process_incomplete_thread(
         )
         log.info(
             "welcome incomplete warning posted",
-            extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+            extra={
+                "thread_id": getattr(thread, "id", None),
+                "ticket": parsed.ticket_code,
+            },
         )
         return
 
@@ -947,7 +1020,10 @@ async def _process_incomplete_thread(
                 )
                 log.info(
                     "welcome empty auto-close completed",
-                    extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+                    extra={
+                        "thread_id": getattr(thread, "id", None),
+                        "ticket": parsed.ticket_code,
+                    },
                 )
                 return
         await _post_inactivity_log(
@@ -960,7 +1036,10 @@ async def _process_incomplete_thread(
         )
         log.info(
             "welcome empty auto-close completed",
-            extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+            extra={
+                "thread_id": getattr(thread, "id", None),
+                "ticket": parsed.ticket_code,
+            },
         )
         return
 
@@ -997,7 +1076,10 @@ async def _process_incomplete_thread(
                 )
                 log.info(
                     "welcome incomplete auto-close completed",
-                    extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+                    extra={
+                        "thread_id": getattr(thread, "id", None),
+                        "ticket": parsed.ticket_code,
+                    },
                 )
                 return
         await _post_inactivity_log(
@@ -1010,12 +1092,19 @@ async def _process_incomplete_thread(
         )
         log.info(
             "welcome incomplete auto-close completed",
-            extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+            extra={
+                "thread_id": getattr(thread, "id", None),
+                "ticket": parsed.ticket_code,
+            },
         )
 
 
 async def _process_promo_thread(
-    bot: commands.Bot, thread: discord.Thread, now: datetime, *, session_row: dict[str, object] | None = None
+    bot: commands.Bot,
+    thread: discord.Thread,
+    now: datetime,
+    *,
+    session_row: dict[str, object] | None = None,
 ) -> None:
     parsed = parse_promo_thread_name(getattr(thread, "name", None))
     if parsed is None:
@@ -1036,10 +1125,13 @@ async def _process_promo_thread(
             )
         except Exception:
             log.exception(
-                "failed to ensure promo session", extra={"thread_id": getattr(thread, "id", None)}
+                "failed to ensure promo session",
+                extra={"thread_id": getattr(thread, "id", None)},
             )
     has_answers = _session_has_answers(session)
-    action = _determine_reminder_action(now, created_at, session, has_answers=has_answers)
+    action = _determine_reminder_action(
+        now, created_at, session, has_answers=has_answers
+    )
 
     if action is None:
         return
@@ -1047,14 +1139,20 @@ async def _process_promo_thread(
     if applicant_id is None:
         log.debug(
             "promo inactivity reminder skipped (no target)",
-            extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+            extra={
+                "thread_id": getattr(thread, "id", None),
+                "ticket": parsed.ticket_code,
+            },
         )
         return
 
     if session is None:
         log.debug(
             "promo inactivity reminder skipped (no session)",
-            extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+            extra={
+                "thread_id": getattr(thread, "id", None),
+                "ticket": parsed.ticket_code,
+            },
         )
         return
 
@@ -1085,7 +1183,10 @@ async def _process_promo_thread(
             )
         log.info(
             "promo empty reminder posted",
-            extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+            extra={
+                "thread_id": getattr(thread, "id", None),
+                "ticket": parsed.ticket_code,
+            },
         )
         return
 
@@ -1114,7 +1215,10 @@ async def _process_promo_thread(
             )
         log.info(
             "promo incomplete reminder posted",
-            extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+            extra={
+                "thread_id": getattr(thread, "id", None),
+                "ticket": parsed.ticket_code,
+            },
         )
         return
 
@@ -1153,7 +1257,10 @@ async def _process_promo_thread(
         )
         log.info(
             "promo empty warning posted",
-            extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+            extra={
+                "thread_id": getattr(thread, "id", None),
+                "ticket": parsed.ticket_code,
+            },
         )
         return
 
@@ -1191,7 +1298,10 @@ async def _process_promo_thread(
         )
         log.info(
             "promo incomplete warning posted",
-            extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+            extra={
+                "thread_id": getattr(thread, "id", None),
+                "ticket": parsed.ticket_code,
+            },
         )
         return
 
@@ -1226,7 +1336,10 @@ async def _process_promo_thread(
                 )
                 log.info(
                     "promo empty auto-close completed",
-                    extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+                    extra={
+                        "thread_id": getattr(thread, "id", None),
+                        "ticket": parsed.ticket_code,
+                    },
                 )
                 return
         await _post_inactivity_log(
@@ -1239,7 +1352,10 @@ async def _process_promo_thread(
         )
         log.info(
             "promo empty auto-close completed",
-            extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+            extra={
+                "thread_id": getattr(thread, "id", None),
+                "ticket": parsed.ticket_code,
+            },
         )
         return
 
@@ -1274,7 +1390,10 @@ async def _process_promo_thread(
                 )
                 log.info(
                     "promo incomplete auto-close completed",
-                    extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+                    extra={
+                        "thread_id": getattr(thread, "id", None),
+                        "ticket": parsed.ticket_code,
+                    },
                 )
                 return
         await _post_inactivity_log(
@@ -1287,13 +1406,14 @@ async def _process_promo_thread(
         )
         log.info(
             "promo incomplete auto-close completed",
-            extra={"thread_id": getattr(thread, "id", None), "ticket": parsed.ticket_code},
+            extra={
+                "thread_id": getattr(thread, "id", None),
+                "ticket": parsed.ticket_code,
+            },
         )
 
 
-async def rename_thread_to_reserved(
-    thread: discord.Thread, clan_tag: str
-) -> bool:
+async def rename_thread_to_reserved(thread: discord.Thread, clan_tag: str) -> bool:
     """Rename ``thread`` to the reserved naming pattern if applicable."""
 
     parts = parse_welcome_thread_name(getattr(thread, "name", None))
@@ -1325,7 +1445,9 @@ async def rename_thread_to_reserved(
         )
         return False
 
-    new_name = build_reserved_thread_name(parts.ticket_code, parts.username, normalized_tag)
+    new_name = build_reserved_thread_name(
+        parts.ticket_code, parts.username, normalized_tag
+    )
     if getattr(thread, "name", None) == new_name:
         log.info(
             "✅ welcome_reserve_rename — ticket=%s • user=%s • tag=%s • result=already_reserved",
@@ -1450,7 +1572,9 @@ def _determine_reservation_decision(
             and normalized_previous != no_placement_tag
             and normalized_previous != normalized_final
         ):
-            open_deltas[normalized_previous] = open_deltas.get(normalized_previous, 0) + 1
+            open_deltas[normalized_previous] = (
+                open_deltas.get(normalized_previous, 0) + 1
+            )
             recompute.append(normalized_previous)
         if (
             consume_open_spot
@@ -1528,7 +1652,9 @@ def _clan_math_column_indices() -> Dict[str, int]:
     missing = [key for key in required if header_map.get(key) is None]
     if missing:
         missing_text = ", ".join(missing)
-        raise ValueError(f"clan header missing required columns for logging: {missing_text}")
+        raise ValueError(
+            f"clan header missing required columns for logging: {missing_text}"
+        )
     open_index = int(header_map["open_spots"])
     inactives_index = int(header_map["inactives"])
     reservation_count_index = int(header_map["reservation_count"])
@@ -1605,7 +1731,9 @@ def _format_clan_row_line(
     before: _ClanMathRowSnapshot | None,
     after: _ClanMathRowSnapshot | None,
 ) -> str:
-    tag_label = (after.tag if after else (before.tag if before else fallback_tag)).strip()
+    tag_label = (
+        after.tag if after else (before.tag if before else fallback_tag)
+    ).strip()
     tag_label = tag_label or fallback_tag or "unknown"
     row_number = after.row_number if after else (before.row_number if before else None)
     row_label = f"row {row_number}" if row_number else "row ?"
@@ -1630,9 +1758,7 @@ def _build_clan_math_row_lines(
 ) -> List[str]:
     lines: List[str] = []
     for key, original in targets.items():
-        lines.append(
-            _format_clan_row_line(original, before.get(key), after.get(key))
-        )
+        lines.append(_format_clan_row_line(original, before.get(key), after.get(key)))
     return lines
 
 
@@ -1709,7 +1835,9 @@ def _decision_visibility_line(
         else "none"
     )
     if open_deltas:
-        delta_bits = ", ".join(f"{tag}:{delta:+d}" for tag, delta in sorted(open_deltas.items()))
+        delta_bits = ", ".join(
+            f"{tag}:{delta:+d}" for tag, delta in sorted(open_deltas.items())
+        )
         return (
             "decision: "
             f"final_tag={final_tag or '-'} • previous_final={previous_display} • "
@@ -1722,7 +1850,9 @@ def _decision_visibility_line(
         skip_reason = "non_real_final_tag"
     elif reservation_row is not None and reservation_label in {"same", "cancelled"}:
         skip_reason = "reservation_consumed_or_matched"
-    elif not consume_open_spot and previous_display == (final_tag or "").strip().upper():
+    elif (
+        not consume_open_spot and previous_display == (final_tag or "").strip().upper()
+    ):
         skip_reason = "already_finalized_same_tag"
     elif not consume_open_spot:
         skip_reason = "consume_open_spot_false"
@@ -1733,6 +1863,8 @@ def _decision_visibility_line(
         f"reservation={reservation_state} • consume_open_spot={consume_open_spot} • "
         f"final_is_real={final_is_real} • decision_result=skipped_open_delta • skip_reason={skip_reason}"
     )
+
+
 async def _send_runtime(message: str) -> None:
     try:
         await rt.send_log_message(message)
@@ -1815,7 +1947,11 @@ async def post_open_questions_panel(
     elif resolution.flow:
         normalized_flow = resolution.flow
 
-    parser = parse_promo_thread_name if normalized_flow.startswith("promo") else parse_welcome_thread_name
+    parser = (
+        parse_promo_thread_name
+        if normalized_flow.startswith("promo")
+        else parse_welcome_thread_name
+    )
     parsed_parts = parser(thread_name)
     if ticket_code is None:
         ticket_code = getattr(parsed_parts, "ticket_code", None)
@@ -1840,14 +1976,18 @@ async def post_open_questions_panel(
 
     if invalid_reason is not None:
         await _emit(result="error", reason=invalid_reason)
-        return PanelOutcome("error", invalid_reason, ticket_code, thread_name, _elapsed())
+        return PanelOutcome(
+            "error", invalid_reason, ticket_code, thread_name, _elapsed()
+        )
 
     joined, join_error = await thread_membership.ensure_thread_membership(thread)
     if not joined:
         if join_error is not None:
             log.warning("failed to join welcome thread", exc_info=True)
         await _emit(result="error", reason="thread_join_failed")
-        return PanelOutcome("error", "thread_join_failed", ticket_code, thread_name, _elapsed())
+        return PanelOutcome(
+            "error", "thread_join_failed", ticket_code, thread_name, _elapsed()
+        )
 
     bot_user_id = getattr(getattr(bot, "user", None), "id", None)
     existing_panel = await panels.find_panel_message(thread, bot_user_id=bot_user_id)
@@ -1857,7 +1997,10 @@ async def post_open_questions_panel(
             return False
         for row in getattr(message, "components", []) or []:
             for component in getattr(row, "children", []) or []:
-                if getattr(component, "custom_id", None) == panels.OPEN_QUESTIONS_CUSTOM_ID:
+                if (
+                    getattr(component, "custom_id", None)
+                    == panels.OPEN_QUESTIONS_CUSTOM_ID
+                ):
                     return True
         for component in getattr(message, "components", []) or []:
             if getattr(component, "custom_id", None) == panels.OPEN_QUESTIONS_CUSTOM_ID:
@@ -1869,9 +2012,14 @@ async def post_open_questions_panel(
             try:
                 await existing_panel.edit(view=panels.OpenQuestionsPanelView())
             except Exception:
-                log.debug("failed to attach open questions view to existing panel", exc_info=True)
+                log.debug(
+                    "failed to attach open questions view to existing panel",
+                    exc_info=True,
+                )
         await _emit(result="skipped", reason="panel_exists")
-        return PanelOutcome("skipped", "panel_exists", ticket_code, thread_name, _elapsed())
+        return PanelOutcome(
+            "skipped", "panel_exists", ticket_code, thread_name, _elapsed()
+        )
 
     view = panels.OpenQuestionsPanelView()
     content = "Ready when you are — tap below to open the onboarding questions."
@@ -1881,20 +2029,26 @@ async def post_open_questions_panel(
     except Exception:
         log.exception("failed to post onboarding panel message")
         await _emit(result="error", reason="panel_send_failed")
-        return PanelOutcome("error", "panel_send_failed", ticket_code, thread_name, _elapsed())
+        return PanelOutcome(
+            "error", "panel_send_failed", ticket_code, thread_name, _elapsed()
+        )
 
     if ticket_code:
         await _emit(result="panel_created")
 
         panel_message_id = getattr(panel_message, "id", None)
         if subject_user_id is None:
-            subject_user_id = await resolve_subject_user_id(thread, bot_user_id=bot_user_id)
+            subject_user_id = await resolve_subject_user_id(
+                thread, bot_user_id=bot_user_id
+            )
         if subject_user_id is None and trigger_message is not None:
             subject_user_id = _extract_subject_user_id(
                 trigger_message, bot_user_id=bot_user_id, log_on_fallback=True
             )
 
-        flow_suffix = f" • flow={normalized_flow}" if normalized_flow.startswith("promo") else ""
+        flow_suffix = (
+            f" • flow={normalized_flow}" if normalized_flow.startswith("promo") else ""
+        )
         if subject_user_id is None:
             log.warning(
                 "onboarding_session_save_skipped • reason=no_subject_user%s • thread_id=%s",
@@ -1914,11 +2068,16 @@ async def post_open_questions_panel(
             )
             if normalized_flow == "welcome":
                 try:
-                    ticket_username = (getattr(thread, "name", "") or "").split("-", 1)[1].strip()
-                    await welcome_tickets.save(ticket_number=ticket_code, username=ticket_username)
+                    ticket_username = (
+                        (getattr(thread, "name", "") or "").split("-", 1)[1].strip()
+                    )
+                    await welcome_tickets.save(
+                        ticket_number=ticket_code, username=ticket_username
+                    )
                 except Exception:
                     log.exception(
-                        "failed to persist welcome ticket log", extra={"thread_id": getattr(thread, "id", None)}
+                        "failed to persist welcome ticket log",
+                        extra={"thread_id": getattr(thread, "id", None)},
                     )
 
         return PanelOutcome(
@@ -1931,7 +2090,11 @@ async def post_open_questions_panel(
         )
 
     expected_patterns = "W####-Name | ####-Name | Res-W####-Name-CLAN | Closed-W####-Name-CLAN | R/M/L####-Name"
-    parsed_ticket_hint = _normalize_ticket_code(thread_name or "") or _normalize_promo_ticket(thread_name or "") or None
+    parsed_ticket_hint = (
+        _normalize_ticket_code(thread_name or "")
+        or _normalize_promo_ticket(thread_name or "")
+        or None
+    )
     log.warning(
         "failed to parse ticket context for panel post",
         extra={
@@ -1944,7 +2107,10 @@ async def post_open_questions_panel(
         },
     )
     await _emit(result="skipped", reason="ticket_not_parsed")
-    return PanelOutcome("skipped", "ticket_not_parsed", ticket_code, thread_name, _elapsed())
+    return PanelOutcome(
+        "skipped", "ticket_not_parsed", ticket_code, thread_name, _elapsed()
+    )
+
 
 def _log_finalize_summary(
     context: TicketContext,
@@ -1955,7 +2121,9 @@ def _log_finalize_summary(
     result: str,
     reason: str | None = None,
 ) -> None:
-    channel_ref = _channel_readable_label(getattr(thread, "guild", None), getattr(thread, "id", None))
+    channel_ref = _channel_readable_label(
+        getattr(thread, "guild", None), getattr(thread, "id", None)
+    )
     reason_suffix = f" • reason={reason}" if reason else ""
     log.info(
         "ℹ️ onboarding_finalize_reconcile — ticket=%s • user=%s • clan=%s • reservation=%s • channel=%s • result=%s%s",
@@ -1969,7 +2137,11 @@ def _log_finalize_summary(
     )
     human_level = "info" if result == "ok" else "warning"
     emoji = "🧭" if result == "ok" else "⚠️"
-    source_suffix = "" if context.close_source == "ticket_tool" else f" • source={context.close_source}"
+    source_suffix = (
+        ""
+        if context.close_source == "ticket_tool"
+        else f" • source={context.close_source}"
+    )
     human_log.human(
         human_level,
         (
@@ -2101,7 +2273,10 @@ class WelcomeWatcher(commands.Cog):
                 channel=label,
                 channel_id=self.channel_id,
             )
-            log.debug("welcome watcher ready", extra={"channel_id": self.channel_id, "channel": label})
+            log.debug(
+                "welcome watcher ready",
+                extra={"channel_id": self.channel_id, "channel": label},
+            )
         else:
             reason = self._onb_reg_error or "unknown"
             line = log_lifecycle(
@@ -2114,8 +2289,10 @@ class WelcomeWatcher(commands.Cog):
                 channel_id=self.channel_id,
                 reason=reason,
             )
-            log.warning("welcome watcher registration failed", extra={"reason": reason, "channel_id": self.channel_id})
-
+            log.warning(
+                "welcome watcher registration failed",
+                extra={"reason": reason, "channel_id": self.channel_id},
+            )
 
     async def _run_startup_welcome_ticket_repair(self) -> None:
         log.debug("welcome ticket repair started")
@@ -2130,20 +2307,25 @@ class WelcomeWatcher(commands.Cog):
 
         repaired = int(summary.get("repaired", 0) or 0)
         flagged = int(summary.get("flagged", 0) or 0)
-        log.info("welcome ticket repair complete", extra={
-            "repaired": repaired,
-            "flagged": flagged,
-            "legacy_rows": int(summary.get("legacy_rows", 0) or 0),
-            "welcome_rows": int(summary.get("welcome_rows", 0) or 0),
-            "reservation_rows": int(summary.get("reservation_rows", 0) or 0),
-            "malformed_rows": int(summary.get("malformed_rows", 0) or 0),
-        })
+        log.info(
+            "welcome ticket repair complete",
+            extra={
+                "repaired": repaired,
+                "flagged": flagged,
+                "legacy_rows": int(summary.get("legacy_rows", 0) or 0),
+                "welcome_rows": int(summary.get("welcome_rows", 0) or 0),
+                "reservation_rows": int(summary.get("reservation_rows", 0) or 0),
+                "malformed_rows": int(summary.get("malformed_rows", 0) or 0),
+            },
+        )
 
     def _register_persistent_view(self) -> None:
         registration = panels.register_persistent_views(self.bot)
 
         view_name = registration.get("view") or "OpenQuestionsPanelView"
-        components = registration.get("components") or "buttons:0,textinputs:0,selects:0"
+        components = (
+            registration.get("components") or "buttons:0,textinputs:0,selects:0"
+        )
         threads_default = registration.get("threads_default")
         duration_ms = registration.get("duration_ms")
         registered = bool(registration.get("registered"))
@@ -2183,7 +2365,10 @@ class WelcomeWatcher(commands.Cog):
         if isinstance(duration_ms, int):
             payload["duration"] = f"{duration_ms}ms"
         if duplicate:
-            log.debug("welcome watcher persistent view duplicate registration", extra={"view": view_name})
+            log.debug(
+                "welcome watcher persistent view duplicate registration",
+                extra={"view": view_name},
+            )
         if error is not None:
             payload["reason"] = f"{error.__class__.__name__}: {error}"
 
@@ -2209,9 +2394,9 @@ class WelcomeWatcher(commands.Cog):
     # ---- helpers -----------------------------------------------------------------
     @staticmethod
     def _features_enabled() -> bool:
-        return feature_flags.is_enabled("recruitment_welcome") and feature_flags.is_enabled(
-            "welcome_dialog"
-        )
+        return feature_flags.is_enabled(
+            "recruitment_welcome"
+        ) and feature_flags.is_enabled("welcome_dialog")
 
     @staticmethod
     def _thread_owner_id(thread: discord.Thread | None) -> int | None:
@@ -2226,7 +2411,9 @@ class WelcomeWatcher(commands.Cog):
         except (TypeError, ValueError):
             return None
 
-    def _eligible_member(self, member: discord.Member | None, thread: discord.Thread | None) -> bool:
+    def _eligible_member(
+        self, member: discord.Member | None, thread: discord.Thread | None
+    ) -> bool:
         if member is None or thread is None:
             return False
         if getattr(member, "bot", False):
@@ -2257,14 +2444,18 @@ class WelcomeWatcher(commands.Cog):
         result: str,
         **extra: object,
     ) -> dict[str, object]:
-        context = logs.thread_context(thread if isinstance(thread, discord.Thread) else None)
+        context = logs.thread_context(
+            thread if isinstance(thread, discord.Thread) else None
+        )
         context.update(
             {
                 "view": "panel",
                 "view_tag": panels.WELCOME_PANEL_TAG,
                 "custom_id": panels.OPEN_QUESTIONS_CUSTOM_ID,
                 "view_id": panels.OPEN_QUESTIONS_CUSTOM_ID,
-                "actor": logs.format_actor(actor if isinstance(actor, discord.abc.User) else None),
+                "actor": logs.format_actor(
+                    actor if isinstance(actor, discord.abc.User) else None
+                ),
                 "actor_name": logs.format_actor_handle(
                     actor if isinstance(actor, discord.abc.User) else None
                 ),
@@ -2331,7 +2522,9 @@ class WelcomeWatcher(commands.Cog):
             **payload,
         )
 
-    async def _resolve_thread(self, payload: RawReactionActionEvent) -> discord.Thread | None:
+    async def _resolve_thread(
+        self, payload: RawReactionActionEvent
+    ) -> discord.Thread | None:
         if payload.guild_id is None:
             return None
         guild = self.bot.get_guild(payload.guild_id)
@@ -2383,14 +2576,18 @@ class WelcomeWatcher(commands.Cog):
             flow=flow,
             ticket_code=ticket_code,
             trigger_message=trigger_message,
-            subject_user_id=context_user_id if context_user_id is not None else subject_user_id,
+            subject_user_id=(
+                context_user_id if context_user_id is not None else subject_user_id
+            ),
         )
         self._log_panel_outcome(actor, thread, outcome, flow=flow)
 
     # ---- listeners ----------------------------------------------------------------
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        thread = message.channel if isinstance(message.channel, discord.Thread) else None
+        thread = (
+            message.channel if isinstance(message.channel, discord.Thread) else None
+        )
         if thread is None:
             return
 
@@ -2411,8 +2608,12 @@ class WelcomeWatcher(commands.Cog):
             thread_id_int = int(thread.id)
         except (TypeError, ValueError):
             thread_id_int = None
-        controller = panels.get_controller(thread_id_int) if thread_id_int is not None else None
-        handler = getattr(controller, "handle_rolling_message", None) if controller else None
+        controller = (
+            panels.get_controller(thread_id_int) if thread_id_int is not None else None
+        )
+        handler = (
+            getattr(controller, "handle_rolling_message", None) if controller else None
+        )
         if callable(handler):
             try:
                 handled = await handler(message)
@@ -2481,7 +2682,9 @@ class WelcomeWatcher(commands.Cog):
             await logs.send_welcome_log("warn", **context)
             return
 
-        await self._post_panel(thread, actor=actor, source="emoji", subject_user_id=payload.user_id)
+        await self._post_panel(
+            thread, actor=actor, source="emoji", subject_user_id=payload.user_id
+        )
 
 
 class _ClanSelect(discord.ui.Select):
@@ -2489,7 +2692,9 @@ class _ClanSelect(discord.ui.Select):
         self._parent_view = parent_view
         super().__init__(placeholder="Select a clan tag", min_values=1, max_values=1)
 
-    async def callback(self, interaction: discord.Interaction) -> None:  # pragma: no cover - UI callback
+    async def callback(
+        self, interaction: discord.Interaction
+    ) -> None:  # pragma: no cover - UI callback
         if not self.values:
             await interaction.response.defer()
             return
@@ -2519,9 +2724,13 @@ class ClanSelectView(discord.ui.View):
         self.prev_button = None
         self.next_button = None
         if len(self.tags) > self.page_size:
-            self.prev_button = discord.ui.Button(label="◀", style=discord.ButtonStyle.secondary)
+            self.prev_button = discord.ui.Button(
+                label="◀", style=discord.ButtonStyle.secondary
+            )
             self.prev_button.callback = self._on_prev  # type: ignore[assignment]
-            self.next_button = discord.ui.Button(label="▶", style=discord.ButtonStyle.secondary)
+            self.next_button = discord.ui.Button(
+                label="▶", style=discord.ButtonStyle.secondary
+            )
             self.next_button.callback = self._on_next  # type: ignore[assignment]
             self.add_item(self.prev_button)
             self.add_item(self.next_button)
@@ -2537,18 +2746,24 @@ class ClanSelectView(discord.ui.View):
         page_tags = self._page_slice()
         if not page_tags:
             self.select.options = [
-                discord.SelectOption(label="No clan tags available", value="none", default=True)
+                discord.SelectOption(
+                    label="No clan tags available", value="none", default=True
+                )
             ]
             self.select.disabled = True
         else:
-            self.select.options = [discord.SelectOption(label=tag, value=tag) for tag in page_tags]
+            self.select.options = [
+                discord.SelectOption(label=tag, value=tag) for tag in page_tags
+            ]
             self.select.disabled = False
         if self.prev_button is not None and self.next_button is not None:
             self.prev_button.disabled = self.page <= 0
             remaining = (self.page + 1) * self.page_size
             self.next_button.disabled = remaining >= len(self.tags)
 
-    async def _on_prev(self, interaction: discord.Interaction) -> None:  # pragma: no cover - UI callback
+    async def _on_prev(
+        self, interaction: discord.Interaction
+    ) -> None:  # pragma: no cover - UI callback
         if self.page <= 0:
             await interaction.response.defer()
             return
@@ -2556,7 +2771,9 @@ class ClanSelectView(discord.ui.View):
         self._refresh_options()
         await interaction.response.edit_message(view=self)
 
-    async def _on_next(self, interaction: discord.Interaction) -> None:  # pragma: no cover - UI callback
+    async def _on_next(
+        self, interaction: discord.Interaction
+    ) -> None:  # pragma: no cover - UI callback
         if (self.page + 1) * self.page_size >= len(self.tags):
             await interaction.response.defer()
             return
@@ -2564,9 +2781,13 @@ class ClanSelectView(discord.ui.View):
         self._refresh_options()
         await interaction.response.edit_message(view=self)
 
-    async def handle_selection(self, interaction: discord.Interaction, tag: str) -> None:
+    async def handle_selection(
+        self, interaction: discord.Interaction, tag: str
+    ) -> None:
         await interaction.response.defer()
-        await self.watcher.finalize_from_interaction(self.context, tag, interaction, self)
+        await self.watcher.finalize_from_interaction(
+            self.context, tag, interaction, self
+        )
 
     async def on_timeout(self) -> None:  # pragma: no cover - timeout path
         if self.message is None:
@@ -2651,7 +2872,11 @@ class WelcomeTicketWatcher(commands.Cog):
             getattr(thread, "id", None),
             getattr(thread, "parent_id", None),
         )
-        me = getattr(thread.guild, "me", None) if getattr(thread, "guild", None) else None
+        me = (
+            getattr(thread.guild, "me", None)
+            if getattr(thread, "guild", None)
+            else None
+        )
         if me is None:
             log.warning(
                 "fallback_reaction_auto_add skipped — reason=no_guild_member • thread=%s",
@@ -2679,7 +2904,9 @@ class WelcomeTicketWatcher(commands.Cog):
             ordered_count = 0
             matched_ids: list[int] = []
             try:
-                target, matched_ids, ordered_count = await _find_newest_stable_welcome_intro(thread)
+                target, matched_ids, ordered_count = (
+                    await _find_newest_stable_welcome_intro(thread)
+                )
                 log.info(
                     "fallback_reaction_auto_add inspect — thread=%s • total_messages=%s • matched_message_ids=%s",
                     getattr(thread, "id", None),
@@ -2750,7 +2977,14 @@ class WelcomeTicketWatcher(commands.Cog):
                     outcome = await post_open_questions_panel(
                         self.bot,
                         thread,
-                        actor=target.author if isinstance(getattr(target, "author", None), (discord.Member, discord.User)) else None,
+                        actor=(
+                            target.author
+                            if isinstance(
+                                getattr(target, "author", None),
+                                (discord.Member, discord.User),
+                            )
+                            else None
+                        ),
                         flow="welcome",
                         trigger_message=target,
                         subject_user_id=target_user_id,
@@ -2758,7 +2992,9 @@ class WelcomeTicketWatcher(commands.Cog):
                     result = "error"
                     if outcome.result == "panel_created":
                         result = "posted"
-                    elif outcome.result == "skipped" and outcome.reason == "panel_exists":
+                    elif (
+                        outcome.result == "skipped" and outcome.reason == "panel_exists"
+                    ):
                         result = "reused"
                     elif outcome.result == "skipped":
                         result = "skipped"
@@ -2770,7 +3006,14 @@ class WelcomeTicketWatcher(commands.Cog):
                         welcome_message_id,
                     )
                     self._log_panel_outcome(
-                        target.author if isinstance(getattr(target, "author", None), (discord.Member, discord.User)) else None,
+                        (
+                            target.author
+                            if isinstance(
+                                getattr(target, "author", None),
+                                (discord.Member, discord.User),
+                            )
+                            else None
+                        ),
                         thread,
                         outcome,
                         flow="welcome",
@@ -2794,7 +3037,9 @@ class WelcomeTicketWatcher(commands.Cog):
             getattr(thread, "id", None),
         )
 
-    async def _handle_ticket_open(self, thread: discord.Thread, context: TicketContext) -> None:
+    async def _handle_ticket_open(
+        self, thread: discord.Thread, context: TicketContext
+    ) -> None:
         existing_row: List[str] | None = None
         try:
             lookup = await asyncio.to_thread(
@@ -2803,7 +3048,10 @@ class WelcomeTicketWatcher(commands.Cog):
         except Exception:
             log.exception(
                 "failed to read existing welcome row",
-                extra={"thread_id": getattr(thread, "id", None), "ticket": context.ticket_number},
+                extra={
+                    "thread_id": getattr(thread, "id", None),
+                    "ticket": context.ticket_number,
+                },
             )
             lookup = None
 
@@ -2855,11 +3103,15 @@ class WelcomeTicketWatcher(commands.Cog):
             except (TypeError, ValueError):
                 context.recruit_id = None
 
-        ticket_user = context.recruit_id if context.recruit_id is not None else subject_resolved
+        ticket_user = (
+            context.recruit_id if context.recruit_id is not None else subject_resolved
+        )
         ticket_number = None
         ticket_username = None
         try:
-            ticket_number, ticket_username = (getattr(thread, "name", "") or "").split("-", 1)
+            ticket_number, ticket_username = (getattr(thread, "name", "") or "").split(
+                "-", 1
+            )
             ticket_number = ticket_number.strip()
             ticket_username = ticket_username.strip()
         except ValueError:
@@ -2924,7 +3176,10 @@ class WelcomeTicketWatcher(commands.Cog):
             log.debug(
                 "welcome reminder: failed to load welcome row for sheet logging",
                 exc_info=True,
-                extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)},
+                extra={
+                    "ticket": context.ticket_number,
+                    "thread_id": getattr(thread, "id", None),
+                },
             )
             existing = None
 
@@ -2967,7 +3222,10 @@ class WelcomeTicketWatcher(commands.Cog):
             log.debug(
                 "welcome reminder: sheet touch failed",
                 exc_info=True,
-                extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)},
+                extra={
+                    "ticket": context.ticket_number,
+                    "thread_id": getattr(thread, "id", None),
+                },
             )
 
     async def _load_clan_tags(self) -> List[str]:
@@ -3054,7 +3312,9 @@ class WelcomeTicketWatcher(commands.Cog):
         await self._handle_ticket_open(thread, context)
 
     @commands.Cog.listener()
-    async def on_thread_update(self, before: discord.Thread, after: discord.Thread) -> None:
+    async def on_thread_update(
+        self, before: discord.Thread, after: discord.Thread
+    ) -> None:
         if not self._features_enabled():
             return
         if not self._is_ticket_thread(after):
@@ -3090,7 +3350,9 @@ class WelcomeTicketWatcher(commands.Cog):
             archived_before = bool(getattr(before, "archived", False))
             locked_now = bool(getattr(after, "locked", False))
             locked_before = bool(getattr(before, "locked", False))
-            if (archived_now and not archived_before) or (locked_now and not locked_before):
+            if (archived_now and not archived_before) or (
+                locked_now and not locked_before
+            ):
                 if not context.ticket_tool_close_detected:
                     reason = "manual_close_without_ticket_tool"
 
@@ -3103,7 +3365,9 @@ class WelcomeTicketWatcher(commands.Cog):
     async def on_message(self, message: discord.Message) -> None:
         if not self._features_enabled():
             return
-        thread = message.channel if isinstance(message.channel, discord.Thread) else None
+        thread = (
+            message.channel if isinstance(message.channel, discord.Thread) else None
+        )
         if not self._is_ticket_thread(thread):
             return
         if thread is None:
@@ -3114,7 +3378,10 @@ class WelcomeTicketWatcher(commands.Cog):
 
         if self._is_ticket_tool(message.author):
             content = (message.content or "").lower()
-            if _CLOSED_MESSAGE_TOKEN in content and context.state not in {"awaiting_clan", "closed"}:
+            if _CLOSED_MESSAGE_TOKEN in content and context.state not in {
+                "awaiting_clan",
+                "closed",
+            }:
                 context.ticket_tool_close_detected = True
                 await self._handle_ticket_closed(thread, context, manual=False)
             return
@@ -3161,7 +3428,10 @@ class WelcomeTicketWatcher(commands.Cog):
         except Exception:
             log.exception(
                 "failed to locate onboarding row for manual close",
-                extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)},
+                extra={
+                    "ticket": context.ticket_number,
+                    "thread_id": getattr(thread, "id", None),
+                },
             )
 
         row_values: List[str] | None = row_info[1] if row_info else None
@@ -3182,7 +3452,10 @@ class WelcomeTicketWatcher(commands.Cog):
             except Exception:
                 log.exception(
                     "failed to insert onboarding row during manual close",
-                    extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)},
+                    extra={
+                        "ticket": context.ticket_number,
+                        "thread_id": getattr(thread, "id", None),
+                    },
                 )
                 row_values = None
             else:
@@ -3257,7 +3530,10 @@ class WelcomeTicketWatcher(commands.Cog):
                 log.warning(
                     "welcome auto-close rename failed",
                     exc_info=True,
-                    extra={"thread_id": getattr(thread, "id", None), "ticket": context.ticket_number},
+                    extra={
+                        "thread_id": getattr(thread, "id", None),
+                        "ticket": context.ticket_number,
+                    },
                 )
 
         try:
@@ -3310,7 +3586,10 @@ class WelcomeTicketWatcher(commands.Cog):
             context.state = "open"
             log.exception(
                 "failed to post clan selection prompt",
-                extra={"thread_id": getattr(thread, "id", None), "ticket": context.ticket_number},
+                extra={
+                    "thread_id": getattr(thread, "id", None),
+                    "ticket": context.ticket_number,
+                },
             )
             return
         view.message = message
@@ -3323,10 +3602,15 @@ class WelcomeTicketWatcher(commands.Cog):
         interaction: discord.Interaction,
         view: ClanSelectView,
     ) -> None:
-        thread = interaction.channel if isinstance(interaction.channel, discord.Thread) else None
+        thread = (
+            interaction.channel
+            if isinstance(interaction.channel, discord.Thread)
+            else None
+        )
         if thread is None:
             await interaction.followup.send(
-                "⚠️ I lost track of the ticket thread. Please try again.", ephemeral=True
+                "⚠️ I lost track of the ticket thread. Please try again.",
+                ephemeral=True,
             )
             return
         await self._finalize_clan_tag(
@@ -3393,6 +3677,184 @@ class WelcomeTicketWatcher(commands.Cog):
         )
 
         timestamp = datetime.now(timezone.utc).date().isoformat()
+        row_missing = False
+        reservation_label = "none"
+        reservation_row: reservations_sheets.ReservationRow | None = None
+        actions_ok = True
+        recompute_tags: List[str] = []
+        row_change_lines: List[str] = []
+        row_targets: "OrderedDict[str, str]" = OrderedDict()
+        before_snapshots: Dict[str, _ClanMathRowSnapshot] = {}
+        column_map: Dict[str, int] | None = None
+        final_is_real = False
+        decision_open_deltas: Dict[str, int] = {}
+        applied_open_deltas: Dict[str, int] = {}
+        delta_failure_reason: str | None = None
+
+        matches: List[reservations_sheets.ReservationRow] = []
+        clans_fresh = await _ensure_fresh_clans_for_placement(
+            actor="welcome_placement",
+            ticket=context.ticket_number,
+            user=context.username,
+        )
+        if not clans_fresh:
+            actions_ok = False
+            decision_line = (
+                "decision: "
+                f"final_tag={final_tag or '-'} • previous_final={(previous_final or '').strip().upper() or '-'} • "
+                f"reservation={reservation_label or 'none'} • consume_open_spot={consume_open_spot} • "
+                "final_is_real=False • decision_result=skipped_open_delta • "
+                "skip_reason=fresh_clans_unavailable"
+            )
+            row_change_lines = [decision_line]
+            log.warning(
+                "welcome placement skipped seat math due to stale/unavailable clans data",
+                extra={"ticket": context.ticket_number, "user": context.username},
+            )
+            final_is_real = False
+        else:
+            final_entry = (
+                recruitment_sheets.find_clan_row(final_tag, force=True)
+                if final_tag != _NO_PLACEMENT_TAG
+                else None
+            )
+            final_is_real = final_entry is not None
+
+            try:
+                matches = (
+                    await reservations_sheets.find_active_reservations_for_recruit(
+                        context.recruit_id,
+                        context.recruit_display or context.username,
+                    )
+                )
+            except Exception:
+                matches = []
+                log.exception(
+                    "failed to look up reservations for recruit",
+                    extra={
+                        "ticket": context.ticket_number,
+                        "user": context.username,
+                    },
+                )
+        if matches:
+            reservation_row = matches[0]
+            if len(matches) > 1:
+                log.warning(
+                    "multiple active reservations matched",
+                    extra={
+                        "ticket": context.ticket_number,
+                        "user": context.username,
+                        "rows": [row.row_number for row in matches],
+                    },
+                )
+
+        if clans_fresh:
+            decision = _determine_reservation_decision(
+                final_tag,
+                reservation_row,
+                no_placement_tag=_NO_PLACEMENT_TAG,
+                final_is_real=final_is_real,
+                consume_open_spot=consume_open_spot,
+                previous_final=previous_final,
+            )
+            reservation_label = decision.label
+            decision_open_deltas = dict(decision.open_deltas)
+
+            preflight_failed = False
+            should_preflight_open_deltas = (
+                getattr(availability.adjust_manual_open_spots, "__module__", "")
+                == "modules.recruitment.availability"
+                or getattr(
+                    availability.preflight_manual_open_spots_adjustment,
+                    "__module__",
+                    "",
+                )
+                != "modules.recruitment.availability"
+            )
+            for tag, delta in (
+                decision_open_deltas.items() if should_preflight_open_deltas else ()
+            ):
+                try:
+                    await availability.preflight_manual_open_spots_adjustment(
+                        tag, delta
+                    )
+                except Exception:
+                    preflight_failed = True
+                    actions_ok = False
+                    delta_failure_reason = (
+                        f"preflight_manual_open_spots_failed:{tag}:{delta}"
+                    )
+                    log.exception(
+                        "welcome placement blocked before Discord/member actions because open spot adjustment preflight failed",
+                        extra={
+                            "clan_tag": tag,
+                            "delta": delta,
+                            "ticket": context.ticket_number,
+                            "action_state": "no_discord_member_action_applied",
+                        },
+                    )
+                    break
+            if preflight_failed:
+                failed_bits = ", ".join(
+                    f"{tag}:{delta:+d}"
+                    for tag, delta in sorted(decision_open_deltas.items())
+                )
+                row_change_lines = [
+                    "decision: "
+                    f"final_tag={final_tag or '-'} • previous_final={(previous_final or '').strip().upper() or '-'} • "
+                    f"reservation={reservation_label or 'none'} • consume_open_spot={consume_open_spot} • "
+                    f"final_is_real={final_is_real} • decision_result=failed_open_delta • deltas={failed_bits} • "
+                    f"failure={delta_failure_reason or 'open_delta_preflight_failed'} • action_state=no_discord_member_action_applied"
+                ]
+                _log_finalize_summary(
+                    context,
+                    thread,
+                    final_display=final_tag if final_tag else _NO_PLACEMENT_TAG,
+                    reservation_label=reservation_label,
+                    result="error",
+                    reason="open_delta_preflight_failed",
+                )
+                try:
+                    await _log_clan_math_event(
+                        context,
+                        final_display=final_tag if final_tag else _NO_PLACEMENT_TAG,
+                        reservation_label=reservation_label,
+                        reservation_row=reservation_row,
+                        result="error",
+                        reason="open_delta_preflight_failed",
+                        row_change_lines=row_change_lines,
+                    )
+                except Exception:
+                    log.exception(
+                        "failed to emit clan math log after preflight failure",
+                        extra={"ticket": context.ticket_number},
+                    )
+                if notify:
+                    await thread.send(
+                        "⚠️ I could not verify the open spot sheet update, so no Discord/member actions were applied. Please fix the clan sheet configuration/value and try again."
+                    )
+                return
+
+            target_tags = _clan_tags_for_logging(
+                final_tag,
+                decision,
+                no_placement_tag=_NO_PLACEMENT_TAG,
+                final_is_real=final_is_real,
+            )
+            if target_tags:
+                row_targets = _normalize_clan_math_targets(target_tags)
+                try:
+                    column_map = _clan_math_column_indices()
+                    before_snapshots = _capture_clan_snapshots(
+                        row_targets, column_map, force=True
+                    )
+                except Exception:
+                    column_map = None
+                    row_targets = OrderedDict()
+                    log.exception(
+                        "failed to capture clan math before-state",
+                        extra={"ticket": context.ticket_number},
+                    )
 
         try:
             result = await log_sheet_write(
@@ -3430,149 +3892,66 @@ class WelcomeTicketWatcher(commands.Cog):
             return
 
         row_missing = result not in {"updated", "inserted"}
-        reservation_label = "none"
-        reservation_row: reservations_sheets.ReservationRow | None = None
-        actions_ok = True
-        recompute_tags: List[str] = []
-        row_change_lines: List[str] = []
-        row_targets: "OrderedDict[str, str]" = OrderedDict()
-        before_snapshots: Dict[str, _ClanMathRowSnapshot] = {}
-        column_map: Dict[str, int] | None = None
-        final_is_real = False
-        decision_open_deltas: Dict[str, int] = {}
-        applied_open_deltas: Dict[str, int] = {}
-        delta_failure_reason: str | None = None
 
-        if not row_missing:
-            matches: List[reservations_sheets.ReservationRow] = []
-            clans_fresh = await _ensure_fresh_clans_for_placement(
-                actor="welcome_placement", ticket=context.ticket_number, user=context.username
-            )
-            if not clans_fresh:
+        if (
+            not row_missing
+            and clans_fresh
+            and reservation_row is not None
+            and decision.status
+        ):
+            try:
+                await reservations_sheets.update_reservation_status(
+                    reservation_row.row_number, decision.status
+                )
+            except Exception:
                 actions_ok = False
-                decision_line = (
-                    "decision: "
-                    f"final_tag={final_tag or '-'} • previous_final={(previous_final or '').strip().upper() or '-'} • "
-                    f"reservation={reservation_label or 'none'} • consume_open_spot={consume_open_spot} • "
-                    "final_is_real=False • decision_result=skipped_open_delta • "
-                    "skip_reason=fresh_clans_unavailable"
+                log.exception(
+                    "failed to update reservation status",
+                    extra={
+                        "row": reservation_row.row_number,
+                        "ticket": context.ticket_number,
+                        "status": decision.status,
+                    },
                 )
-                row_change_lines = [decision_line]
-                log.warning(
-                    "welcome placement skipped seat math due to stale/unavailable clans data",
-                    extra={"ticket": context.ticket_number, "user": context.username},
+
+        for tag, delta in (
+            decision.open_deltas.items() if clans_fresh and not row_missing else ()
+        ):
+            try:
+                await availability.adjust_manual_open_spots(tag, delta)
+                applied_open_deltas[tag] = applied_open_deltas.get(tag, 0) + delta
+            except Exception:
+                actions_ok = False
+                delta_failure_reason = f"adjust_manual_open_spots_failed:{tag}:{delta}"
+                log.exception(
+                    "failed to adjust manual open spots",
+                    extra={
+                        "clan_tag": tag,
+                        "delta": delta,
+                        "ticket": context.ticket_number,
+                    },
                 )
-                final_is_real = False
-            else:
-                final_entry = (
-                    recruitment_sheets.find_clan_row(final_tag, force=True)
-                    if final_tag != _NO_PLACEMENT_TAG
-                    else None
+
+        recompute_tags = (
+            decision.recompute_tags if clans_fresh and not row_missing else []
+        )
+        for tag in recompute_tags:
+            try:
+                await availability.recompute_clan_availability(tag, guild=thread.guild)
+            except Exception:
+                actions_ok = False
+                log.exception(
+                    "failed to recompute clan availability",
+                    extra={"clan_tag": tag, "ticket": context.ticket_number},
                 )
-                final_is_real = final_entry is not None
 
-                try:
-                    matches = await reservations_sheets.find_active_reservations_for_recruit(
-                        context.recruit_id,
-                        context.recruit_display or context.username,
-                    )
-                except Exception:
-                    matches = []
-                    log.exception(
-                        "failed to look up reservations for recruit",
-                        extra={"ticket": context.ticket_number, "user": context.username},
-                    )
-            if matches:
-                reservation_row = matches[0]
-                if len(matches) > 1:
-                    log.warning(
-                        "multiple active reservations matched",
-                        extra={
-                            "ticket": context.ticket_number,
-                            "user": context.username,
-                            "rows": [row.row_number for row in matches],
-                        },
-                    )
-
-            if clans_fresh:
-                decision = _determine_reservation_decision(
-                    final_tag,
-                    reservation_row,
-                    no_placement_tag=_NO_PLACEMENT_TAG,
-                    final_is_real=final_is_real,
-                    consume_open_spot=consume_open_spot,
-                    previous_final=previous_final,
-                )
-                reservation_label = decision.label
-                decision_open_deltas = dict(decision.open_deltas)
-
-                target_tags = _clan_tags_for_logging(
-                    final_tag,
-                    decision,
-                    no_placement_tag=_NO_PLACEMENT_TAG,
-                    final_is_real=final_is_real,
-                )
-                if target_tags:
-                    row_targets = _normalize_clan_math_targets(target_tags)
-                    try:
-                        column_map = _clan_math_column_indices()
-                        before_snapshots = _capture_clan_snapshots(
-                            row_targets, column_map, force=True
-                        )
-                    except Exception:
-                        column_map = None
-                        row_targets = OrderedDict()
-                        log.exception(
-                            "failed to capture clan math before-state",
-                            extra={"ticket": context.ticket_number},
-                        )
-
-            if clans_fresh and reservation_row is not None and decision.status:
-                try:
-                    await reservations_sheets.update_reservation_status(
-                        reservation_row.row_number, decision.status
-                    )
-                except Exception:
-                    actions_ok = False
-                    log.exception(
-                        "failed to update reservation status",
-                        extra={
-                            "row": reservation_row.row_number,
-                            "ticket": context.ticket_number,
-                            "status": decision.status,
-                        },
-                    )
-
-            for tag, delta in (decision.open_deltas.items() if clans_fresh else ()):
-                try:
-                    await availability.adjust_manual_open_spots(tag, delta)
-                    applied_open_deltas[tag] = applied_open_deltas.get(tag, 0) + delta
-                except Exception:
-                    actions_ok = False
-                    delta_failure_reason = f"adjust_manual_open_spots_failed:{tag}:{delta}"
-                    log.exception(
-                        "failed to adjust manual open spots",
-                        extra={"clan_tag": tag, "delta": delta, "ticket": context.ticket_number},
-                    )
-
-            recompute_tags = decision.recompute_tags if clans_fresh else []
-            for tag in recompute_tags:
-                try:
-                    await availability.recompute_clan_availability(tag, guild=thread.guild)
-                except Exception:
-                    actions_ok = False
-                    log.exception(
-                        "failed to recompute clan availability",
-                        extra={"clan_tag": tag, "ticket": context.ticket_number},
-                    )
-
-            if row_targets and column_map is not None:
-                after_snapshots = _capture_clan_snapshots(
-                    row_targets, column_map, force=True
-                )
-                row_change_lines = _build_clan_math_row_lines(
-                    row_targets, before_snapshots, after_snapshots
-                )
+        if not row_missing and row_targets and column_map is not None:
+            after_snapshots = _capture_clan_snapshots(
+                row_targets, column_map, force=True
+            )
+            row_change_lines = _build_clan_math_row_lines(
+                row_targets, before_snapshots, after_snapshots
+            )
 
         effective_open_deltas = applied_open_deltas if applied_open_deltas else {}
         decision_line = _decision_visibility_line(
@@ -3585,14 +3964,17 @@ class WelcomeTicketWatcher(commands.Cog):
             open_deltas=effective_open_deltas,
         )
         if decision_open_deltas and not applied_open_deltas:
-            failed_bits = ", ".join(f"{tag}:{delta:+d}" for tag, delta in sorted(decision_open_deltas.items()))
+            failed_bits = ", ".join(
+                f"{tag}:{delta:+d}"
+                for tag, delta in sorted(decision_open_deltas.items())
+            )
             fail_reason = delta_failure_reason or "open_delta_write_failed"
             decision_line = (
                 "decision: "
                 f"final_tag={final_tag or '-'} • previous_final={(previous_final or '').strip().upper() or '-'} • "
                 f"reservation={reservation_label or 'none'} • consume_open_spot={consume_open_spot} • "
                 f"final_is_real={final_is_real} • decision_result=failed_open_delta • deltas={failed_bits} • "
-                f"failure={fail_reason}"
+                f"failure={fail_reason} • action_state=some_actions_applied_sheet_update_failed"
             )
         row_change_lines = [decision_line, *row_change_lines]
 
@@ -3628,7 +4010,10 @@ class WelcomeTicketWatcher(commands.Cog):
                 actions_ok = False
                 log.exception(
                     "failed to rename welcome thread",
-                    extra={"thread_id": getattr(thread, "id", None), "ticket": context.ticket_number},
+                    extra={
+                        "thread_id": getattr(thread, "id", None),
+                        "ticket": context.ticket_number,
+                    },
                 )
 
         context.final_clan = final_display
@@ -3669,10 +4054,14 @@ class WelcomeTicketWatcher(commands.Cog):
         log_result = "ok" if actions_ok else "error"
         is_manual = context.close_source == "manual_fallback"
         event_name = "welcome_close_manual" if is_manual else "welcome_close"
-        emoji = "⚠️" if is_manual and log_result == "ok" else ("✅" if log_result == "ok" else "❌")
+        emoji = (
+            "⚠️"
+            if is_manual and log_result == "ok"
+            else ("✅" if log_result == "ok" else "❌")
+        )
         extra_bits = ""
         if log_result != "ok":
-            extra_bits = " • reason=partial_actions"
+            extra_bits = " • reason=partial_actions • action_state=some_actions_applied_sheet_update_failed"
         if is_manual:
             extra_bits = f"{extra_bits} • source=manual_fallback"
         log.info(

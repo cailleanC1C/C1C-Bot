@@ -46,7 +46,9 @@ def _stub_find_welcome_row(monkeypatch):
     )
 
 
-def _make_reservation(tag: str, *, created: dt.datetime | None = None) -> reservations_sheets.ReservationRow:
+def _make_reservation(
+    tag: str, *, created: dt.datetime | None = None
+) -> reservations_sheets.ReservationRow:
     created_at = created or dt.datetime.now(dt.timezone.utc)
     return reservations_sheets.ReservationRow(
         row_number=2,
@@ -102,14 +104,13 @@ def test_parse_thread_name_open_without_w_prefix() -> None:
     assert parts.state == "open"
 
 
-
-
 def test_parse_thread_name_open_without_w_prefix_em_dash() -> None:
     parts = parse_welcome_thread_name("0867—Caillean")
     assert parts is not None
     assert parts.ticket_code == "W0867"
     assert parts.username == "Caillean"
     assert parts.state == "open"
+
 
 def test_parse_thread_name_reserved() -> None:
     parts = parse_welcome_thread_name("Res-W0298-Caillean AT-C1CE")
@@ -221,7 +222,9 @@ class _DummyMessage:
         self.id = message_id
         self._content = content
 
-    async def edit(self, *, content: str | None = None, view: object | None = None) -> None:
+    async def edit(
+        self, *, content: str | None = None, view: object | None = None
+    ) -> None:
         if content is not None:
             self._thread.messages.append(content)
 
@@ -357,7 +360,9 @@ def test_finalize_reconciles_when_row_inserted(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.human_log",
-        SimpleNamespace(human=lambda level, message: human_logs.append(f"{level}:{message}")),
+        SimpleNamespace(
+            human=lambda level, message: human_logs.append(f"{level}:{message}")
+        ),
     )
 
     async def runner() -> None:
@@ -390,7 +395,9 @@ def test_finalize_reconciles_when_row_inserted(monkeypatch) -> None:
 
     asyncio.run(runner())
 
-    assert reservation_calls, "should look up reservations even when the row was inserted"
+    assert (
+        reservation_calls
+    ), "should look up reservations even when the row was inserted"
     assert adjustments == [("C1CE", -1)]
     assert recomputed == ["C1CE"]
     assert human_logs, "human log entry should be emitted"
@@ -508,6 +515,7 @@ def test_ticket_open_without_mention_avoids_fallback_user(monkeypatch) -> None:
         "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
         fake_append_welcome_ticket_row,
     )
+
     async def fake_persist_session(**kwargs):  # type: ignore[no-untyped-def]
         recorded.setdefault("sessions", []).append(kwargs)
 
@@ -543,11 +551,22 @@ def test_finalize_skips_when_upsert_unexpected(monkeypatch, caplog) -> None:
     def fake_upsert(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         return "unknown"
 
-    async def fail_async(*_args, **_kwargs):  # type: ignore[no-untyped-def]
-        raise AssertionError("should not run reconciliation when row is unknown")
+    async def fake_find_reservations(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        return []
 
-    def fail_sync(*_args, **_kwargs):  # type: ignore[no-untyped-def]
-        raise AssertionError("should not read clan rows when row is unknown")
+    async def fail_async(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError(
+            "should not run durable reconciliation mutations when row is unknown"
+        )
+
+    def fake_find_clan(tag: str, *, force=False):  # type: ignore[no-untyped-def]
+        row = [""] * 35
+        row[2] = tag
+        row[31] = "1"
+        row[32] = "0"
+        row[33] = "0"
+        row[34] = ""
+        return 7, row
 
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
@@ -555,7 +574,7 @@ def test_finalize_skips_when_upsert_unexpected(monkeypatch, caplog) -> None:
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.reservations_sheets.find_active_reservations_for_recruit",
-        fail_async,
+        fake_find_reservations,
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.availability.adjust_manual_open_spots",
@@ -567,7 +586,16 @@ def test_finalize_skips_when_upsert_unexpected(monkeypatch, caplog) -> None:
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.recruitment_sheets.find_clan_row",
-        fail_sync,
+        fake_find_clan,
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.recruitment_sheets.get_clan_header_map",
+        lambda: {
+            "open_spots": 31,
+            "inactives": 32,
+            "reservation_count": 33,
+            "reservation_summary": 34,
+        },
     )
 
     caplog.set_level(logging.WARNING, logger="c1c.onboarding.welcome_watcher")
@@ -676,7 +704,8 @@ def test_finalize_no_reservation_consumes_open_spot(monkeypatch, caplog) -> None
     log_messages = [
         record.getMessage()
         for record in caplog.records
-        if record.name == "c1c.onboarding.welcome_watcher" and record.levelno == logging.INFO
+        if record.name == "c1c.onboarding.welcome_watcher"
+        and record.levelno == logging.INFO
     ]
     assert (
         "✅ welcome_close — ticket=W0456 • user=Tester • final=C1CE • reservation=none • result=ok"
@@ -764,12 +793,12 @@ def test_finalize_manual_logs_manual_event(monkeypatch, caplog) -> None:
     log_messages = [
         record.getMessage()
         for record in caplog.records
-        if record.name == "c1c.onboarding.welcome_watcher" and record.levelno == logging.INFO
+        if record.name == "c1c.onboarding.welcome_watcher"
+        and record.levelno == logging.INFO
     ]
     assert (
         "⚠️ welcome_close_manual — ticket=W1456 • user=Tester • final=C1CE "
-        "• reservation=none • result=ok • source=manual_fallback"
-        in log_messages
+        "• reservation=none • result=ok • source=manual_fallback" in log_messages
     )
 
 
@@ -1299,7 +1328,14 @@ def test_finalize_posts_clan_math_log(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.recruitment_sheets.get_clan_header_map",
-        lambda: {"open_spots": 31, "inactives": 32, "reservation_count": 33, "reservation_summary": 34, "manual_open_spots": 4, "manual_open_spots_seen": 35},
+        lambda: {
+            "open_spots": 31,
+            "inactives": 32,
+            "reservation_count": 33,
+            "reservation_summary": 34,
+            "manual_open_spots": 4,
+            "manual_open_spots_seen": 35,
+        },
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.rt.send_log_message", fake_send_log
@@ -1412,7 +1448,14 @@ def test_finalize_error_pings_admins(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.recruitment_sheets.get_clan_header_map",
-        lambda: {"open_spots": 31, "inactives": 32, "reservation_count": 33, "reservation_summary": 34, "manual_open_spots": 4, "manual_open_spots_seen": 35},
+        lambda: {
+            "open_spots": 31,
+            "inactives": 32,
+            "reservation_count": 33,
+            "reservation_summary": 34,
+            "manual_open_spots": 4,
+            "manual_open_spots_seen": 35,
+        },
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.rt.send_log_message", fake_send_log
@@ -1538,7 +1581,14 @@ def test_finalize_manual_path_logs_source(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.recruitment_sheets.get_clan_header_map",
-        lambda: {"open_spots": 31, "inactives": 32, "reservation_count": 33, "reservation_summary": 34, "manual_open_spots": 4, "manual_open_spots_seen": 35},
+        lambda: {
+            "open_spots": 31,
+            "inactives": 32,
+            "reservation_count": 33,
+            "reservation_summary": 34,
+            "manual_open_spots": 4,
+            "manual_open_spots_seen": 35,
+        },
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.rt.send_log_message", fake_send_log
@@ -1611,7 +1661,14 @@ def test_finalize_non_real_tag_logs_skip_reason(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.recruitment_sheets.get_clan_header_map",
-        lambda: {"open_spots": 31, "inactives": 32, "reservation_count": 33, "reservation_summary": 34, "manual_open_spots": 4, "manual_open_spots_seen": 35},
+        lambda: {
+            "open_spots": 31,
+            "inactives": 32,
+            "reservation_count": 33,
+            "reservation_summary": 34,
+            "manual_open_spots": 4,
+            "manual_open_spots_seen": 35,
+        },
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.get_admin_role_ids", lambda: set()
@@ -1622,7 +1679,9 @@ def test_finalize_non_real_tag_logs_skip_reason(monkeypatch) -> None:
     async def fake_send_log(message: str) -> None:
         log_messages.append(message)
 
-    monkeypatch.setattr("modules.onboarding.watcher_welcome.rt.send_log_message", fake_send_log)
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.rt.send_log_message", fake_send_log
+    )
 
     async def runner() -> None:
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
@@ -1637,7 +1696,15 @@ def test_finalize_non_real_tag_logs_skip_reason(monkeypatch) -> None:
             recruit_display="Tester",
         )
         context.state = "awaiting_clan"
-        await watcher._finalize_clan_tag(_DummyThread(), context, "C1CZ", actor=None, source="select", prompt_message=None, view=None)
+        await watcher._finalize_clan_tag(
+            _DummyThread(),
+            context,
+            "C1CZ",
+            actor=None,
+            source="select",
+            prompt_message=None,
+            view=None,
+        )
         await bot.close()
 
     asyncio.run(runner())
@@ -1646,6 +1713,7 @@ def test_finalize_non_real_tag_logs_skip_reason(monkeypatch) -> None:
     assert "decision_result=skipped_open_delta" in message
     assert "skip_reason=non_real_final_tag" in message
     assert "open_spots" not in message or "open_spots: " not in message
+
 
 def test_manual_close_missing_row_prompts(monkeypatch, caplog) -> None:
     inserted_rows: list[list[str]] = []
@@ -1693,7 +1761,10 @@ def test_manual_close_missing_row_prompts(monkeypatch, caplog) -> None:
     asyncio.run(runner())
 
     assert inserted_rows and inserted_rows[0][:2] == ["W0500", "Tester"]
-    assert any("onboarding_row_missing_manual_close" in record.getMessage() for record in caplog.records)
+    assert any(
+        "onboarding_row_missing_manual_close" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_manual_close_existing_clan_skips_prompt(monkeypatch) -> None:
@@ -1766,7 +1837,9 @@ def test_rename_thread_to_reserved_unparsed_logs_error(monkeypatch, caplog) -> N
 
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.human_log",
-        SimpleNamespace(human=lambda level, message: human_calls.append((level, message))),
+        SimpleNamespace(
+            human=lambda level, message: human_calls.append((level, message))
+        ),
     )
 
     caplog.set_level(logging.ERROR, logger="c1c.onboarding.welcome_watcher")
@@ -1788,3 +1861,116 @@ def test_rename_thread_to_reserved_unparsed_logs_error(monkeypatch, caplog) -> N
     assert level == "error"
     assert "welcome_reserve_rename_error" in message
     assert "thread=W554-cail" in message
+
+
+def test_finalize_preflight_failure_applies_no_discord_actions(monkeypatch) -> None:
+    async def fake_to_thread(func, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
+    welcome_writes: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def fake_append_welcome_ticket_row(*args, **kwargs):  # type: ignore[no-untyped-def]
+        welcome_writes.append((args, kwargs))
+        return "updated"
+
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
+        fake_append_welcome_ticket_row,
+    )
+
+    async def fake_find_reservations(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        return []
+
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.reservations_sheets.find_active_reservations_for_recruit",
+        fake_find_reservations,
+    )
+
+    row = [""] * 37
+    row[2] = "C1CE"
+    row[4] = "not a number"
+    row[31] = "3"
+    row[35] = "3"
+
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.recruitment_sheets.find_clan_row",
+        lambda tag, *, force=False: (12, list(row)) if tag == "C1CE" else None,
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.recruitment_sheets.get_clan_header_map",
+        lambda: {
+            "open_spots": 31,
+            "inactives": 32,
+            "reservation_count": 33,
+            "reservation_summary": 34,
+            "manual_open_spots": 4,
+            "manual_open_spots_seen": 35,
+        },
+    )
+
+    async def failing_preflight(tag: str, delta: int):
+        raise ValueError("non_numeric_manual_open_spots_value")
+
+    adjust_calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.availability.preflight_manual_open_spots_adjustment",
+        failing_preflight,
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.availability.adjust_manual_open_spots",
+        lambda tag, delta: adjust_calls.append((tag, delta)),
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.availability.recompute_clan_availability",
+        lambda *_args, **_kwargs: None,
+    )
+
+    log_messages: list[str] = []
+
+    async def fake_send_log(message: str) -> None:
+        log_messages.append(message)
+
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.rt.send_log_message", fake_send_log
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.get_admin_role_ids", lambda: set()
+    )
+
+    async def runner() -> tuple[_DummyThread, TicketContext]:
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        watcher = WelcomeTicketWatcher(bot)
+        watcher._clan_tags = ["C1CE", _NO_PLACEMENT_TAG]
+        watcher._clan_tag_set = set(watcher._clan_tags)
+        context = TicketContext(
+            thread_id=1,
+            ticket_number="W0777",
+            username="Tester",
+            recruit_id=777,
+            recruit_display="Tester",
+        )
+        context.state = "awaiting_clan"
+        thread = _DummyThread()
+        await watcher._finalize_clan_tag(
+            thread,
+            context,
+            "C1CE",
+            actor=None,
+            source="select",
+            prompt_message=None,
+            view=None,
+        )
+        await bot.close()
+        return thread, context
+
+    thread, context = asyncio.run(runner())
+
+    assert context.state == "awaiting_clan"
+    assert not getattr(thread, "edited_names", [])
+    assert welcome_writes == []
+    assert adjust_calls == []
+    assert log_messages
+    assert "result=error" in log_messages[-1]
+    assert "reason=open_delta_preflight_failed" in log_messages[-1]
+    assert "action_state=no_discord_member_action_applied" in log_messages[-1]
