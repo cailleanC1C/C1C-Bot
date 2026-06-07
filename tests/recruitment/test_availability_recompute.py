@@ -25,11 +25,29 @@ def _default_recruitment_config(monkeypatch):
         availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
     )
     header = [""] * 42
+
+    config_values = {
+        "clans_header_manual_open_spots": "Manual open spots",
+        "clans_header_open_spots": "Effective open spots",
+        "clans_header_inactives": "Inactives",
+        "clans_header_reservation_count": "Reservation count",
+        "clans_header_reservation_summary": "Reservation summary",
+        "clans_header_manual_open_spots_seen": "Manual open spots seen",
+        "clans_header_clan_tag": "Clan Tag",
+    }
+    monkeypatch.setattr(
+        availability.recruitment,
+        "get_config_value",
+        lambda key, default=None: config_values.get(key, default),
+    )
     header[4] = "Manual open spots"
     header[20] = "Effective open spots"
     header[31] = "Effective open spots"
+    header[32] = "Inactives"
+    header[33] = "Reservation count"
+    header[34] = "Reservation summary"
     header[35] = "Manual open spots seen"
-    header[36] = "Manual open spots seen"
+    header[36] = "Clan Tag"
     monkeypatch.setattr(availability.recruitment, "get_clan_header_row", lambda: header)
 
 
@@ -262,11 +280,11 @@ def test_recompute_clan_availability_uses_reordered_reservation_columns(monkeypa
     asyncio.run(availability.recompute_clan_availability("#EEE"))
 
     assert worksheet.updates == [
-        ("U11", [[3]], {"value_input_option": "RAW"}),
-        ("AP11", [[4]], {"value_input_option": "RAW"}),
+        ("AF11", [[3]], {"value_input_option": "RAW"}),
+        ("AJ11", [[4]], {"value_input_option": "RAW"}),
         ("AG11", [[""]], {"value_input_option": "RAW"}),
-        ("AK11", [[1]], {"value_input_option": "RAW"}),
-        ("Z11", [["1 -> Alice"]], {"value_input_option": "RAW"}),
+        ("AH11", [[1]], {"value_input_option": "RAW"}),
+        ("AI11", [["1 -> Alice"]], {"value_input_option": "RAW"}),
     ]
 
 
@@ -287,7 +305,23 @@ def test_recompute_clan_availability_requires_reservation_headers(monkeypatch):
         },
     )
 
-    with pytest.raises(ValueError, match="reservation_count/reservation_summary"):
+    monkeypatch.setattr(
+        availability.recruitment,
+        "get_config_value",
+        lambda key, default=None: (
+            None
+            if key == "clans_header_reservation_count"
+            else {
+                "clans_header_manual_open_spots": "Manual open spots",
+                "clans_header_open_spots": "Effective open spots",
+                "clans_header_inactives": "Inactives",
+                "clans_header_reservation_summary": "Reservation summary",
+                "clans_header_manual_open_spots_seen": "Manual open spots seen",
+                "clans_header_clan_tag": "Clan Tag",
+            }.get(key, default)
+        ),
+    )
+    with pytest.raises(ValueError, match="clans_header_reservation_count"):
         asyncio.run(availability.recompute_clan_availability("#AAA"))
 
 
@@ -443,9 +477,13 @@ def test_adjust_manual_open_spots_applies_delta_to_resolved_column(monkeypatch):
     monkeypatch.setattr(
         availability.recruitment, "get_clans_tab_name", lambda: "bot_info"
     )
-    header = [""] * 37
+    header = [""] * 42
+    header[2] = "Clan Tag"
     header[4] = "Manual open spots"
     header[20] = "Effective open spots"
+    header[32] = "Inactives"
+    header[33] = "Reservation count"
+    header[34] = "Reservation summary"
     header[36] = "Manual open spots seen"
     monkeypatch.setattr(availability.recruitment, "get_clan_header_row", lambda: header)
 
@@ -491,7 +529,23 @@ def test_adjust_manual_open_spots_requires_open_spots_header(monkeypatch):
         lambda: {"manual_open_spots": 4, "open_spots": 20},
     )
 
-    with pytest.raises(ValueError, match="manual_open_spots_seen"):
+    monkeypatch.setattr(
+        availability.recruitment,
+        "get_config_value",
+        lambda key, default=None: (
+            None
+            if key == "clans_header_manual_open_spots_seen"
+            else {
+                "clans_header_manual_open_spots": "Manual open spots",
+                "clans_header_open_spots": "Effective open spots",
+                "clans_header_inactives": "Inactives",
+                "clans_header_reservation_count": "Reservation count",
+                "clans_header_reservation_summary": "Reservation summary",
+                "clans_header_clan_tag": "Clan Tag",
+            }.get(key, default)
+        ),
+    )
+    with pytest.raises(ValueError, match="clans_header_manual_open_spots_seen"):
         asyncio.run(availability.adjust_manual_open_spots("#CCC", -1))
 
 
@@ -534,8 +588,8 @@ def test_adjust_manual_open_spots_rebases_when_manual_changes(monkeypatch):
     new_value = asyncio.run(availability.adjust_manual_open_spots("#DDD", -1))
     assert new_value == 3
     assert worksheet.updates == [
-        ("U15", [["3"]], {"value_input_option": "RAW"}),
-        ("AK15", [["4"]], {"value_input_option": "RAW"}),
+        ("AF15", [["3"]], {"value_input_option": "RAW"}),
+        ("AJ15", [["4"]], {"value_input_option": "RAW"}),
     ]
 
 
@@ -578,8 +632,8 @@ def test_adjust_manual_open_spots_rebase_without_delta(monkeypatch):
     new_value = asyncio.run(availability.adjust_manual_open_spots("#DDD", 0))
     assert new_value == 4
     assert worksheet.updates == [
-        ("U15", [["4"]], {"value_input_option": "RAW"}),
-        ("AK15", [["4"]], {"value_input_option": "RAW"}),
+        ("AF15", [["4"]], {"value_input_option": "RAW"}),
+        ("AJ15", [["4"]], {"value_input_option": "RAW"}),
     ]
 
 
@@ -596,9 +650,13 @@ def _patch_adjust_common(monkeypatch, *, row, header_map=None, worksheet=None):
         lambda: header_map
         or {"manual_open_spots": 4, "open_spots": 20, "manual_open_spots_seen": 36},
     )
-    header = [""] * 37
+    header = [""] * 42
+    header[2] = "Clan Tag"
     header[4] = "Manual open spots"
     header[20] = "Effective open spots"
+    header[32] = "Inactives"
+    header[33] = "Reservation count"
+    header[34] = "Reservation summary"
     header[36] = "Manual open spots seen"
     monkeypatch.setattr(availability.recruitment, "get_clan_header_row", lambda: header)
     monkeypatch.setattr(
@@ -630,7 +688,7 @@ def test_adjust_manual_open_spots_missing_bot_info_row_logs_context(
     _patch_adjust_common(monkeypatch, row=[""] * 37)
     with pytest.raises(ValueError, match="Unknown clan tag"):
         asyncio.run(availability.preflight_manual_open_spots_adjustment("#MISS", -1))
-    assert "manual open spot adjustment preflight failed" in caplog.text
+    assert "bot_info availability header diagnostics" in caplog.text
     assert any(
         getattr(r, "reason", None) == "bot_info_row_not_found" for r in caplog.records
     )
@@ -645,19 +703,27 @@ def test_adjust_manual_open_spots_missing_configured_manual_column_logs_context(
     row = [""] * 37
     row[20] = "3"
     row[36] = "3"
-    _patch_adjust_common(
-        monkeypatch,
-        row=row,
-        header_map={"open_spots": 20, "manual_open_spots_seen": 36},
+    _patch_adjust_common(monkeypatch, row=row)
+    monkeypatch.setattr(
+        availability.recruitment,
+        "get_config_value",
+        lambda key, default=None: (
+            None
+            if key == "clans_header_manual_open_spots"
+            else {
+                "clans_header_open_spots": "Effective open spots",
+                "clans_header_inactives": "Inactives",
+                "clans_header_reservation_count": "Reservation count",
+                "clans_header_reservation_summary": "Reservation summary",
+                "clans_header_manual_open_spots_seen": "Manual open spots seen",
+                "clans_header_clan_tag": "Clan Tag",
+            }.get(key, default)
+        ),
     )
-    with pytest.raises(ValueError, match="manual_open_spots"):
+    with pytest.raises(ValueError, match="clans_header_manual_open_spots"):
         asyncio.run(availability.preflight_manual_open_spots_adjustment("#CCC", -1))
     assert any(
-        getattr(r, "reason", None) == "configured_column_not_found"
-        for r in caplog.records
-    )
-    assert any(
-        getattr(r, "configured_column_header_key", None) == "manual_open_spots"
+        getattr(r, "missing_config_key", None) == "clans_header_manual_open_spots"
         for r in caplog.records
     )
 
@@ -693,3 +759,46 @@ def test_adjust_manual_open_spots_sheet_update_exception_logs_range(
     assert "range=U12" in caplog.text
     assert "boom U12" in caplog.text
     assert any(getattr(r, "write_range", None) == "U12" for r in caplog.records)
+
+
+def test_availability_header_config_resolves_production_columns(monkeypatch):
+    header = [""] * 37
+    header[4] = "manual_open_spots"
+    header[31] = "open_spots"
+    header[32] = "inactives"
+    header[33] = "reservation_count"
+    header[34] = "reservation_summary"
+    header[35] = "manual_open_spots_seen"
+    header[36] = "clan_tag"
+    config_values = {
+        f"clans_header_{field}": field for field in availability.AVAILABILITY_FIELDS
+    }
+    monkeypatch.setattr(
+        availability.recruitment, "get_clans_tab_name", lambda: "bot_info"
+    )
+    monkeypatch.setattr(
+        availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
+    )
+    monkeypatch.setattr(
+        availability.recruitment, "get_clan_header_row", lambda force=False: header
+    )
+    monkeypatch.setattr(
+        availability.recruitment,
+        "get_config_value",
+        lambda key, default=None: config_values.get(key, default),
+    )
+
+    resolved = availability._resolve_availability_headers()
+
+    assert {
+        key: availability._column_label(index)
+        for key, index in resolved.header_map.items()
+    } == {
+        "manual_open_spots": "E",
+        "open_spots": "AF",
+        "inactives": "AG",
+        "reservation_count": "AH",
+        "reservation_summary": "AI",
+        "manual_open_spots_seen": "AJ",
+        "clan_tag": "AK",
+    }
