@@ -12,7 +12,6 @@ from modules.onboarding.watcher_welcome import (
     WelcomeTicketWatcher,
     _NO_PLACEMENT_TAG,
     _determine_reservation_decision,
-    build_closed_thread_name,
     parse_welcome_thread_name,
     rename_thread_to_reserved,
     _clan_math_column_indices,
@@ -1871,6 +1870,30 @@ def test_rename_thread_to_reserved_success() -> None:
     assert thread.renames == ["Res-W0999-Tester-C1CE"]
 
 
+def test_rename_thread_to_reserved_promo_ticket_success() -> None:
+    thread = _RenameThread("M0351-Debido")
+
+    async def runner() -> None:
+        await rename_thread_to_reserved(thread, "C1CK")
+
+    asyncio.run(runner())
+
+    assert thread.name == "Res-M0351-Debido-C1CK"
+    assert thread.renames == ["Res-M0351-Debido-C1CK"]
+
+
+def test_rename_thread_to_reserved_updates_existing_reserved_clan() -> None:
+    thread = _RenameThread("Res-M0351-Debido-C1CD")
+
+    async def runner() -> None:
+        await rename_thread_to_reserved(thread, "C1CK")
+
+    asyncio.run(runner())
+
+    assert thread.name == "Res-M0351-Debido-C1CK"
+    assert thread.renames == ["Res-M0351-Debido-C1CK"]
+
+
 def test_rename_thread_to_reserved_unparsed_logs_error(monkeypatch, caplog) -> None:
     thread = _RenameThread("W554-cail")
     human_calls: list[tuple[str, str]] = []
@@ -1895,12 +1918,21 @@ def test_rename_thread_to_reserved_unparsed_logs_error(monkeypatch, caplog) -> N
         for record in caplog.records
         if record.name == "c1c.onboarding.welcome_watcher"
     ]
-    assert any("welcome_reserve_rename_error" in message for message in messages)
+    assert any("reservation thread rename skipped" in message for message in messages)
+    assert any(
+        getattr(record, "reason", None) == "parse_failed" for record in caplog.records
+    )
+    assert any(
+        getattr(record, "current_thread_name", None) == "W554-cail"
+        for record in caplog.records
+    )
+    assert any(getattr(record, "clan_tag", None) == "C1CE" for record in caplog.records)
     assert human_calls
     level, message = human_calls[0]
     assert level == "error"
-    assert "welcome_reserve_rename_error" in message
+    assert "reservation_thread_rename" in message
     assert "thread=W554-cail" in message
+    assert "reason=parse_failed" in message
 
 
 def test_finalize_preflight_failure_applies_no_discord_actions(monkeypatch) -> None:
