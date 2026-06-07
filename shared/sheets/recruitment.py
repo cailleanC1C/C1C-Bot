@@ -203,9 +203,7 @@ def _build_header_map(header_row: Sequence[Any], tab: str) -> Dict[str, int]:
         column_map[key] = resolved
 
     for key in missing:
-        log.debug(
-            "recruitment sheet column missing", extra={"tab": tab, "column": key}
-        )
+        log.debug("recruitment sheet column missing", extra={"tab": tab, "column": key})
 
     return column_map
 
@@ -235,7 +233,9 @@ def _to_int(value: Any) -> int:
         return 0
 
 
-def _make_clan_record(row: Sequence[str], header_map: Dict[str, int]) -> RecruitmentClanRecord:
+def _make_clan_record(
+    row: Sequence[str], header_map: Dict[str, int]
+) -> RecruitmentClanRecord:
     roster_idx = header_map.get("roster", DEFAULT_ROSTER_INDEX)
     roster_cell = _cell_value(row, roster_idx)
 
@@ -366,11 +366,17 @@ def get_config_value(key: str, default: Optional[str] = None) -> Optional[str]:
 
 
 def _clans_tab() -> str:
-    return _config_lookup("clans_tab", os.getenv("WORKSHEET_NAME", "bot_info")) or "bot_info"
+    return (
+        _config_lookup("clans_tab", os.getenv("WORKSHEET_NAME", "bot_info"))
+        or "bot_info"
+    )
 
 
 def _templates_tab() -> str:
-    return _config_lookup("welcome_templates_tab", "WelcomeTemplates") or "WelcomeTemplates"
+    return (
+        _config_lookup("welcome_templates_tab", "WelcomeTemplates")
+        or "WelcomeTemplates"
+    )
 
 
 def get_recruitment_sheet_id() -> str:
@@ -495,6 +501,16 @@ def get_clan_header_map(force: bool = False) -> Dict[str, int]:
     return dict(_CLAN_HEADER_MAP or {})
 
 
+def get_clan_header_row(force: bool = False) -> List[str]:
+    """Return the cached clan roster header row used for config-driven column names."""
+
+    global _CLAN_HEADER_ROW, _CLAN_HEADER_TS
+    now = time.time()
+    if force or _CLAN_HEADER_ROW is None or (now - _CLAN_HEADER_TS) >= _CACHE_TTL:
+        fetch_clans(force=force)
+    return list(_CLAN_HEADER_ROW or [])
+
+
 def get_clan_records(force: bool = False) -> List[RecruitmentClanRecord]:
     """Return normalized clan roster records with numeric roster metadata."""
 
@@ -573,8 +589,6 @@ async def _load_templates_async() -> List[Dict[str, Any]]:
     return await afetch_records(sheet_id, tab)
 
 
-
-
 def register_cache_buckets() -> None:
     """Register recruitment cache buckets if they are not already present."""
 
@@ -634,7 +648,9 @@ def get_clan_by_tag(tag: str, *, force: bool = False) -> List[str] | None:
     return None
 
 
-def find_clan_row(clan_tag: str, *, force: bool = False) -> tuple[int, List[str]] | None:
+def find_clan_row(
+    clan_tag: str, *, force: bool = False
+) -> tuple[int, List[str]] | None:
     """Return the sheet row number and values for ``clan_tag``."""
 
     normalized = _normalize_tag(clan_tag)

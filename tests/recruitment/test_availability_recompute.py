@@ -16,6 +16,23 @@ class StubWorksheet:
         return None
 
 
+@pytest.fixture(autouse=True)
+def _default_recruitment_config(monkeypatch):
+    monkeypatch.setattr(
+        availability.recruitment, "get_clans_tab_name", lambda: "bot_info"
+    )
+    monkeypatch.setattr(
+        availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
+    )
+    header = [""] * 42
+    header[4] = "Manual open spots"
+    header[20] = "Effective open spots"
+    header[31] = "Effective open spots"
+    header[35] = "Manual open spots seen"
+    header[36] = "Manual open spots seen"
+    monkeypatch.setattr(availability.recruitment, "get_clan_header_row", lambda: header)
+
+
 def test_recompute_clan_availability_updates_sheet(monkeypatch):
     worksheet = StubWorksheet()
 
@@ -55,12 +72,16 @@ def test_recompute_clan_availability_updates_sheet(monkeypatch):
                 "",  # D
                 "3",  # E manual open spots
             ]
-            + [""] * 30
+            + [""] * 30,
         ),
     )
 
-    monkeypatch.setattr(availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
-    monkeypatch.setattr(availability.recruitment, "get_clans_tab_name", lambda: "bot_info")
+    monkeypatch.setattr(
+        availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
+    )
+    monkeypatch.setattr(
+        availability.recruitment, "get_clans_tab_name", lambda: "bot_info"
+    )
     monkeypatch.setattr(
         availability.recruitment,
         "get_clan_header_map",
@@ -73,6 +94,7 @@ def test_recompute_clan_availability_updates_sheet(monkeypatch):
             "reservation_summary": 34,
         },
     )
+
     async def fake_aget(sheet_id: str, tab_name: str):
         assert sheet_id == "sheet"
         assert tab_name == "bot_info"
@@ -90,7 +112,9 @@ def test_recompute_clan_availability_updates_sheet(monkeypatch):
         updated_rows["row"] = list(row_values)
         updated_rows["sheet_row"] = sheet_row
 
-    monkeypatch.setattr(availability.recruitment, "update_cached_clan_row", capture_update)
+    monkeypatch.setattr(
+        availability.recruitment, "update_cached_clan_row", capture_update
+    )
 
     asyncio.run(availability.recompute_clan_availability("#AAA"))
 
@@ -128,8 +152,12 @@ def test_recompute_clan_availability_zero_reservations(monkeypatch):
         "find_clan_row",
         lambda tag, *, force=False: (9, list(base_row)),
     )
-    monkeypatch.setattr(availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
-    monkeypatch.setattr(availability.recruitment, "get_clans_tab_name", lambda: "bot_info")
+    monkeypatch.setattr(
+        availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
+    )
+    monkeypatch.setattr(
+        availability.recruitment, "get_clans_tab_name", lambda: "bot_info"
+    )
     monkeypatch.setattr(
         availability.recruitment,
         "get_clan_header_map",
@@ -152,7 +180,9 @@ def test_recompute_clan_availability_zero_reservations(monkeypatch):
     monkeypatch.setattr(availability.async_core, "aget_worksheet", fake_aget)
     monkeypatch.setattr(availability.async_core, "acall_with_backoff", fake_acall)
 
-    monkeypatch.setattr(availability.recruitment, "update_cached_clan_row", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        availability.recruitment, "update_cached_clan_row", lambda *args, **kwargs: None
+    )
 
     asyncio.run(availability.recompute_clan_availability("#BBB"))
 
@@ -188,12 +218,22 @@ def test_recompute_clan_availability_uses_reordered_reservation_columns(monkeypa
     async def fake_resolve_names(_rows, *, guild=None, resolver=None):
         return ["Alice"]
 
-    monkeypatch.setattr(reservations, "get_active_reservations_for_clan", fake_get_active_reservations)
+    monkeypatch.setattr(
+        reservations, "get_active_reservations_for_clan", fake_get_active_reservations
+    )
     monkeypatch.setattr(reservations, "resolve_reservation_names", fake_resolve_names)
     row = ["", "Clan", "#EEE", "", "4"] + [""] * 40
-    monkeypatch.setattr(availability.recruitment, "find_clan_row", lambda tag, *, force=False: (11, list(row)))
-    monkeypatch.setattr(availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
-    monkeypatch.setattr(availability.recruitment, "get_clans_tab_name", lambda: "bot_info")
+    monkeypatch.setattr(
+        availability.recruitment,
+        "find_clan_row",
+        lambda tag, *, force=False: (11, list(row)),
+    )
+    monkeypatch.setattr(
+        availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
+    )
+    monkeypatch.setattr(
+        availability.recruitment, "get_clans_tab_name", lambda: "bot_info"
+    )
     monkeypatch.setattr(
         availability.recruitment,
         "get_clan_header_map",
@@ -215,7 +255,9 @@ def test_recompute_clan_availability_uses_reordered_reservation_columns(monkeypa
 
     monkeypatch.setattr(availability.async_core, "aget_worksheet", fake_aget)
     monkeypatch.setattr(availability.async_core, "acall_with_backoff", fake_acall)
-    monkeypatch.setattr(availability.recruitment, "update_cached_clan_row", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        availability.recruitment, "update_cached_clan_row", lambda *args, **kwargs: None
+    )
 
     asyncio.run(availability.recompute_clan_availability("#EEE"))
 
@@ -237,14 +279,21 @@ def test_recompute_clan_availability_requires_reservation_headers(monkeypatch):
     monkeypatch.setattr(
         availability.recruitment,
         "get_clan_header_map",
-        lambda: {"manual_open_spots": 4, "open_spots": 31, "inactives": 32, "manual_open_spots_seen": 35},
+        lambda: {
+            "manual_open_spots": 4,
+            "open_spots": 31,
+            "inactives": 32,
+            "manual_open_spots_seen": 35,
+        },
     )
 
     with pytest.raises(ValueError, match="reservation_count/reservation_summary"):
         asyncio.run(availability.recompute_clan_availability("#AAA"))
 
 
-def test_recompute_clan_availability_keeps_runtime_af_when_manual_seen_matches(monkeypatch):
+def test_recompute_clan_availability_keeps_runtime_af_when_manual_seen_matches(
+    monkeypatch,
+):
     worksheet = StubWorksheet()
 
     async def fake_get_active_reservations(clan_tag: str):
@@ -253,12 +302,22 @@ def test_recompute_clan_availability_keeps_runtime_af_when_manual_seen_matches(m
     async def fake_resolve_names(_rows, *, guild=None, resolver=None):
         return []
 
-    monkeypatch.setattr(reservations, "get_active_reservations_for_clan", fake_get_active_reservations)
+    monkeypatch.setattr(
+        reservations, "get_active_reservations_for_clan", fake_get_active_reservations
+    )
     monkeypatch.setattr(reservations, "resolve_reservation_names", fake_resolve_names)
     row = ["", "Clan", "#AAA", "", "3"] + [""] * 26 + ["2", "", "", "", "3"] + [""] * 4
-    monkeypatch.setattr(availability.recruitment, "find_clan_row", lambda tag, *, force=False: (12, list(row)))
-    monkeypatch.setattr(availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
-    monkeypatch.setattr(availability.recruitment, "get_clans_tab_name", lambda: "bot_info")
+    monkeypatch.setattr(
+        availability.recruitment,
+        "find_clan_row",
+        lambda tag, *, force=False: (12, list(row)),
+    )
+    monkeypatch.setattr(
+        availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
+    )
+    monkeypatch.setattr(
+        availability.recruitment, "get_clans_tab_name", lambda: "bot_info"
+    )
     monkeypatch.setattr(
         availability.recruitment,
         "get_clan_header_map",
@@ -284,7 +343,9 @@ def test_recompute_clan_availability_keeps_runtime_af_when_manual_seen_matches(m
     monkeypatch.setattr(
         availability.recruitment,
         "update_cached_clan_row",
-        lambda sheet_row, row_values: captured.update({"sheet_row": sheet_row, "row_values": list(row_values)}),
+        lambda sheet_row, row_values: captured.update(
+            {"sheet_row": sheet_row, "row_values": list(row_values)}
+        ),
     )
 
     asyncio.run(availability.recompute_clan_availability("#AAA"))
@@ -294,7 +355,9 @@ def test_recompute_clan_availability_keeps_runtime_af_when_manual_seen_matches(m
     assert captured["row_values"][35] == "3"
 
 
-def test_recompute_clan_availability_rebases_runtime_af_when_manual_changes(monkeypatch):
+def test_recompute_clan_availability_rebases_runtime_af_when_manual_changes(
+    monkeypatch,
+):
     worksheet = StubWorksheet()
 
     async def fake_get_active_reservations(clan_tag: str):
@@ -303,12 +366,22 @@ def test_recompute_clan_availability_rebases_runtime_af_when_manual_changes(monk
     async def fake_resolve_names(_rows, *, guild=None, resolver=None):
         return []
 
-    monkeypatch.setattr(reservations, "get_active_reservations_for_clan", fake_get_active_reservations)
+    monkeypatch.setattr(
+        reservations, "get_active_reservations_for_clan", fake_get_active_reservations
+    )
     monkeypatch.setattr(reservations, "resolve_reservation_names", fake_resolve_names)
     row = ["", "Clan", "#AAA", "", "4"] + [""] * 26 + ["2", "", "", "", "3"] + [""] * 4
-    monkeypatch.setattr(availability.recruitment, "find_clan_row", lambda tag, *, force=False: (13, list(row)))
-    monkeypatch.setattr(availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
-    monkeypatch.setattr(availability.recruitment, "get_clans_tab_name", lambda: "bot_info")
+    monkeypatch.setattr(
+        availability.recruitment,
+        "find_clan_row",
+        lambda tag, *, force=False: (13, list(row)),
+    )
+    monkeypatch.setattr(
+        availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
+    )
+    monkeypatch.setattr(
+        availability.recruitment, "get_clans_tab_name", lambda: "bot_info"
+    )
     monkeypatch.setattr(
         availability.recruitment,
         "get_clan_header_map",
@@ -334,7 +407,9 @@ def test_recompute_clan_availability_rebases_runtime_af_when_manual_changes(monk
     monkeypatch.setattr(
         availability.recruitment,
         "update_cached_clan_row",
-        lambda sheet_row, row_values: captured.update({"sheet_row": sheet_row, "row_values": list(row_values)}),
+        lambda sheet_row, row_values: captured.update(
+            {"sheet_row": sheet_row, "row_values": list(row_values)}
+        ),
     )
 
     asyncio.run(availability.recompute_clan_availability("#AAA"))
@@ -356,10 +431,23 @@ def test_adjust_manual_open_spots_applies_delta_to_resolved_column(monkeypatch):
     monkeypatch.setattr(
         availability.recruitment,
         "get_clan_header_map",
-        lambda: {"manual_open_spots": 4, "open_spots": 20, "manual_open_spots_seen": 36},
+        lambda: {
+            "manual_open_spots": 4,
+            "open_spots": 20,
+            "manual_open_spots_seen": 36,
+        },
     )
-    monkeypatch.setattr(availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
-    monkeypatch.setattr(availability.recruitment, "get_clans_tab_name", lambda: "bot_info")
+    monkeypatch.setattr(
+        availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
+    )
+    monkeypatch.setattr(
+        availability.recruitment, "get_clans_tab_name", lambda: "bot_info"
+    )
+    header = [""] * 37
+    header[4] = "Manual open spots"
+    header[20] = "Effective open spots"
+    header[36] = "Manual open spots seen"
+    monkeypatch.setattr(availability.recruitment, "get_clan_header_row", lambda: header)
 
     async def fake_aget(_sheet_id: str, _tab_name: str):
         return worksheet
@@ -397,7 +485,11 @@ def test_adjust_manual_open_spots_requires_open_spots_header(monkeypatch):
         "find_clan_row",
         lambda tag, *, force=False: (12, ["", "Clan", "#CCC", "", "3"] + [""] * 30),
     )
-    monkeypatch.setattr(availability.recruitment, "get_clan_header_map", lambda: {"manual_open_spots": 4, "open_spots": 20})
+    monkeypatch.setattr(
+        availability.recruitment,
+        "get_clan_header_map",
+        lambda: {"manual_open_spots": 4, "open_spots": 20},
+    )
 
     with pytest.raises(ValueError, match="manual_open_spots_seen"):
         asyncio.run(availability.adjust_manual_open_spots("#CCC", -1))
@@ -405,15 +497,27 @@ def test_adjust_manual_open_spots_requires_open_spots_header(monkeypatch):
 
 def test_adjust_manual_open_spots_rebases_when_manual_changes(monkeypatch):
     worksheet = StubWorksheet()
-    row = ["", "Clan", "#DDD", "", "4"] + [""] * 15 + ["2"] + [""] * 16 + ["3"]
-    monkeypatch.setattr(availability.recruitment, "find_clan_row", lambda tag, *, force=False: (15, list(row)))
+    row = ["", "Clan", "#DDD", "", "4"] + [""] * 15 + ["2"] + [""] * 15 + ["3"]
+    monkeypatch.setattr(
+        availability.recruitment,
+        "find_clan_row",
+        lambda tag, *, force=False: (15, list(row)),
+    )
     monkeypatch.setattr(
         availability.recruitment,
         "get_clan_header_map",
-        lambda: {"manual_open_spots": 4, "open_spots": 20, "manual_open_spots_seen": 36},
+        lambda: {
+            "manual_open_spots": 4,
+            "open_spots": 20,
+            "manual_open_spots_seen": 36,
+        },
     )
-    monkeypatch.setattr(availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
-    monkeypatch.setattr(availability.recruitment, "get_clans_tab_name", lambda: "bot_info")
+    monkeypatch.setattr(
+        availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
+    )
+    monkeypatch.setattr(
+        availability.recruitment, "get_clans_tab_name", lambda: "bot_info"
+    )
 
     async def fake_aget(_sheet_id: str, _tab_name: str):
         return worksheet
@@ -423,7 +527,9 @@ def test_adjust_manual_open_spots_rebases_when_manual_changes(monkeypatch):
 
     monkeypatch.setattr(availability.async_core, "aget_worksheet", fake_aget)
     monkeypatch.setattr(availability.async_core, "acall_with_backoff", fake_acall)
-    monkeypatch.setattr(availability.recruitment, "update_cached_clan_row", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        availability.recruitment, "update_cached_clan_row", lambda *args, **kwargs: None
+    )
 
     new_value = asyncio.run(availability.adjust_manual_open_spots("#DDD", -1))
     assert new_value == 3
@@ -435,22 +541,39 @@ def test_adjust_manual_open_spots_rebases_when_manual_changes(monkeypatch):
 
 def test_adjust_manual_open_spots_rebase_without_delta(monkeypatch):
     worksheet = StubWorksheet()
-    row = ["", "Clan", "#DDD", "", "4"] + [""] * 15 + ["2"] + [""] * 16 + ["3"]
-    monkeypatch.setattr(availability.recruitment, "find_clan_row", lambda tag, *, force=False: (15, list(row)))
+    row = ["", "Clan", "#DDD", "", "4"] + [""] * 15 + ["2"] + [""] * 15 + ["3"]
+    monkeypatch.setattr(
+        availability.recruitment,
+        "find_clan_row",
+        lambda tag, *, force=False: (15, list(row)),
+    )
     monkeypatch.setattr(
         availability.recruitment,
         "get_clan_header_map",
-        lambda: {"manual_open_spots": 4, "open_spots": 20, "manual_open_spots_seen": 36},
+        lambda: {
+            "manual_open_spots": 4,
+            "open_spots": 20,
+            "manual_open_spots_seen": 36,
+        },
     )
-    monkeypatch.setattr(availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
-    monkeypatch.setattr(availability.recruitment, "get_clans_tab_name", lambda: "bot_info")
+    monkeypatch.setattr(
+        availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
+    )
+    monkeypatch.setattr(
+        availability.recruitment, "get_clans_tab_name", lambda: "bot_info"
+    )
+
     async def fake_aget(_sheet_id: str, _tab_name: str):
         return worksheet
+
     async def fake_acall(func, *args, **kwargs):
         return func(*args, **kwargs)
+
     monkeypatch.setattr(availability.async_core, "aget_worksheet", fake_aget)
     monkeypatch.setattr(availability.async_core, "acall_with_backoff", fake_acall)
-    monkeypatch.setattr(availability.recruitment, "update_cached_clan_row", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        availability.recruitment, "update_cached_clan_row", lambda *args, **kwargs: None
+    )
 
     new_value = asyncio.run(availability.adjust_manual_open_spots("#DDD", 0))
     assert new_value == 4
@@ -458,3 +581,115 @@ def test_adjust_manual_open_spots_rebase_without_delta(monkeypatch):
         ("U15", [["4"]], {"value_input_option": "RAW"}),
         ("AK15", [["4"]], {"value_input_option": "RAW"}),
     ]
+
+
+def _patch_adjust_common(monkeypatch, *, row, header_map=None, worksheet=None):
+    worksheet = worksheet or StubWorksheet()
+    monkeypatch.setattr(
+        availability.recruitment,
+        "find_clan_row",
+        lambda tag, *, force=False: (12, list(row)) if tag != "#MISS" else None,
+    )
+    monkeypatch.setattr(
+        availability.recruitment,
+        "get_clan_header_map",
+        lambda: header_map
+        or {"manual_open_spots": 4, "open_spots": 20, "manual_open_spots_seen": 36},
+    )
+    header = [""] * 37
+    header[4] = "Manual open spots"
+    header[20] = "Effective open spots"
+    header[36] = "Manual open spots seen"
+    monkeypatch.setattr(availability.recruitment, "get_clan_header_row", lambda: header)
+    monkeypatch.setattr(
+        availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
+    )
+    monkeypatch.setattr(
+        availability.recruitment, "get_clans_tab_name", lambda: "bot_info"
+    )
+
+    async def fake_aget(_sheet_id: str, _tab_name: str):
+        return worksheet
+
+    async def fake_acall(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(availability.async_core, "aget_worksheet", fake_aget)
+    monkeypatch.setattr(availability.async_core, "acall_with_backoff", fake_acall)
+    monkeypatch.setattr(
+        availability.recruitment,
+        "update_cached_clan_row",
+        lambda *_args, **_kwargs: None,
+    )
+    return worksheet
+
+
+def test_adjust_manual_open_spots_missing_bot_info_row_logs_context(
+    monkeypatch, caplog
+):
+    _patch_adjust_common(monkeypatch, row=[""] * 37)
+    with pytest.raises(ValueError, match="Unknown clan tag"):
+        asyncio.run(availability.preflight_manual_open_spots_adjustment("#MISS", -1))
+    assert "manual open spot adjustment preflight failed" in caplog.text
+    assert any(
+        getattr(r, "reason", None) == "bot_info_row_not_found" for r in caplog.records
+    )
+    assert any(
+        getattr(r, "configured_tab_name", None) == "bot_info" for r in caplog.records
+    )
+
+
+def test_adjust_manual_open_spots_missing_configured_manual_column_logs_context(
+    monkeypatch, caplog
+):
+    row = [""] * 37
+    row[20] = "3"
+    row[36] = "3"
+    _patch_adjust_common(
+        monkeypatch,
+        row=row,
+        header_map={"open_spots": 20, "manual_open_spots_seen": 36},
+    )
+    with pytest.raises(ValueError, match="manual_open_spots"):
+        asyncio.run(availability.preflight_manual_open_spots_adjustment("#CCC", -1))
+    assert any(
+        getattr(r, "reason", None) == "configured_column_not_found"
+        for r in caplog.records
+    )
+    assert any(
+        getattr(r, "configured_column_header_key", None) == "manual_open_spots"
+        for r in caplog.records
+    )
+
+
+def test_adjust_manual_open_spots_non_numeric_manual_value_logs_context(
+    monkeypatch, caplog
+):
+    row = [""] * 37
+    row[4] = "TBD"
+    row[20] = "3"
+    row[36] = "3"
+    _patch_adjust_common(monkeypatch, row=row)
+    with pytest.raises(ValueError, match="non_numeric_manual_open_spots_value"):
+        asyncio.run(availability.preflight_manual_open_spots_adjustment("#CCC", -1))
+    assert any(getattr(r, "raw_cell_value", None) == "TBD" for r in caplog.records)
+    assert any(getattr(r, "attempted_delta", None) == -1 for r in caplog.records)
+
+
+def test_adjust_manual_open_spots_sheet_update_exception_logs_range(
+    monkeypatch, caplog
+):
+    class FailingWorksheet(StubWorksheet):
+        def update(self, range_name, values, **kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError(f"boom {range_name}")
+
+    row = [""] * 37
+    row[4] = "3"
+    row[20] = "3"
+    row[36] = "3"
+    _patch_adjust_common(monkeypatch, row=row, worksheet=FailingWorksheet())
+    with pytest.raises(RuntimeError, match="boom U12"):
+        asyncio.run(availability.adjust_manual_open_spots("#CCC", -1))
+    assert "range=U12" in caplog.text
+    assert "boom U12" in caplog.text
+    assert any(getattr(r, "write_range", None) == "U12" for r in caplog.records)
