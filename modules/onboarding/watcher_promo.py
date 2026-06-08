@@ -22,7 +22,13 @@ from modules.onboarding.controllers.welcome_controller import (
     locate_welcome_message,
 )
 from modules.onboarding.watcher_welcome import (
+    _build_clan_math_row_lines,
+    _capture_clan_snapshots,
     _channel_readable_label,
+    _clan_math_column_indices,
+    _NO_PLACEMENT_TAG,
+    _normalize_clan_math_targets,
+    build_closed_thread_name,
     cleanup_reservation_for_ticket_close,
     PanelOutcome,
     parse_promo_thread_name,
@@ -562,20 +568,6 @@ class PromoTicketWatcher(commands.Cog):
         if context.state != "closed":
             return
 
-        updated_name = getattr(thread, "name", "") or ""
-        if updated_name and not updated_name.upper().endswith(f"-{final_tag}"):
-            renamed = f"{updated_name}-{final_tag}"
-            if len(renamed) > 100:
-                renamed = renamed[:100]
-            try:
-                await thread.edit(name=renamed)
-            except Exception:
-                log.debug(
-                    "promo watcher: failed to rename thread after clan finalization",
-                    exc_info=True,
-                    extra={"thread_id": getattr(thread, "id", None), "ticket": context.ticket_number},
-                )
-
         followup = f"✅ Logged clan tag **{final_tag}** to Promo and closed this promo workflow."
         if prompt_message is not None:
             try:
@@ -632,21 +624,56 @@ class PromoTicketWatcher(commands.Cog):
         context.clan_name = clan_name
         context.progression = progression
         context.state = "closed"
+        ticket_id_raw = context.ticket_number
+        ticket_id_final = (context.ticket_number or "").strip()
+        final_tag = (context.clan_tag or "").strip().upper()
+        channel_name_before = getattr(thread, "name", "") or ""
         log.info(
-            "promo_ticket_close — ticket=%s • user=%s • result=row_%s",
-            context.ticket_number,
+            "promo_ticket_close — workflow_type=promo/move • ticket_id_raw=%s • ticket_id_final=%s • player_name=%s • final_clan_tag=%s • result=row_%s",
+            ticket_id_raw,
+            ticket_id_final,
             context.username,
+            final_tag or "-",
             result,
         )
+
+        row_targets = None
+        column_map = None
+        before_snapshots = {}
+        open_spots_before = "-"
+        math_tags = {
+            tag
+            for tag in {final_tag, (previous_final or "").strip().upper()}
+            if tag and tag != _NO_PLACEMENT_TAG
+        }
+        if math_tags:
+            try:
+                row_targets = _normalize_clan_math_targets(math_tags)
+                column_map = _clan_math_column_indices()
+                before_snapshots = _capture_clan_snapshots(row_targets, column_map, force=True)
+                if row_targets:
+                    first_key = next(iter(row_targets))
+                    snapshot = before_snapshots.get(first_key)
+                    if snapshot is not None:
+                        open_spots_before = snapshot.values.get("open_spots", "-") or "-"
+            except Exception:
+                log.exception(
+                    "promo_close clan math before-state unavailable; continuing with safe sheet update path",
+                    extra={"ticket": context.ticket_number, "clan_tag": final_tag},
+                )
+                row_targets = None
+                column_map = None
+                before_snapshots = {}
+
         cleanup = await cleanup_reservation_for_ticket_close(
             scope="promo",
-            ticket=context.ticket_number,
+            ticket=ticket_id_final,
             user=context.username,
             user_id=context.user_id,
-            final_tag=context.clan_tag,
+            final_tag=final_tag,
             previous_final=previous_final or "",
             guild=getattr(thread, "guild", None),
-            require_active_reservation=True,
+            require_active_reservation=False,
             logger=log,
             ensure_fresh_fn=_ensure_fresh_clans_for_placement,
             find_active_reservations_fn=reservations_sheets.find_active_reservations_for_recruit,
@@ -680,10 +707,75 @@ class PromoTicketWatcher(commands.Cog):
             )
         log.info(
             "promo_open_spots_reconcile — ticket=%s • user=%s • clan=%s • source=promo • %s",
-            context.ticket_number,
+            ticket_id_final,
             context.username,
-            context.clan_tag or "-",
+            final_tag or "-",
             cleanup.decision_line,
+        )
+
+        open_spots_after = "-"
+        row_change_lines = [cleanup.decision_line]
+        if row_targets is not None and column_map is not None:
+            try:
+                after_snapshots = _capture_clan_snapshots(row_targets, column_map, force=True)
+                row_change_lines.extend(
+                    _build_clan_math_row_lines(row_targets, before_snapshots, after_snapshots)
+                )
+                if row_targets:
+                    first_key = next(iter(row_targets))
+                    snapshot = after_snapshots.get(first_key)
+                    if snapshot is not None:
+                        open_spots_after = snapshot.values.get("open_spots", "-") or "-"
+            except Exception:
+                log.exception(
+                    "promo_close clan math after-state unavailable",
+                    extra={"ticket": ticket_id_final, "clan_tag": final_tag},
+                )
+
+        logging_channel_result = "skip"
+        try:
+            await rt.send_log_message(
+                "\n".join(
+                    [
+                        f"{ticket_id_final} • {context.username} → {final_tag or _NO_PLACEMENT_TAG} "
+                        f"(source=promo, reservation={cleanup.reservation_label or 'none'}, result={'ok' if cleanup.ok else 'error'})",
+                        *row_change_lines,
+                    ]
+                )
+            )
+            logging_channel_result = "ok"
+        except Exception:
+            logging_channel_result = "error"
+            log.exception(
+                "promo_close logging-channel entry failed",
+                extra={"ticket": ticket_id_final, "clan_tag": final_tag},
+            )
+
+        channel_name_after = channel_name_before
+        if final_tag:
+            new_name = build_closed_thread_name(ticket_id_final, context.username, final_tag)
+            try:
+                await thread.edit(name=new_name)
+                channel_name_after = new_name
+            except Exception:
+                log.exception(
+                    "failed to rename promo thread",
+                    extra={"thread_id": getattr(thread, "id", None), "ticket": ticket_id_final},
+                )
+
+        log.info(
+            "promo_close_debug — workflow_type=promo/move • ticket_id_raw=%s • ticket_id_final=%s • player_name=%s • final_clan_tag=%s • reservation=%s • consume_open_spot=%s • open_spots_before=%s • open_spots_after=%s • channel_name_before=%s • channel_name_after=%s • logging_channel_result=%s",
+            ticket_id_raw,
+            ticket_id_final,
+            context.username,
+            final_tag or "-",
+            cleanup.reservation_label or "none",
+            cleanup.consume_open_spot,
+            open_spots_before,
+            open_spots_after,
+            channel_name_before or "-",
+            channel_name_after or "-",
+            logging_channel_result,
         )
         try:
             onboarding_sessions.mark_completed(getattr(thread, "id", 0))
