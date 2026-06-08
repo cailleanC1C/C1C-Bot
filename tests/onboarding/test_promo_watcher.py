@@ -30,6 +30,13 @@ class DummyThread:
         self.archived = False
         self.locked = False
         self.sent: list[tuple[str | None, object | None, DummyMessage]] = []
+        self.edits: list[dict[str, object]] = []
+        self.guild = SimpleNamespace(id=123)
+
+    async def edit(self, **kwargs) -> None:
+        self.edits.append(dict(kwargs))
+        if "name" in kwargs:
+            self.name = str(kwargs["name"])
 
     async def send(self, content: str | None = None, view: object | None = None) -> DummyMessage:
         message_id = len(self.sent) + 1
@@ -243,6 +250,141 @@ def test_promo_watcher_close_flow_updates_sheet(promo_setup, monkeypatch: pytest
     assert final_row[-1] == ""
     assert final_row[-2] == ""
 
+
+
+def _patch_promo_close_dependencies(monkeypatch: pytest.MonkeyPatch, *, open_spots: int = 2, reservations=None):
+    state = {"open_spots": open_spots}
+    deltas: list[tuple[str, int]] = []
+    log_messages: list[str] = []
+
+    async def fresh(**_kwargs):
+        return True
+
+    async def find_reservations(*_args, **_kwargs):
+        return list(reservations or [])
+
+    def find_clan_row(tag, force=False):
+        if str(tag).strip().upper() != "F-IT":
+            return None
+        return (7, ["", "", "F-IT", "", str(state["open_spots"]), "0", "0", ""])
+
+    async def adjust(tag, delta):
+        deltas.append((tag, delta))
+        state["open_spots"] += delta
+        return state["open_spots"]
+
+    async def recompute(*_args, **_kwargs):
+        return None
+
+    async def update_status(*_args, **_kwargs):
+        return None
+
+    async def send_log(message):
+        log_messages.append(message)
+
+    monkeypatch.setattr(watcher_promo, "_ensure_fresh_clans_for_placement", fresh)
+    monkeypatch.setattr(watcher_promo.reservations_sheets, "find_active_reservations_for_recruit", find_reservations)
+    monkeypatch.setattr(watcher_promo.reservations_sheets, "update_reservation_status", update_status)
+    monkeypatch.setattr(watcher_promo.recruitment_sheets, "find_clan_row", find_clan_row)
+    monkeypatch.setattr(watcher_promo.recruitment_sheets, "get_clan_header_map", lambda: {
+        "open_spots": 4,
+        "inactives": 5,
+        "reservation_count": 6,
+        "reservation_summary": 7,
+    })
+    monkeypatch.setattr(watcher_promo.availability, "adjust_manual_open_spots", adjust)
+    monkeypatch.setattr(watcher_promo.availability, "recompute_clan_availability", recompute)
+    monkeypatch.setattr(watcher_promo.rt, "send_log_message", send_log)
+    monkeypatch.setattr(watcher_promo.onboarding_sessions, "mark_completed", lambda *_args, **_kwargs: None)
+    return state, deltas, log_messages
+
+
+def test_promo_move_close_preserves_full_ticket_id_and_consumes_unreserved_spot(
+    promo_setup, monkeypatch: pytest.MonkeyPatch
+):
+    watcher, calls, promo_parent, _ticket_tool_id = promo_setup
+    state, deltas, log_messages = _patch_promo_close_dependencies(
+        monkeypatch, open_spots=2
+    )
+    thread = DummyThread("M0352-Lucifer", promo_parent)
+    context = watcher_promo.PromoTicketContext(
+        thread_id=thread.id,
+        ticket_number="M0352",
+        username="Lucifer",
+        promo_type="move",
+        thread_created="2026-06-08 00:00:00",
+        year="2026",
+        month="June",
+        clan_tag="F-IT",
+        user_id=12345,
+    )
+
+    async def run():
+        await watcher._complete_close(
+            thread, context, progression="", clan_name="", previous_final=""
+        )
+
+    asyncio.run(run())
+
+    assert context.state == "closed"
+    assert calls["upserts"][-1][0][0] == "M0352"
+    assert calls["upserts"][-1][0][0] != "0352"
+    assert thread.name == "Closed-M0352-Lucifer-F-IT"
+    assert thread.edits[-1]["name"] == "Closed-M0352-Lucifer-F-IT"
+    assert deltas == [("F-IT", -1)]
+    assert state["open_spots"] == 1
+    assert log_messages, "expected logging-channel open spot delta entry"
+    assert "M0352 • Lucifer → F-IT" in log_messages[-1]
+    assert "open_spots: 2 → 1" in log_messages[-1]
+    assert "F-IT:-1" in log_messages[-1]
+
+
+def test_reserved_promo_move_same_clan_does_not_double_consume_open_spot(
+    promo_setup, monkeypatch: pytest.MonkeyPatch
+):
+    watcher, _calls, promo_parent, _ticket_tool_id = promo_setup
+    reservation = watcher_promo.reservations_sheets.ReservationRow(
+        row_number=4,
+        thread_id="111",
+        ticket_user_id=12345,
+        recruiter_id=None,
+        clan_tag="F-IT",
+        reserved_until=None,
+        created_at=None,
+        status="active",
+        notes="",
+        username_snapshot="Lucifer",
+        raw=[],
+    )
+    state, deltas, log_messages = _patch_promo_close_dependencies(
+        monkeypatch, open_spots=2, reservations=[reservation]
+    )
+    thread = DummyThread("M0352-Lucifer", promo_parent)
+    context = watcher_promo.PromoTicketContext(
+        thread_id=thread.id,
+        ticket_number="M0352",
+        username="Lucifer",
+        promo_type="move",
+        thread_created="2026-06-08 00:00:00",
+        year="2026",
+        month="June",
+        clan_tag="F-IT",
+        user_id=12345,
+    )
+
+    async def run():
+        await watcher._complete_close(
+            thread, context, progression="", clan_name="", previous_final=""
+        )
+
+    asyncio.run(run())
+
+    assert thread.name == "Closed-M0352-Lucifer-F-IT"
+    assert deltas == []
+    assert state["open_spots"] == 2
+    assert log_messages
+    assert "reservation=same" in log_messages[-1]
+    assert "skipped_open_delta" in log_messages[-1]
 
 def test_promo_watcher_respects_feature_flags(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(watcher_promo, "get_promo_channel_id", lambda: 1)

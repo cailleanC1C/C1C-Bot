@@ -1621,9 +1621,11 @@ def _determine_reservation_decision(
             recompute.append(normalized_final)
         return ReservationDecision("none", None, open_deltas, recompute)
 
-    reservation_tag = reservation_row.normalized_clan_tag
-    if not reservation_tag:
-        reservation_tag = (reservation_row.clan_tag or "").strip().upper()
+    reservation_tag = (reservation_row.clan_tag or "").strip().upper()
+    reservation_tag_key = reservation_row.normalized_clan_tag or _normalize_clan_tag_key(
+        reservation_tag
+    )
+    final_tag_key = _normalize_clan_tag_key(normalized_final)
 
     if normalized_final == no_placement_tag:
         label = "cancelled"
@@ -1633,11 +1635,10 @@ def _determine_reservation_decision(
             recompute.append(reservation_tag)
         return ReservationDecision(label, status, open_deltas, recompute)
 
-    if reservation_tag and reservation_tag == normalized_final:
+    if reservation_tag and reservation_tag_key == final_tag_key:
         label = "same"
         status = "closed_same_clan"
-        if reservation_tag:
-            recompute.append(reservation_tag)
+        recompute.append(reservation_tag)
         return ReservationDecision(label, status, open_deltas, recompute)
 
     label = "other"
@@ -1645,7 +1646,7 @@ def _determine_reservation_decision(
     if reservation_tag:
         open_deltas[reservation_tag] = open_deltas.get(reservation_tag, 0) + 1
         recompute.append(reservation_tag)
-    if final_is_real and normalized_final and normalized_final != reservation_tag:
+    if final_is_real and normalized_final and final_tag_key != reservation_tag_key:
         open_deltas[normalized_final] = open_deltas.get(normalized_final, 0) - 1
         recompute.append(normalized_final)
     return ReservationDecision(label, status, open_deltas, recompute)
