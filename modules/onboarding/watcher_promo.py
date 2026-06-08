@@ -109,6 +109,27 @@ async def _ensure_fresh_clans_for_placement(*, actor: str, ticket: str, user: st
     return True
 
 
+def _find_promo_clan_row(clan_tag: str, *, force: bool = False) -> tuple[int, List[str]] | None:
+    """Resolve promo clans with the same configured bot_info tag column used by availability writes."""
+
+    try:
+        headers = availability._resolve_availability_headers()  # type: ignore[attr-defined]
+        return availability._find_availability_clan_row(clan_tag, headers)  # type: ignore[attr-defined]
+    except Exception:
+        log.debug(
+            "promo clan lookup falling back to recruitment.find_clan_row",
+            exc_info=True,
+            extra={"clan_tag": clan_tag},
+        )
+    try:
+        return recruitment_sheets.find_clan_row(clan_tag, force=force)
+    except TypeError:
+        return recruitment_sheets.find_clan_row(clan_tag)
+
+
+_find_promo_clan_row.lookup_mode = "availability_configured_clan_tag_header_with_recruitment_fallback"  # type: ignore[attr-defined]
+
+
 async def _send_runtime(message: str) -> None:
     try:
         await rt.send_log_message(message)
@@ -794,7 +815,7 @@ class PromoTicketWatcher(commands.Cog):
             logger=log,
             ensure_fresh_fn=_ensure_fresh_clans_for_placement,
             find_active_reservations_fn=reservations_sheets.find_active_reservations_for_recruit,
-            find_clan_row_fn=recruitment_sheets.find_clan_row,
+            find_clan_row_fn=_find_promo_clan_row,
             update_reservation_status_fn=reservations_sheets.update_reservation_status,
             adjust_manual_open_spots_fn=availability.adjust_manual_open_spots,
             recompute_clan_availability_fn=availability.recompute_clan_availability,
@@ -885,11 +906,17 @@ class PromoTicketWatcher(commands.Cog):
         release_source_open_spot = cleanup.applied_open_deltas.get(source_tag, 0) > 0
         consume_destination_open_spot = cleanup.applied_open_deltas.get(final_tag, 0) < 0
         log.info(
-            "promo_close_debug — workflow_type=promo/move • ticket_id_raw=%s • ticket_id_final=%s • player_name=%s • source_clan_tag=%s • destination_clan_tag=%s • reservation_status=%s • consume_destination_open_spot=%s • release_source_open_spot=%s • open_spots_before=%s • open_spots_after=%s • open_spots_before_by_clan=%s • open_spots_after_by_clan=%s • channel_name_before=%s • channel_name_after=%s • logging_channel_result=%s",
+            "promo_close_debug — workflow_type=promo/move • ticket_id_raw=%s • ticket_id_final=%s • player_name=%s • source_clan_tag=%s • source_clan_lookup_key=%s • source_clan_row_found=%s • source_clan_row_number=%s • previous_is_real=%s • reason_if_not_real=%s • source_clan_lookup_mode=%s • destination_clan_tag=%s • reservation_status=%s • consume_destination_open_spot=%s • release_source_open_spot=%s • open_spots_before=%s • open_spots_after=%s • open_spots_before_by_clan=%s • open_spots_after_by_clan=%s • channel_name_before=%s • channel_name_after=%s • logging_channel_result=%s",
             ticket_id_raw,
             ticket_id_final,
             context.username,
             source_tag or "-",
+            cleanup.source_clan_lookup_key or "-",
+            cleanup.source_clan_row_found,
+            cleanup.source_clan_row_number if cleanup.source_clan_row_number is not None else "-",
+            cleanup.previous_is_real,
+            cleanup.source_clan_not_real_reason or "-",
+            cleanup.source_clan_lookup_mode or "-",
             final_tag or "-",
             cleanup.reservation_label or "none",
             consume_destination_open_spot,
