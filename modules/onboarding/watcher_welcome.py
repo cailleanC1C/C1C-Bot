@@ -1616,7 +1616,7 @@ def _determine_reservation_decision(
             previous_is_real
             and normalized_previous
             and normalized_previous != no_placement_tag
-            and normalized_previous != normalized_final
+            and _normalize_clan_tag_key(normalized_previous) != _normalize_clan_tag_key(normalized_final)
         ):
             open_deltas[normalized_previous] = (
                 open_deltas.get(normalized_previous, 0) + 1
@@ -1696,6 +1696,12 @@ class ReservationCleanupResult:
     skipped: bool
     reason: str | None
     decision_line: str
+    source_clan_lookup_key: str = ""
+    source_clan_row_found: bool = False
+    source_clan_row_number: int | None = None
+    previous_is_real: bool = False
+    source_clan_not_real_reason: str | None = None
+    source_clan_lookup_mode: str = ""
 
 
 async def cleanup_reservation_for_ticket_close(
@@ -1839,25 +1845,84 @@ async def cleanup_reservation_for_ticket_close(
         final_is_real = False
 
     previous_is_real = False
+    source_clan_lookup_key = _normalize_clan_tag_key(normalized_previous)
+    source_clan_row_found = False
+    source_clan_row_number: int | None = None
+    source_clan_not_real_reason: str | None = None
+    source_clan_lookup_mode = str(getattr(find_clan_row, "lookup_mode", ""))
+    if not source_clan_lookup_mode:
+        lookup_module = getattr(find_clan_row, "__module__", "unknown")
+        lookup_name = getattr(
+            find_clan_row,
+            "__qualname__",
+            getattr(find_clan_row, "__name__", "unknown"),
+        )
+        source_clan_lookup_mode = f"{lookup_module}.{lookup_name}"
     if normalized_previous and normalized_previous != _NO_PLACEMENT_TAG:
         try:
-            previous_is_real = await asyncio.to_thread(_call_find_clan_row, find_clan_row, normalized_previous, force=True) is not None
+            previous_entry = await asyncio.to_thread(
+                _call_find_clan_row, find_clan_row, normalized_previous, force=True
+            )
+            source_clan_row_found = previous_entry is not None
+            if previous_entry is not None:
+                previous_is_real = True
+                try:
+                    source_clan_row_number = int(previous_entry[0])  # type: ignore[index]
+                except (TypeError, ValueError, IndexError):
+                    source_clan_row_number = None
+            else:
+                previous_is_real = False
+                source_clan_not_real_reason = "source_clan_row_not_found"
         except Exception:
+            source_clan_not_real_reason = "source_clan_lookup_exception"
             event_log.exception(
                 "reservation_cleanup — scope=%s • ticket=%s • user=%s • user_id=%s • source_clan_tag=%s • result=partial • reason=source_clan_lookup_failed",
                 normalized_scope, ticket, user_label or "-", user_id or "-", normalized_previous or "-",
             )
             previous_is_real = False
     elif normalized_previous == _NO_PLACEMENT_TAG:
+        source_clan_not_real_reason = "source_clan_none"
         previous_is_real = False
+    else:
+        source_clan_not_real_reason = "source_clan_blank"
 
+    event_log.info(
+        "reservation_cleanup_source_lookup — scope=%s • ticket=%s • user=%s • source_clan_tag=%s • source_clan_lookup_key=%s • source_clan_row_found=%s • source_clan_row_number=%s • previous_is_real=%s • reason_if_not_real=%s • available_lookup_mode=%s",
+        normalized_scope,
+        ticket,
+        user_label or "-",
+        normalized_previous or "-",
+        source_clan_lookup_key or "-",
+        source_clan_row_found,
+        source_clan_row_number if source_clan_row_number is not None else "-",
+        previous_is_real,
+        source_clan_not_real_reason or "-",
+        source_clan_lookup_mode,
+    )
+    if (
+        normalized_scope == "promo"
+        and normalized_previous
+        and normalized_previous != _NO_PLACEMENT_TAG
+        and not source_clan_row_found
+    ):
+        event_log.warning(
+            "promo_source_clan_lookup_failed — source_clan_tag=%s • source_clan_lookup_key=%s • ticket=%s • player=%s • available_lookup_mode=%s",
+            normalized_previous,
+            source_clan_lookup_key or "-",
+            ticket,
+            user_label or "-",
+            source_clan_lookup_mode,
+        )
+
+    normalized_previous_key = _normalize_clan_tag_key(normalized_previous)
+    normalized_final_key = _normalize_clan_tag_key(normalized_final)
     consume_open_spot = bool(
         normalized_final
         and normalized_final != _NO_PLACEMENT_TAG
         and (
             not normalized_previous
             or normalized_previous == _NO_PLACEMENT_TAG
-            or normalized_previous != normalized_final
+            or normalized_previous_key != normalized_final_key
         )
     )
     decision = _determine_reservation_decision(
@@ -1961,6 +2026,12 @@ async def cleanup_reservation_for_ticket_close(
         False,
         reason,
         decision_line,
+        source_clan_lookup_key,
+        source_clan_row_found,
+        source_clan_row_number,
+        previous_is_real,
+        source_clan_not_real_reason,
+        source_clan_lookup_mode,
     )
 
 
@@ -1996,17 +2067,30 @@ def _normalize_clan_math_targets(tags: set[str]) -> OrderedDict[str, str]:
 
 def _clan_math_column_indices() -> Dict[str, int]:
     header_map = recruitment_sheets.get_clan_header_map()
-    required = ("open_spots", "inactives", "reservation_count", "reservation_summary")
-    missing = [key for key in required if header_map.get(key) is None]
+    fallback_open = getattr(recruitment_sheets, "FALLBACK_OPEN_SPOTS_INDEX", 31)
+    fallback_inactives = getattr(recruitment_sheets, "FALLBACK_INACTIVES_INDEX", 32)
+    # Bot-info logging is visibility-only; do not fail close math just because
+    # optional display columns are absent from the cached header map.
+    fallback_reservation_count = 33  # Column AH
+    fallback_reservation_summary = getattr(recruitment_sheets, "FALLBACK_RESERVED_INDEX", 34)  # Column AI
+    missing = [
+        key
+        for key in ("open_spots", "inactives", "reservation_count", "reservation_summary")
+        if header_map.get(key) is None
+    ]
     if missing:
-        missing_text = ", ".join(missing)
-        raise ValueError(
-            f"clan header missing required columns for logging: {missing_text}"
+        log.warning(
+            "clan math logging using fallback bot_info columns",
+            extra={"missing_columns": missing, "header_map": dict(header_map)},
         )
-    open_index = int(header_map["open_spots"])
-    inactives_index = int(header_map["inactives"])
-    reservation_count_index = int(header_map["reservation_count"])
-    reservation_summary_index = int(header_map["reservation_summary"])
+    open_index = int(header_map.get("open_spots", fallback_open))
+    inactives_index = int(header_map.get("inactives", fallback_inactives))
+    reservation_count_index = int(
+        header_map.get("reservation_count", header_map.get("reserved", fallback_reservation_count))
+    )
+    reservation_summary_index = int(
+        header_map.get("reservation_summary", fallback_reservation_summary)
+    )
     return {
         "open_spots": open_index,
         "AF": open_index,
@@ -2037,7 +2121,11 @@ def _capture_clan_snapshots(
         if entry is None:
             continue
         sheet_row, row_values = entry
-        tag_cell = row_values[2] if len(row_values) > 2 else tag
+        try:
+            tag_index = recruitment_sheets.get_clan_header_map().get("clan_tag", 2)
+        except Exception:
+            tag_index = 2
+        tag_cell = row_values[tag_index] if len(row_values) > tag_index else tag
         display_tag = (tag_cell or tag or "").strip() or tag
         values: Dict[str, str] = {}
         for label, index in column_map.items():

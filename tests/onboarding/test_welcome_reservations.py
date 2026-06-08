@@ -95,13 +95,18 @@ def test_clan_math_column_indices_resolve_by_header(monkeypatch) -> None:
     assert resolved == {"open_spots": 22, "AF": 22, "AG": 8, "AH": 41, "AI": 3}
 
 
-def test_clan_math_column_indices_missing_required_header_raises(monkeypatch) -> None:
+def test_clan_math_column_indices_missing_visibility_header_uses_fallback(monkeypatch) -> None:
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.recruitment_sheets.get_clan_header_map",
         lambda: {"open_spots": 22, "inactives": 8, "reservation_count": 41},
     )
-    with pytest.raises(ValueError, match="required columns"):
-        _clan_math_column_indices()
+    assert _clan_math_column_indices() == {
+        "open_spots": 22,
+        "AF": 22,
+        "AG": 8,
+        "AH": 41,
+        "AI": 34,
+    }
 
 
 def test_parse_thread_name_open_without_w_prefix() -> None:
@@ -2112,3 +2117,88 @@ def test_promo_move_missing_source_skips_open_spot_math() -> None:
 
     asyncio.run(run())
     assert applied == []
+
+
+def test_promo_source_lookup_failure_warns_and_records_debug(caplog) -> None:
+    applied = []
+
+    async def run() -> None:
+        caplog.set_level(logging.INFO)
+        result = await cleanup_reservation_for_ticket_close(
+            scope="promo",
+            ticket="M0361",
+            user="Caillean",
+            user_id=None,
+            final_tag="C1CD",
+            previous_final="C1CB",
+            require_source_for_open_spot_math=True,
+            ensure_fresh_fn=lambda **_kwargs: asyncio.sleep(0, result=True),
+            find_active_reservations_fn=lambda *_args, **_kwargs: asyncio.sleep(0, result=[]),
+            find_clan_row_fn=lambda tag, **_kwargs: (20, []) if tag == "C1CD" else None,
+            adjust_manual_open_spots_fn=lambda tag, delta: applied.append((tag, delta)) or asyncio.sleep(0, result=0),
+            recompute_clan_availability_fn=lambda *_args, **_kwargs: asyncio.sleep(0, result=None),
+        )
+        assert result.source_clan_lookup_key == "C1CB"
+        assert result.source_clan_row_found is False
+        assert result.previous_is_real is False
+        assert result.source_clan_not_real_reason == "source_clan_row_not_found"
+
+    asyncio.run(run())
+    assert applied == [("C1CD", -1)]
+    assert "promo_source_clan_lookup_failed" in caplog.text
+    assert "source_clan_tag=C1CB" in caplog.text
+    assert "source_clan_lookup_key=C1CB" in caplog.text
+    assert "source_clan_row_found=False" in caplog.text
+    assert "previous_is_real=False" in caplog.text
+
+
+def test_promo_source_none_only_consumes_destination() -> None:
+    applied = []
+
+    async def run() -> None:
+        result = await cleanup_reservation_for_ticket_close(
+            scope="promo",
+            ticket="M0361",
+            user="Caillean",
+            user_id=None,
+            final_tag="C1CD",
+            previous_final=_NO_PLACEMENT_TAG,
+            require_source_for_open_spot_math=True,
+            ensure_fresh_fn=lambda **_kwargs: asyncio.sleep(0, result=True),
+            find_active_reservations_fn=lambda *_args, **_kwargs: asyncio.sleep(0, result=[]),
+            find_clan_row_fn=lambda tag, **_kwargs: (20, []) if tag == "C1CD" else None,
+            adjust_manual_open_spots_fn=lambda tag, delta: applied.append((tag, delta)) or asyncio.sleep(0, result=0),
+            recompute_clan_availability_fn=lambda *_args, **_kwargs: asyncio.sleep(0, result=None),
+        )
+        assert result.requested_open_deltas == {"C1CD": -1}
+        assert result.source_clan_not_real_reason == "source_clan_none"
+
+    asyncio.run(run())
+    assert applied == [("C1CD", -1)]
+
+
+def test_promo_same_source_destination_normalized_no_delta() -> None:
+    decision = _determine_reservation_decision(
+        "C1-CD",
+        None,
+        no_placement_tag=_NO_PLACEMENT_TAG,
+        final_is_real=True,
+        consume_open_spot=False,
+        previous_final="C1CD",
+        previous_is_real=True,
+    )
+    assert decision.open_deltas == {}
+
+
+def test_clan_math_column_indices_uses_fallbacks_for_missing_visibility_columns(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.recruitment_sheets.get_clan_header_map",
+        lambda: {"open_spots": 4},
+    )
+    assert _clan_math_column_indices() == {
+        "open_spots": 4,
+        "AF": 4,
+        "AG": 32,
+        "AH": 33,
+        "AI": 34,
+    }

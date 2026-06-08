@@ -68,6 +68,12 @@ def _column_aliases(*aliases: str) -> tuple[str, ...]:
 
 
 HEADER_MAP: Dict[str, tuple[str, ...]] = {
+    "clan_tag": _column_aliases(
+        "clan tag",
+        "clantag",
+        "clan_tag",
+        "tag",
+    ),
     "manual_open_spots": _column_aliases(
         "manual open spots",
         "manual_open_spots",
@@ -683,10 +689,11 @@ def _normalize_tag(tag: str | None) -> str:
 
 def _build_tag_index(rows: List[List[str]]) -> Dict[str, List[str]]:
     index: Dict[str, List[str]] = {}
+    tag_index = (_CLAN_HEADER_MAP or {}).get("clan_tag", 2)
     for row in rows:
-        if len(row) < 3:
+        if tag_index >= len(row):
             continue
-        normalized = _normalize_tag(row[2])
+        normalized = _normalize_tag(row[tag_index])
         if not normalized:
             continue
         index[normalized] = row
@@ -718,10 +725,11 @@ def get_clan_by_tag(tag: str, *, force: bool = False) -> List[str] | None:
 
     # Index unavailable — fall back to a lightweight scan of cached rows.
     rows = fetch_clans(force=False)
+    tag_index = (_CLAN_HEADER_MAP or {}).get("clan_tag", 2)
     for row in rows:
-        if len(row) < 3:
+        if tag_index >= len(row):
             continue
-        if _normalize_tag(row[2]) == normalized:
+        if _normalize_tag(row[tag_index]) == normalized:
             return row
     return None
 
@@ -736,10 +744,11 @@ def find_clan_row(
         return None
 
     rows = fetch_clans(force=force)
+    tag_index = (_CLAN_HEADER_MAP or {}).get("clan_tag", 2)
     for idx, row in enumerate(rows):
-        if len(row) < 3:
+        if tag_index >= len(row):
             continue
-        if _normalize_tag(row[2]) == normalized:
+        if _normalize_tag(row[tag_index]) == normalized:
             sheet_row = idx + 4  # Account for the three summary/header rows.
             return sheet_row, list(row)
     return None
@@ -763,7 +772,8 @@ def update_cached_clan_row(sheet_row: int, row_values: Sequence[str]) -> None:
         _CLAN_ROWS_TS = now
 
     if _CLAN_TAG_INDEX is not None:
-        tag = normalized_row[2] if len(normalized_row) > 2 else ""
+        tag_index = (_CLAN_HEADER_MAP or {}).get("clan_tag", 2)
+        tag = normalized_row[tag_index] if len(normalized_row) > tag_index else ""
         normalized_tag = _normalize_tag(tag)
         if normalized_tag:
             _CLAN_TAG_INDEX[normalized_tag] = list(normalized_row)
