@@ -47,6 +47,7 @@ PROMO_HEADERS: List[str] = [
     "ticket number",
     "username",
     "clantag",
+    "source_clan_tag",
     "date closed",
     "type",
     "thread created",
@@ -64,6 +65,51 @@ PROMO_HEADERS: List[str] = [
     "created_at",
     "updated_at",
 ]
+PROMO_SOURCE_CLAN_TAG_HEADER_CONFIG_KEY = "PROMO_SOURCE_CLAN_TAG_HEADER"
+_PROMO_SOURCE_CLAN_TAG_HEADER_DEFAULT_SLOT = 3
+
+
+def get_promo_source_clan_tag_header(*, force: bool = False) -> str:
+    """Return the Config-driven Promo source clan header.
+
+    This is intentionally required. Promo move close math must not silently fall
+    back to destination-only behavior if the source column mapping is absent.
+    """
+
+    if force:
+        _load_config(force=True)
+    header = _config_lookup(PROMO_SOURCE_CLAN_TAG_HEADER_CONFIG_KEY)
+    cleaned = str(header or "").strip()
+    if not cleaned:
+        raise RuntimeError(
+            "Onboarding Config missing PROMO_SOURCE_CLAN_TAG_HEADER for Promo source clan header"
+        )
+    return cleaned
+
+
+def get_promo_headers(*, force: bool = False) -> List[str]:
+    """Return Promo headers with the source-clan column resolved from Config."""
+
+    headers = list(PROMO_HEADERS)
+    headers[_PROMO_SOURCE_CLAN_TAG_HEADER_DEFAULT_SLOT] = (
+        get_promo_source_clan_tag_header(force=force)
+    )
+    return headers
+
+
+def require_promo_source_clan_header(headers: Sequence[str]) -> str:
+    """Validate that ``headers`` include the Config-resolved source header."""
+
+    source_header = get_promo_source_clan_tag_header()
+    normalized_source = _normalize_header_name(source_header)
+    normalized_headers = {_normalize_header_name(header) for header in headers}
+    if normalized_source not in normalized_headers:
+        raise RuntimeError(
+            "Promo sheet/header mapping missing configured source clan header "
+            f"{PROMO_SOURCE_CLAN_TAG_HEADER_CONFIG_KEY}={source_header!r}"
+        )
+    return source_header
+
 WELCOME_TICKET_INDEX = 0
 WELCOME_CLAN_TAG_INDEX = 2
 WELCOME_DATE_CLOSED_INDEX = 3
@@ -262,6 +308,30 @@ def _ensure_headers(ws, headers: Sequence[str]) -> List[str]:
         core.call_with_backoff(ws.update, "A1", [list(headers)])
         return list(headers)
     return list(existing) if existing else list(headers)
+
+
+def _ensure_promo_headers(ws) -> List[str]:
+    """Ensure Promo headers without silently adding a missing source column.
+
+    Empty worksheets are initialized, but an existing Promo header row must
+    already contain the Config-resolved source clan header so row data cannot be
+    shifted accidentally.
+    """
+
+    desired = get_promo_headers()
+    source_header = get_promo_source_clan_tag_header()
+    try:
+        existing = core.call_with_backoff(ws.row_values, 1)
+    except Exception:
+        existing = []
+    if existing:
+        normalized_existing = {_normalize_header_name(header) for header in existing}
+        if _normalize_header_name(source_header) not in normalized_existing:
+            raise RuntimeError(
+                "Promo sheet missing configured source clan header "
+                f"{PROMO_SOURCE_CLAN_TAG_HEADER_CONFIG_KEY}={source_header!r}"
+            )
+    return _ensure_headers(ws, desired)
 
 
 def _fmt_ticket(ticket: str | None) -> str:
@@ -728,15 +798,19 @@ def upsert_promo(
 ) -> str:
     """Insert or update a promo ticket row based on its ticket number."""
 
+    resolved_headers = list(headers or get_promo_headers())
+    require_promo_source_clan_header(resolved_headers)
     ws = _worksheet(_promo_tab())
+    _ensure_promo_headers(ws)
     keys = [("ticket number", _fmt_ticket)]
-    return _upsert(ws, keys, row_values, headers)
+    return _upsert(ws, keys, row_values, resolved_headers)
 
 
 def append_promo_ticket_row(
     ticket: str,
     username: str,
     clan_tag: str,
+    source_clan_tag: str,
     promo_type: str,
     thread_created: str,
     year: str,
@@ -755,7 +829,8 @@ def append_promo_ticket_row(
 ) -> str:
     sheet_id, tab = _resolve_onboarding_and_promo_tab()
     ws = core.get_worksheet(sheet_id, tab)
-    header = _ensure_headers(ws, PROMO_HEADERS)
+    header = _ensure_promo_headers(ws)
+    source_header = require_promo_source_clan_header(header)
     ticket_value = _fmt_ticket(ticket)
     created, updated = _normalize_ticket_timestamps(created_at, updated_at)
 
@@ -765,6 +840,7 @@ def append_promo_ticket_row(
         "ticketid": ticket_value,
         "username": str(username or "").strip(),
         "clantag": str(clan_tag or "").strip(),
+        _normalize_header_name(source_header): str(source_clan_tag or "").strip(),
         "dateclosed": "",
         "type": str(promo_type or "").strip(),
         "threadcreated": str(thread_created or "").strip(),
@@ -851,7 +927,8 @@ def find_promo_row(ticket: str | None) -> Optional[Tuple[int, Dict[str, str]]]:
         return None
 
     ws = _worksheet(_promo_tab())
-    header = _ensure_headers(ws, PROMO_HEADERS)
+    header = _ensure_promo_headers(ws)
+    require_promo_source_clan_header(header)
     ticket_col = _column_index(header, "ticket number")
     target = _fmt_ticket(ticket)
 

@@ -46,10 +46,40 @@ from shared.sheets import onboarding_sessions
 from shared.sheets import promo_tickets
 from shared.sheets import recruitment as recruitment_sheets
 from shared.sheets import reservations as reservations_sheets
-from shared.sheets.onboarding import PROMO_HEADERS
 
 UTC = dt.timezone.utc
 log = logging.getLogger("c1c.onboarding.promo_watcher")
+
+
+def _promo_headers_for_write(*, ticket: str | None = None) -> list[str]:
+    try:
+        return onboarding_sheets.get_promo_headers()
+    except Exception:
+        log.exception(
+            "promo source clan header mapping unavailable; cannot write Promo row",
+            extra={"ticket": ticket or "-"},
+        )
+        raise
+
+
+def _source_clan_from_promo_values(values: dict[str, str], *, ticket: str | None = None) -> str:
+    try:
+        source_header = onboarding_sheets.get_promo_source_clan_tag_header()
+    except Exception:
+        log.exception(
+            "promo source clan header mapping unavailable; cannot read source clan",
+            extra={"ticket": ticket or "-"},
+        )
+        return ""
+    if source_header not in values:
+        log.warning(
+            "promo row missing configured source clan header",
+            extra={"ticket": ticket or "-", "source_header": source_header},
+        )
+        return ""
+    return (values.get(source_header, "") or "").strip()
+
+
 _CLOSED_MESSAGE_TOKEN = "ticket closed"
 _PROMO_TRIGGER_MAP: Dict[str, str] = {
     "<!-- trigger:promo.r -->": "promo.r",
@@ -97,6 +127,7 @@ class PromoTicketContext:
     month: str
     join_month: str = ""
     clan_tag: str = ""
+    source_clan_tag: str = ""
     clan_name: str = ""
     progression: str = ""
     state: str = "open"
@@ -106,9 +137,9 @@ class PromoTicketContext:
 
 
 class PromoClanSelect(discord.ui.Select):
-    def __init__(self, parent_view: "PromoClanSelectView", tags: List[str]) -> None:
+    def __init__(self, parent_view: "PromoClanSelectView", tags: List[str], *, role: str) -> None:
         options = [discord.SelectOption(label=tag, value=tag) for tag in tags[:25]]
-        placeholder = "Select a clan tag"
+        placeholder = "Where did they come from?" if role == "source" else "Where are they going?"
         super().__init__(placeholder=placeholder, min_values=1, max_values=1, options=options)
         self._parent_view = parent_view
 
@@ -120,16 +151,20 @@ class PromoClanSelect(discord.ui.Select):
 
 
 class PromoClanSelectView(discord.ui.View):
-    def __init__(self, watcher: "PromoTicketWatcher", context: PromoTicketContext, tags: List[str]):
+    def __init__(self, watcher: "PromoTicketWatcher", context: PromoTicketContext, tags: List[str], *, role: str):
         super().__init__(timeout=300)
         self.watcher = watcher
         self.context = context
+        self.role = role
         self.message: Optional[discord.Message] = None
-        self.select = PromoClanSelect(self, tags)
+        self.select = PromoClanSelect(self, tags, role=role)
         self.add_item(self.select)
 
     async def handle_selection(self, interaction: discord.Interaction, tag: str) -> None:
         await interaction.response.defer()
+        if self.role == "source":
+            await self.watcher.source_from_interaction(self.context, tag, interaction, self)
+            return
         await self.watcher.finalize_from_interaction(self.context, tag, interaction, self)
 
     async def on_timeout(self) -> None:  # pragma: no cover - timeout path
@@ -324,6 +359,7 @@ class PromoTicketWatcher(commands.Cog):
         if found:
             _, values = found
             context.clan_tag = values.get("clantag", "") or context.clan_tag
+            context.source_clan_tag = _source_clan_from_promo_values(values, ticket=parts.ticket_code) or context.source_clan_tag
             context.clan_name = values.get("clan name", "") or context.clan_name
             context.progression = values.get("progression", "") or context.progression
             context.thread_created = values.get("thread created", "") or context.thread_created
@@ -356,6 +392,7 @@ class PromoTicketWatcher(commands.Cog):
                     context.ticket_number,
                     context.username,
                     context.clan_tag,
+                    context.source_clan_tag,
                     context.promo_type,
                     context.thread_created,
                     context.year,
@@ -398,6 +435,7 @@ class PromoTicketWatcher(commands.Cog):
         if found:
             _, values = found
             context.clan_tag = values.get("clantag", "") or context.clan_tag
+            context.source_clan_tag = _source_clan_from_promo_values(values, ticket=context.ticket_number) or context.source_clan_tag
             context.clan_name = values.get("clan name", "") or context.clan_name
             context.progression = values.get("progression", "") or context.progression
             context.thread_created = values.get("thread created", "") or context.thread_created
@@ -435,9 +473,16 @@ class PromoTicketWatcher(commands.Cog):
 
         await self._ensure_row_initialized(thread, context)
 
-        context.state = "awaiting_clan"
-        content = f"Which clan tag applies to {context.username} (ticket {context.ticket_number})?\n{CLAN_TAG_PROMPT_HELPER}"
-        view = PromoClanSelectView(self, context, tags)
+        context.state = "awaiting_source_clan"
+        content = (
+            f"Where did the member come from?\n"
+            f"Where is the member going?\n"
+            f"First select the source clan for {context.username} (ticket {context.ticket_number}).\n"
+            f"Use **{_NO_PLACEMENT_TAG}** only when there was no source placement.\n{CLAN_TAG_PROMPT_HELPER}"
+        )
+        source_tags = [tag for tag in tags if tag != _NO_PLACEMENT_TAG]
+        source_tags.insert(0, _NO_PLACEMENT_TAG)
+        view = PromoClanSelectView(self, context, source_tags, role="source")
         try:
             message = await thread.send(content, view=view)
         except Exception:
@@ -490,6 +535,81 @@ class PromoTicketWatcher(commands.Cog):
                         extra={"thread_id": getattr(thread, "id", None), "ticket": context.ticket_number},
                     )
 
+
+    async def source_from_interaction(
+        self,
+        context: PromoTicketContext,
+        tag: str,
+        interaction: discord.Interaction,
+        view: PromoClanSelectView,
+    ) -> None:
+        thread = interaction.channel if isinstance(interaction.channel, discord.Thread) else None
+        if thread is None:
+            await interaction.followup.send(
+                "⚠️ I lost track of the ticket thread. Please try again.", ephemeral=True
+            )
+            return
+        await self._set_source_clan_tag(
+            thread,
+            context,
+            tag,
+            actor=getattr(interaction, "user", None),
+            prompt_message=interaction.message,
+            view=view,
+        )
+
+    async def _set_source_clan_tag(
+        self,
+        thread: discord.Thread,
+        context: PromoTicketContext,
+        source_tag: str,
+        *,
+        actor: discord.abc.User | None,
+        prompt_message: Optional[discord.Message],
+        view: Optional[PromoClanSelectView],
+    ) -> None:
+        if context.state != "awaiting_source_clan":
+            return
+        source_tag = (source_tag or "").strip().upper()
+        if not source_tag:
+            return
+
+        tags = await self._load_clan_tags()
+        valid_sources = set(tags) | {_NO_PLACEMENT_TAG}
+        if source_tag not in valid_sources:
+            await self._send_invalid_tag_notice(thread, actor, source_tag)
+            return
+
+        context.source_clan_tag = source_tag
+        context.state = "awaiting_destination_clan"
+        if view is not None:
+            view.stop()
+
+        destination_content = (
+            f"Source recorded as **{source_tag}**. Where is the member going?\n"
+            f"Select the destination clan for {context.username} (ticket {context.ticket_number}).\n"
+            f"{CLAN_TAG_PROMPT_HELPER}"
+        )
+        destination_view = PromoClanSelectView(self, context, tags, role="destination")
+        if prompt_message is not None:
+            try:
+                await prompt_message.edit(content=destination_content, view=destination_view)
+                destination_view.message = prompt_message
+                return
+            except Exception:
+                log.debug("failed to edit promo source prompt into destination prompt", exc_info=True)
+        try:
+            message = await thread.send(destination_content, view=destination_view)
+        except Exception:
+            context.state = "awaiting_source_clan"
+            log.exception(
+                "failed to post promo destination clan selection prompt",
+                extra={"thread_id": getattr(thread, "id", None), "ticket": context.ticket_number},
+            )
+            return
+        destination_view.message = message
+        context.prompt_message_id = message.id
+
     async def finalize_from_interaction(
         self,
         context: PromoTicketContext,
@@ -522,7 +642,7 @@ class PromoTicketWatcher(commands.Cog):
         prompt_message: Optional[discord.Message],
         view: Optional[PromoClanSelectView],
     ) -> None:
-        if context.state != "awaiting_clan":
+        if context.state not in {"awaiting_clan", "awaiting_destination_clan"}:
             return
         final_tag = (final_tag or "").strip().upper()
         if not final_tag:
@@ -543,20 +663,7 @@ class PromoTicketWatcher(commands.Cog):
             except Exception:
                 prompt_message = None
 
-        previous_final: str | None = ""
-        try:
-            existing_row = await asyncio.to_thread(
-                onboarding_sheets.find_promo_row, context.ticket_number
-            )
-            if existing_row:
-                row_values = existing_row[1]
-                previous_final = (row_values.get("clantag", "") or "").strip()
-        except Exception:
-            previous_final = None
-            log.exception(
-                "promo reconcile: failed to fetch promo row before close write",
-                extra={"ticket": context.ticket_number},
-            )
+        previous_final: str | None = (context.source_clan_tag or "").strip().upper()
 
         await self._complete_close(
             thread,
@@ -588,10 +695,17 @@ class PromoTicketWatcher(commands.Cog):
         previous_final: str | None = "",
     ) -> None:
         timestamp = _format_date(dt.datetime.now(UTC))
+        try:
+            promo_headers = _promo_headers_for_write(ticket=context.ticket_number)
+        except Exception:
+            await thread.send("⚠️ Promo source clan header mapping is missing. Please fix Config before closing this promo ticket.")
+            return
+
         row = [
             context.ticket_number,
             context.username,
             context.clan_tag,
+            context.source_clan_tag,
             timestamp,
             context.promo_type,
             context.thread_created,
@@ -610,7 +724,7 @@ class PromoTicketWatcher(commands.Cog):
                 thread=thread,
                 user=context.username,
                 write_coro=lambda: asyncio.to_thread(
-                    onboarding_sheets.upsert_promo, row, PROMO_HEADERS
+                    onboarding_sheets.upsert_promo, row, promo_headers
                 ),
             )
         except Exception:
@@ -627,12 +741,14 @@ class PromoTicketWatcher(commands.Cog):
         ticket_id_raw = context.ticket_number
         ticket_id_final = (context.ticket_number or "").strip()
         final_tag = (context.clan_tag or "").strip().upper()
+        source_tag = (context.source_clan_tag or "").strip().upper()
         channel_name_before = getattr(thread, "name", "") or ""
         log.info(
-            "promo_ticket_close — workflow_type=promo/move • ticket_id_raw=%s • ticket_id_final=%s • player_name=%s • final_clan_tag=%s • result=row_%s",
+            "promo_ticket_close — workflow_type=promo/move • ticket_id_raw=%s • ticket_id_final=%s • player_name=%s • source_clan_tag=%s • destination_clan_tag=%s • result=row_%s",
             ticket_id_raw,
             ticket_id_final,
             context.username,
+            source_tag or "-",
             final_tag or "-",
             result,
         )
@@ -643,7 +759,7 @@ class PromoTicketWatcher(commands.Cog):
         open_spots_before = "-"
         math_tags = {
             tag
-            for tag in {final_tag, (previous_final or "").strip().upper()}
+            for tag in {final_tag, source_tag}
             if tag and tag != _NO_PLACEMENT_TAG
         }
         if math_tags:
@@ -671,7 +787,8 @@ class PromoTicketWatcher(commands.Cog):
             user=context.username,
             user_id=context.user_id,
             final_tag=final_tag,
-            previous_final=previous_final or "",
+            previous_final=source_tag,
+            require_source_for_open_spot_math=True,
             guild=getattr(thread, "guild", None),
             require_active_reservation=False,
             logger=log,
@@ -714,6 +831,7 @@ class PromoTicketWatcher(commands.Cog):
         )
 
         open_spots_after = "-"
+        after_snapshots = {}
         row_change_lines = [cleanup.decision_line]
         if row_targets is not None and column_map is not None:
             try:
@@ -737,7 +855,8 @@ class PromoTicketWatcher(commands.Cog):
             await rt.send_log_message(
                 "\n".join(
                     [
-                        f"{ticket_id_final} • {context.username} → {final_tag or _NO_PLACEMENT_TAG} "
+                        f"{ticket_id_final} • {context.username}: "
+                        f"{source_tag or '-'} → {final_tag or _NO_PLACEMENT_TAG} "
                         f"(source=promo, reservation={cleanup.reservation_label or 'none'}, result={'ok' if cleanup.ok else 'error'})",
                         *row_change_lines,
                     ]
@@ -763,16 +882,22 @@ class PromoTicketWatcher(commands.Cog):
                     extra={"thread_id": getattr(thread, "id", None), "ticket": ticket_id_final},
                 )
 
+        release_source_open_spot = cleanup.applied_open_deltas.get(source_tag, 0) > 0
+        consume_destination_open_spot = cleanup.applied_open_deltas.get(final_tag, 0) < 0
         log.info(
-            "promo_close_debug — workflow_type=promo/move • ticket_id_raw=%s • ticket_id_final=%s • player_name=%s • final_clan_tag=%s • reservation=%s • consume_open_spot=%s • open_spots_before=%s • open_spots_after=%s • channel_name_before=%s • channel_name_after=%s • logging_channel_result=%s",
+            "promo_close_debug — workflow_type=promo/move • ticket_id_raw=%s • ticket_id_final=%s • player_name=%s • source_clan_tag=%s • destination_clan_tag=%s • reservation_status=%s • consume_destination_open_spot=%s • release_source_open_spot=%s • open_spots_before=%s • open_spots_after=%s • open_spots_before_by_clan=%s • open_spots_after_by_clan=%s • channel_name_before=%s • channel_name_after=%s • logging_channel_result=%s",
             ticket_id_raw,
             ticket_id_final,
             context.username,
+            source_tag or "-",
             final_tag or "-",
             cleanup.reservation_label or "none",
-            cleanup.consume_open_spot,
+            consume_destination_open_spot,
+            release_source_open_spot,
             open_spots_before,
             open_spots_after,
+            {tag: (before_snapshots.get(key).values.get("open_spots", "-") if before_snapshots.get(key) else "-") for key, tag in (row_targets or {}).items()},
+            {tag: (after_snapshots.get(key).values.get("open_spots", "-") if after_snapshots.get(key) else "-") for key, tag in (row_targets or {}).items()} if 'after_snapshots' in locals() else {},
             channel_name_before or "-",
             channel_name_after or "-",
             logging_channel_result,
@@ -796,6 +921,14 @@ class PromoTicketWatcher(commands.Cog):
     ) -> None:
         created_value = created_at.isoformat()
         updated_value = dt.datetime.now(UTC).isoformat()
+        try:
+            promo_headers = _promo_headers_for_write(ticket=context.ticket_number)
+        except Exception:
+            log.warning(
+                "promo reminder: source clan header mapping missing; skipping sheet touch",
+                extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)},
+            )
+            return
 
         try:
             existing = await asyncio.to_thread(
@@ -810,12 +943,17 @@ class PromoTicketWatcher(commands.Cog):
             existing = None
 
         if existing:
-            row_values = list(existing[1].values()) if isinstance(existing[1], dict) else list(existing[1])
+            row_values = (
+                [existing[1].get(header, "") for header in promo_headers]
+                if isinstance(existing[1], dict)
+                else list(existing[1])
+            )
         else:
             row_values = [
                 context.ticket_number,
                 context.username,
                 context.clan_tag,
+                context.source_clan_tag,
                 "",
                 context.promo_type,
                 context.thread_created,
@@ -829,16 +967,17 @@ class PromoTicketWatcher(commands.Cog):
                 str(getattr(thread, "id", 0)),
                 "",
                 context.state,
+                "",
                 created_value,
                 "",
             ]
 
-        if len(row_values) < len(PROMO_HEADERS):
-            row_values.extend(["" for _ in range(len(PROMO_HEADERS) - len(row_values))])
+        if len(row_values) < len(promo_headers):
+            row_values.extend(["" for _ in range(len(promo_headers) - len(row_values))])
 
         try:
-            created_idx = PROMO_HEADERS.index("created_at")
-            updated_idx = PROMO_HEADERS.index("updated_at")
+            created_idx = promo_headers.index("created_at")
+            updated_idx = promo_headers.index("updated_at")
         except ValueError:
             return
 
@@ -855,7 +994,7 @@ class PromoTicketWatcher(commands.Cog):
                 thread=thread,
                 user=user_ref,
                 write_coro=lambda: asyncio.to_thread(
-                    onboarding_sheets.upsert_promo, row_values, PROMO_HEADERS
+                    onboarding_sheets.upsert_promo, row_values, promo_headers
                 ),
             )
         except Exception:
@@ -970,7 +1109,7 @@ class PromoTicketWatcher(commands.Cog):
         context = await self._ensure_context(after)
         if context is None:
             return
-        if context.state in {"awaiting_clan", "closed"}:
+        if context.state in {"awaiting_clan", "awaiting_source_clan", "awaiting_destination_clan", "closed"}:
             return
         if getattr(after, "id", None) in self._auto_closed_threads:
             context.state = "closed"
@@ -1075,13 +1214,24 @@ class PromoTicketWatcher(commands.Cog):
         if getattr(message.author, "bot", False):
             return
 
-        if context.state == "awaiting_clan":
+        if context.state in {"awaiting_clan", "awaiting_source_clan", "awaiting_destination_clan"}:
             candidate = (message.content or "").strip().upper()
             if not candidate:
                 return
             tags = await self._load_clan_tags()
-            if candidate not in tags:
+            valid = set(tags) | ({_NO_PLACEMENT_TAG} if context.state == "awaiting_source_clan" else set())
+            if candidate not in valid:
                 await self._send_invalid_tag_notice(thread, message.author, candidate)
+                return
+            if context.state == "awaiting_source_clan":
+                await self._set_source_clan_tag(
+                    thread,
+                    context,
+                    candidate,
+                    actor=message.author,
+                    prompt_message=None,
+                    view=None,
+                )
                 return
             await self._finalize_clan_tag(
                 thread,

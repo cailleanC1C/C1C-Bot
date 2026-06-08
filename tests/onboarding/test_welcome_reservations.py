@@ -12,6 +12,7 @@ from modules.onboarding.watcher_welcome import (
     WelcomeTicketWatcher,
     _NO_PLACEMENT_TAG,
     _determine_reservation_decision,
+    cleanup_reservation_for_ticket_close,
     parse_welcome_thread_name,
     rename_thread_to_reserved,
     _clan_math_column_indices,
@@ -2046,3 +2047,68 @@ def test_finalize_preflight_failure_applies_no_discord_actions(monkeypatch) -> N
     assert "result=error" in log_messages[-1]
     assert "reason=open_delta_preflight_failed" in log_messages[-1]
     assert "action_state=no_discord_member_action_applied" in log_messages[-1]
+
+
+def test_promo_move_decision_releases_source_and_consumes_destination() -> None:
+    decision = _determine_reservation_decision(
+        "F-IT",
+        None,
+        no_placement_tag=_NO_PLACEMENT_TAG,
+        final_is_real=True,
+        previous_final="C1CV",
+        previous_is_real=True,
+    )
+    assert decision.open_deltas == {"C1CV": 1, "F-IT": -1}
+
+
+def test_promo_move_decision_same_source_destination_noop() -> None:
+    decision = _determine_reservation_decision(
+        "F-IT",
+        None,
+        no_placement_tag=_NO_PLACEMENT_TAG,
+        final_is_real=True,
+        consume_open_spot=False,
+        previous_final="F-IT",
+        previous_is_real=True,
+    )
+    assert decision.open_deltas == {}
+
+
+def test_promo_move_destination_reservation_still_releases_source() -> None:
+    row = _make_reservation("F-IT")
+    decision = _determine_reservation_decision(
+        "F-IT",
+        row,
+        no_placement_tag=_NO_PLACEMENT_TAG,
+        final_is_real=True,
+        previous_final="C1CV",
+        previous_is_real=True,
+    )
+    assert decision.label == "same"
+    assert decision.open_deltas == {"C1CV": 1}
+
+
+def test_promo_move_missing_source_skips_open_spot_math() -> None:
+    applied = []
+
+    async def run() -> None:
+        result = await cleanup_reservation_for_ticket_close(
+            scope="promo",
+            ticket="M0352",
+            user="Lucifer",
+            user_id=None,
+            final_tag="F-IT",
+            previous_final="",
+            require_source_for_open_spot_math=True,
+            ensure_fresh_fn=lambda **_kwargs: asyncio.sleep(0, result=True),
+            find_active_reservations_fn=lambda *_args, **_kwargs: asyncio.sleep(0, result=[]),
+            find_clan_row_fn=lambda *_args, **_kwargs: (10, []),
+            adjust_manual_open_spots_fn=lambda tag, delta: applied.append((tag, delta)) or asyncio.sleep(0, result=0),
+            recompute_clan_availability_fn=lambda *_args, **_kwargs: asyncio.sleep(0, result=None),
+        )
+        assert result.skipped is True
+        assert result.reason == "source_clan_missing"
+        assert "skip_reason=source_clan_missing" in result.decision_line
+
+    asyncio.run(run())
+    assert applied == []

@@ -19,14 +19,17 @@ The promo watcher (`modules.onboarding.watcher_promo.PromoTicketWatcher`):
 - Logs opens and closes to the `PROMO_TICKETS_TAB` worksheet using the following
   columns:
 
-  `ticket number | username | clantag | date closed | type | thread created |
+  `ticket number | username | clantag | source_clan_tag | date closed | type | thread created |
   year | month | join_month | clan name | progression`
 
 - Maps prefixes to types: `R` → `returning player`, `M` → `player move request`,
   `L` → `clan lead move request`.
-- On closure, prompts for a clan tag and progression text; responses update the
-  `clantag`, `date closed`, `clan name`, and `progression` fields. Dialog/panel
-  onboarding for promo tickets will arrive in a later release.
+- On closure, prompts the closer for both **where the member came from** (`source_clan_tag`)
+  and **where the member is going** (`clantag`). Successful close math releases one
+  source open spot and consumes one destination open spot, unless the normalized
+  source and destination are the same clan or either side is `NONE`.
+- Destination reservations still prevent double-consuming the destination spot,
+  while source-clan release still runs for member moves.
 - Lifecycle logs surface as `Promo panel — scope=promo` entries; welcome only
   handles threads that begin with `W####-…`.
 
@@ -34,6 +37,7 @@ The promo watcher (`modules.onboarding.watcher_promo.PromoTicketWatcher`):
 
 - **Channels:** `PROMO_CHANNEL_ID`
 - **Sheet tab:** `PROMO_TICKETS_TAB`
+- **Required Promo source header:** Config key `PROMO_SOURCE_CLAN_TAG_HEADER=source_clan_tag`; the resolved header must exist in `PROMO_TICKETS_TAB`.
 - **Toggles:** `PROMO_ENABLED`, `ENABLE_PROMO_HOOK` (promo dialog toggle
   reserved for later: `promo_dialog`)
 
@@ -51,4 +55,4 @@ The promo watcher (`modules.onboarding.watcher_promo.PromoTicketWatcher`):
   the watcher misses the trigger. Removing the trigger lines prevents the bot
   from recognising promo tickets.
 
-Doc last updated: 2025-11-29 (v0.9.8.2)
+Doc last updated: 2026-06-08 (v0.9.8.2)
