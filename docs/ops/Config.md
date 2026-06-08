@@ -241,13 +241,16 @@ explicitly configured in the sheet.
 - 'ONBOARDING_TAB'
 - 'WELCOME_TICKETS_TAB'
 - 'PROMO_TICKETS_TAB'
+- `PROMO_SOURCE_CLAN_TAG_HEADER` (required; value `source_clan_tag`)
 - 'CLANLIST_TAB'
 
 **Promo tab columns (PROMO_TICKETS_TAB)**
 
 ```
-ticket number | username | clantag | date closed | type | thread created | year | month | join_month | clan name | progression
+ticket number | username | clantag | source_clan_tag | date closed | type | thread created | year | month | join_month | clan name | progression
 ```
+
+`source_clan_tag` records the previous/came-from clan selected during promo/move close; `clantag` remains the destination/final clan used in the closed thread name. The bot resolves this source column through `PROMO_SOURCE_CLAN_TAG_HEADER`; missing Config/header mapping is treated as an operational error instead of silently falling back to destination-only math.
 
 Promo tickets use the R/M/L prefixes to map to `type` values:
 
@@ -376,4 +379,4 @@ Feature enable/disable is always sourced from the FeatureToggles worksheet; ENV 
 
 > **Template note:** The `.env.example` file in this directory mirrors the tables below. Treat that file as the canonical template for new deployments and update both assets together.
 
-Doc last updated: 2025-12-31 (v0.9.8.2)
+Doc last updated: 2026-06-08 (v0.9.8.2)

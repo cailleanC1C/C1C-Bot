@@ -1580,6 +1580,15 @@ class ReservationDecision:
     recompute_tags: List[str]
 
 
+def _call_find_clan_row(find_clan_row: Callable[..., object], tag: str, *, force: bool = True) -> object:
+    try:
+        return find_clan_row(tag, force=force)
+    except TypeError as exc:
+        if "force" not in str(exc):
+            raise
+        return find_clan_row(tag)
+
+
 @dataclass(slots=True)
 class _ClanMathRowSnapshot:
     tag: str
@@ -1595,6 +1604,7 @@ def _determine_reservation_decision(
     final_is_real: bool,
     consume_open_spot: bool = True,
     previous_final: str | None = None,
+    previous_is_real: bool = True,
 ) -> ReservationDecision:
     normalized_final = (final_tag or "").strip().upper()
     normalized_previous = (previous_final or "").strip().upper()
@@ -1603,7 +1613,8 @@ def _determine_reservation_decision(
 
     if reservation_row is None:
         if (
-            normalized_previous
+            previous_is_real
+            and normalized_previous
             and normalized_previous != no_placement_tag
             and normalized_previous != normalized_final
         ):
@@ -1638,6 +1649,14 @@ def _determine_reservation_decision(
     if reservation_tag and reservation_tag_key == final_tag_key:
         label = "same"
         status = "closed_same_clan"
+        if (
+            previous_is_real
+            and normalized_previous
+            and normalized_previous != no_placement_tag
+            and _normalize_clan_tag_key(normalized_previous) != final_tag_key
+        ):
+            open_deltas[normalized_previous] = open_deltas.get(normalized_previous, 0) + 1
+            recompute.append(normalized_previous)
         recompute.append(reservation_tag)
         return ReservationDecision(label, status, open_deltas, recompute)
 
@@ -1646,6 +1665,14 @@ def _determine_reservation_decision(
     if reservation_tag:
         open_deltas[reservation_tag] = open_deltas.get(reservation_tag, 0) + 1
         recompute.append(reservation_tag)
+    if (
+        previous_is_real
+        and normalized_previous
+        and normalized_previous != no_placement_tag
+        and _normalize_clan_tag_key(normalized_previous) not in {reservation_tag_key, final_tag_key}
+    ):
+        open_deltas[normalized_previous] = open_deltas.get(normalized_previous, 0) + 1
+        recompute.append(normalized_previous)
     if final_is_real and normalized_final and final_tag_key != reservation_tag_key:
         open_deltas[normalized_final] = open_deltas.get(normalized_final, 0) - 1
         recompute.append(normalized_final)
@@ -1688,6 +1715,7 @@ async def cleanup_reservation_for_ticket_close(
     update_reservation_status_fn: Callable[..., Awaitable[None]] | None = None,
     adjust_manual_open_spots_fn: Callable[..., Awaitable[int]] | None = None,
     recompute_clan_availability_fn: Callable[..., Awaitable[None]] | None = None,
+    require_source_for_open_spot_math: bool = False,
 ) -> ReservationCleanupResult:
     """Apply the shared welcome-close reservation cleanup path.
 
@@ -1760,6 +1788,23 @@ async def cleanup_reservation_for_ticket_close(
             None, "none", None, None, False, False, {}, {}, [], [], True, True, True, reason, decision_line
         )
 
+    if require_source_for_open_spot_math and normalized_final != _NO_PLACEMENT_TAG and not normalized_previous:
+        reason = "source_clan_missing"
+        decision_line = (
+            "decision: "
+            f"final_tag={normalized_final or '-'} • previous_final=- • "
+            "reservation=unknown • consume_open_spot=False • final_is_real=False • "
+            "decision_result=skipped_open_delta • skip_reason=source_clan_missing • "
+            "action_required=prompt_for_source_clan"
+        )
+        event_log.warning(
+            "reservation_cleanup — scope=%s • ticket=%s • user=%s • user_id=%s • clan_tag=%s • source_clan_tag=- • result=skip • reason=%s • action_required=prompt_for_source_clan",
+            normalized_scope, ticket, user_label or "-", user_id or "-", normalized_final or "-", reason,
+        )
+        return ReservationCleanupResult(
+            reservation_row, "source_missing", old_status, None, False, False, {}, {}, [], [], True, True, True, reason, decision_line
+        )
+
     clans_fresh = await ensure_fresh(
         actor=f"{normalized_scope}_placement", ticket=ticket, user=user_label
     )
@@ -1781,7 +1826,7 @@ async def cleanup_reservation_for_ticket_close(
 
     try:
         final_entry = (
-            await asyncio.to_thread(find_clan_row, normalized_final, force=True)
+            await asyncio.to_thread(_call_find_clan_row, find_clan_row, normalized_final, force=True)
             if normalized_final != _NO_PLACEMENT_TAG
             else None
         )
@@ -1792,6 +1837,19 @@ async def cleanup_reservation_for_ticket_close(
             normalized_scope, ticket, user_label or "-", user_id or "-", normalized_final or "-",
         )
         final_is_real = False
+
+    previous_is_real = False
+    if normalized_previous and normalized_previous != _NO_PLACEMENT_TAG:
+        try:
+            previous_is_real = await asyncio.to_thread(_call_find_clan_row, find_clan_row, normalized_previous, force=True) is not None
+        except Exception:
+            event_log.exception(
+                "reservation_cleanup — scope=%s • ticket=%s • user=%s • user_id=%s • source_clan_tag=%s • result=partial • reason=source_clan_lookup_failed",
+                normalized_scope, ticket, user_label or "-", user_id or "-", normalized_previous or "-",
+            )
+            previous_is_real = False
+    elif normalized_previous == _NO_PLACEMENT_TAG:
+        previous_is_real = False
 
     consume_open_spot = bool(
         normalized_final
@@ -1809,6 +1867,7 @@ async def cleanup_reservation_for_ticket_close(
         final_is_real=final_is_real,
         consume_open_spot=consume_open_spot,
         previous_final=previous_final or "",
+        previous_is_real=previous_is_real,
     )
     new_status = decision.status
 

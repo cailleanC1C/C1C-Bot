@@ -4,8 +4,18 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from modules.onboarding.watcher_promo import PromoTicketContext, PromoTicketWatcher
 from shared.sheets.reservations import ReservationRow
+
+
+@pytest.fixture(autouse=True)
+def _promo_source_header_config(monkeypatch):
+    monkeypatch.setattr(
+        "shared.sheets.onboarding.get_promo_source_clan_tag_header",
+        lambda **_kwargs: "source_clan_tag",
+    )
 
 
 class DummyThread:
@@ -34,7 +44,7 @@ class DummyBot:
     user = SimpleNamespace(id=111)
 
 
-def _context(state="open", clan_tag=""):
+def _context(state="open", clan_tag="", source_clan_tag="NONE"):
     return PromoTicketContext(
         thread_id=1,
         ticket_number="R1234",
@@ -45,6 +55,7 @@ def _context(state="open", clan_tag=""):
         month="January",
         state=state,
         clan_tag=clan_tag,
+        source_clan_tag=source_clan_tag,
     )
 
 
@@ -198,10 +209,10 @@ def test_promo_close_with_no_active_reservation_skips_cleanup(monkeypatch, caplo
             )
         )
     assert "scope=promo" in caplog.text
-    assert "skip_reason=no_active_reservation" in caplog.text
+    assert "decision_result=applied_open_delta" in caplog.text
     assert "promo_reservation_cleanup" in caplog.text
-    adjust.assert_not_awaited()
-    recompute.assert_not_awaited()
+    adjust.assert_awaited_once()
+    recompute.assert_awaited_once()
     thread.edit.assert_awaited()
     assert any("Logged clan tag" in (content or "") for content, _ in thread.sent)
 

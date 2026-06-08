@@ -4,11 +4,20 @@ from types import SimpleNamespace
 
 import pytest
 
+
 from modules.onboarding.constants import CLAN_TAG_PROMPT_HELPER
 from modules.onboarding import thread_scopes
 from modules.onboarding import watcher_promo
 from modules.onboarding.watcher_welcome import parse_promo_thread_name
 from shared.sheets import onboarding as onboarding_sheets
+
+
+@pytest.fixture(autouse=True)
+def _promo_source_header_config(monkeypatch):
+    monkeypatch.setattr(
+        "shared.sheets.onboarding.get_promo_source_clan_tag_header",
+        lambda **_kwargs: "source_clan_tag",
+    )
 
 
 class DummyMessage:
@@ -82,8 +91,8 @@ def promo_setup(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(onboarding_sheets, "upsert_promo", _fake_upsert)
 
-    def _fake_append(ticket, username, clan_tag, promo_type, thread_created, year, month, join_month, clan_name, progression, **_kwargs):
-        row = [ticket, username, clan_tag, "", promo_type, thread_created, year, month, join_month, clan_name, progression]
+    def _fake_append(ticket, username, clan_tag, source_clan_tag, promo_type, thread_created, year, month, join_month, clan_name, progression, **_kwargs):
+        row = [ticket, username, clan_tag, source_clan_tag, "", promo_type, thread_created, year, month, join_month, clan_name, progression]
         return _fake_upsert(row, onboarding_sheets.PROMO_HEADERS)
 
     monkeypatch.setattr(onboarding_sheets, "append_promo_ticket_row", _fake_append)
@@ -233,6 +242,9 @@ def test_promo_watcher_close_flow_updates_sheet(promo_setup, monkeypatch: pytest
         await watcher.on_message(close_message)
 
         assert thread.sent, "expected prompt to be sent"
+        source_message = SimpleNamespace(content="NONE", author=DummyAuthor(bot=False), channel=thread)
+        await watcher.on_message(source_message)
+
         clan_message = SimpleNamespace(content="C1CE", author=DummyAuthor(bot=False), channel=thread)
         await watcher.on_message(clan_message)
 
@@ -264,9 +276,10 @@ def _patch_promo_close_dependencies(monkeypatch: pytest.MonkeyPatch, *, open_spo
         return list(reservations or [])
 
     def find_clan_row(tag, force=False):
-        if str(tag).strip().upper() != "F-IT":
+        normalized = str(tag).strip().upper()
+        if normalized not in {"F-IT", "C1CV"}:
             return None
-        return (7, ["", "", "F-IT", "", str(state["open_spots"]), "0", "0", ""])
+        return (7, ["", "", normalized, "", str(state["open_spots"]), "0", "0", ""])
 
     async def adjust(tag, delta):
         deltas.append((tag, delta))
@@ -316,6 +329,7 @@ def test_promo_move_close_preserves_full_ticket_id_and_consumes_unreserved_spot(
         year="2026",
         month="June",
         clan_tag="F-IT",
+        source_clan_tag="C1CV",
         user_id=12345,
     )
 
@@ -331,11 +345,10 @@ def test_promo_move_close_preserves_full_ticket_id_and_consumes_unreserved_spot(
     assert calls["upserts"][-1][0][0] != "0352"
     assert thread.name == "Closed-M0352-Lucifer-F-IT"
     assert thread.edits[-1]["name"] == "Closed-M0352-Lucifer-F-IT"
-    assert deltas == [("F-IT", -1)]
-    assert state["open_spots"] == 1
+    assert sorted(deltas) == [("C1CV", 1), ("F-IT", -1)]
+    assert state["open_spots"] == 2
     assert log_messages, "expected logging-channel open spot delta entry"
-    assert "M0352 • Lucifer → F-IT" in log_messages[-1]
-    assert "open_spots: 2 → 1" in log_messages[-1]
+    assert "M0352 • Lucifer: C1CV → F-IT" in log_messages[-1]
     assert "F-IT:-1" in log_messages[-1]
 
 
@@ -369,6 +382,7 @@ def test_reserved_promo_move_same_clan_does_not_double_consume_open_spot(
         year="2026",
         month="June",
         clan_tag="F-IT",
+        source_clan_tag="C1CV",
         user_id=12345,
     )
 
@@ -380,11 +394,11 @@ def test_reserved_promo_move_same_clan_does_not_double_consume_open_spot(
     asyncio.run(run())
 
     assert thread.name == "Closed-M0352-Lucifer-F-IT"
-    assert deltas == []
-    assert state["open_spots"] == 2
+    assert deltas == [("C1CV", 1)]
+    assert state["open_spots"] == 3
     assert log_messages
     assert "reservation=same" in log_messages[-1]
-    assert "skipped_open_delta" in log_messages[-1]
+    assert "C1CV:+1" in log_messages[-1]
 
 def test_promo_watcher_respects_feature_flags(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(watcher_promo, "get_promo_channel_id", lambda: 1)
