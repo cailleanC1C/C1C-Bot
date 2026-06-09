@@ -12,9 +12,28 @@ from shared.sheets.reservations import ReservationRow
 
 @pytest.fixture(autouse=True)
 def _promo_source_header_config(monkeypatch):
+    from shared.sheets import onboarding as onboarding_sheets
+
+    config = {
+        "promo_source_clan_tag_header": "source_clan_tag",
+        "promo_finalization_status_header": "finalization_status",
+        "promo_reservation_status_header": "reservation_status",
+        "promo_clan_update_status_header": "clan_update_status",
+        "promo_finalization_note_header": "finalization_note",
+    }
+    monkeypatch.setattr(onboarding_sheets, "_CONFIG_CACHE", config)
+    monkeypatch.setattr(onboarding_sheets, "_CONFIG_CACHE_TS", 9999999999.0)
     monkeypatch.setattr(
-        "shared.sheets.onboarding.get_promo_source_clan_tag_header",
-        lambda **_kwargs: "source_clan_tag",
+        "shared.sheets.onboarding.update_ticket_finalization_state",
+        lambda *_args, **_kwargs: "updated",
+    )
+
+    async def no_reservations(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_promo.reservations_sheets.find_active_reservations_for_recruit",
+        no_reservations,
     )
 
 

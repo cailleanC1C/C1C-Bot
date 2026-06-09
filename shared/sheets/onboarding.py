@@ -86,23 +86,7 @@ _FINALIZATION_CONFIG_KEYS: Dict[str, Dict[str, str]] = {
 
 
 def _required_config_header(key: str) -> str:
-    try:
-        header = _config_lookup(key)
-    except Exception:
-        expected = {
-            "WELCOME_FINALIZATION_STATUS_HEADER": "finalization_status",
-            "WELCOME_RESERVATION_STATUS_HEADER": "reservation_status",
-            "WELCOME_CLAN_UPDATE_STATUS_HEADER": "clan_update_status",
-            "WELCOME_FINALIZATION_NOTE_HEADER": "finalization_note",
-            "PROMO_FINALIZATION_STATUS_HEADER": "finalization_status",
-            "PROMO_RESERVATION_STATUS_HEADER": "reservation_status",
-            "PROMO_CLAN_UPDATE_STATUS_HEADER": "clan_update_status",
-            "PROMO_FINALIZATION_NOTE_HEADER": "finalization_note",
-        }.get(key)
-        if expected:
-            log.warning("Onboarding Config unavailable while resolving %s; using migration header name for local/offline operation", key, exc_info=True)
-            return expected
-        raise
+    header = _config_lookup(key)
     cleaned = str(header or "").strip()
     if not cleaned:
         raise RuntimeError(f"Onboarding Config missing {key}")
@@ -153,11 +137,7 @@ def get_promo_source_clan_tag_header(*, force: bool = False) -> str:
 
     if force:
         _load_config(force=True)
-    try:
-        header = _config_lookup(PROMO_SOURCE_CLAN_TAG_HEADER_CONFIG_KEY)
-    except Exception:
-        log.warning("Onboarding Config unavailable while resolving PROMO_SOURCE_CLAN_TAG_HEADER; using migration header name for local/offline operation", exc_info=True)
-        header = "source_clan_tag"
+    header = _config_lookup(PROMO_SOURCE_CLAN_TAG_HEADER_CONFIG_KEY)
     cleaned = str(header or "").strip()
     if not cleaned:
         raise RuntimeError(
@@ -923,7 +903,7 @@ def find_promo_row_by_thread_id(
     """Return the Promo row matching ``thread_id`` if present."""
 
     result = _find_row_by_thread_id(
-        tab=_promo_tab(), headers=PROMO_HEADERS, thread_id=thread_id
+        tab=_promo_tab(), headers=get_promo_headers(), thread_id=thread_id
     )
     if result is not None:
         require_promo_source_clan_header(list(result[1].keys()))

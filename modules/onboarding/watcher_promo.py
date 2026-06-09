@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
-import os
 from dataclasses import dataclass
 from time import monotonic
 from typing import Dict, List, Optional, Tuple
@@ -119,9 +118,6 @@ async def _ensure_fresh_clans_for_placement(*, actor: str, ticket: str, user: st
         return False
     snapshot = cache_telemetry.get_snapshot("clans")
     if (not snapshot.available) or snapshot.last_result not in {"ok", "retry_ok"}:
-        if os.getenv("PYTEST_CURRENT_TEST"):
-            log.warning("placement clans cache unavailable in pytest; allowing existing unit-test math path", extra={"ticket": ticket, "user": user, "actor": actor})
-            return True
         log.warning(
             "promo reconcile: clans data not fresh; skipping seat math",
             extra={"ticket": ticket, "user": user, "last_result": snapshot.last_result, "last_error": snapshot.last_error},
@@ -799,6 +795,8 @@ class PromoTicketWatcher(commands.Cog):
         trigger: str = "ticket_tool",
     ) -> None:
         timestamp = _format_date(dt.datetime.now(UTC))
+        found_state = None
+        found_state_lookup_failed = False
         try:
             found_state = await asyncio.to_thread(onboarding_sheets.find_promo_row, context.ticket_number)
             if found_state and (_promo_finalization_state(found_state[1]).get("finalization_status") or "").lower() == "done":
@@ -808,6 +806,7 @@ class PromoTicketWatcher(commands.Cog):
                 return
             await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "promo", ticket=context.ticket_number, thread_id=getattr(thread, "id", None), finalization_status="in_progress", finalization_note=f"finalization started by {trigger}")
         except Exception:
+            found_state_lookup_failed = True
             log.exception("promo finalization state preflight failed", extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)})
         log.info("close_finalization_started", extra={"flow": "promo", "trigger": trigger, "thread_id": getattr(thread, "id", None), "ticket": context.ticket_number})
         try:
@@ -856,7 +855,12 @@ class PromoTicketWatcher(commands.Cog):
         ticket_id_raw = context.ticket_number
         ticket_id_final = (context.ticket_number or "").strip()
         final_tag = (context.clan_tag or "").strip().upper()
-        source_tag = (context.source_clan_tag or _NO_PLACEMENT_TAG).strip().upper()
+        source_tag = (context.source_clan_tag or "").strip().upper()
+        existing_clan = str(found_state[1].get("clantag", "") or "").strip().upper() if found_state else ""
+        if not source_tag and not found_state_lookup_failed:
+            source_tag = existing_clan or _NO_PLACEMENT_TAG
+        if source_tag == _NO_PLACEMENT_TAG and existing_clan:
+            source_tag = existing_clan
         channel_name_before = getattr(thread, "name", "") or ""
         log.info(
             "promo_ticket_close — workflow_type=promo/move • ticket_id_raw=%s • ticket_id_final=%s • player_name=%s • source_clan_tag=%s • destination_clan_tag=%s • result=row_%s",

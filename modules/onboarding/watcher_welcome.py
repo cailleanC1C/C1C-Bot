@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import asyncio
 from time import monotonic
@@ -100,9 +99,6 @@ async def _ensure_fresh_clans_for_placement(
         return False
     snapshot = cache_telemetry.get_snapshot("clans")
     if (not snapshot.available) or snapshot.last_result not in {"ok", "retry_ok"}:
-        if os.getenv("PYTEST_CURRENT_TEST"):
-            log.warning("placement clans cache unavailable in pytest; allowing existing unit-test math path", extra={"ticket": ticket, "user": user, "actor": actor})
-            return True
         log.warning(
             "placement blocked due to unavailable/failed clans cache refresh",
             extra={
@@ -4414,9 +4410,6 @@ class WelcomeTicketWatcher(commands.Cog):
                         tag, delta=delta
                     )
                 except Exception:
-                    if os.getenv("PYTEST_CURRENT_TEST"):
-                        log.warning("welcome availability preflight unavailable in pytest; continuing unit-test math path", extra={"clan_tag": tag, "delta": delta, "ticket": context.ticket_number})
-                        continue
                     preflight_failed = True
                     actions_ok = False
                     delta_failure_reason = (

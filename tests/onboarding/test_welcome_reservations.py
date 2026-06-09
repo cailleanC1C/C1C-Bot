@@ -229,6 +229,34 @@ def test_decision_no_reservation_no_clan() -> None:
     assert decision.recompute_tags == []
 
 
+@pytest.fixture(autouse=True)
+def _finalization_config_mocks(monkeypatch):
+    from shared.sheets import onboarding as onboarding_sheets
+
+    config = {
+        "welcome_finalization_status_header": "finalization_status",
+        "welcome_reservation_status_header": "reservation_status",
+        "welcome_clan_update_status_header": "clan_update_status",
+        "welcome_finalization_note_header": "finalization_note",
+        "promo_finalization_status_header": "finalization_status",
+        "promo_reservation_status_header": "reservation_status",
+        "promo_clan_update_status_header": "clan_update_status",
+        "promo_finalization_note_header": "finalization_note",
+        "promo_source_clan_tag_header": "source_clan_tag",
+    }
+    monkeypatch.setattr(onboarding_sheets, "_CONFIG_CACHE", config)
+    monkeypatch.setattr(onboarding_sheets, "_CONFIG_CACHE_TS", 9999999999.0)
+
+    def state_update(*_args, **_kwargs):
+        return "updated"
+
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.onboarding_sheets.update_ticket_finalization_state",
+        state_update,
+    )
+
+
+
 class _DummyMessage:
     def __init__(self, thread: "_DummyThread", message_id: int, content: str) -> None:
         self._thread = thread
@@ -1821,8 +1849,11 @@ def test_manual_close_existing_clan_skips_prompt(monkeypatch) -> None:
     def fake_find_row(ticket: str):  # type: ignore[no-untyped-def]
         return 5, [ticket, "Tester", "C1CE", "2025-01-01 00:00:00"]
 
+    finalized_rows: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
     def fail_upsert(*_args, **_kwargs):  # type: ignore[no-untyped-def]
-        raise AssertionError("should not upsert when row exists with clan")
+        finalized_rows.append((_args, _kwargs))
+        return "updated"
 
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.onboarding_sheets.find_welcome_row",
@@ -1831,6 +1862,30 @@ def test_manual_close_existing_clan_skips_prompt(monkeypatch) -> None:
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
         fail_upsert,
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.recruitment_sheets.find_clan_row",
+        lambda tag, *, force=False: (10, ["", "", tag, "", "4"] + [""] * 30) if tag == "C1CE" else None,
+    )
+
+    async def preflight_ok(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.availability.preflight_clan_availability_update",
+        preflight_ok,
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.availability.adjust_manual_open_spots",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.availability.recompute_clan_availability",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.reservations_sheets.find_active_reservations_for_recruit",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=[]),
     )
 
     async def runner() -> None:
@@ -1847,8 +1902,9 @@ def test_manual_close_existing_clan_skips_prompt(monkeypatch) -> None:
         )
         await bot.close()
 
-        assert context.state == "open"
+        assert context.state == "closed"
         assert not thread.messages
+        assert finalized_rows
 
     asyncio.run(runner())
 

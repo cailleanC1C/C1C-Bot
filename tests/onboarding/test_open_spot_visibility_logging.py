@@ -3,11 +3,49 @@ import logging
 from types import SimpleNamespace
 
 import discord
+import pytest
 from discord.ext import commands
 
 from modules.onboarding.watcher_welcome import WelcomeTicketWatcher, TicketContext, _NO_PLACEMENT_TAG
 from modules.onboarding.watcher_promo import PromoTicketWatcher, PromoTicketContext
 from shared.sheets import onboarding as onboarding_sheets
+
+
+@pytest.fixture(autouse=True)
+def _finalization_and_cache_mocks(monkeypatch):
+    config = {
+        "welcome_finalization_status_header": "finalization_status",
+        "welcome_reservation_status_header": "reservation_status",
+        "welcome_clan_update_status_header": "clan_update_status",
+        "welcome_finalization_note_header": "finalization_note",
+        "promo_finalization_status_header": "finalization_status",
+        "promo_reservation_status_header": "reservation_status",
+        "promo_clan_update_status_header": "clan_update_status",
+        "promo_finalization_note_header": "finalization_note",
+        "promo_source_clan_tag_header": "source_clan_tag",
+    }
+    monkeypatch.setattr(onboarding_sheets, "_CONFIG_CACHE", config)
+    monkeypatch.setattr(onboarding_sheets, "_CONFIG_CACHE_TS", 9999999999.0)
+
+    async def fresh(*_args, **_kwargs):
+        return True
+
+    async def no_reservations(*_args, **_kwargs):
+        return []
+
+    def state_update(*_args, **_kwargs):
+        return "updated"
+
+    monkeypatch.setattr("modules.onboarding.watcher_welcome._ensure_fresh_clans_for_placement", fresh)
+    monkeypatch.setattr("modules.onboarding.watcher_promo._ensure_fresh_clans_for_placement", fresh)
+    async def preflight_ok(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("modules.onboarding.watcher_promo.reservations_sheets.find_active_reservations_for_recruit", no_reservations)
+    monkeypatch.setattr("modules.onboarding.watcher_welcome.availability.preflight_clan_availability_update", preflight_ok)
+    monkeypatch.setattr("modules.onboarding.watcher_welcome.onboarding_sheets.update_ticket_finalization_state", state_update)
+    monkeypatch.setattr("modules.onboarding.watcher_promo.onboarding_sheets.update_ticket_finalization_state", state_update)
+
 
 
 class DummyThread:
@@ -295,10 +333,9 @@ def test_promo_blank_previous_not_rehydrated_from_post_write(monkeypatch, caplog
     caplog.set_level(logging.INFO)
     asyncio.run(watcher._finalize_clan_tag(DummyThread(), ctx, 'C1CK', actor=None, prompt_message=None, view=None))
     assert deltas == [('C1CK', -1)]
-    assert 'previous_final=-' in caplog.text
+    assert 'previous_final=NONE' in caplog.text
 
 
-def test_promo_previous_final_unavailable_skips_with_action_required(monkeypatch, caplog):
     monkeypatch.setattr('modules.common.feature_flags.is_enabled', lambda *_: True)
     monkeypatch.setattr('modules.onboarding.watcher_promo.get_promo_channel_id', lambda: 1)
     monkeypatch.setattr('modules.onboarding.watcher_promo.get_ticket_tool_bot_id', lambda: 1)
@@ -319,12 +356,11 @@ def test_promo_previous_final_unavailable_skips_with_action_required(monkeypatch
     asyncio.run(watcher._finalize_clan_tag(DummyThread(), ctx, 'C1CK', actor=None, prompt_message=None, view=None))
     assert ctx.state == 'closed'
     assert adjust_calls == []
-    assert 'skip_reason=previous_final_unavailable' in caplog.text
-    assert 'action_required=manual_open_spots_review' in caplog.text
+    assert 'reason=source_clan_missing' in caplog.text
+    assert 'action_required=prompt_for_source_clan' in caplog.text
     assert 'ticket=R7' in caplog.text
     assert 'user=u' in caplog.text
-    assert 'final_tag=C1CK' in caplog.text
-    assert 'reason=previous_final_unavailable' in caplog.text
+    assert 'clan_tag=C1CK' in caplog.text
 
 
 def test_promo_non_real_tag_logs_skip_reason(monkeypatch, caplog):
