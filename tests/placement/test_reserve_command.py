@@ -1,6 +1,7 @@
 import asyncio
 import datetime as dt
 import logging
+import itertools
 from typing import List
 
 import discord
@@ -84,6 +85,9 @@ class FakeGuild:
         return None
 
 
+_message_ids = itertools.count(1000)
+
+
 class FakeThread:
     def __init__(
         self,
@@ -101,17 +105,34 @@ class FakeThread:
         self.owner_id = owner_id
         self.guild = guild
         self.sent: list[FakeSentMessage] = []
+        self.edited_names: list[str] = []
+        self.delete_error_for_sent: Exception | None = None
 
     async def send(self, content: str | None = None, **kwargs):
         message = FakeSentMessage(content, kwargs)
+        message.delete_error = self.delete_error_for_sent
         self.sent.append(message)
         return message
+
+    async def edit(self, *, name: str | None = None, **_kwargs):
+        if name is not None:
+            self.name = name
+            self.edited_names.append(name)
+        return self
 
 
 class FakeSentMessage:
     def __init__(self, content: str | None, kwargs: dict) -> None:
+        self.id = next(_message_ids)
         self.content = content
         self.kwargs = dict(kwargs)
+        self.deleted = False
+        self.delete_error: Exception | None = None
+
+    async def delete(self):
+        if self.delete_error is not None:
+            raise self.delete_error
+        self.deleted = True
 
     async def edit(self, *, content: str | None = None, **kwargs):
         if content is not None:
@@ -122,10 +143,18 @@ class FakeSentMessage:
 
 class FakeMessage:
     def __init__(self, content: str, author, channel, mentions=None) -> None:
+        self.id = next(_message_ids)
         self.content = content
         self.author = author
         self.channel = channel
         self.mentions = list(mentions or [])
+        self.deleted = False
+        self.delete_error: Exception | None = None
+
+    async def delete(self):
+        if self.delete_error is not None:
+            raise self.delete_error
+        self.deleted = True
 
 
 class FakeBot:
@@ -157,6 +186,7 @@ class FakeContext:
         self.guild = guild
         self.channel = channel
         self.author = author
+        self.message = FakeMessage("!reserve ABC", author=author, channel=channel)
         self.replies: list[FakeSentMessage] = []
 
     async def reply(self, content: str, *, mention_author: bool = False):
@@ -263,7 +293,7 @@ def test_reserve_success(monkeypatch):
     mention_message = FakeMessage(
         "reserve user", author=None, channel=thread, mentions=[recruit]
     )
-    date_message = FakeMessage("2025-12-01", author=None, channel=thread)
+    date_message = FakeMessage("2026-12-01", author=None, channel=thread)
     confirm_message = FakeMessage("yes", author=None, channel=thread)
 
     author = FakeMember(111, "Recruiter")
@@ -323,6 +353,11 @@ def test_reserve_success(monkeypatch):
     monkeypatch.setattr(
         reserve_module.availability, "recompute_clan_availability", fake_recompute
     )
+    monkeypatch.setattr(
+        reserve_module,
+        "_ensure_fresh_clans_for_reservations",
+        lambda **_: asyncio.sleep(0, result=True),
+    )
 
     cog = _make_cog(bot)
     asyncio.run(cog.reserve.callback(cog, ctx, "ABC"))
@@ -380,7 +415,7 @@ def test_reserve_partial_success_when_recompute_fails(monkeypatch):
             ticket_user_id=recruit.id,
             ticket_display=recruit.display_name,
             ticket_username=recruit.display_name,
-            reserved_until=dt.date(2025, 12, 6),
+            reserved_until=dt.date(2026, 12, 6),
             notes="",
         )
 
@@ -500,7 +535,7 @@ def test_reserve_accepts_inline_recruit(monkeypatch):
     guild = FakeGuild([recruit])
     thread = FakeThread(thread_id=556, parent_id=999)
 
-    date_message = FakeMessage("2025-12-05", author=None, channel=thread)
+    date_message = FakeMessage("2026-12-05", author=None, channel=thread)
     confirm_message = FakeMessage("yes", author=None, channel=thread)
     author = FakeMember(111, "Recruiter")
     for message in (date_message, confirm_message):
@@ -548,11 +583,16 @@ def test_reserve_accepts_inline_recruit(monkeypatch):
         "recompute_clan_availability",
         lambda *args, **kwargs: asyncio.sleep(0),
     )
+    monkeypatch.setattr(
+        reserve_module,
+        "_ensure_fresh_clans_for_reservations",
+        lambda **_: asyncio.sleep(0, result=True),
+    )
 
     cog = _make_cog(bot)
     asyncio.run(cog.reserve.callback(cog, ctx, "ABC", f"<@{recruit.id}>"))
 
-    assert any("Reserving a spot for" in sent.content for sent in thread.sent[:1])
+    assert any("Until which date" in sent.content for sent in thread.sent[:1])
     if appended:
         assert appended[0][1] == str(recruit.id)
 
@@ -623,7 +663,7 @@ def test_reserve_duplicate_blocked(monkeypatch):
     mention_message = FakeMessage(
         "reserve user", author=author, channel=thread, mentions=[recruit]
     )
-    date_message = FakeMessage("2025-12-01", author=author, channel=thread)
+    date_message = FakeMessage("2026-12-01", author=author, channel=thread)
     confirm_message = FakeMessage("yes", author=author, channel=thread)
 
     bot = FakeBot([mention_message, date_message, confirm_message])
@@ -703,7 +743,7 @@ def test_reserve_requires_reason(monkeypatch):
     author = FakeMember(444, "Recruiter")
     messages = [
         FakeMessage("who", author=author, channel=thread, mentions=[recruit]),
-        FakeMessage("2025-11-30", author=author, channel=thread),
+        FakeMessage("2026-11-30", author=author, channel=thread),
         FakeMessage(
             "Because they confirmed a start date", author=author, channel=thread
         ),
@@ -714,6 +754,18 @@ def test_reserve_requires_reason(monkeypatch):
     ctx = FakeContext(bot, guild=guild, channel=thread, author=author)
 
     clan_row = ["", "Clan", "#DEF", "", "1"] + [""] * 40
+
+    class ReasonPlan:
+        sheet_row = 11
+        row = tuple(clan_row)
+        numeric_values = {"manual_open_spots": 1}
+        headers = type("Headers", (), {"header_map": {"clan_tag": 2}})()
+
+    monkeypatch.setattr(
+        reserve_module.availability,
+        "preflight_clan_availability_update",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=ReasonPlan()),
+    )
     monkeypatch.setattr(
         reserve_module.recruitment, "find_clan_row", lambda tag: (11, list(clan_row))
     )
@@ -751,6 +803,11 @@ def test_reserve_requires_reason(monkeypatch):
         reserve_module.availability,
         "recompute_clan_availability",
         lambda *args, **kwargs: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        reserve_module,
+        "_ensure_fresh_clans_for_reservations",
+        lambda **_: asyncio.sleep(0, result=True),
     )
 
     cog = _make_cog(bot)
@@ -2154,3 +2211,362 @@ def test_reservations_clan_listing_uses_configured_clan_tag_header_not_column_c(
 
     assert channel.sent, "expected clan reservation listing"
     assert "ticket W3021" in channel.sent[0].content
+
+
+def _forbidden_error() -> discord.Forbidden:
+    response = type("Response", (), {"status": 403, "reason": "Forbidden"})()
+    return discord.Forbidden(response, "Missing Manage Messages")
+
+
+def _not_found_error() -> discord.NotFound:
+    response = type("Response", (), {"status": 404, "reason": "Not Found"})()
+    return discord.NotFound(response, "Unknown Message")
+
+
+def _setup_successful_reserve(
+    monkeypatch, *, parent_id: int = 999, thread_name: str = "W0056-denbotron"
+):
+    _enable_feature(monkeypatch, enabled=True)
+    _setup_parents(monkeypatch, parent_id=parent_id)
+    _setup_permissions(monkeypatch, recruiter=True)
+    _setup_control_channels(monkeypatch)
+
+    recruit = FakeMember(222, "denbotron")
+    guild = FakeGuild([recruit])
+    thread = FakeThread(thread_id=555, parent_id=parent_id, name=thread_name)
+    author = FakeMember(111, "Recruiter")
+    date_message = FakeMessage("2026-06-13", author=author, channel=thread)
+    confirm_message = FakeMessage("yes", author=author, channel=thread)
+    bot = FakeBot([date_message, confirm_message])
+    ctx = FakeContext(bot, guild=guild, channel=thread, author=author)
+    ctx.message.content = f"!reserve C1C5 <@{recruit.id}>"
+
+    clan_row = ["", "Clan", "C1C5", "", "5"] + [""] * 40
+
+    class SuccessPlan:
+        sheet_row = 10
+        row = tuple(clan_row)
+        numeric_values = {"manual_open_spots": 5}
+        headers = type("Headers", (), {"header_map": {"clan_tag": 2}})()
+
+    monkeypatch.setattr(
+        reserve_module.availability,
+        "preflight_clan_availability_update",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=SuccessPlan()),
+    )
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (10, list(clan_row))
+    )
+
+    def fake_updated_row(tag):
+        updated = list(clan_row)
+        while len(updated) <= 33:
+            updated.append("")
+        updated[31] = "3"
+        updated[33] = "2"
+        return updated
+
+    monkeypatch.setattr(reserve_module.recruitment, "get_clan_by_tag", fake_updated_row)
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "count_active_reservations_for_clan",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=1),
+    )
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "find_active_reservations_for_recruit",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=[]),
+    )
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "append_reservation_row",
+        lambda *_args, **_kwargs: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        reserve_module.availability,
+        "recompute_clan_availability",
+        lambda *_args, **_kwargs: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        reserve_module,
+        "_ensure_fresh_clans_for_reservations",
+        lambda **_: asyncio.sleep(0, result=True),
+    )
+
+    return _make_cog(bot), ctx, thread, (date_message, confirm_message)
+
+
+def test_reserve_success_cleans_only_tracked_prompt_messages(monkeypatch, caplog):
+    cog, ctx, thread, (date_message, confirm_message) = _setup_successful_reserve(
+        monkeypatch
+    )
+    unrelated = FakeMessage("unrelated ticket note", author=ctx.author, channel=thread)
+
+    with caplog.at_level(logging.INFO, logger=reserve_module.log.name):
+        asyncio.run(cog.reserve.callback(cog, ctx, "C1C5", "<@222>"))
+
+    assert ctx.message.deleted is True
+    assert date_message.deleted is True
+    assert confirm_message.deleted is True
+    assert unrelated.deleted is False
+    prompt_messages = [
+        message
+        for message in thread.sent
+        if "Reserved 1 spot" not in (message.content or "")
+    ]
+    assert prompt_messages
+    assert all(message.deleted for message in prompt_messages)
+    final_messages = [
+        message
+        for message in thread.sent
+        if (message.content or "").startswith("✅ Reserved 1 spot")
+    ]
+    assert len(final_messages) == 1
+    assert final_messages[0].deleted is False
+    assert thread.edited_names == ["Res-W0056-denbotron-C1C5"]
+    cleanup_records = [
+        record
+        for record in caplog.records
+        if record.message == "reservation_prompt_cleanup"
+    ]
+    assert cleanup_records
+    assert getattr(cleanup_records[-1], "deleted_count") == 5
+    assert getattr(cleanup_records[-1], "failed_count") == 0
+    assert getattr(cleanup_records[-1], "result") == "ok"
+
+
+def test_reserve_failure_does_not_cleanup_prompt_messages(monkeypatch):
+    _enable_feature(monkeypatch, enabled=True)
+    _setup_parents(monkeypatch, parent_id=1000)
+    _setup_permissions(monkeypatch, recruiter=True)
+    _setup_control_channels(monkeypatch)
+
+    recruit = FakeMember(3000, "Duplicate User")
+    guild = FakeGuild([recruit])
+    thread = FakeThread(thread_id=2000, parent_id=1000, name="W0500-Duplicate")
+    author = FakeMember(3001)
+    date_message = FakeMessage("2026-12-01", author=author, channel=thread)
+    confirm_message = FakeMessage("yes", author=author, channel=thread)
+    bot = FakeBot([date_message, confirm_message])
+    ctx = FakeContext(bot, guild=guild, channel=thread, author=author)
+
+    clan_row = ["", "Clan", "ZZZ", "", "5"] + [""] * 40
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (12, list(clan_row))
+    )
+    monkeypatch.setattr(
+        reserve_module.recruitment, "get_clan_by_tag", lambda tag: clan_row
+    )
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "count_active_reservations_for_clan",
+        lambda *_: asyncio.sleep(0, result=0),
+    )
+    existing_row = _reservation_row(
+        99,
+        clan_tag="OLD",
+        reserved_until=dt.date(2026, 12, 30),
+        thread_id=5555,
+        ticket_user_id=recruit.id,
+    )
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "find_active_reservations_for_recruit",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=[existing_row]),
+    )
+    monkeypatch.setattr(
+        reserve_module,
+        "_resolve_thread",
+        lambda *_args, **_kwargs: asyncio.sleep(
+            0, result=FakeThread(5555, parent_id=1000, name="Res-W0499-Other-C1CM")
+        ),
+    )
+
+    cog = _make_cog(bot)
+    asyncio.run(cog.reserve.callback(cog, ctx, "ZZZ", f"<@{recruit.id}>"))
+
+    assert ctx.message.deleted is False
+    assert date_message.deleted is False
+    assert confirm_message.deleted is False
+    assert all(not message.deleted for message in thread.sent)
+
+
+def test_reserve_cancel_does_not_delete_unrelated_messages(monkeypatch):
+    _enable_feature(monkeypatch, enabled=True)
+    _setup_parents(monkeypatch, parent_id=999)
+    _setup_permissions(monkeypatch, recruiter=True)
+    _setup_control_channels(monkeypatch)
+
+    recruit = FakeMember(222, "Recruit")
+    guild = FakeGuild([recruit])
+    thread = FakeThread(thread_id=555, parent_id=999, name="W0001-Recruit")
+    author = FakeMember(111, "Recruiter")
+    cancel_message = FakeMessage("cancel", author=author, channel=thread)
+    unrelated = FakeMessage("do not delete", author=author, channel=thread)
+    bot = FakeBot([cancel_message])
+    ctx = FakeContext(bot, guild=guild, channel=thread, author=author)
+    clan_row = ["", "Clan", "ABC", "", "3"] + [""] * 40
+    monkeypatch.setattr(
+        reserve_module.recruitment, "find_clan_row", lambda tag: (10, list(clan_row))
+    )
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "count_active_reservations_for_clan",
+        lambda *_: asyncio.sleep(0, result=0),
+    )
+
+    cog = _make_cog(bot)
+    asyncio.run(cog.reserve.callback(cog, ctx, "ABC", f"<@{recruit.id}>"))
+
+    assert unrelated.deleted is False
+    assert ctx.message.deleted is False
+    assert cancel_message.deleted is False
+
+
+def test_reserve_cleanup_missing_manage_messages_logs_and_keeps_reservation(
+    monkeypatch, caplog
+):
+    cog, ctx, thread, (date_message, confirm_message) = _setup_successful_reserve(
+        monkeypatch
+    )
+    error = _forbidden_error()
+    ctx.message.delete_error = error
+    date_message.delete_error = error
+    confirm_message.delete_error = error
+    thread.delete_error_for_sent = error
+
+    with caplog.at_level(logging.INFO, logger=reserve_module.log.name):
+        asyncio.run(cog.reserve.callback(cog, ctx, "C1C5", "<@222>"))
+
+    assert any(
+        (message.content or "").startswith("✅ Reserved 1 spot")
+        for message in thread.sent
+    )
+    cleanup_records = [
+        record
+        for record in caplog.records
+        if record.message == "reservation_prompt_cleanup"
+    ]
+    assert cleanup_records
+    assert getattr(cleanup_records[-1], "failed_count") == 5
+    assert getattr(cleanup_records[-1], "result") == "partial_failure"
+
+
+def test_reserve_cleanup_ignores_already_deleted_messages(monkeypatch, caplog):
+    cog, ctx, _thread, (date_message, _confirm_message) = _setup_successful_reserve(
+        monkeypatch
+    )
+    date_message.delete_error = _not_found_error()
+
+    with caplog.at_level(logging.INFO, logger=reserve_module.log.name):
+        asyncio.run(cog.reserve.callback(cog, ctx, "C1C5", "<@222>"))
+
+    cleanup_records = [
+        record
+        for record in caplog.records
+        if record.message == "reservation_prompt_cleanup"
+    ]
+    assert cleanup_records
+    assert getattr(cleanup_records[-1], "failed_count") == 0
+    assert getattr(cleanup_records[-1], "result") == "ok"
+
+
+def test_reserve_change_flow_cleans_full_completed_chain(monkeypatch):
+    _enable_feature(monkeypatch, enabled=True)
+    _setup_parents(monkeypatch, parent_id=999)
+    _setup_permissions(monkeypatch, recruiter=True)
+    _setup_control_channels(monkeypatch)
+
+    recruit = FakeMember(222, "Change Recruit")
+    guild = FakeGuild([recruit])
+    thread = FakeThread(thread_id=555, parent_id=999, name="W0057-ChangeRecruit")
+    author = FakeMember(111, "Recruiter")
+    date_message = FakeMessage("2026-06-13", author=author, channel=thread)
+    change_message = FakeMessage("change", author=author, channel=thread)
+    change_choice_message = FakeMessage("date", author=author, channel=thread)
+    changed_date_message = FakeMessage("2026-06-14", author=author, channel=thread)
+    confirm_message = FakeMessage("yes", author=author, channel=thread)
+    bot = FakeBot(
+        [
+            date_message,
+            change_message,
+            change_choice_message,
+            changed_date_message,
+            confirm_message,
+        ]
+    )
+    ctx = FakeContext(bot, guild=guild, channel=thread, author=author)
+    ctx.message.content = f"!reserve C1C5 <@{recruit.id}>"
+
+    clan_row = ["", "Clan", "C1C5", "", "5"] + [""] * 40
+
+    class SuccessPlan:
+        sheet_row = 10
+        row = tuple(clan_row)
+        numeric_values = {"manual_open_spots": 5}
+        headers = type("Headers", (), {"header_map": {"clan_tag": 2}})()
+
+    monkeypatch.setattr(
+        reserve_module.availability,
+        "preflight_clan_availability_update",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=SuccessPlan()),
+    )
+    monkeypatch.setattr(
+        reserve_module.recruitment, "get_clan_by_tag", lambda _tag: clan_row
+    )
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "count_active_reservations_for_clan",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=0),
+    )
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "find_active_reservations_for_recruit",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=[]),
+    )
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "append_reservation_row",
+        lambda *_args, **_kwargs: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        reserve_module.availability,
+        "recompute_clan_availability",
+        lambda *_args, **_kwargs: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        reserve_module,
+        "_ensure_fresh_clans_for_reservations",
+        lambda **_: asyncio.sleep(0, result=True),
+    )
+
+    cog = _make_cog(bot)
+    asyncio.run(cog.reserve.callback(cog, ctx, "C1C5", f"<@{recruit.id}>"))
+
+    assert ctx.message.deleted is True
+    assert date_message.deleted is True
+    assert change_message.deleted is True
+    assert change_choice_message.deleted is True
+    assert changed_date_message.deleted is True
+    assert confirm_message.deleted is True
+    assert all(
+        message.deleted
+        for message in thread.sent
+        if not (message.content or "").startswith("✅ Reserved 1 spot")
+    )
+    assert any("2026-06-14" in (message.content or "") for message in thread.sent)
+
+
+def test_reserve_cleanup_works_for_promo_parent(monkeypatch):
+    cog, ctx, thread, (date_message, confirm_message) = _setup_successful_reserve(
+        monkeypatch, parent_id=4242, thread_name="M1234-denbotron"
+    )
+    monkeypatch.setattr(reserve_module, "get_welcome_channel_id", lambda: None)
+    monkeypatch.setattr(reserve_module, "get_promo_channel_id", lambda: 4242)
+
+    asyncio.run(cog.reserve.callback(cog, ctx, "C1C5", "<@222>"))
+
+    assert ctx.message.deleted is True
+    assert date_message.deleted is True
+    assert confirm_message.deleted is True
+    assert any(name == "Res-M1234-denbotron-C1C5" for name in thread.edited_names)
