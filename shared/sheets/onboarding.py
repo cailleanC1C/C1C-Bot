@@ -69,6 +69,65 @@ PROMO_SOURCE_CLAN_TAG_HEADER_CONFIG_KEY = "PROMO_SOURCE_CLAN_TAG_HEADER"
 _PROMO_SOURCE_CLAN_TAG_HEADER_DEFAULT_SLOT = 3
 
 
+_FINALIZATION_CONFIG_KEYS: Dict[str, Dict[str, str]] = {
+    "welcome": {
+        "finalization_status": "WELCOME_FINALIZATION_STATUS_HEADER",
+        "reservation_status": "WELCOME_RESERVATION_STATUS_HEADER",
+        "clan_update_status": "WELCOME_CLAN_UPDATE_STATUS_HEADER",
+        "finalization_note": "WELCOME_FINALIZATION_NOTE_HEADER",
+    },
+    "promo": {
+        "finalization_status": "PROMO_FINALIZATION_STATUS_HEADER",
+        "reservation_status": "PROMO_RESERVATION_STATUS_HEADER",
+        "clan_update_status": "PROMO_CLAN_UPDATE_STATUS_HEADER",
+        "finalization_note": "PROMO_FINALIZATION_NOTE_HEADER",
+    },
+}
+
+
+def _required_config_header(key: str) -> str:
+    header = _config_lookup(key)
+    cleaned = str(header or "").strip()
+    if not cleaned:
+        raise RuntimeError(f"Onboarding Config missing {key}")
+    return cleaned
+
+
+def get_finalization_headers(flow: str, *, force: bool = False) -> Dict[str, str]:
+    """Return Config-resolved finalization state headers for Welcome/Promo."""
+
+    normalized = (flow or "").strip().lower()
+    if normalized not in _FINALIZATION_CONFIG_KEYS:
+        raise ValueError(f"unknown onboarding finalization flow: {flow!r}")
+    if force:
+        _load_config(force=True)
+    return {field: _required_config_header(key) for field, key in _FINALIZATION_CONFIG_KEYS[normalized].items()}
+
+
+def require_finalization_headers(flow: str, headers: Sequence[str]) -> Dict[str, str]:
+    """Validate that the sheet contains all Config-resolved finalization columns."""
+
+    resolved = get_finalization_headers(flow)
+    normalized_headers = {_normalize_header_name(header) for header in headers}
+    missing = [
+        f"{_FINALIZATION_CONFIG_KEYS[(flow or '').strip().lower()][field]}={header!r}"
+        for field, header in resolved.items()
+        if _normalize_header_name(header) not in normalized_headers
+    ]
+    if missing:
+        raise RuntimeError(
+            f"{flow.title()} sheet missing configured finalization header(s): " + ", ".join(missing)
+        )
+    return resolved
+
+
+def get_welcome_headers(*, force: bool = False) -> List[str]:
+    """Return Welcome headers with finalization columns resolved from Config."""
+
+    final_headers = get_finalization_headers("welcome", force=force)
+    return [*WELCOME_HEADERS, *final_headers.values()]
+
+
 def get_promo_source_clan_tag_header(*, force: bool = False) -> str:
     """Return the Config-driven Promo source clan header.
 
@@ -88,13 +147,14 @@ def get_promo_source_clan_tag_header(*, force: bool = False) -> str:
 
 
 def get_promo_headers(*, force: bool = False) -> List[str]:
-    """Return Promo headers with the source-clan column resolved from Config."""
+    """Return Promo headers with Config-resolved source/finalization columns."""
 
     headers = list(PROMO_HEADERS)
     headers[_PROMO_SOURCE_CLAN_TAG_HEADER_DEFAULT_SLOT] = (
         get_promo_source_clan_tag_header(force=force)
     )
-    return headers
+    final_headers = get_finalization_headers("promo", force=force)
+    return [*headers, *final_headers.values()]
 
 
 def require_promo_source_clan_header(headers: Sequence[str]) -> str:
@@ -108,6 +168,7 @@ def require_promo_source_clan_header(headers: Sequence[str]) -> str:
             "Promo sheet/header mapping missing configured source clan header "
             f"{PROMO_SOURCE_CLAN_TAG_HEADER_CONFIG_KEY}={source_header!r}"
         )
+    require_finalization_headers("promo", headers)
     return source_header
 
 WELCOME_TICKET_INDEX = 0
@@ -387,7 +448,7 @@ def _looks_like_ticket(value: str) -> bool:
 
 
 def repair_welcome_rows(ws) -> dict[str, int]:
-    header = _ensure_headers(ws, WELCOME_HEADERS)
+    header = _ensure_headers(ws, get_welcome_headers())
     norm = [_normalize_header_name(col) for col in header]
     idx = {name: pos for pos, name in enumerate(norm)}
     required = {"ticketnumber", "username"}
@@ -697,7 +758,7 @@ def append_welcome_ticket_row(
 ) -> str:
     sheet_id, tab = _resolve_onboarding_and_welcome_tab()
     ws = core.get_worksheet(sheet_id, tab)
-    header = _ensure_headers(ws, WELCOME_HEADERS)
+    header = _ensure_headers(ws, get_welcome_headers())
     run_welcome_ticket_repair_pass(min_interval_sec=3600)
     normalized_header = [_normalize_header_name(col) for col in header]
     ticket_value = _fmt_ticket(ticket)
@@ -767,6 +828,16 @@ def append_welcome_ticket_row(
         "createdat": created.isoformat(),
         "updatedat": updated.isoformat(),
     }
+    try:
+        final_headers = require_finalization_headers("welcome", header)
+    except Exception:
+        log.exception("welcome finalization header mapping unavailable; refusing welcome row write", extra={"ticket": ticket_value})
+        raise
+    existing_map = _row_map(header, existing_match or []) if existing_match else {}
+    value_map[_normalize_header_name(final_headers["finalization_status"])] = existing_map.get(final_headers["finalization_status"], "") or "pending"
+    value_map[_normalize_header_name(final_headers["reservation_status"])] = existing_map.get(final_headers["reservation_status"], "") or ("pending" if clan_text else "none")
+    value_map[_normalize_header_name(final_headers["clan_update_status"])] = existing_map.get(final_headers["clan_update_status"], "") or "pending"
+    value_map[_normalize_header_name(final_headers["finalization_note"])] = existing_map.get(final_headers["finalization_note"], "")
 
     row_values = _build_ticket_row(header, value_map)
     key_columns, search_values = _ticket_key_columns(header, ticket_value, thread_id)
@@ -822,7 +893,7 @@ def find_welcome_row_by_thread_id(
     """Return the Welcome row matching ``thread_id`` if present."""
 
     return _find_row_by_thread_id(
-        tab=_welcome_tab(), headers=WELCOME_HEADERS, thread_id=thread_id
+        tab=_welcome_tab(), headers=get_welcome_headers(), thread_id=thread_id
     )
 
 
@@ -832,7 +903,7 @@ def find_promo_row_by_thread_id(
     """Return the Promo row matching ``thread_id`` if present."""
 
     result = _find_row_by_thread_id(
-        tab=_promo_tab(), headers=PROMO_HEADERS, thread_id=thread_id
+        tab=_promo_tab(), headers=get_promo_headers(), thread_id=thread_id
     )
     if result is not None:
         require_promo_source_clan_header(list(result[1].keys()))
@@ -845,7 +916,7 @@ def find_welcome_row(ticket: str | None) -> Optional[Tuple[int, List[str]]]:
         return None
 
     ws = _worksheet(_welcome_tab())
-    header = _ensure_headers(ws, WELCOME_HEADERS)
+    header = _ensure_headers(ws, get_welcome_headers())
     ticket_col = _column_index(header, "ticket_number")
     target = _fmt_ticket(ticket)
 
@@ -861,14 +932,31 @@ def upsert_promo(
     row_values: Sequence[str],
     headers: Sequence[str],
 ) -> str:
-    """Insert or update a promo ticket row based on its ticket number."""
+    """Insert or update a promo ticket row based on its ticket number.
+
+    Existing metadata/finalization columns are preserved when older callers pass
+    the core Promo values only. Finalization updates should use
+    :func:`update_ticket_finalization_state`.
+    """
 
     resolved_headers = list(headers or get_promo_headers())
     require_promo_source_clan_header(resolved_headers)
     ws = _worksheet(_promo_tab())
-    _ensure_promo_headers(ws)
+    actual_headers = _ensure_promo_headers(ws)
+    final_headers = require_finalization_headers("promo", actual_headers)
+    incoming = list(row_values)
+    ticket_idx = _column_index(resolved_headers, "ticket number")
+    ticket_value = incoming[ticket_idx] if ticket_idx < len(incoming) else ""
+    existing = find_promo_row(ticket_value) if ticket_value else None
+    existing_map = existing[1] if existing else {}
+    if len(incoming) < len(resolved_headers):
+        incoming.extend("" for _ in range(len(resolved_headers) - len(incoming)))
+    for field, header in final_headers.items():
+        col = _column_index(resolved_headers, header, default=-1)
+        if col >= 0 and not str(incoming[col] or "").strip():
+            incoming[col] = existing_map.get(header, "") or ("pending" if field != "finalization_note" else "")
     keys = [("ticket number", _fmt_ticket)]
-    return _upsert(ws, keys, row_values, resolved_headers)
+    return _upsert(ws, keys, incoming, resolved_headers)
 
 
 def append_promo_ticket_row(
@@ -924,6 +1012,11 @@ def append_promo_ticket_row(
         "createdat": created.isoformat(),
         "updatedat": updated.isoformat(),
     }
+    final_headers = require_finalization_headers("promo", header)
+    value_map[_normalize_header_name(final_headers["finalization_status"])] = "pending"
+    value_map[_normalize_header_name(final_headers["reservation_status"])] = "pending" if clan_tag else "none"
+    value_map[_normalize_header_name(final_headers["clan_update_status"])] = "pending"
+    value_map[_normalize_header_name(final_headers["finalization_note"])] = ""
 
     row_values = _build_ticket_row(header, value_map)
     key_columns, search_values = _ticket_key_columns(header, ticket_value, thread_id)
@@ -1008,6 +1101,93 @@ def find_promo_row(ticket: str | None) -> Optional[Tuple[int, Dict[str, str]]]:
             return row_idx, mapped
     return None
 
+
+def get_ticket_finalization_state(flow: str, row_values: Dict[str, str] | Sequence[str]) -> Dict[str, str]:
+    headers = get_finalization_headers(flow)
+    if isinstance(row_values, dict):
+        return {field: str(row_values.get(header, "") or "").strip() for field, header in headers.items()}
+    base_headers = get_welcome_headers() if flow == "welcome" else get_promo_headers()
+    row_map = _row_map(base_headers, row_values)
+    require_finalization_headers(flow, base_headers)
+    return {field: str(row_map.get(header, "") or "").strip() for field, header in headers.items()}
+
+
+def update_ticket_finalization_state(
+    flow: str,
+    *,
+    ticket: str | None = None,
+    thread_id: int | str | None = None,
+    finalization_status: str | None = None,
+    reservation_status: str | None = None,
+    clan_update_status: str | None = None,
+    finalization_note: str | None = None,
+) -> str:
+    """Patch only the finalization state columns for a Welcome/Promo row."""
+
+    normalized = (flow or "").strip().lower()
+    if normalized == "welcome":
+        sheet_id, tab = _resolve_onboarding_and_welcome_tab()
+        desired_headers = get_welcome_headers()
+        ticket_header = "ticket_number"
+    elif normalized == "promo":
+        sheet_id, tab = _resolve_onboarding_and_promo_tab()
+        desired_headers = get_promo_headers()
+        ticket_header = "ticket number"
+    else:
+        raise ValueError(f"unknown onboarding finalization flow: {flow!r}")
+
+    ws = core.get_worksheet(sheet_id, tab)
+    header = _ensure_promo_headers(ws) if normalized == "promo" else _ensure_headers(ws, desired_headers)
+    final_headers = require_finalization_headers(normalized, header)
+    values = core.call_with_backoff(ws.get_all_values)
+    ticket_col = _column_index(header, ticket_header)
+    thread_col = next((idx for idx, name in enumerate(_normalize_header_name(h) for h in header) if name in {"threadid", "thread"}), -1)
+    target_ticket = _fmt_ticket(ticket) if ticket else ""
+    target_thread = str(thread_id or "").strip()
+    row_number = None
+    row = None
+    for idx, current in enumerate(values[1:], start=2):
+        ticket_match = bool(target_ticket) and ticket_col < len(current) and _fmt_ticket(current[ticket_col]) == target_ticket
+        thread_match = bool(target_thread) and thread_col >= 0 and thread_col < len(current) and str(current[thread_col] or "").strip() == target_thread
+        if ticket_match or thread_match:
+            row_number = idx
+            row = list(current)
+            break
+    if row_number is None or row is None:
+        raise RuntimeError(f"{normalized} finalization row not found for ticket={ticket or '-'} thread_id={thread_id or '-'}")
+    if len(row) < len(header):
+        row.extend("" for _ in range(len(header) - len(row)))
+    updates = {
+        "finalization_status": finalization_status,
+        "reservation_status": reservation_status,
+        "clan_update_status": clan_update_status,
+        "finalization_note": finalization_note,
+    }
+    for field, value in updates.items():
+        if value is None:
+            continue
+        col = _column_index(header, final_headers[field], default=-1)
+        if col < 0:
+            raise RuntimeError(f"{normalized} finalization header missing for {field}: {final_headers[field]!r}")
+        row[col] = str(value)
+    end_col = _col_to_a1(len(header) - 1)
+    core.call_with_backoff(ws.update, f"A{row_number}:{end_col}{row_number}", [row[: len(header)]])
+    return "updated"
+
+
+def list_ticket_rows_for_finalization_backfill(flow: str) -> List[Tuple[int, Dict[str, str]]]:
+    normalized = (flow or "").strip().lower()
+    if normalized == "welcome":
+        ws = _worksheet(_welcome_tab())
+        header = _ensure_headers(ws, get_welcome_headers())
+    elif normalized == "promo":
+        ws = _worksheet(_promo_tab())
+        header = _ensure_promo_headers(ws)
+    else:
+        raise ValueError(f"unknown onboarding finalization flow: {flow!r}")
+    require_finalization_headers(normalized, header)
+    values = core.call_with_backoff(ws.get_all_values)
+    return [(row_idx, _row_map(header, row)) for row_idx, row in enumerate(values[1:], start=2)]
 
 def dedupe() -> Dict[str, int]:
     """Remove duplicate rows from welcome and promo sheets."""
