@@ -1522,7 +1522,15 @@ class PromoTicketWatcher(commands.Cog):
                     thread = None
             ticket = values.get("ticket number") or values.get("ticket_number") or values.get("ticket")
             player = values.get("username") or "unknown"
+            sheet_closed = status == "closed"
+            thread_closed = bool(thread is not None and _is_closed_thread(thread))
             if thread is None:
+                if not sheet_closed:
+                    log.info(
+                        "close_backfill_skip_open_unfetchable",
+                        extra={"flow": "promo", "thread_id": thread_id, "ticket": ticket, "status": status or "-"},
+                    )
+                    continue
                 summary["unresolved"] += 1
                 try:
                     await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "promo", ticket=ticket, thread_id=thread_id, finalization_status="skipped_unresolved", finalization_note="context unresolved during startup/backfill")
@@ -1531,11 +1539,19 @@ class PromoTicketWatcher(commands.Cog):
                 log.warning("close_context_unresolved", extra={"flow": "promo", "trigger": "startup_backfill", "thread_id": thread_id, "ticket": ticket})
                 await _send_placement_log_line(flow="promo", outcome="unresolved", ticket=ticket, player=player, trigger="startup_backfill", reason="context_not_found", action="skipped", thread=values.get("thread_name"))
                 continue
-            if status != "closed" and not _is_closed_thread(thread):
+            if not sheet_closed and not thread_closed:
+                log.debug(
+                    "close_backfill_skip_open_thread",
+                    extra={"flow": "promo", "thread_id": thread_id, "ticket": ticket, "status": status or "-"},
+                )
                 continue
             context = await self._ensure_context(thread)
             if context is None:
                 summary["unresolved"] += 1
+                try:
+                    await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "promo", ticket=ticket, thread_id=thread_id, finalization_status="skipped_unresolved", finalization_note="context unresolved during startup/backfill")
+                except Exception:
+                    summary["error"] += 1
                 await _send_placement_log_line(flow="promo", outcome="unresolved", ticket=ticket, player=player, trigger="startup_backfill", reason="context_not_found", action="skipped", thread=getattr(thread, "name", None))
                 continue
             try:
