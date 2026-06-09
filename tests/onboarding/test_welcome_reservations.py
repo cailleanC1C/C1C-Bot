@@ -1888,6 +1888,54 @@ def test_rename_thread_to_reserved_promo_ticket_success() -> None:
     assert thread.renames == ["Res-M0351-Debido-C1CK"]
 
 
+def test_rename_thread_to_reserved_preserves_discord_accepted_username() -> None:
+    thread = _RenameThread("M0363-[C1C] SoulAnon")
+
+    async def runner() -> None:
+        await rename_thread_to_reserved(thread, "C1CM")
+
+    asyncio.run(runner())
+
+    assert thread.name == "Res-M0363-[C1C] SoulAnon-C1CM"
+    assert thread.renames == ["Res-M0363-[C1C] SoulAnon-C1CM"]
+
+
+def test_rename_thread_to_reserved_truncates_only_when_discord_limit_requires(
+    monkeypatch, caplog
+) -> None:
+    username = "[C1C] " + "SoulAnon" * 20
+    original_target_name = f"Res-M0363-{username}-C1CM"
+    thread = _RenameThread(f"M0363-{username}")
+    human_calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.human_log",
+        SimpleNamespace(
+            human=lambda level, message: human_calls.append((level, message))
+        ),
+    )
+    caplog.set_level(logging.WARNING, logger="c1c.onboarding.welcome_watcher")
+
+    async def runner() -> None:
+        await rename_thread_to_reserved(thread, "C1CM")
+
+    asyncio.run(runner())
+
+    assert len(thread.name) == 100
+    assert thread.name.startswith("Res-M0363-[C1C] SoulAnon")
+    assert thread.name.endswith("-C1CM")
+    assert " " in thread.name
+    assert "[C1C]" in thread.name
+    assert any(
+        record.getMessage() == "reservation_thread_name_truncated"
+        and getattr(record, "original_target_name", None) == original_target_name
+        and getattr(record, "truncated_target_name", None) == thread.name
+        for record in caplog.records
+    )
+    assert human_calls
+    assert human_calls[0][0] == "warning"
+    assert "reservation_thread_name_truncated" in human_calls[0][1]
+
 def test_rename_thread_to_reserved_updates_existing_reserved_clan() -> None:
     thread = _RenameThread("Res-M0351-Debido-C1CD")
 

@@ -82,6 +82,7 @@ _PROMO_TYPE_MAP = {
     "M": "player move request",
     "L": "clan lead move request",
 }
+_DISCORD_THREAD_NAME_LIMIT = 100
 
 
 async def _ensure_fresh_clans_for_placement(
@@ -383,6 +384,21 @@ async def resolve_subject_user_id(
 def build_reserved_thread_name(ticket_code: str, username: str, clan_tag: str) -> str:
     tag = (clan_tag or "").strip().upper()
     return f"Res-{ticket_code}-{username}-{tag}".strip("-")
+
+
+def _truncate_reserved_thread_name(
+    ticket_code: str, username: str, clan_tag: str
+) -> tuple[str, str | None]:
+    original_name = build_reserved_thread_name(ticket_code, username, clan_tag)
+    if len(original_name) <= _DISCORD_THREAD_NAME_LIMIT:
+        return original_name, None
+
+    tag = (clan_tag or "").strip().upper()
+    prefix = f"Res-{ticket_code}-"
+    suffix = f"-{tag}" if tag else ""
+    max_username_length = max(0, _DISCORD_THREAD_NAME_LIMIT - len(prefix) - len(suffix))
+    truncated_name = f"{prefix}{username[:max_username_length]}{suffix}"
+    return truncated_name, original_name
 
 
 def build_closed_thread_name(ticket_code: str, username: str, clan_tag: str) -> str:
@@ -1411,31 +1427,49 @@ async def _process_promo_thread(
 
 
 def _parse_reservable_ticket_thread_name(name: str | None) -> Optional[ThreadNameParts]:
-    """Parse welcome or promo ticket thread names for reservation renames."""
-
-    parts = parse_welcome_thread_name(name)
-    if parts is not None:
-        return parts
+    """Parse ticket thread names for reservation renames without rewriting usernames."""
 
     normalized = (name or "").strip()
-    prefix_match = re.match(
-        r"^(?P<prefix>res|closed)[-_\s]+", normalized, re.IGNORECASE
-    )
-    state_prefix = prefix_match.group("prefix") if prefix_match else None
-    promo_name = normalized[prefix_match.end() :] if prefix_match else normalized
-    promo_parts = parse_promo_thread_name(promo_name)
-    if promo_parts is None:
+    if not normalized:
         return None
-    username = promo_parts.username
-    clan_tag = promo_parts.clan_tag
-    if state_prefix and clan_tag is None:
-        username_parts = re.split(r"[-_\s]+", username)
-        possible_tag = username_parts[-1] if len(username_parts) > 1 else ""
-        if re.fullmatch(r"[A-Z0-9]+", possible_tag or ""):
-            clan_tag = possible_tag
-            username = "-".join(part for part in username_parts[:-1] if part)
+
+    state_prefix: str | None = None
+    ticket_name = normalized
+    prefix_match = re.match(r"^(?P<prefix>res|closed)-", normalized, re.IGNORECASE)
+    if prefix_match:
+        state_prefix = prefix_match.group("prefix")
+        ticket_name = normalized[prefix_match.end() :].strip()
+
+    ticket_id, separator, remainder = ticket_name.partition("-")
+    if not separator:
+        return None
+
+    ticket_id = ticket_id.strip()
+    username = remainder.strip()
+    if not ticket_id or not username:
+        return None
+
+    if ticket_id[:1].upper() in _PROMO_TYPE_MAP:
+        valid_ticket = _normalize_promo_ticket(ticket_id)
+    else:
+        valid_ticket = _normalize_ticket_code(ticket_id)
+    if not valid_ticket:
+        return None
+
+    clan_tag = None
+    if state_prefix:
+        username_value, tag_separator, possible_tag = username.rpartition("-")
+        if tag_separator:
+            possible_tag = possible_tag.strip()
+            if re.fullmatch(r"[A-Za-z0-9]+", possible_tag or ""):
+                clan_tag = possible_tag
+                username = username_value.strip()
+
+    if not username:
+        return None
+
     return ThreadNameParts(
-        ticket_code=promo_parts.ticket_code,
+        ticket_code=ticket_id,
         username=username,
         prefix=state_prefix,
         clan_tag=clan_tag,
@@ -1477,9 +1511,27 @@ async def rename_thread_to_reserved(thread: discord.Thread, clan_tag: str) -> bo
         )
         return False
 
-    new_name = build_reserved_thread_name(
+    new_name, original_target_name = _truncate_reserved_thread_name(
         parts.ticket_code, parts.username, normalized_tag
     )
+    if original_target_name is not None:
+        log.warning(
+            "reservation_thread_name_truncated",
+            extra={
+                "original_target_name": original_target_name,
+                "truncated_target_name": new_name,
+                "thread_id": getattr(thread, "id", None),
+                "ticket": parts.ticket_code,
+            },
+        )
+        human_log.human(
+            "warning",
+            (
+                "⚠️ reservation_thread_name_truncated "
+                f"• original_target_name={original_target_name} "
+                f"• truncated_target_name={new_name}"
+            ),
+        )
     if getattr(thread, "name", None) == new_name:
         log.info(
             "✅ welcome_reserve_rename — ticket=%s • user=%s • tag=%s • result=already_reserved",
