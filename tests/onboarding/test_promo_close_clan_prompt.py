@@ -27,6 +27,10 @@ def _promo_source_header_config(monkeypatch):
         "shared.sheets.onboarding.update_ticket_finalization_state",
         lambda *_args, **_kwargs: "updated",
     )
+    monkeypatch.setattr(
+        "shared.sheets.onboarding.find_promo_row",
+        lambda *_args, **_kwargs: (2, {"clantag": "", "source_clan_tag": "NONE", "finalization_status": "pending"}),
+    )
 
     async def no_reservations(*_args, **_kwargs):
         return []

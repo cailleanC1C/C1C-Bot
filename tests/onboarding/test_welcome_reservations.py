@@ -18,16 +18,30 @@ from modules.onboarding.watcher_welcome import (
     _clan_math_column_indices,
 )
 from shared.sheets import reservations as reservations_sheets
+from shared.sheets import onboarding as onboarding_sheets
 
 
 @pytest.fixture(autouse=True)
 def _stub_find_welcome_row(monkeypatch):
-    def _fake_find_welcome_row(_ticket):  # type: ignore[no-untyped-def]
-        return None
+    config = {
+        "welcome_finalization_status_header": "finalization_status",
+        "welcome_reservation_status_header": "reservation_status",
+        "welcome_clan_update_status_header": "clan_update_status",
+        "welcome_finalization_note_header": "finalization_note",
+    }
+    monkeypatch.setattr(onboarding_sheets, "_CONFIG_CACHE", config)
+    monkeypatch.setattr(onboarding_sheets, "_CONFIG_CACHE_TS", 9999999999.0)
+
+    def _fake_find_welcome_row(ticket):  # type: ignore[no-untyped-def]
+        return 2, [ticket or "W0000", "Tester", "", "", "", "", "123", "", "open", "", "", "", "pending", "pending", "pending", ""]
 
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.onboarding_sheets.find_welcome_row",
         _fake_find_welcome_row,
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.onboarding_sheets.update_ticket_finalization_state",
+        lambda *_args, **_kwargs: "updated",
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome._ensure_fresh_clans_for_placement",

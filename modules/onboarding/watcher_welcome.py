@@ -4275,7 +4275,10 @@ class WelcomeTicketWatcher(commands.Cog):
 
         try:
             existing_for_state = await asyncio.to_thread(onboarding_sheets.find_welcome_row, context.ticket_number)
-            if existing_for_state and (_finalization_state_from_welcome_row(existing_for_state[1]).get("finalization_status") or "").lower() == "done":
+            if not existing_for_state:
+                raise RuntimeError(f"welcome finalization row not found for ticket={context.ticket_number}")
+            finalization_state = onboarding_sheets.get_ticket_finalization_state("welcome", existing_for_state[1])
+            if (finalization_state.get("finalization_status") or "").lower() == "done":
                 log.info("close_already_finalized", extra={"flow": "welcome", "trigger": source, "thread_id": getattr(thread, "id", None), "ticket": context.ticket_number})
                 await _send_placement_log_line(flow="welcome", outcome="already_done", ticket=context.ticket_number, player=context.username, destination=final_tag, trigger=source, action="skipped")
                 context.state = "closed"
@@ -4283,6 +4286,12 @@ class WelcomeTicketWatcher(commands.Cog):
             await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "welcome", ticket=context.ticket_number, thread_id=getattr(thread, "id", None), finalization_status="in_progress", finalization_note=f"finalization started by {source}")
         except Exception:
             log.exception("welcome finalization state preflight failed", extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)})
+            try:
+                await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "welcome", ticket=context.ticket_number, thread_id=getattr(thread, "id", None), finalization_status="failed", finalization_note="finalization state preflight failed")
+            except Exception:
+                log.exception("welcome finalization state failed marker update failed", extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)})
+            await _send_placement_log_line(flow="welcome", outcome="failed", ticket=context.ticket_number, reason="finalization_state_preflight_failed", action="manual_check")
+            return
         log.info("close_finalization_started", extra={"flow": "welcome", "trigger": source, "thread_id": getattr(thread, "id", None), "ticket": context.ticket_number})
 
         previous_final = ""

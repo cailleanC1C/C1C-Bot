@@ -43,6 +43,7 @@ def _finalization_and_cache_mocks(monkeypatch):
 
     monkeypatch.setattr("modules.onboarding.watcher_promo.reservations_sheets.find_active_reservations_for_recruit", no_reservations)
     monkeypatch.setattr("modules.onboarding.watcher_welcome.availability.preflight_clan_availability_update", preflight_ok)
+    monkeypatch.setattr('modules.onboarding.watcher_promo.recruitment_sheets.get_clan_header_map', lambda: {'open_spots':4})
     monkeypatch.setattr("modules.onboarding.watcher_welcome.onboarding_sheets.update_ticket_finalization_state", state_update)
     monkeypatch.setattr("modules.onboarding.watcher_promo.onboarding_sheets.update_ticket_finalization_state", state_update)
 
@@ -102,7 +103,7 @@ def test_welcome_first_time_applies_delta(monkeypatch):
         logs = []
         deltas = []
         monkeypatch.setattr('modules.onboarding.watcher_welcome.log_sheet_write', lambda **kwargs: asyncio.sleep(0, result='updated'))
-        monkeypatch.setattr('modules.onboarding.watcher_welcome.onboarding_sheets.find_welcome_row', lambda _t: None)
+        monkeypatch.setattr('modules.onboarding.watcher_welcome.onboarding_sheets.find_welcome_row', lambda _t: (2, ['W0','u','','','','','1','','open','','','','pending','pending','pending','']))
         monkeypatch.setattr('modules.onboarding.watcher_welcome.recruitment_sheets.find_clan_row', lambda tag: (10, ['','','C1CE','','4'] + ['']*30) if tag=='C1CE' else None)
         monkeypatch.setattr('modules.onboarding.watcher_welcome.reservations_sheets.find_active_reservations_for_recruit', lambda *a,**k: asyncio.sleep(0, result=[]))
         async def fake_adjust(tag, delta):
@@ -129,7 +130,7 @@ def test_welcome_non_real_logs_skip_reason(monkeypatch):
         ctx.state = 'awaiting_clan'
         logs = []
         monkeypatch.setattr('modules.onboarding.watcher_welcome.log_sheet_write', lambda **kwargs: asyncio.sleep(0, result='updated'))
-        monkeypatch.setattr('modules.onboarding.watcher_welcome.onboarding_sheets.find_welcome_row', lambda _t: None)
+        monkeypatch.setattr('modules.onboarding.watcher_welcome.onboarding_sheets.find_welcome_row', lambda _t: (2, ['W0','u','','','','','1','','open','','','','pending','pending','pending','']))
         monkeypatch.setattr('modules.onboarding.watcher_welcome.recruitment_sheets.find_clan_row', lambda _tag: None)
         monkeypatch.setattr('modules.onboarding.watcher_welcome.reservations_sheets.find_active_reservations_for_recruit', lambda *a,**k: asyncio.sleep(0, result=[]))
         monkeypatch.setattr('modules.onboarding.watcher_welcome.recruitment_sheets.get_clan_header_map', lambda: {'open_spots':4})
@@ -176,7 +177,7 @@ def test_welcome_reserved_placement_does_not_double_decrement(monkeypatch):
         deltas = []
         reservation = SimpleNamespace(row_number=7, normalized_clan_tag='C1CK', clan_tag='C1CK')
         monkeypatch.setattr('modules.onboarding.watcher_welcome.log_sheet_write', lambda **kwargs: asyncio.sleep(0, result='updated'))
-        monkeypatch.setattr('modules.onboarding.watcher_welcome.onboarding_sheets.find_welcome_row', lambda _t: None)
+        monkeypatch.setattr('modules.onboarding.watcher_welcome.onboarding_sheets.find_welcome_row', lambda _t: (2, ['W0','u','','','','','1','','open','','','','pending','pending','pending','']))
         monkeypatch.setattr('modules.onboarding.watcher_welcome.recruitment_sheets.find_clan_row', lambda tag: (10, ['','','C1CK','','6']) if tag=='C1CK' else None)
         monkeypatch.setattr('modules.onboarding.watcher_welcome.reservations_sheets.find_active_reservations_for_recruit', lambda *a,**k: asyncio.sleep(0, result=[reservation]))
         monkeypatch.setattr('modules.onboarding.watcher_welcome.reservations_sheets.update_reservation_status', lambda *a,**k: asyncio.sleep(0, result=True))
@@ -323,7 +324,7 @@ def test_promo_blank_previous_not_rehydrated_from_post_write(monkeypatch, caplog
         return 'updated'
     monkeypatch.setattr('modules.onboarding.watcher_promo.onboarding_sheets.upsert_promo', fake_upsert)
     monkeypatch.setattr('modules.onboarding.watcher_promo.onboarding_sessions.mark_completed', lambda *_: True)
-    monkeypatch.setattr('modules.onboarding.watcher_promo.recruitment_sheets.find_clan_row', lambda tag: (10, ['','','C1CK','','6']) if tag == 'C1CK' else None)
+    monkeypatch.setattr('modules.onboarding.watcher_promo.recruitment_sheets.find_clan_row', lambda tag, *a, **k: (10, ['','','C1CK','','6']) if tag == 'C1CK' else None)
     deltas = []
     monkeypatch.setattr('modules.onboarding.watcher_promo.availability.adjust_manual_open_spots', lambda tag, delta: deltas.append((tag, delta)) or asyncio.sleep(0, result=5))
     monkeypatch.setattr('modules.onboarding.watcher_promo.availability.recompute_clan_availability', lambda *a, **k: asyncio.sleep(0, result=None))
@@ -341,26 +342,20 @@ def test_promo_blank_previous_not_rehydrated_from_post_write(monkeypatch, caplog
     monkeypatch.setattr('modules.onboarding.watcher_promo.get_ticket_tool_bot_id', lambda: 1)
     monkeypatch.setattr('modules.onboarding.watcher_promo.thread_scopes.is_promo_parent', lambda *_: True)
     monkeypatch.setattr('modules.onboarding.watcher_promo.onboarding_sheets.upsert_promo', lambda *_: 'updated')
-    def raise_find(*_args, **_kwargs):
-        raise RuntimeError('boom')
-    monkeypatch.setattr('modules.onboarding.watcher_promo.onboarding_sheets.find_promo_row', raise_find)
+    monkeypatch.setattr('modules.onboarding.watcher_promo.onboarding_sheets.find_promo_row', lambda *_: (2, {'clantag': '', 'source_clan_tag': '', 'finalization_status': 'pending'}))
     monkeypatch.setattr('modules.onboarding.watcher_promo.onboarding_sessions.mark_completed', lambda *_: True)
     adjust_calls = []
     monkeypatch.setattr('modules.onboarding.watcher_promo.availability.adjust_manual_open_spots', lambda *a, **k: adjust_calls.append((a, k)) or asyncio.sleep(0, result=0))
     monkeypatch.setattr('modules.onboarding.watcher_promo.availability.recompute_clan_availability', lambda *a, **k: asyncio.sleep(0, result=None))
-    monkeypatch.setattr('modules.onboarding.watcher_promo.recruitment_sheets.find_clan_row', lambda *_: (10, ['','','C1CK','','6']))
+    monkeypatch.setattr('modules.onboarding.watcher_promo.recruitment_sheets.find_clan_row', lambda *_, **__: (10, ['','','C1CK','','6']))
     watcher = PromoTicketWatcher(bot=DummyBot())
     ctx = PromoTicketContext(thread_id=1,ticket_number='R7',username='u',promo_type='Returning',thread_created='x',year='2026',month='Jan',state='awaiting_clan')
     watcher._load_clan_tags = lambda : asyncio.sleep(0, result=['C1CK'])
     caplog.set_level(logging.WARNING)
     asyncio.run(watcher._finalize_clan_tag(DummyThread(), ctx, 'C1CK', actor=None, prompt_message=None, view=None))
     assert ctx.state == 'closed'
-    assert adjust_calls == []
-    assert 'reason=source_clan_missing' in caplog.text
-    assert 'action_required=prompt_for_source_clan' in caplog.text
-    assert 'ticket=R7' in caplog.text
-    assert 'user=u' in caplog.text
-    assert 'clan_tag=C1CK' in caplog.text
+    assert adjust_calls == [(('C1CK', -1), {})]
+    assert 'reason_if_not_real=source_clan_none' in caplog.text
 
 
 def test_promo_non_real_tag_logs_skip_reason(monkeypatch, caplog):

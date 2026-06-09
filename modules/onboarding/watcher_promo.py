@@ -796,18 +796,25 @@ class PromoTicketWatcher(commands.Cog):
     ) -> None:
         timestamp = _format_date(dt.datetime.now(UTC))
         found_state = None
-        found_state_lookup_failed = False
         try:
             found_state = await asyncio.to_thread(onboarding_sheets.find_promo_row, context.ticket_number)
-            if found_state and (_promo_finalization_state(found_state[1]).get("finalization_status") or "").lower() == "done":
+            if not found_state:
+                raise RuntimeError(f"promo finalization row not found for ticket={context.ticket_number}")
+            finalization_state = onboarding_sheets.get_ticket_finalization_state("promo", found_state[1])
+            if (finalization_state.get("finalization_status") or "").lower() == "done":
                 log.info("close_already_finalized", extra={"flow": "promo", "trigger": trigger, "thread_id": getattr(thread, "id", None), "ticket": context.ticket_number})
                 await _send_placement_log_line(flow="promo", outcome="already_done", ticket=context.ticket_number, player=context.username, source=context.source_clan_tag, destination=context.clan_tag, trigger=trigger, action="skipped")
                 context.state = "closed"
                 return
             await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "promo", ticket=context.ticket_number, thread_id=getattr(thread, "id", None), finalization_status="in_progress", finalization_note=f"finalization started by {trigger}")
         except Exception:
-            found_state_lookup_failed = True
             log.exception("promo finalization state preflight failed", extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)})
+            try:
+                await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "promo", ticket=context.ticket_number, thread_id=getattr(thread, "id", None), finalization_status="failed", finalization_note="finalization state preflight failed")
+            except Exception:
+                log.exception("promo finalization state failed marker update failed", extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)})
+            await _send_placement_log_line(flow="promo", outcome="failed", ticket=context.ticket_number, reason="finalization_state_preflight_failed", action="manual_check")
+            return
         log.info("close_finalization_started", extra={"flow": "promo", "trigger": trigger, "thread_id": getattr(thread, "id", None), "ticket": context.ticket_number})
         try:
             promo_headers = _promo_headers_for_write(ticket=context.ticket_number)
@@ -857,7 +864,7 @@ class PromoTicketWatcher(commands.Cog):
         final_tag = (context.clan_tag or "").strip().upper()
         source_tag = (context.source_clan_tag or "").strip().upper()
         existing_clan = str(found_state[1].get("clantag", "") or "").strip().upper() if found_state else ""
-        if not source_tag and not found_state_lookup_failed:
+        if not source_tag:
             source_tag = existing_clan or _NO_PLACEMENT_TAG
         if source_tag == _NO_PLACEMENT_TAG and existing_clan:
             source_tag = existing_clan
