@@ -6,7 +6,7 @@ import asyncio
 import datetime as dt
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Iterable, Optional
 
 import discord
@@ -36,6 +36,73 @@ log = logging.getLogger(__name__)
 
 PROMPT_TIMEOUT_SECONDS = 300
 ACTIVE_STATUS = "active"
+
+
+@dataclass(slots=True)
+class ReservationPromptCleanupResult:
+    """Outcome from deleting tracked reservation prompt messages."""
+
+    attempted_message_ids: list[int] = field(default_factory=list)
+    deleted_count: int = 0
+    failed_count: int = 0
+    result: str = "skipped"
+
+
+class ReservationPromptTracker:
+    """Tracks exact messages that belong to one reservation prompt flow."""
+
+    def __init__(self) -> None:
+        self._messages: list[discord.Message] = []
+        self._message_ids: set[int] = set()
+
+    @property
+    def message_ids(self) -> list[int]:
+        return [int(getattr(message, "id")) for message in self._messages]
+
+    def track(self, message: object | None) -> None:
+        message_id = getattr(message, "id", None)
+        if message_id is None:
+            return
+        try:
+            normalized_id = int(message_id)
+        except (TypeError, ValueError):
+            return
+        if normalized_id in self._message_ids:
+            return
+        delete = getattr(message, "delete", None)
+        if not callable(delete):
+            return
+        self._message_ids.add(normalized_id)
+        self._messages.append(message)
+
+    async def cleanup(self) -> ReservationPromptCleanupResult:
+        result = ReservationPromptCleanupResult(
+            attempted_message_ids=[
+                int(getattr(message, "id")) for message in self._messages
+            ]
+        )
+        if not self._messages:
+            result.result = "noop"
+            return result
+
+        for message in self._messages:
+            try:
+                await message.delete()
+            except discord.NotFound:
+                continue
+            except discord.Forbidden:
+                result.failed_count += 1
+            except Exception:
+                result.failed_count += 1
+                log.exception(
+                    "reservation_prompt_cleanup_delete_failed",
+                    extra={"message_id": getattr(message, "id", None)},
+                )
+            else:
+                result.deleted_count += 1
+
+        result.result = "ok" if result.failed_count == 0 else "partial_failure"
+        return result
 
 
 class ReservationFlowAbort(Exception):
@@ -71,6 +138,7 @@ class ReservationConversation:
         active_reservations: int,
         wait_for: Callable[..., Awaitable[discord.Message]],
         preset_user: tuple[Optional[int], str, Optional[str]] | None = None,
+        prompt_tracker: ReservationPromptTracker | None = None,
     ) -> None:
         self.ctx = ctx
         self._clan_label = clan_label
@@ -80,6 +148,7 @@ class ReservationConversation:
         self._author_id = getattr(ctx.author, "id", None)
         self._channel_id = getattr(ctx.channel, "id", None)
         self._preset_user = preset_user
+        self.prompt_tracker = prompt_tracker or ReservationPromptTracker()
 
     async def run(self) -> ReservationDetails:
         """Execute the full conversation flow and return reservation details."""
@@ -122,14 +191,12 @@ class ReservationConversation:
         if not reprompt and self._preset_user is not None:
             preset = self._preset_user
             self._preset_user = None
-            display = preset[1] or (f"<@{preset[0]}>" if preset[0] else "the recruit")
-            await self.ctx.send(f"Reserving a spot for {display}.")
             return preset
 
         if not reprompt:
-            await self.ctx.send(prompt)
+            await self._send_tracked(prompt)
         else:
-            await self.ctx.send(
+            await self._send_tracked(
                 "Please @mention the recruit or paste their Discord ID. Type `cancel` to abort."
             )
 
@@ -162,7 +229,7 @@ class ReservationConversation:
                         return candidate_id, mention_text, _display_name(member)
                     return candidate_id, f"<@{candidate_id}>", None
 
-            await self.ctx.send(
+            await self._send_tracked(
                 "I didn't catch that. Please @mention the recruit or paste their Discord ID (or type `cancel`)."
             )
 
@@ -172,9 +239,9 @@ class ReservationConversation:
             " Please use `YYYY-MM-DD` (no time). Type `cancel` to abort."
         )
         if not reprompt:
-            await self.ctx.send(prompt)
+            await self._send_tracked(prompt)
         else:
-            await self.ctx.send(
+            await self._send_tracked(
                 "Please provide the reservation end date in `YYYY-MM-DD` (or type `cancel`)."
             )
 
@@ -191,7 +258,7 @@ class ReservationConversation:
                 parsed = None
             today = dt.date.today()
             if parsed is None or parsed < today:
-                await self.ctx.send(
+                await self._send_tracked(
                     "Please use `YYYY-MM-DD` and make sure the date is today or later."
                 )
                 continue
@@ -203,7 +270,7 @@ class ReservationConversation:
             " reservations are included. You can still reserve a seat, but please add a short"
             " reason (or type `cancel` to abort)."
         )
-        await self.ctx.send(prompt)
+        await self._send_tracked(prompt)
 
         while True:
             message = await self._next_message()
@@ -213,7 +280,7 @@ class ReservationConversation:
                 raise ReservationFlowAbort("cancelled")
             if content:
                 return content
-            await self.ctx.send(
+            await self._send_tracked(
                 "Please add a short reason (or type `cancel` to abort)."
             )
 
@@ -226,7 +293,7 @@ class ReservationConversation:
         lines.append(
             "Type `yes` to save, `no` to cancel, or `change` to edit the recruit/date."
         )
-        await self.ctx.send("\n".join(lines))
+        await self._send_tracked("\n".join(lines))
 
         while True:
             message = await self._next_message()
@@ -237,7 +304,7 @@ class ReservationConversation:
             if content in {"yes", "y"}:
                 return "yes"
             if content in {"change", "c"}:
-                await self.ctx.send(
+                await self._send_tracked(
                     "Type `user` to change the recruit or `date` to change the end date."
                 )
                 while True:
@@ -250,11 +317,11 @@ class ReservationConversation:
                         return "user"
                     if "date" in follow_content:
                         return "date"
-                    await self.ctx.send(
+                    await self._send_tracked(
                         "Please type `user` or `date`, or `cancel` to abort."
                     )
                 continue
-            await self.ctx.send(
+            await self._send_tracked(
                 "Please reply with `yes`, `no`, or `change` (or type `cancel`)."
             )
 
@@ -276,6 +343,12 @@ class ReservationConversation:
                 "Reservation timed out. Please run `!reserve` again if you still need it."
             )
             raise ReservationFlowAbort("timeout")
+        self.prompt_tracker.track(message)
+        return message
+
+    async def _send_tracked(self, content: str) -> discord.Message:
+        message = await self.ctx.send(content)
+        self.prompt_tracker.track(message)
         return message
 
 
@@ -366,6 +439,13 @@ def _is_ticket_thread(channel: object) -> bool:
         return False
 
     return parent_value in _ticket_parent_ids()
+
+
+def _reservation_ticket_id(channel: object) -> str | None:
+    parts = parse_welcome_thread_name(getattr(channel, "name", None))
+    if parts and parts.ticket_code:
+        return parts.ticket_code
+    return None
 
 
 def _reservations_enabled() -> bool:
@@ -845,6 +925,8 @@ class ReservationCog(commands.Cog):
             )
             return
 
+        prompt_tracker = ReservationPromptTracker()
+        prompt_tracker.track(getattr(ctx, "message", None))
         conversation = ReservationConversation(
             ctx,
             clan_label=sheet_tag,
@@ -852,6 +934,7 @@ class ReservationCog(commands.Cog):
             active_reservations=active_reservations,
             wait_for=wait_for,
             preset_user=preset_user,
+            prompt_tracker=prompt_tracker,
         )
 
         try:
@@ -1050,18 +1133,18 @@ class ReservationCog(commands.Cog):
             af_value = str(fallback_available)
 
         await ctx.send(
-            "\n".join(
-                [
-                    f"Reserved 1 spot in `{sheet_tag}` for {details.ticket_display} until `{details.reserved_until.isoformat()}`.",
-                    f"Reserved for this clan: `{ah_value}`. Effective open spots: `{af_value}`.",
-                ]
+            (
+                f"✅ Reserved 1 spot in `{sheet_tag}` for {details.ticket_display} "
+                f"until `{details.reserved_until.isoformat()}`. Reserved for this clan: "
+                f"`{ah_value}`. Effective open spots: `{af_value}`."
             )
         )
 
-        thread = ctx.channel if isinstance(ctx.channel, discord.Thread) else None
+        rename_succeeded = False
+        thread = ctx.channel if _is_ticket_thread(ctx.channel) else None
         if thread is not None:
             try:
-                await rename_thread_to_reserved(thread, sheet_tag)
+                rename_succeeded = await rename_thread_to_reserved(thread, sheet_tag)
             except Exception:
                 log.exception(
                     "failed to rename welcome thread for reservation",
@@ -1070,6 +1153,22 @@ class ReservationCog(commands.Cog):
                         "clan_tag": _normalize_tag(sheet_tag),
                     },
                 )
+
+        if rename_succeeded:
+            cleanup_result = await prompt_tracker.cleanup()
+            log.info(
+                "reservation_prompt_cleanup",
+                extra={
+                    "ticket_id": _reservation_ticket_id(ctx.channel),
+                    "thread_id": getattr(ctx.channel, "id", None),
+                    "clan_tag": _normalize_tag(sheet_tag),
+                    "recruit_user_id": details.ticket_user_id,
+                    "message_ids_attempted": cleanup_result.attempted_message_ids,
+                    "deleted_count": cleanup_result.deleted_count,
+                    "failed_count": cleanup_result.failed_count,
+                    "result": cleanup_result.result,
+                },
+            )
 
         log.info(
             "[reserve] reservation created",
