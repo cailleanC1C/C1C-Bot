@@ -773,6 +773,71 @@ def append_welcome_ticket_row(
     return _upsert(ws, key_columns, row_values, header, search_values=search_values)
 
 
+def _row_map(header: Sequence[str], row: Sequence[str]) -> Dict[str, str]:
+    """Return a header-to-value mapping for a sheet row."""
+
+    return {
+        str(name): (row[idx] if idx < len(row) else "")
+        for idx, name in enumerate(header)
+    }
+
+
+def _find_row_by_thread_id(
+    *, tab: str, headers: Sequence[str], thread_id: int | str | None
+) -> Optional[Tuple[int, Dict[str, str]]]:
+    """Return the (1-indexed) row number and mapped values for ``thread_id``."""
+
+    if thread_id is None:
+        return None
+    target = str(thread_id).strip()
+    if not target:
+        return None
+
+    ws = _worksheet(tab)
+    if tab == _promo_tab():
+        header = _ensure_promo_headers(ws)
+    else:
+        header = _ensure_headers(ws, headers)
+    normalized_header = [_normalize_header_name(col) for col in header]
+    thread_indexes = [
+        idx
+        for idx, name in enumerate(normalized_header)
+        if name in {"threadid", "thread"}
+    ]
+    if not thread_indexes:
+        return None
+
+    values = core.call_with_backoff(ws.get_all_values)
+    for row_idx, row in enumerate(values[1:], start=2):
+        for col_idx in thread_indexes:
+            current = row[col_idx] if col_idx < len(row) else ""
+            if str(current or "").strip() == target:
+                return row_idx, _row_map(header, row)
+    return None
+
+
+def find_welcome_row_by_thread_id(
+    thread_id: int | str | None,
+) -> Optional[Tuple[int, Dict[str, str]]]:
+    """Return the Welcome row matching ``thread_id`` if present."""
+
+    return _find_row_by_thread_id(
+        tab=_welcome_tab(), headers=WELCOME_HEADERS, thread_id=thread_id
+    )
+
+
+def find_promo_row_by_thread_id(
+    thread_id: int | str | None,
+) -> Optional[Tuple[int, Dict[str, str]]]:
+    """Return the Promo row matching ``thread_id`` if present."""
+
+    result = _find_row_by_thread_id(
+        tab=_promo_tab(), headers=PROMO_HEADERS, thread_id=thread_id
+    )
+    if result is not None:
+        require_promo_source_clan_header(list(result[1].keys()))
+    return result
+
 def find_welcome_row(ticket: str | None) -> Optional[Tuple[int, List[str]]]:
     """Return the (1-indexed) row number and values for ``ticket`` if present."""
 

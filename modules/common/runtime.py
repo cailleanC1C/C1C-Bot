@@ -1192,6 +1192,7 @@ class Runtime:
         from modules.onboarding import watcher_welcome as onboarding_welcome
         from modules.onboarding import watcher_promo as onboarding_promo
         from modules.onboarding import cmd_resume as onboarding_cmd_resume
+        from modules.onboarding import cmd_finishplacement as onboarding_cmd_finishplacement
         from modules.ops import permissions_ui as ops_permissions
         from c1c_coreops import ops as ops_cog
 
@@ -1361,6 +1362,12 @@ class Runtime:
             log.info("modules: onboarding_resume enabled")
         else:
             log.info("modules: onboarding_resume disabled")
+
+        if toggles.welcome_watcher_enabled or toggles.promo_watcher_enabled:
+            await onboarding_cmd_finishplacement.setup(self.bot)
+            log.info("modules: onboarding_finishplacement enabled")
+        else:
+            log.info("modules: onboarding_finishplacement disabled")
 
         await ops_cog.setup(self.bot)
 
