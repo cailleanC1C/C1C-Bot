@@ -7,7 +7,7 @@ import os
 import re
 import time
 from datetime import datetime, timezone
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from shared.sheets import core
 from shared.sheets.async_core import afetch_values
@@ -447,13 +447,18 @@ def _looks_like_ticket(value: str) -> bool:
     return bool(_WELCOME_TICKET_RE.match(_fmt_ticket(value)))
 
 
-def repair_welcome_rows(ws) -> dict[str, int]:
+def repair_welcome_rows(ws) -> dict[str, Any]:
     header = _ensure_headers(ws, get_welcome_headers())
     norm = [_normalize_header_name(col) for col in header]
     idx = {name: pos for pos, name in enumerate(norm)}
     required = {"ticketnumber", "username"}
-    if not required.issubset(idx):
-        return {"repaired": 0, "flagged": 0, "scanned": 0}
+    missing_required = sorted(required - set(idx))
+    if missing_required:
+        log.error(
+            "welcome ticket metadata check skipped: missing required header",
+            extra={"missing_headers": missing_required},
+        )
+        return {"repaired": 0, "flagged": 0, "scanned": 0, "config_error": "missing_required_header"}
 
     values = core.call_with_backoff(ws.get_all_values)
     repaired = 0
@@ -463,6 +468,8 @@ def repair_welcome_rows(ws) -> dict[str, int]:
     welcome_rows = 0
     reservation_rows = 0
     malformed_rows = 0
+    review_detail_rows = 0
+    app_logged_review_details = 0
     ticket_identity: dict[str, dict[str, set[str]]] = {}
     for row in values[1:]:
         row_values = list(row) + [""] * (len(header) - len(row))
@@ -554,20 +561,36 @@ def repair_welcome_rows(ws) -> dict[str, int]:
         if invalid and status_idx is not None:
             status_value = str(row_values[status_idx] or "").strip().lower()
             if len(identity["thread_ids"]) > 1:
-                row_values[status_idx] = "needs_review"
-                if review_idx is not None:
-                    row_values[review_idx] = "conflicting thread IDs"
-                changed = True
+                review_reason = "conflicting thread IDs"
             elif len(identity["user_ids"]) > 1:
+                review_reason = "conflicting user IDs"
+            else:
+                review_reason = "no matching ticket source found"
+
+            if status_value not in {"invalid", "needs_review", "closed"}:
                 row_values[status_idx] = "needs_review"
-                if review_idx is not None:
-                    row_values[review_idx] = "conflicting user IDs"
                 changed = True
-            elif status_value not in {"invalid", "needs_review", "closed"}:
-                row_values[status_idx] = "needs_review"
-                if review_idx is not None:
-                    row_values[review_idx] = "no matching ticket source found"
+            if review_idx is not None and not str(row_values[review_idx] or "").strip():
+                row_values[review_idx] = review_reason
                 changed = True
+            if review_idx is not None and str(row_values[review_idx] or "").strip():
+                review_detail_rows += 1
+
+            log.warning(
+                "welcome ticket metadata check needs attention",
+                extra={
+                    "ticket": ticket_key,
+                    "row_number": row_number,
+                    "username": username,
+                    "thread_id": thread_id or None,
+                    "user_id": user_id or None,
+                    "review_reason": str(row_values[review_idx] or "").strip() if review_idx is not None else review_reason,
+                    "review_reason_persisted": bool(
+                        review_idx is not None and str(row_values[review_idx] or "").strip()
+                    ),
+                },
+            )
+            app_logged_review_details += 1
             flagged += 1
         elif status_idx is not None and str(row_values[status_idx] or "").strip().lower() == "needs_review":
             # keep explicit invalid marker untouched
@@ -585,28 +608,54 @@ def repair_welcome_rows(ws) -> dict[str, int]:
             core.call_with_backoff(ws.update, f"A{row_number}:{end_col}{row_number}", [row_values[: len(header)]])
             repaired += 1
 
-    return {"repaired": repaired, "flagged": flagged, "scanned": scanned, "legacy_rows": legacy_rows, "welcome_rows": welcome_rows, "reservation_rows": reservation_rows, "malformed_rows": malformed_rows}
+    return {"repaired": repaired, "flagged": flagged, "scanned": scanned, "legacy_rows": legacy_rows, "welcome_rows": welcome_rows, "reservation_rows": reservation_rows, "malformed_rows": malformed_rows, "review_detail_rows": review_detail_rows, "app_logged_review_details": app_logged_review_details}
 
 
-def _queue_welcome_repair_alert(summary: dict[str, int]) -> None:
-    global _WELCOME_REPAIR_ALERT_LAST_TS, _WELCOME_REPAIR_ALERT_PENDING
+def _format_welcome_repair_alert(summary: dict[str, Any]) -> str | None:
+    if summary.get("config_error"):
+        return "⚠️ Welcome ticket metadata check skipped: required sheet configuration is missing."
+
     flagged = int(summary.get("flagged", 0) or 0)
-    if flagged <= 0:
-        return
     repaired = int(summary.get("repaired", 0) or 0)
+    welcome_rows = int(summary.get("welcome_rows", 0) or 0)
+    review_detail_rows = int(summary.get("review_detail_rows", 0) or 0)
+    app_logged_review_details = int(summary.get("app_logged_review_details", 0) or 0)
+
+    if flagged <= 0 and repaired <= 0:
+        return f"✅ Welcome ticket metadata check: no repair needed. {welcome_rows} welcome tickets checked."
+    if flagged <= 0:
+        return f"✅ Welcome ticket metadata check: {repaired} repaired, none need review."
+    if review_detail_rows >= flagged:
+        return (
+            "⚠️ Welcome ticket metadata check: "
+            f"{flagged} tickets need review, {repaired} repaired. "
+            "See review_reason in the configured onboarding sheet."
+        )
+    if app_logged_review_details >= flagged:
+        return (
+            "⚠️ Welcome ticket metadata check: "
+            f"{flagged} ticket records could not be auto-repaired. Details in app logs."
+        )
+    log.error(
+        "welcome ticket metadata check found records without review visibility",
+        extra={"flagged": flagged, "repaired": repaired, "welcome_rows": welcome_rows},
+    )
+    return None
+
+
+def _queue_welcome_repair_alert(summary: dict[str, Any]) -> None:
+    global _WELCOME_REPAIR_ALERT_LAST_TS, _WELCOME_REPAIR_ALERT_PENDING
+    message = _format_welcome_repair_alert(summary)
+    if not message:
+        return
+    flagged = int(summary.get("flagged", 0) or 0)
+    if flagged <= 0 and int(summary.get("repaired", 0) or 0) <= 0:
+        return
     now_ts = time.time()
     if (now_ts - _WELCOME_REPAIR_ALERT_LAST_TS) < 3600:
         return
     _WELCOME_REPAIR_ALERT_LAST_TS = now_ts
-    legacy_rows = int(summary.get("legacy_rows", 0) or 0)
-    welcome_rows = int(summary.get("welcome_rows", 0) or 0)
-    reservation_rows = int(summary.get("reservation_rows", 0) or 0)
-    malformed_rows = int(summary.get("malformed_rows", 0) or 0)
-    _WELCOME_REPAIR_ALERT_PENDING = (
-        "Welcome ticket metadata repair: "
-        f"{repaired} repaired, {flagged} flagged for review "
-        f"(welcome={welcome_rows}, reservations={reservation_rows}, legacy={legacy_rows}, malformed={malformed_rows}, open_spots_repair=not_performed)"
-    )
+    _WELCOME_REPAIR_ALERT_PENDING = message
 
 
 def consume_welcome_repair_alert() -> str | None:
@@ -715,7 +764,7 @@ def _normalize_ticket_timestamps(
 
 
 
-def run_welcome_ticket_repair_pass(*, min_interval_sec: float = 3600) -> dict[str, int]:
+def run_welcome_ticket_repair_pass(*, min_interval_sec: float = 3600) -> dict[str, Any]:
     """Run a repair/flag sweep on the Welcome ticket tab using config-resolved sheet/tab."""
 
     global _WELCOME_REPAIR_LAST_RUN

@@ -222,10 +222,11 @@ def test_welcome_reads_previous_final_before_overwrite(monkeypatch):
     asyncio.run(run())
 
 
-def test_repair_alert_mentions_not_performed():
-    onboarding_sheets._queue_welcome_repair_alert({'repaired':0,'flagged':1,'legacy_rows':0,'welcome_rows':1,'reservation_rows':0,'malformed_rows':0})
+def test_repair_alert_omits_open_spots_when_not_part_of_metadata_check():
+    onboarding_sheets._WELCOME_REPAIR_ALERT_LAST_TS = 0
+    onboarding_sheets._queue_welcome_repair_alert({'repaired':0,'flagged':1,'legacy_rows':0,'welcome_rows':1,'reservation_rows':0,'malformed_rows':0,'review_detail_rows':1,'app_logged_review_details':1})
     msg = onboarding_sheets.consume_welcome_repair_alert()
-    assert 'open_spots_repair=not_performed' in (msg or '')
+    assert 'open_spots_repair=not_performed' not in (msg or '')
 
 
 def test_promo_first_time_placement_decrements_once(monkeypatch, caplog):
