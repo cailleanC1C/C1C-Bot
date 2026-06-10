@@ -72,6 +72,14 @@ def _role_mentions() -> Sequence[str]:
 
 
 HeadersMap = Dict[str, int]
+_REPORT_REQUIRED_HEADERS = (
+    "h1 headline",
+    "h2 headline",
+    "key",
+    "open spots",
+    "inactives",
+    "reserved spots",
+)
 
 
 def _normalize_header(label: str) -> str:
@@ -100,7 +108,9 @@ def _parse_int(text: str) -> int:
         return 0
 
 
-def _find_row_equals(rows: Sequence[Sequence[str]], column: int, needle: str) -> int:
+def _find_row_equals(rows: Sequence[Sequence[str]], column: int | None, needle: str) -> int:
+    if column is None:
+        return -1
     target = (needle or "").strip().lower()
     for idx, row in enumerate(rows):
         value = str(row[column] if column < len(row) else "").strip().lower()
@@ -113,14 +123,14 @@ def _collect_block(
     rows: Sequence[Sequence[str]],
     *,
     start_row: int,
-    stop_column: int,
+    stop_column: int | None,
     stop_value: str,
 ) -> List[Sequence[str]]:
     collected: List[Sequence[str]] = []
     stop_normalized = (stop_value or "").strip().lower()
     for idx in range(start_row + 1, len(rows)):
         row = rows[idx]
-        value = str(row[stop_column] if stop_column < len(row) else "").strip().lower()
+        value = _column(row, stop_column).strip().lower()
         if value == stop_normalized:
             break
         collected.append(row)
@@ -131,40 +141,67 @@ def _collect_bracket_sections(
     rows: Sequence[Sequence[str]],
     *,
     start_row: int,
-) -> Tuple[Dict[str, List[Sequence[str]]], Dict[str, Tuple[int, int, int]]]:
-    wanted = [
-        "elite end game",
-        "early end game",
-        "late game",
-        "mid game",
-        "early game",
-        "beginners",
-    ]
-    sections: Dict[str, List[Sequence[str]]] = {label: [] for label in wanted}
-    totals: Dict[str, Tuple[int, int, int]] = {label: (0, 0, 0) for label in wanted}
-    active: Optional[str] = None
-    for idx in range(start_row, len(rows)):
-        row = rows[idx]
-        group = str(row[1] if len(row) > 1 else "").strip().lower()
-        if group in sections:
-            active = group
-            open_total = _parse_int(row[3] if len(row) > 3 else "0")
-            inactive_total = _parse_int(row[4] if len(row) > 4 else "0")
-            reserved_total = _parse_int(row[5] if len(row) > 5 else "0")
-            totals[group] = (open_total, inactive_total, reserved_total)
-            continue
-        if active is None:
-            continue
+    headers: HeadersMap,
+) -> List[Tuple[str, List[Sequence[str]]]]:
+    """Collect Bracket Details groups in the same order they appear in the sheet.
+
+    The Statistics sheet marks Bracket Details groups in the configured
+    ``H2_Headline`` column, then lists clan rows below each heading using the
+    configured ``Key`` column. Do not hardcode bracket names or column
+    positions here; the sheet layout is allowed to reorder columns as long as
+    the existing header row supplies the schema.
+    """
+
+    h1_index = _resolve_index(headers, "h1 headline")
+    h2_index = _resolve_index(headers, "h2 headline")
+    key_index = _resolve_index(headers, "key")
+    if h2_index is None or key_index is None:
+        return []
+
+    sections: List[Tuple[str, List[Sequence[str]]]] = []
+    active_index: int | None = None
+
+    for row in rows[start_row:]:
         if not any(str(cell).strip() for cell in row):
-            active = None
+            active_index = None
             continue
-        sections[active].append(row)
-    return sections, totals
+
+        section_label = _column(row, h1_index).strip()
+        bracket_label = _column(row, h2_index).strip()
+        key_label = _column(row, key_index).strip()
+
+        if section_label and not bracket_label and not key_label:
+            active_index = None
+            continue
+
+        if bracket_label and not key_label:
+            sections.append((bracket_label, []))
+            active_index = len(sections) - 1
+            continue
+
+        if active_index is None or not key_label:
+            continue
+
+        sections[active_index][1].append(row)
+
+    return sections
 
 
 def _resolve_index(headers: HeadersMap, name: str) -> Optional[int]:
     normalized = _normalize_header(name)
     return headers.get(normalized)
+
+
+def _require_report_headers(headers: HeadersMap) -> None:
+    missing = [
+        name
+        for name in _REPORT_REQUIRED_HEADERS
+        if _resolve_index(headers, name) is None
+    ]
+    if missing:
+        raise ValueError(
+            f"Statistics report missing required header(s): {', '.join(missing)}"
+        )
 
 
 def _format_line(
@@ -223,13 +260,16 @@ async def _fetch_report_rows() -> Tuple[List[List[str]], HeadersMap]:
 def _extract_report_sections(
     rows: Sequence[Sequence[str]], headers: HeadersMap
 ) -> ReportSections:
-    general_index = _find_row_equals(rows, 0, "general overview")
-    per_bracket_index = _find_row_equals(rows, 0, "per bracket")
-    details_index = _find_row_equals(rows, 0, "bracket details")
+    _require_report_headers(headers)
+    h1_index = _resolve_index(headers, "h1 headline")
+    key_index = _resolve_index(headers, "key")
+    general_index = _find_row_equals(rows, h1_index, "general overview")
+    per_bracket_index = _find_row_equals(rows, h1_index, "per bracket")
+    details_index = _find_row_equals(rows, h1_index, "bracket details")
 
     general_lines: List[str] = []
     if general_index != -1:
-        stop_column = 0
+        stop_column = h1_index
         if per_bracket_index != -1:
             stop_value = "per bracket"
         elif details_index != -1:
@@ -242,7 +282,6 @@ def _extract_report_sections(
             stop_column=stop_column,
             stop_value=stop_value,
         )
-        key_index = _resolve_index(headers, "key")
         always_visible = {"overall", "top 10", "top 5"}
         for row in block:
             label = _column(row, key_index).strip().lower() if key_index is not None else ""
@@ -256,10 +295,9 @@ def _extract_report_sections(
         block = _collect_block(
             rows,
             start_row=per_bracket_index,
-            stop_column=0,
+            stop_column=h1_index,
             stop_value=stop_value,
         )
-        key_index = _resolve_index(headers, "key")
         for row in block:
             label = _column(row, key_index).strip() if key_index is not None else ""
             if not label:
@@ -274,24 +312,21 @@ def _extract_report_sections(
     elif per_bracket_index != -1:
         details_start = per_bracket_index + 1
 
-    sections: Dict[str, List[Sequence[str]]] = {}
+    sections: List[Tuple[str, List[Sequence[str]]]] = []
     if details_start > 0 and details_start < len(rows):
-        sections, _ = _collect_bracket_sections(rows, start_row=details_start)
+        sections = _collect_bracket_sections(
+            rows, start_row=details_start, headers=headers
+        )
 
-    order = [
-        "elite end game",
-        "early end game",
-        "late game",
-        "mid game",
-        "early game",
-        "beginners",
-    ]
     detail_blocks: List[Tuple[str, List[str]]] = []
-    for key in order:
-        entries = sections.get(key) or []
-        formatted = [line for row in entries if (line := _format_line(headers, row))]
+    for label, entries in sections:
+        formatted = [
+            line
+            for row in entries
+            if (line := _format_line(headers, row, always=True))
+        ]
         if formatted:
-            detail_blocks.append((key, formatted))
+            detail_blocks.append((label, formatted))
 
     return ReportSections(
         general_lines=general_lines,
@@ -514,11 +549,16 @@ async def post_daily_recruiter_update(bot: discord.Client) -> Tuple[bool, str]:
         fetch_error = _format_error(exc)
         log.warning("failed to fetch recruiter report rows", exc_info=True)
 
-    sections = _extract_report_sections(rows, headers)
-    summary_embed = _build_summary_embed(sections)
+    try:
+        sections = _extract_report_sections(rows, headers)
+        summary_embed = _build_summary_embed(sections)
+        pager_view = OpenSpotsPager(sections)
+    except Exception as exc:
+        log.warning("failed to build recruiter report", exc_info=True)
+        return False, _format_error(exc)
+
     today = datetime.now(UTC).strftime("%Y-%m-%d")
     content = _report_content(today)
-    pager_view = OpenSpotsPager(sections)
 
     try:
         await channel.send(content=content, embeds=[summary_embed], view=pager_view)

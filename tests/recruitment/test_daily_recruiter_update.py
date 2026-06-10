@@ -8,20 +8,28 @@ from cogs.recruitment_reporting import RecruitmentReporting
 
 def _sample_rows():
     return [
-        ["Key", "Grouping", "Open Spots", "Inactives", "Reserved Spots"],
-        ["General Overview", "", "", "", ""],
-        ["Ops Summary", "", "3", "1", "0"],
-        ["Ops Idle", "", "0", "0", "0"],
-        ["Per Bracket", "", "", "", ""],
-        ["Elite End Game", "", "2", "0", "1"],
-        ["Mid Game", "", "0", "0", "0"],
-        ["Bracket Details", "", "", "", ""],
-        ["", "Elite End Game", "", "", ""],
-        ["Clan Alpha", "", "5", "0", "1"],
-        ["Clan Beta", "", "0", "0", "0"],
-        ["", "", "", "", ""],
-        ["", "Mid Game", "", "", ""],
-        ["Clan Delta", "", "2", "2", "0"],
+        [
+            "H1_Headline",
+            "H2_Headline",
+            "Key",
+            "open_spots",
+            "inactives",
+            "reserved_spots",
+        ],
+        ["General Overview", "", "", "", "", ""],
+        ["", "", "Ops Summary", "3", "1", "0"],
+        ["", "", "Ops Idle", "0", "0", "0"],
+        ["Per Bracket", "", "", "", "", ""],
+        ["", "", "Elite End Game", "2", "0", "1"],
+        ["", "", "Mid Game", "0", "0", "0"],
+        ["Bracket Details", "", "", "", "", ""],
+        ["", "Elite End Game", "", "", "", ""],
+        ["", "", "Clan Alpha", "5", "0", "1"],
+        ["", "", "Elders", "0", "0", "0"],
+        ["", "", "Cambions", "0", "0", "0"],
+        ["", "", "", "", "", ""],
+        ["", "Mid Game", "", "", "", ""],
+        ["", "", "Clan Delta", "2", "2", "0"],
     ]
 
 
@@ -58,12 +66,79 @@ def test_build_embeds_from_rows_filters_and_groups():
     assert elite_end_game.name == "Elite End Game"
     assert elite_end_game.inline is False
     assert "🔹 **Clan Alpha:** open 5 | inactives 0 | reserved 1" in elite_end_game.value
-    assert "Clan Beta" not in elite_end_game.value
+    assert "🔹 **Elders:** open 0 | inactives 0 | reserved 0" in elite_end_game.value
+    assert "🔹 **Cambions:** open 0 | inactives 0 | reserved 0" in elite_end_game.value
 
     mid_game = details_embed.fields[1]
     assert mid_game.name == "Mid Game"
     assert mid_game.inline is False
     assert "🔹 **Clan Delta:** open 2 | inactives 2 | reserved 0" in mid_game.value
+
+
+def test_bracket_details_include_zero_rows_and_preserve_sheet_order():
+    rows = [
+        [
+            "H1_Headline",
+            "H2_Headline",
+            "Key",
+            "open_spots",
+            "inactives",
+            "reserved_spots",
+        ],
+        ["Bracket Details", "", "", "", "", ""],
+        ["", "First Sheet Bracket", "", "", "", ""],
+        ["", "", "Island Arena", "0", "0", "0"],
+        ["", "", "Active Clan", "4", "1", "2"],
+        ["", "Second Sheet Bracket", "", "", "", ""],
+        ["", "", "Vindicators", "0", "0", "0"],
+        ["", "", "Warlords", "0", "0", "0"],
+        ["", "", "Eff-It", "0", "0", "0"],
+    ]
+    headers = dru._headers_map(rows[0])
+
+    sections = dru._extract_report_sections(rows, headers)
+    details_embed = dru._build_details_embed(sections)
+
+    assert [field.name for field in details_embed.fields] == [
+        "First Sheet Bracket",
+        "Second Sheet Bracket",
+    ]
+    first_value = details_embed.fields[0].value
+    assert "🔹 **Island Arena:** open 0 | inactives 0 | reserved 0" in first_value
+    assert "🔹 **Active Clan:** open 4 | inactives 1 | reserved 2" in first_value
+    assert first_value.index("Island Arena") < first_value.index("Active Clan")
+    second_value = details_embed.fields[1].value
+    assert "🔹 **Vindicators:** open 0 | inactives 0 | reserved 0" in second_value
+    assert "🔹 **Warlords:** open 0 | inactives 0 | reserved 0" in second_value
+    assert "🔹 **Eff-It:** open 0 | inactives 0 | reserved 0" in second_value
+
+
+def test_live_headers_drive_sections_brackets_and_clan_names_without_grouping():
+    rows = [
+        [
+            "reserved_spots",
+            "H2_Headline",
+            "inactives",
+            "Key",
+            "H1_Headline",
+            "open_spots",
+        ],
+        ["", "", "", "", "Bracket Details", ""],
+        ["", "Configured H2 Bracket", "", "", "", ""],
+        ["0", "", "0", "Key Clan Zero", "", "0"],
+        ["3", "", "1", "Key Clan Active", "", "2"],
+    ]
+    headers = dru._headers_map(rows[0])
+
+    assert "grouping" not in headers
+    sections = dru._extract_report_sections(rows, headers)
+    details_embed = dru._build_details_embed(sections)
+
+    assert len(details_embed.fields) == 1
+    assert details_embed.fields[0].name == "Configured H2 Bracket"
+    value = details_embed.fields[0].value
+    assert "🔹 **Key Clan Zero:** open 0 | inactives 0 | reserved 0" in value
+    assert "🔹 **Key Clan Active:** open 2 | inactives 1 | reserved 3" in value
 
 
 def test_open_spots_pager_switches_pages():
