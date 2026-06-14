@@ -372,27 +372,36 @@ def _ensure_headers(ws, headers: Sequence[str]) -> List[str]:
 
 
 def _ensure_promo_headers(ws) -> List[str]:
-    """Ensure Promo headers without silently adding a missing source column.
+    """Return the live Promo header row without mutating it.
 
-    Empty worksheets are initialized, but an existing Promo header row must
-    already contain the Config-resolved source clan header so row data cannot be
-    shifted accidentally.
+    Promo column order is operator-owned. Existing headers are the source of
+    truth; callers must map writes by matching header names only.
     """
 
-    desired = get_promo_headers()
-    source_header = get_promo_source_clan_tag_header()
     try:
         existing = core.call_with_backoff(ws.row_values, 1)
     except Exception:
         existing = []
-    if existing:
-        normalized_existing = {_normalize_header_name(header) for header in existing}
-        if _normalize_header_name(source_header) not in normalized_existing:
-            raise RuntimeError(
-                "Promo sheet missing configured source clan header "
-                f"{PROMO_SOURCE_CLAN_TAG_HEADER_CONFIG_KEY}={source_header!r}"
-            )
-    return _ensure_headers(ws, desired)
+    header = [str(value or "").strip() for value in existing]
+    if not any(header):
+        raise RuntimeError("Promo sheet header row missing; refusing to write")
+
+    source_header = get_promo_source_clan_tag_header()
+    normalized_existing = {_normalize_header_name(col) for col in header}
+    if _normalize_header_name(source_header) not in normalized_existing:
+        raise RuntimeError(
+            "Promo sheet missing configured source clan header "
+            f"{PROMO_SOURCE_CLAN_TAG_HEADER_CONFIG_KEY}={source_header!r}"
+        )
+    return header
+
+
+def get_live_promo_headers() -> List[str]:
+    """Return the operator-owned live Promo header row."""
+
+    sheet_id, tab = _resolve_onboarding_and_promo_tab()
+    ws = core.get_worksheet(sheet_id, tab)
+    return _ensure_promo_headers(ws)
 
 
 def _fmt_ticket(ticket: str | None) -> str:
@@ -1000,12 +1009,182 @@ def upsert_promo(
     existing_map = existing[1] if existing else {}
     if len(incoming) < len(resolved_headers):
         incoming.extend("" for _ in range(len(resolved_headers) - len(incoming)))
+    for idx, header in enumerate(resolved_headers):
+        if idx >= len(incoming):
+            continue
+        if str(incoming[idx] or "").strip():
+            continue
+        existing_value = existing_map.get(header, "")
+        if str(existing_value or "").strip():
+            incoming[idx] = existing_value
     for field, header in final_headers.items():
         col = _column_index(resolved_headers, header, default=-1)
         if col >= 0 and not str(incoming[col] or "").strip():
             incoming[col] = existing_map.get(header, "") or ("pending" if field != "finalization_note" else "")
     keys = [("ticket number", _fmt_ticket)]
     return _upsert(ws, keys, incoming, resolved_headers)
+
+
+PROMO_METADATA_REQUIRED_HEADERS = {
+    "ticketnumber": "ticket number",
+    "threadid": "thread_id",
+}
+PROMO_METADATA_FIELDS = {
+    "ticketnumber",
+    "username",
+    "threadname",
+    "userid",
+    "threadid",
+    "panelmessageid",
+    "status",
+    "reviewreason",
+    "createdat",
+    "updatedat",
+}
+PROMO_METADATA_PRESERVE_FIELDS = {
+    "ticketnumber",
+    "username",
+    "clantag",
+    "sourceclantag",
+    "dateclosed",
+    "type",
+    "threadcreated",
+    "finalizationstatus",
+    "reservationstatus",
+    "clanupdatestatus",
+    "finalizationnote",
+    "year",
+    "month",
+    "joinmonth",
+    "clanname",
+    "progression",
+}
+
+
+def patch_promo_ticket_metadata(
+    *,
+    ticket: str | None,
+    thread_id: int | str | None = None,
+    thread_name: str | None = None,
+    username: str | None = None,
+    user_id: int | str | None = None,
+    panel_message_id: int | str | None = None,
+    status: str | None = None,
+    review_reason: str | None = None,
+    created_at: datetime | None = None,
+    updated_at: datetime | None = None,
+) -> str:
+    """Patch Promo ticket metadata using the live sheet headers.
+
+    Existing nonblank values are preserved unless the incoming value is a
+    lifecycle update that is expected to be newer (status, panel id, updated_at,
+    review_reason). Business and finalization columns are never changed here.
+    """
+
+    sheet_id, tab = _resolve_onboarding_and_promo_tab()
+    ws = core.get_worksheet(sheet_id, tab)
+    header = _ensure_promo_headers(ws)
+    normalized_header = [_normalize_header_name(col) for col in header]
+    idx = {name: pos for pos, name in enumerate(normalized_header)}
+
+    missing = [
+        label
+        for normalized, label in PROMO_METADATA_REQUIRED_HEADERS.items()
+        if normalized not in idx
+    ]
+    if missing:
+        log.warning(
+            "promo metadata skipped: missing required header",
+            extra={"missing_headers": missing, "ticket": _fmt_ticket(ticket), "thread_id": thread_id},
+        )
+        return "skipped_missing_header"
+
+    ticket_value = _fmt_ticket(ticket)
+    thread_value = str(thread_id or "").strip()
+    if not ticket_value and not thread_value:
+        log.warning("promo metadata skipped: missing ticket and thread_id")
+        return "skipped_missing_key"
+
+    values = core.call_with_backoff(ws.get_all_values)
+    row_number: int | None = None
+    row_values: list[str] | None = None
+
+    thread_idx = idx.get("threadid")
+    ticket_idx = idx.get("ticketnumber")
+
+    if thread_value and thread_idx is not None:
+        for current_idx, row in enumerate(values[1:], start=2):
+            current = row[thread_idx] if thread_idx < len(row) else ""
+            if str(current or "").strip() == thread_value:
+                row_number = current_idx
+                row_values = list(row)
+                break
+
+    if row_number is None and ticket_value and ticket_idx is not None:
+        for current_idx, row in enumerate(values[1:], start=2):
+            current = row[ticket_idx] if ticket_idx < len(row) else ""
+            if _fmt_ticket(current) == ticket_value:
+                row_number = current_idx
+                row_values = list(row)
+                break
+
+    if row_values is None:
+        row_values = ["" for _ in header]
+    elif len(row_values) < len(header):
+        row_values.extend("" for _ in range(len(header) - len(row_values)))
+
+    now = updated_at or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    created = created_at
+    if created is not None and created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+
+    incoming = {
+        "ticketnumber": ticket_value,
+        "username": str(username or "").strip(),
+        "threadname": str(thread_name or "").strip(),
+        "userid": str(user_id).strip() if user_id is not None else "",
+        "threadid": thread_value,
+        "panelmessageid": str(panel_message_id).strip() if panel_message_id is not None else "",
+        "status": str(status or "").strip(),
+        "reviewreason": str(review_reason or "").strip(),
+        "createdat": created.isoformat() if created is not None else "",
+        "updatedat": now.isoformat(),
+    }
+
+    changed = False
+    for field, value in incoming.items():
+        if field not in idx or field not in PROMO_METADATA_FIELDS:
+            continue
+        if not value:
+            continue
+        current = str(row_values[idx[field]] or "").strip()
+        if field in PROMO_METADATA_PRESERVE_FIELDS and current:
+            continue
+        if field in {"threadid", "userid", "threadname", "createdat"} and current:
+            continue
+        if field == "reviewreason" and current and current == value:
+            continue
+        if field == "panelmessageid" and current == value:
+            continue
+        if field == "status" and current == value:
+            continue
+        if field == "updatedat" and current == value:
+            continue
+        row_values[idx[field]] = value
+        changed = True
+
+    if not changed:
+        return "unchanged"
+
+    if row_number is None:
+        core.call_with_backoff(ws.append_row, row_values[: len(header)], value_input_option="RAW")
+        return "inserted"
+
+    end_col = _col_to_a1(len(header) - 1)
+    core.call_with_backoff(ws.update, f"A{row_number}:{end_col}{row_number}", [row_values[: len(header)]])
+    return "updated"
 
 
 def append_promo_ticket_row(
