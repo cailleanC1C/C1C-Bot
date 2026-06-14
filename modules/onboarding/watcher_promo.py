@@ -54,7 +54,7 @@ log = logging.getLogger("c1c.onboarding.promo_watcher")
 
 def _promo_headers_for_write(*, ticket: str | None = None) -> list[str]:
     try:
-        return onboarding_sheets.get_promo_headers()
+        return onboarding_sheets.get_live_promo_headers()
     except Exception:
         log.exception(
             "promo source clan header mapping unavailable; cannot write Promo row",
@@ -89,6 +89,13 @@ def _promo_finalization_state(row_values: dict[str, str] | list[str] | None) -> 
         return onboarding_sheets.get_ticket_finalization_state("promo", row_values)
     except Exception:
         log.exception("promo finalization state unavailable")
+        if isinstance(row_values, dict):
+            return {
+                "finalization_status": str(row_values.get("finalization_status", "") or "").strip(),
+                "reservation_status": str(row_values.get("reservation_status", "") or "").strip(),
+                "clan_update_status": str(row_values.get("clan_update_status", "") or "").strip(),
+                "finalization_note": str(row_values.get("finalization_note", "") or "").strip(),
+            }
         return {}
 
 
@@ -108,6 +115,13 @@ _PROMO_TRIGGER_LABELS: Dict[str, str] = {
     "promo.m": "Player move request",
     "promo.l": "Clan lead move request",
 }
+PROMO_CLOSE_BACKFILL_LOOKBACK_HOURS = 48
+_PROMO_BACKFILL_TIMESTAMP_HEADERS = (
+    "date closed",
+    "updated_at",
+    "created_at",
+    "thread created",
+)
 
 
 async def _ensure_fresh_clans_for_placement(*, actor: str, ticket: str, user: str) -> bool:
@@ -244,6 +258,37 @@ def _promo_trigger_from_content(content: str | None) -> Tuple[str | None, str | 
     for marker, flow in _PROMO_TRIGGER_MAP.items():
         if marker in text:
             return marker, flow
+    return None, None
+
+
+def _parse_backfill_timestamp(value: object) -> dt.datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    candidates = [text]
+    if " " in text and "T" not in text:
+        candidates.append(text.replace(" ", "T", 1))
+    if len(text) >= 10:
+        candidates.append(text[:10])
+    for candidate in candidates:
+        try:
+            if len(candidate) == 10 and candidate[4] == "-" and candidate[7] == "-":
+                parsed = dt.datetime.combine(dt.date.fromisoformat(candidate), dt.time.min)
+            else:
+                parsed = dt.datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+    return None
+
+
+def _backfill_row_timestamp(values: dict[str, str]) -> tuple[dt.datetime | None, str | None]:
+    for header in _PROMO_BACKFILL_TIMESTAMP_HEADERS:
+        parsed = _parse_backfill_timestamp(values.get(header))
+        if parsed is not None:
+            return parsed, header
     return None, None
 
 
@@ -500,6 +545,62 @@ class PromoTicketWatcher(commands.Cog):
                 context.username,
                 exc,
             )
+        await self._patch_ticket_metadata(
+            phase="created_metadata",
+            thread=thread,
+            context=context,
+            user_id=user_id,
+            status="open",
+            created_at=created,
+        )
+
+    async def _patch_ticket_metadata(
+        self,
+        *,
+        phase: str,
+        thread: discord.Thread,
+        context: PromoTicketContext,
+        user_id: int | str | None = None,
+        panel_message_id: int | str | None = None,
+        status: str | None = None,
+        review_reason: str | None = None,
+        created_at: dt.datetime | None = None,
+        updated_at: dt.datetime | None = None,
+    ) -> str | None:
+        resolved_user_id = user_id if user_id is not None else context.user_id
+        reason = review_reason
+        if resolved_user_id is None and not reason:
+            reason = "user_id unresolved from Ticket Tool intro message"
+            log.warning(
+                "promo metadata user_id unresolved",
+                extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)},
+            )
+        try:
+            result = await asyncio.to_thread(
+                onboarding_sheets.patch_promo_ticket_metadata,
+                ticket=context.ticket_number,
+                thread_id=getattr(thread, "id", None),
+                thread_name=getattr(thread, "name", ""),
+                username=context.username,
+                user_id=resolved_user_id,
+                panel_message_id=panel_message_id,
+                status=status or context.state or "open",
+                review_reason=reason,
+                created_at=created_at or getattr(thread, "created_at", None),
+                updated_at=updated_at,
+            )
+        except Exception:
+            log.exception(
+                "promo metadata write failed",
+                extra={"phase": phase, "ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)},
+            )
+            return None
+        log.info(
+            "promo metadata write %s",
+            result,
+            extra={"phase": phase, "ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)},
+        )
+        return result
 
     async def _ensure_row_initialized(self, thread: discord.Thread, context: PromoTicketContext) -> None:
         try:
@@ -591,6 +692,14 @@ class PromoTicketWatcher(commands.Cog):
             return
         view.message = message
         context.prompt_message_id = message.id
+        await self._patch_ticket_metadata(
+            phase="close_prompt_metadata",
+            thread=thread,
+            context=context,
+            panel_message_id=message.id,
+            status="prompt_required",
+            updated_at=getattr(message, "created_at", None),
+        )
         log.info("close_prompt_started", extra={"flow": "promo", "trigger": trigger, "thread_id": getattr(thread, "id", None), "ticket": context.ticket_number})
         await _send_placement_log_line(flow="promo", outcome="prompt", ticket=context.ticket_number, player=context.username, trigger=trigger, finalization_status="prompt_required", reason="missing_source_destination", action="prompted_staff")
 
@@ -822,21 +931,35 @@ class PromoTicketWatcher(commands.Cog):
             await thread.send("⚠️ Promo source clan header mapping is missing. Please fix Config before closing this promo ticket.")
             return
 
+        row_map = {
+            "ticketnumber": context.ticket_number,
+            "username": context.username,
+            "clantag": context.clan_tag,
+            "sourceclantag": context.source_clan_tag,
+            "dateclosed": timestamp,
+            "type": context.promo_type,
+            "threadcreated": context.thread_created,
+            "year": context.year,
+            "month": context.month,
+            "joinmonth": context.join_month,
+            "clanname": clan_name,
+            "progression": progression,
+        }
         row = [
-            context.ticket_number,
-            context.username,
-            context.clan_tag,
-            context.source_clan_tag,
-            timestamp,
-            context.promo_type,
-            context.thread_created,
-            context.year,
-            context.month,
-            context.join_month,
-            clan_name,
-            progression,
+            row_map.get(
+                "".join(ch for ch in str(header or "").lower() if ch.isalnum()),
+                "",
+            )
+            for header in promo_headers
         ]
         try:
+            await self._patch_ticket_metadata(
+                phase="finalization_metadata",
+                thread=thread,
+                context=context,
+                panel_message_id=context.prompt_message_id,
+                status="closed",
+            )
             result = await log_sheet_write(
                 flow="promo",
                 phase=phase or "close",
@@ -1047,90 +1170,16 @@ class PromoTicketWatcher(commands.Cog):
         created_at: dt.datetime,
         user_ref: str,
     ) -> None:
-        created_value = created_at.isoformat()
-        updated_value = dt.datetime.now(UTC).isoformat()
-        try:
-            promo_headers = _promo_headers_for_write(ticket=context.ticket_number)
-        except Exception:
-            log.warning(
-                "promo reminder: source clan header mapping missing; skipping sheet touch",
-                extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)},
-            )
-            return
-
-        try:
-            existing = await asyncio.to_thread(
-                onboarding_sheets.find_promo_row, context.ticket_number
-            )
-        except Exception:
-            log.debug(
-                "promo reminder: failed to load promo row for sheet logging",
-                exc_info=True,
-                extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)},
-            )
-            existing = None
-
-        if existing:
-            row_values = (
-                [existing[1].get(header, "") for header in promo_headers]
-                if isinstance(existing[1], dict)
-                else list(existing[1])
-            )
-        else:
-            row_values = [
-                context.ticket_number,
-                context.username,
-                context.clan_tag,
-                context.source_clan_tag,
-                "",
-                context.promo_type,
-                context.thread_created,
-                context.year,
-                context.month,
-                context.join_month,
-                context.clan_name,
-                context.progression,
-                getattr(thread, "name", ""),
-                str(context.user_id or ""),
-                str(getattr(thread, "id", 0)),
-                "",
-                context.state,
-                "",
-                created_value,
-                "",
-            ]
-
-        if len(row_values) < len(promo_headers):
-            row_values.extend(["" for _ in range(len(promo_headers) - len(row_values))])
-
-        try:
-            created_idx = promo_headers.index("created_at")
-            updated_idx = promo_headers.index("updated_at")
-        except ValueError:
-            return
-
-        if not row_values[created_idx]:
-            row_values[created_idx] = created_value
-        row_values[updated_idx] = updated_value
-
-        try:
-            await log_sheet_write(
-                flow="promo",
-                phase=phase,
-                tab="Promo",
-                logger=log,
-                thread=thread,
-                user=user_ref,
-                write_coro=lambda: asyncio.to_thread(
-                    onboarding_sheets.upsert_promo, row_values, promo_headers
-                ),
-            )
-        except Exception:
-            log.debug(
-                "promo reminder: sheet touch failed",
-                exc_info=True,
-                extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)},
-            )
+        _ = user_ref
+        await self._patch_ticket_metadata(
+            phase=phase,
+            thread=thread,
+            context=context,
+            panel_message_id=context.prompt_message_id,
+            status=context.state or "open",
+            created_at=created_at,
+            updated_at=dt.datetime.now(UTC),
+        )
 
     async def auto_close_ticket(
         self, thread: discord.Thread, context: PromoTicketContext
@@ -1343,6 +1392,14 @@ class PromoTicketWatcher(commands.Cog):
                 flow=flow_key,
                 trigger_message=message,
             )
+            if getattr(outcome, "panel_message_id", None):
+                await self._patch_ticket_metadata(
+                    phase="panel_metadata",
+                    thread=thread,
+                    context=context,
+                    panel_message_id=outcome.panel_message_id,
+                    status="open",
+                )
             self._log_panel_outcome(
                 message.author,
                 thread,
@@ -1414,6 +1471,14 @@ class PromoTicketWatcher(commands.Cog):
             flow=flow_key,
             trigger_message=message,
         )
+        if getattr(outcome, "panel_message_id", None):
+            await self._patch_ticket_metadata(
+                phase="panel_metadata",
+                thread=thread,
+                context=context,
+                panel_message_id=outcome.panel_message_id,
+                status="open",
+            )
         self._log_panel_outcome(
             message.author,
             thread,
@@ -1502,7 +1567,17 @@ class PromoTicketWatcher(commands.Cog):
         # Startup watcher status is included in the global startup summary.
 
     async def run_close_backfill(self) -> dict[str, int]:
-        summary = {"scanned": 0, "finalized": 0, "prompt_required": 0, "already_done": 0, "unresolved": 0, "error": 0}
+        summary = {
+            "scanned": 0,
+            "finalized": 0,
+            "prompt_required": 0,
+            "already_done": 0,
+            "unresolved": 0,
+            "error": 0,
+            "skipped_old": 0,
+            "skipped_no_timestamp": 0,
+        }
+        cutoff = dt.datetime.now(UTC) - dt.timedelta(hours=PROMO_CLOSE_BACKFILL_LOOKBACK_HOURS)
         try:
             rows = await asyncio.to_thread(onboarding_sheets.list_ticket_rows_for_finalization_backfill, "promo")
         except Exception:
@@ -1517,6 +1592,28 @@ class PromoTicketWatcher(commands.Cog):
             thread_id = str(values.get("thread_id") or values.get("thread") or "").strip()
             if status != "closed" and not thread_id:
                 continue
+            stamp, stamp_source = _backfill_row_timestamp(values)
+            ticket = values.get("ticket number") or values.get("ticket_number") or values.get("ticket")
+            if stamp is None:
+                summary["skipped_no_timestamp"] += 1
+                log.info(
+                    "close_backfill_skip_no_timestamp",
+                    extra={"flow": "promo", "thread_id": thread_id, "ticket": ticket},
+                )
+                continue
+            if stamp < cutoff:
+                summary["skipped_old"] += 1
+                log.debug(
+                    "close_backfill_skip_old",
+                    extra={
+                        "flow": "promo",
+                        "thread_id": thread_id,
+                        "ticket": ticket,
+                        "timestamp_source": stamp_source,
+                        "lookback_hours": PROMO_CLOSE_BACKFILL_LOOKBACK_HOURS,
+                    },
+                )
+                continue
             summary["scanned"] += 1
             thread = None
             if thread_id:
@@ -1527,7 +1624,6 @@ class PromoTicketWatcher(commands.Cog):
                         thread = await self.bot.fetch_channel(tid)
                 except Exception:
                     thread = None
-            ticket = values.get("ticket number") or values.get("ticket_number") or values.get("ticket")
             player = values.get("username") or "unknown"
             sheet_closed = status == "closed"
             thread_closed = bool(thread is not None and _is_closed_thread(thread))
