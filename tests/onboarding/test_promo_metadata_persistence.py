@@ -423,3 +423,61 @@ def test_list_ticket_rows_for_promo_backfill_does_not_mutate_header(promo_sheet)
     assert rows[0][1]["ticket number"] == "M0503"
     assert promo_sheet.rows[0] == LIVE_PROMO_HEADERS
     assert promo_sheet.header_updates == []
+
+
+def test_promo_backfill_loader_uses_live_headers_without_source_config(promo_sheet, monkeypatch):
+    monkeypatch.setattr(onboarding_sheets, "get_promo_source_clan_tag_header", lambda **kwargs: "wrong_source_header")
+    promo_sheet.rows.append(["M0600", "Player", "C1CE", "C1CV", "", "move", "", "thread", "111", "222", "", "closed", "", "", dt.datetime.now(dt.timezone.utc).isoformat(), "pending", "", "", "", "2026", "June", "June", "Clan", "TH16"])
+
+    rows = onboarding_sheets.list_ticket_rows_for_finalization_backfill("promo")
+
+    assert rows == [(2, dict(zip(LIVE_PROMO_HEADERS, promo_sheet.rows[1])))]
+    assert promo_sheet.rows[0] == LIVE_PROMO_HEADERS
+    assert promo_sheet.header_updates == []
+
+
+def test_promo_backfill_loader_missing_required_header_clear_reason(monkeypatch):
+    worksheet = FakeWorksheet(headers=[h for h in LIVE_PROMO_HEADERS if h != "finalization_status"])
+    monkeypatch.setattr(onboarding_sheets.core, "call_with_backoff", lambda func, *args, **kwargs: func(*args, **kwargs))
+    monkeypatch.setattr(onboarding_sheets, "_promo_tab", lambda: "PromoFromConfig")
+    monkeypatch.setattr(onboarding_sheets, "_worksheet", lambda tab: worksheet)
+
+    with pytest.raises(RuntimeError, match=r"Promo backfill missing required header\(s\): finalization_status"):
+        onboarding_sheets.list_ticket_rows_for_finalization_backfill("promo")
+
+    assert worksheet.rows[0] == [h for h in LIVE_PROMO_HEADERS if h != "finalization_status"]
+    assert worksheet.header_updates == []
+
+
+def test_promo_startup_backfill_empty_loader_clean_summary_and_header_unchanged(promo_sheet, caplog):
+    watcher = watcher_promo.PromoTicketWatcher(bot=SimpleNamespace(get_channel=lambda tid: None))
+
+    import asyncio
+    summary = asyncio.run(watcher.run_close_backfill())
+
+    assert summary == {
+        "scanned": 0,
+        "finalized": 0,
+        "prompt_required": 0,
+        "already_done": 0,
+        "unresolved": 0,
+        "error": 0,
+        "skipped_old": 0,
+        "skipped_no_timestamp": 0,
+    }
+    assert promo_sheet.rows[0] == LIVE_PROMO_HEADERS
+    assert promo_sheet.header_updates == []
+    assert not [record for record in caplog.records if record.levelname == "ERROR"]
+
+
+def test_promo_startup_backfill_loader_error_logs_reason(monkeypatch, caplog):
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "list_ticket_rows_for_finalization_backfill", lambda flow: (_ for _ in ()).throw(RuntimeError("Promo backfill missing required header(s): finalization_status")))
+    watcher = watcher_promo.PromoTicketWatcher(bot=SimpleNamespace(get_channel=lambda tid: None))
+
+    import asyncio
+    summary = asyncio.run(watcher.run_close_backfill())
+
+    assert summary["scanned"] == 0
+    errors = [record for record in caplog.records if record.name == "c1c.onboarding.promo_watcher" and record.levelname == "ERROR"]
+    assert errors
+    assert "RuntimeError: Promo backfill missing required header(s): finalization_status" == errors[-1].reason

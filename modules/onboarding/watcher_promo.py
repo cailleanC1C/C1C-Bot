@@ -1580,8 +1580,9 @@ class PromoTicketWatcher(commands.Cog):
         cutoff = dt.datetime.now(UTC) - dt.timedelta(hours=PROMO_CLOSE_BACKFILL_LOOKBACK_HOURS)
         try:
             rows = await asyncio.to_thread(onboarding_sheets.list_ticket_rows_for_finalization_backfill, "promo")
-        except Exception:
-            log.exception("close_backfill_summary", extra={"flow": "promo", **summary, "result": "error"})
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            log.exception("close_backfill_summary", extra={"flow": "promo", **summary, "result": "error", "reason": reason})
             return summary
         for _, values in rows:
             state = _promo_finalization_state(values)

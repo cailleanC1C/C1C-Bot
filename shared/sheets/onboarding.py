@@ -371,12 +371,8 @@ def _ensure_headers(ws, headers: Sequence[str]) -> List[str]:
     return list(existing) if existing else list(headers)
 
 
-def _ensure_promo_headers(ws) -> List[str]:
-    """Return the live Promo header row without mutating it.
-
-    Promo column order is operator-owned. Existing headers are the source of
-    truth; callers must map writes by matching header names only.
-    """
+def _read_promo_live_header_row(ws) -> List[str]:
+    """Read the operator-owned Promo header row without mutating it."""
 
     try:
         existing = core.call_with_backoff(ws.row_values, 1)
@@ -384,8 +380,18 @@ def _ensure_promo_headers(ws) -> List[str]:
         existing = []
     header = [str(value or "").strip() for value in existing]
     if not any(header):
-        raise RuntimeError("Promo sheet header row missing; refusing to write")
+        raise RuntimeError("Promo sheet header row missing")
+    return header
 
+
+def _ensure_promo_headers(ws) -> List[str]:
+    """Return the live Promo header row without mutating it.
+
+    Promo column order is operator-owned. Existing headers are the source of
+    truth; callers must map writes by matching header names only.
+    """
+
+    header = _read_promo_live_header_row(ws)
     source_header = get_promo_source_clan_tag_header()
     normalized_existing = {_normalize_header_name(col) for col in header}
     if _normalize_header_name(source_header) not in normalized_existing:
@@ -1519,7 +1525,17 @@ def list_ticket_rows_for_finalization_backfill(flow: str) -> List[Tuple[int, Dic
         header = _ensure_headers(ws, get_welcome_headers())
     elif normalized == "promo":
         ws = _worksheet(_promo_tab())
-        header = _ensure_promo_headers(ws)
+        header = _read_promo_live_header_row(ws)
+        header_index = _promo_header_index(header)
+        required = {
+            "ticketnumber": "ticket number",
+            "finalizationstatus": "finalization_status",
+        }
+        missing = [label for key, label in required.items() if key not in header_index]
+        if missing:
+            raise RuntimeError("Promo backfill missing required header(s): " + ", ".join(missing))
+        values = core.call_with_backoff(ws.get_all_values)
+        return [(row_idx, _row_map(header, row)) for row_idx, row in enumerate(values[1:], start=2)]
     else:
         raise ValueError(f"unknown onboarding finalization flow: {flow!r}")
     require_finalization_headers(normalized, header)
