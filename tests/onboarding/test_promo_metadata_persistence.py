@@ -66,6 +66,7 @@ def promo_sheet(monkeypatch):
     monkeypatch.setattr(onboarding_sheets.core, "call_with_backoff", lambda func, *args, **kwargs: func(*args, **kwargs))
     monkeypatch.setattr(onboarding_sheets, "_resolve_onboarding_and_promo_tab", lambda: ("sheet", "PromoFromConfig"))
     monkeypatch.setattr(onboarding_sheets, "_worksheet", lambda tab: worksheet)
+    monkeypatch.setattr(onboarding_sheets, "_promo_tab", lambda: "PromoFromConfig")
     monkeypatch.setattr(onboarding_sheets.core, "get_worksheet", lambda sheet_id, tab: worksheet)
     monkeypatch.setattr(onboarding_sheets, "get_promo_source_clan_tag_header", lambda **kwargs: "source_clan_tag")
     monkeypatch.setattr(onboarding_sheets, "get_finalization_headers", lambda flow, **kwargs: {
@@ -300,3 +301,125 @@ def test_startup_backfill_skips_closed_promo_with_no_usable_timestamp(monkeypatc
     assert summary["skipped_no_timestamp"] == 1
     assert summary["scanned"] == 0
     assert updates == []
+
+
+def test_append_promo_ticket_row_preserves_header_order_and_places_values(promo_sheet):
+    created = dt.datetime(2026, 6, 14, 12, 0, tzinfo=dt.timezone.utc)
+    result = onboarding_sheets.append_promo_ticket_row(
+        "M0500",
+        "Player One",
+        "C1CE",
+        "C1CV",
+        "move",
+        "2026-06-14 12:00",
+        "2026",
+        "June",
+        "June",
+        "Clan One",
+        "TH16",
+        thread_name="M0500-Player-One",
+        user_id=111,
+        thread_id=222,
+        panel_message_id=333,
+        status="open",
+        created_at=created,
+        updated_at=created,
+    )
+
+    assert result == "inserted"
+    assert promo_sheet.rows[0] == LIVE_PROMO_HEADERS
+    assert promo_sheet.header_updates == []
+    row = _row_map(promo_sheet)
+    expected = {
+        "ticket number": "M0500",
+        "username": "Player One",
+        "clantag": "C1CE",
+        "source_clan_tag": "C1CV",
+        "date closed": "",
+        "type": "move",
+        "thread created": "2026-06-14 12:00",
+        "thread_name": "M0500-Player-One",
+        "user_id": "111",
+        "thread_id": "222",
+        "panel_message_id": "333",
+        "status": "open",
+        "review_reason": "",
+        "created_at": created.isoformat(),
+        "updated_at": created.isoformat(),
+        "finalization_status": "pending",
+        "reservation_status": "pending",
+        "clan_update_status": "pending",
+        "finalization_note": "",
+        "year": "2026",
+        "month": "June",
+        "join_month": "June",
+        "clan name": "Clan One",
+        "progression": "TH16",
+    }
+    assert row == expected
+
+
+def test_upsert_promo_preserves_header_and_existing_metadata(promo_sheet):
+    promo_sheet.rows.append(["M0501", "Old", "C1CA", "C1CB", "", "move", "old thread", "thread-name", "111", "222", "333", "open", "keep", "created", "updated", "pending", "pending", "pending", "", "2026", "May", "May", "Clan", "TH15"])
+    incoming = [""] * len(LIVE_PROMO_HEADERS)
+    values = dict(zip(LIVE_PROMO_HEADERS, incoming))
+    values.update({
+        "ticket number": "M0501",
+        "username": "New",
+        "clantag": "C1CE",
+        "source_clan_tag": "C1CV",
+        "type": "move",
+        "year": "2026",
+        "month": "June",
+        "clan name": "Clan New",
+    })
+    row_values = [values[h] for h in LIVE_PROMO_HEADERS]
+
+    result = onboarding_sheets.upsert_promo(row_values, LIVE_PROMO_HEADERS)
+
+    assert result == "updated"
+    assert promo_sheet.rows[0] == LIVE_PROMO_HEADERS
+    assert promo_sheet.header_updates == []
+    row = _row_map(promo_sheet)
+    assert row["thread_name"] == "thread-name"
+    assert row["user_id"] == "111"
+    assert row["panel_message_id"] == "333"
+    assert row["finalization_status"] == "pending"
+    assert row["username"] == "New"
+    assert row["clantag"] == "C1CE"
+
+
+def test_update_ticket_finalization_state_promo_preserves_header_and_metadata(promo_sheet):
+    promo_sheet.rows.append(["M0502", "Player", "C1CE", "C1CV", "", "move", "created thread", "thread-name", "111", "222", "333", "closed", "reason", "created", "updated", "pending", "pending", "pending", "", "2026", "June", "June", "Clan", "TH16"])
+
+    result = onboarding_sheets.update_ticket_finalization_state(
+        "promo",
+        ticket="M0502",
+        thread_id=222,
+        finalization_status="done",
+        reservation_status="released",
+        clan_update_status="done",
+        finalization_note="finalized",
+    )
+
+    assert result == "updated"
+    assert promo_sheet.rows[0] == LIVE_PROMO_HEADERS
+    assert promo_sheet.header_updates == []
+    row = _row_map(promo_sheet)
+    assert row["thread_name"] == "thread-name"
+    assert row["user_id"] == "111"
+    assert row["panel_message_id"] == "333"
+    assert row["finalization_status"] == "done"
+    assert row["reservation_status"] == "released"
+    assert row["clan_update_status"] == "done"
+    assert row["finalization_note"] == "finalized"
+
+
+def test_list_ticket_rows_for_promo_backfill_does_not_mutate_header(promo_sheet):
+    promo_sheet.rows.append(["M0503", "Player", "", "", "", "", "", "", "", "222", "", "closed", "", "", dt.datetime.now(dt.timezone.utc).isoformat(), "pending", "", "", "", "", "", "", "", ""])
+
+    rows = onboarding_sheets.list_ticket_rows_for_finalization_backfill("promo")
+
+    assert rows[0][1]["ticket number"] == "M0503"
+    assert promo_sheet.rows[0] == LIVE_PROMO_HEADERS
+    assert promo_sheet.header_updates == []
