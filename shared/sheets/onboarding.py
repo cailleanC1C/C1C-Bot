@@ -371,12 +371,8 @@ def _ensure_headers(ws, headers: Sequence[str]) -> List[str]:
     return list(existing) if existing else list(headers)
 
 
-def _ensure_promo_headers(ws) -> List[str]:
-    """Return the live Promo header row without mutating it.
-
-    Promo column order is operator-owned. Existing headers are the source of
-    truth; callers must map writes by matching header names only.
-    """
+def _read_promo_live_header_row(ws) -> List[str]:
+    """Read the operator-owned Promo header row without mutating it."""
 
     try:
         existing = core.call_with_backoff(ws.row_values, 1)
@@ -384,8 +380,18 @@ def _ensure_promo_headers(ws) -> List[str]:
         existing = []
     header = [str(value or "").strip() for value in existing]
     if not any(header):
-        raise RuntimeError("Promo sheet header row missing; refusing to write")
+        raise RuntimeError("Promo sheet header row missing")
+    return header
 
+
+def _ensure_promo_headers(ws) -> List[str]:
+    """Return the live Promo header row without mutating it.
+
+    Promo column order is operator-owned. Existing headers are the source of
+    truth; callers must map writes by matching header names only.
+    """
+
+    header = _read_promo_live_header_row(ws)
     source_header = get_promo_source_clan_tag_header()
     normalized_existing = {_normalize_header_name(col) for col in header}
     if _normalize_header_name(source_header) not in normalized_existing:
@@ -759,6 +765,87 @@ def _ticket_key_columns(
     return key_columns, search_values
 
 
+
+
+def _promo_header_index(header: Sequence[str]) -> dict[str, int]:
+    return {_normalize_header_name(name): idx for idx, name in enumerate(header)}
+
+
+def _promo_find_row_in_values(
+    header: Sequence[str],
+    values: Sequence[Sequence[str]],
+    *,
+    ticket: str | None = None,
+    thread_id: int | str | None = None,
+) -> tuple[int | None, list[str] | None]:
+    idx = _promo_header_index(header)
+    target_thread = str(thread_id or "").strip()
+    thread_col = idx.get("threadid")
+    if target_thread and thread_col is not None:
+        for row_idx, row in enumerate(values[1:], start=2):
+            current = row[thread_col] if thread_col < len(row) else ""
+            if str(current or "").strip() == target_thread:
+                return row_idx, list(row)
+
+    target_ticket = _fmt_ticket(ticket) if ticket else ""
+    ticket_col = idx.get("ticketnumber")
+    if target_ticket and ticket_col is not None:
+        for row_idx, row in enumerate(values[1:], start=2):
+            current = row[ticket_col] if ticket_col < len(row) else ""
+            if _fmt_ticket(current) == target_ticket:
+                return row_idx, list(row)
+    return None, None
+
+
+def _promo_update_data_row(ws, header: Sequence[str], row_number: int, row_values: Sequence[str]) -> None:
+    end_col = _col_to_a1(len(header) - 1)
+    core.call_with_backoff(ws.update, f"A{row_number}:{end_col}{row_number}", [list(row_values)[: len(header)]])
+
+
+def _promo_safe_upsert_mapped(
+    ws,
+    header: Sequence[str],
+    incoming: dict[str, str],
+    *,
+    ticket: str | None = None,
+    thread_id: int | str | None = None,
+    preserve_existing: bool = True,
+) -> str:
+    """Insert/update a Promo data row without touching row 1."""
+
+    idx = _promo_header_index(header)
+    if "ticketnumber" not in idx:
+        raise RuntimeError("Promo sheet missing required header: ticket number")
+    values = core.call_with_backoff(ws.get_all_values)
+    row_number, row = _promo_find_row_in_values(header, values, ticket=ticket, thread_id=thread_id)
+    if row is None:
+        row = ["" for _ in header]
+    elif len(row) < len(header):
+        row.extend("" for _ in range(len(header) - len(row)))
+
+    changed = False
+    for normalized, value in incoming.items():
+        col = idx.get(_normalize_header_name(normalized))
+        if col is None:
+            continue
+        text = str(value or "").strip()
+        if not text:
+            continue
+        if preserve_existing and str(row[col] or "").strip():
+            continue
+        if row[col] != text:
+            row[col] = text
+            changed = True
+
+    if row_number is None:
+        core.call_with_backoff(ws.append_row, row[: len(header)], value_input_option="RAW")
+        return "inserted"
+    if not changed:
+        return "unchanged"
+    _promo_update_data_row(ws, header, row_number, row)
+    return "updated"
+
+
 def _normalize_ticket_timestamps(
     created_at: datetime | None, updated_at: datetime | None
 ) -> tuple[datetime, datetime]:
@@ -1021,8 +1108,23 @@ def upsert_promo(
         col = _column_index(resolved_headers, header, default=-1)
         if col >= 0 and not str(incoming[col] or "").strip():
             incoming[col] = existing_map.get(header, "") or ("pending" if field != "finalization_note" else "")
-    keys = [("ticket number", _fmt_ticket)]
-    return _upsert(ws, keys, incoming, resolved_headers)
+    actual_idx = _promo_header_index(actual_headers)
+    resolved_idx = {_normalize_header_name(name): pos for pos, name in enumerate(resolved_headers)}
+    incoming_map: dict[str, str] = {}
+    for normalized, actual_pos in actual_idx.items():
+        source_pos = resolved_idx.get(normalized)
+        value = incoming[source_pos] if source_pos is not None and source_pos < len(incoming) else ""
+        if str(value or "").strip():
+            incoming_map[normalized] = str(value)
+    thread_value = incoming_map.get("threadid") or incoming_map.get("thread")
+    return _promo_safe_upsert_mapped(
+        ws,
+        actual_headers,
+        incoming_map,
+        ticket=ticket_value,
+        thread_id=thread_value,
+        preserve_existing=False,
+    )
 
 
 PROMO_METADATA_REQUIRED_HEADERS = {
@@ -1246,9 +1348,14 @@ def append_promo_ticket_row(
     value_map[_normalize_header_name(final_headers["clan_update_status"])] = "pending"
     value_map[_normalize_header_name(final_headers["finalization_note"])] = ""
 
-    row_values = _build_ticket_row(header, value_map)
-    key_columns, search_values = _ticket_key_columns(header, ticket_value, thread_id)
-    return _upsert(ws, key_columns, row_values, header, search_values=search_values)
+    return _promo_safe_upsert_mapped(
+        ws,
+        header,
+        value_map,
+        ticket=ticket_value,
+        thread_id=thread_id,
+        preserve_existing=False,
+    )
 
 
 def append_onboarding_session_row(
@@ -1368,19 +1475,27 @@ def update_ticket_finalization_state(
     header = _ensure_promo_headers(ws) if normalized == "promo" else _ensure_headers(ws, desired_headers)
     final_headers = require_finalization_headers(normalized, header)
     values = core.call_with_backoff(ws.get_all_values)
-    ticket_col = _column_index(header, ticket_header)
-    thread_col = next((idx for idx, name in enumerate(_normalize_header_name(h) for h in header) if name in {"threadid", "thread"}), -1)
     target_ticket = _fmt_ticket(ticket) if ticket else ""
     target_thread = str(thread_id or "").strip()
-    row_number = None
-    row = None
-    for idx, current in enumerate(values[1:], start=2):
-        ticket_match = bool(target_ticket) and ticket_col < len(current) and _fmt_ticket(current[ticket_col]) == target_ticket
-        thread_match = bool(target_thread) and thread_col >= 0 and thread_col < len(current) and str(current[thread_col] or "").strip() == target_thread
-        if ticket_match or thread_match:
-            row_number = idx
-            row = list(current)
-            break
+    if normalized == "promo":
+        row_number, row = _promo_find_row_in_values(
+            header,
+            values,
+            ticket=target_ticket,
+            thread_id=target_thread,
+        )
+    else:
+        ticket_col = _column_index(header, ticket_header)
+        thread_col = next((idx for idx, name in enumerate(_normalize_header_name(h) for h in header) if name in {"threadid", "thread"}), -1)
+        row_number = None
+        row = None
+        for idx, current in enumerate(values[1:], start=2):
+            ticket_match = bool(target_ticket) and ticket_col < len(current) and _fmt_ticket(current[ticket_col]) == target_ticket
+            thread_match = bool(target_thread) and thread_col >= 0 and thread_col < len(current) and str(current[thread_col] or "").strip() == target_thread
+            if ticket_match or thread_match:
+                row_number = idx
+                row = list(current)
+                break
     if row_number is None or row is None:
         raise RuntimeError(f"{normalized} finalization row not found for ticket={ticket or '-'} thread_id={thread_id or '-'}")
     if len(row) < len(header):
@@ -1410,7 +1525,17 @@ def list_ticket_rows_for_finalization_backfill(flow: str) -> List[Tuple[int, Dic
         header = _ensure_headers(ws, get_welcome_headers())
     elif normalized == "promo":
         ws = _worksheet(_promo_tab())
-        header = _ensure_promo_headers(ws)
+        header = _read_promo_live_header_row(ws)
+        header_index = _promo_header_index(header)
+        required = {
+            "ticketnumber": "ticket number",
+            "finalizationstatus": "finalization_status",
+        }
+        missing = [label for key, label in required.items() if key not in header_index]
+        if missing:
+            raise RuntimeError("Promo backfill missing required header(s): " + ", ".join(missing))
+        values = core.call_with_backoff(ws.get_all_values)
+        return [(row_idx, _row_map(header, row)) for row_idx, row in enumerate(values[1:], start=2)]
     else:
         raise ValueError(f"unknown onboarding finalization flow: {flow!r}")
     require_finalization_headers(normalized, header)
