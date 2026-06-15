@@ -156,6 +156,20 @@ def test_upsert_promo_inserts_and_updates(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(onboarding_sheets, "_worksheet", lambda tab: FakeWorksheet())
     monkeypatch.setattr(onboarding_sheets, "_promo_tab", lambda: "PromoTickets")
     monkeypatch.setattr(onboarding_sheets, "_sheet_id", lambda: "sheet")
+    monkeypatch.setattr(onboarding_sheets, "get_promo_source_clan_tag_header", lambda **kwargs: "source_clan_tag")
+    monkeypatch.setattr(onboarding_sheets, "get_finalization_headers", lambda flow, **kwargs: {
+        "finalization_status": "finalization_status",
+        "reservation_status": "reservation_status",
+        "clan_update_status": "clan_update_status",
+        "finalization_note": "finalization_note",
+    })
+    live_headers = list(onboarding_sheets.PROMO_HEADERS) + [
+        "finalization_status",
+        "reservation_status",
+        "clan_update_status",
+        "finalization_note",
+    ]
+    rows.append(live_headers)
 
     base_row = [
         "R0001",
@@ -171,15 +185,15 @@ def test_upsert_promo_inserts_and_updates(monkeypatch: pytest.MonkeyPatch) -> No
         "",
     ]
 
-    result_insert = onboarding_sheets.upsert_promo(base_row, onboarding_sheets.PROMO_HEADERS)
+    result_insert = onboarding_sheets.upsert_promo(base_row, live_headers)
     assert result_insert == "inserted"
-    assert rows[0] == onboarding_sheets.PROMO_HEADERS
+    assert rows[0] == live_headers
     assert len(rows) == 2
     assert rows[1][:5] == base_row[:5]
 
     updated_row = base_row[:]
     updated_row[2] = "C1CE"
-    result_update = onboarding_sheets.upsert_promo(updated_row, onboarding_sheets.PROMO_HEADERS)
+    result_update = onboarding_sheets.upsert_promo(updated_row, live_headers)
     assert result_update == "updated"
     assert len(rows) == 2
     assert rows[1][2] == "C1CE"

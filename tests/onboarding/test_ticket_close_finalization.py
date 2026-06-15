@@ -1,4 +1,5 @@
 import asyncio
+import datetime as dt
 from types import SimpleNamespace
 
 from modules.onboarding import watcher_promo, watcher_welcome
@@ -258,6 +259,7 @@ def test_welcome_backfill_closed_row_fetch_fails_marks_skipped_unresolved(monkey
         "username": "ClosedUser",
         "thread_id": "123",
         "status": "closed",
+        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "finalization_status": "pending",
     }
     updates = []
@@ -283,6 +285,7 @@ def test_promo_backfill_closed_row_fetch_fails_marks_skipped_unresolved(monkeypa
         "username": "ClosedUser",
         "thread_id": "123",
         "status": "closed",
+        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "finalization_status": "pending",
     }
     updates = []
@@ -328,6 +331,7 @@ def test_promo_backfill_open_row_fetched_archived_thread_triggers_prompt(monkeyp
         "username": "ArchivedUser",
         "thread_id": "123",
         "status": "open",
+        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "finalization_status": "pending",
     }
     prompted = []
