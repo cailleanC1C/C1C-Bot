@@ -10,6 +10,7 @@ from typing import Iterable, Sequence
 import discord
 from discord.ext import commands
 
+from modules.community.fusion import role_cleanup as fusion_role_cleanup
 from modules.common.embeds import get_embed_colour
 from modules.common.tickets import TicketThread, fetch_ticket_threads
 from shared.config import (
@@ -51,6 +52,8 @@ class AuditResult:
     visitors_no_ticket: list[discord.Member] | None = None
     visitors_closed_only: list[tuple[discord.Member, list[TicketThread]]] | None = None
     visitors_extra_roles: list[tuple[discord.Member, list[discord.Role], list[TicketThread]]] | None = None
+    members_only_everyone: list[discord.Member] | None = None
+    fusion_role_cleanup: list[fusion_role_cleanup.FusionRoleCleanupSummary] | None = None
     proposed_role_mutations: list[tuple[discord.Member, list[discord.Role], list[discord.Role]]] | None = None
     action_roles_removed: list[str] | None = None
     action_roles_added: list[str] | None = None
@@ -88,6 +91,17 @@ def _extra_roles(member: discord.Member, visitor_role_id: int) -> list[discord.R
     return extras
 
 
+def _is_only_everyone_member(member: discord.Member) -> bool:
+    """Return True for non-bot members whose only role is the guild @everyone role."""
+    if getattr(member, "bot", False):
+        return False
+    guild_id = getattr(getattr(member, "guild", None), "id", None)
+    role_ids = _member_roles(member)
+    if guild_id is not None:
+        role_ids.discard(int(guild_id))
+    return not role_ids
+
+
 def _format_member(member: discord.Member) -> str:
     mention = getattr(member, "mention", None)
     if mention:
@@ -96,6 +110,13 @@ def _format_member(member: discord.Member) -> str:
     if name:
         return f"{name} ({getattr(member, 'id', 'unknown')})"
     return str(getattr(member, "id", "unknown"))
+
+
+def _format_member_with_username(member: discord.Member) -> str:
+    name = getattr(member, "display_name", None) or getattr(member, "name", None)
+    if not name:
+        name = str(getattr(member, "id", "unknown"))
+    return f"{_format_member(member)} – {name}"
 
 
 def _format_roles(roles: Iterable[discord.Role]) -> str:
@@ -214,6 +235,7 @@ async def _audit_guild(
         visitors_no_ticket=[],
         visitors_closed_only=[],
         visitors_extra_roles=[],
+        members_only_everyone=[],
         proposed_role_mutations=[],
         action_roles_removed=[],
         action_roles_added=[],
@@ -223,6 +245,8 @@ async def _audit_guild(
 
     for member in members:
         member_roles = _member_roles(member)
+        if _is_only_everyone_member(member):
+            result.members_only_everyone.append(member)
 
         classification = _classify_roles(
             member_roles,
@@ -309,17 +333,33 @@ def _format_joined_date(member: discord.abc.User) -> str:
     return joined_at.strftime("%Y-%m-%d")
 
 
-def _render_report(
+def _build_fusion_cleanup_lines(
+    summaries: Sequence[fusion_role_cleanup.FusionRoleCleanupSummary],
+) -> list[str]:
+    lines: list[str] = []
+    for item in summaries:
+        role_label = item.role_name or "unknown"
+        status = "already processed/skipped" if item.already_processed else item.status
+        lines.append(
+            "• "
+            f"{item.fusion_name or item.fusion_id} (`{item.fusion_id}`) – "
+            f"role `{role_label}` ({item.role_id or 'missing'}); "
+            f"found={item.members_found}, removed={item.removed_count}, "
+            f"failed={item.failed_count}, skipped={item.skipped_count}; "
+            f"dedupe=`{item.dedupe_key}` {status}"
+        )
+        for reason in item.failure_reasons:
+            lines.append(f"  ◦ failure: {reason}")
+    return lines
+
+
+def _build_report_sections(
     *,
     summary: AuditResult,
     raid_role_name: str,
     wanderer_role_name: str,
     dry_run: bool = True,
-) -> discord.Embed:
-    date_text = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    parts: list[str] = []
-
+) -> tuple[list[tuple[str, list[str]]], list[tuple[str, list[str]]]]:
     stray_action = "Would remove" if dry_run else "Removed"
     stray_add_action = "would add" if dry_run else "added"
     wanderer_action = "Would remove" if dry_run else "Removed"
@@ -364,6 +404,17 @@ def _render_report(
     if visitor_extra_roles:
         detected_sections.append(("5) Visitors with extra roles", visitor_extra_roles))
 
+    only_everyone_lines = [
+        f"• {_format_member_with_username(member)}"
+        for member in (summary.members_only_everyone or [])
+    ]
+    if only_everyone_lines:
+        detected_sections.append(("6) Members with only @everyone", only_everyone_lines))
+
+    fusion_lines = _build_fusion_cleanup_lines(summary.fusion_role_cleanup or [])
+    if fusion_lines:
+        detected_sections.append(("7) Fusion role cleanup", fusion_lines))
+
     if summary.action_roles_removed:
         action_sections.append(("6) Roles removed", summary.action_roles_removed))
     if summary.action_roles_added:
@@ -373,30 +424,110 @@ def _render_report(
     if summary.action_failed_or_skipped:
         action_sections.append(("9) Failed / skipped actions", summary.action_failed_or_skipped))
 
+    return detected_sections, action_sections
+
+
+_SAFE_DESCRIPTION_LIMIT = 3800
+
+
+def _section_blocks(sections: Sequence[tuple[str, list[str]]], *, heading: str) -> list[list[str]]:
+    if not sections:
+        return []
+    blocks: list[list[str]] = [["━━━━━━━━━━━━", heading, "━━━━━━━━━━━━", ""]]
+    for idx, (title, lines) in enumerate(sections):
+        section_lines = _render_section(title, lines)
+        if idx < len(sections) - 1:
+            section_lines.append("")
+        blocks.append(section_lines)
+    return blocks
+
+
+def _split_report_parts(blocks: Sequence[Sequence[str]]) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+
+    def _joined_len(lines: Sequence[str]) -> int:
+        return len("\n".join(lines).strip())
+
+    for block in blocks:
+        block_lines = list(block)
+        if current and _joined_len([*current, *block_lines]) > _SAFE_DESCRIPTION_LIMIT:
+            parts.append("\n".join(current).strip())
+            current = []
+        if _joined_len(block_lines) <= _SAFE_DESCRIPTION_LIMIT:
+            current.extend(block_lines)
+            continue
+
+        header = block_lines[:1]
+        entries = block_lines[1:]
+        if not current:
+            current.extend(header)
+        for line in entries:
+            if current and _joined_len([*current, line]) > _SAFE_DESCRIPTION_LIMIT:
+                parts.append("\n".join(current).strip())
+                current = header.copy()
+            current.append(line)
+    if current or not parts:
+        parts.append("\n".join(current).strip())
+    return parts
+
+
+def _render_report_embeds(
+    *,
+    summary: AuditResult,
+    raid_role_name: str,
+    wanderer_role_name: str,
+    dry_run: bool = True,
+) -> list[discord.Embed]:
+    date_text = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    detected_sections, action_sections = _build_report_sections(
+        summary=summary,
+        raid_role_name=raid_role_name,
+        wanderer_role_name=wanderer_role_name,
+        dry_run=dry_run,
+    )
+    blocks: list[list[str]] = []
     if detected_sections:
-        parts.extend(["━━━━━━━━━━━━", "DETECTED ISSUES", "━━━━━━━━━━━━", ""])
-        for idx, (title, lines) in enumerate(detected_sections):
-            parts.extend(_render_section(title, lines))
-            if idx < len(detected_sections) - 1:
-                parts.append("")
+        blocks.extend(_section_blocks(detected_sections, heading="DETECTED ISSUES"))
 
     if action_sections:
-        if parts:
-            parts.append("")
-        parts.extend(["━━━━━━━━━━━━", "ACTIONS PERFORMED", "━━━━━━━━━━━━", ""])
-        for idx, (title, lines) in enumerate(action_sections):
-            parts.extend(_render_section(title, lines))
-            if idx < len(action_sections) - 1:
-                parts.append("")
+        if blocks:
+            blocks.append([""])
+        blocks.extend(_section_blocks(action_sections, heading="ACTIONS PERFORMED"))
 
-    embed = discord.Embed(
-        title="🧹 Role & Visitor Audit",
-        description="\n".join(parts).strip(),
-        colour=get_embed_colour("admin"),
-    )
-    embed.set_footer(text=f"Date: {date_text} • Checked: {summary.checked} members")
+    parts = _split_report_parts(blocks)
+    embeds: list[discord.Embed] = []
+    for idx, description in enumerate(parts, start=1):
+        total = len(parts)
+        title = "🧹 Role & Visitor Audit"
+        if total > 1:
+            title = f"{title} ({idx}/{total})"
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            colour=get_embed_colour("admin"),
+        )
+        footer = f"Date: {date_text} • Checked: {summary.checked} members"
+        if total > 1:
+            footer = f"{footer} • Part {idx}/{total}"
+        embed.set_footer(text=footer)
+        embeds.append(embed)
+    return embeds
 
-    return embed
+
+def _render_report(
+    *,
+    summary: AuditResult,
+    raid_role_name: str,
+    wanderer_role_name: str,
+    dry_run: bool = True,
+) -> discord.Embed:
+    return _render_report_embeds(
+        summary=summary,
+        raid_role_name=raid_role_name,
+        wanderer_role_name=wanderer_role_name,
+        dry_run=dry_run,
+    )[0]
 
 
 async def run_role_and_visitor_audit(
@@ -426,6 +557,13 @@ async def run_role_and_visitor_audit(
 
     raid_role_name = "Raid"
     wanderer_role_name = "Wandering Souls"
+    actor_normalized = (actor or "").strip().lower()
+    scheduled_actors = {"scheduled", "background", "cron", "startup", "ready"}
+    try:
+        fusion_cleanup_summaries = await fusion_role_cleanup.load_unreported_role_cleanup_summaries()
+    except Exception:
+        log.warning("failed to load fusion role cleanup summaries", exc_info=True)
+        fusion_cleanup_summaries = fusion_role_cleanup.get_recent_role_cleanup_summaries()
     aggregated = AuditResult(
         checked=0,
         auto_fixed_strays=[],
@@ -434,6 +572,8 @@ async def run_role_and_visitor_audit(
         visitors_no_ticket=[],
         visitors_closed_only=[],
         visitors_extra_roles=[],
+        members_only_everyone=[],
+        fusion_role_cleanup=fusion_cleanup_summaries,
         proposed_role_mutations=[],
         action_roles_removed=[],
         action_roles_added=[],
@@ -471,6 +611,7 @@ async def run_role_and_visitor_audit(
         aggregated.visitors_no_ticket.extend(result.visitors_no_ticket or [])
         aggregated.visitors_closed_only.extend(result.visitors_closed_only or [])
         aggregated.visitors_extra_roles.extend(result.visitors_extra_roles or [])
+        aggregated.members_only_everyone.extend(result.members_only_everyone or [])
         aggregated.proposed_role_mutations.extend(result.proposed_role_mutations or [])
         aggregated.action_roles_removed.extend(result.action_roles_removed or [])
         aggregated.action_roles_added.extend(result.action_roles_added or [])
@@ -482,8 +623,6 @@ async def run_role_and_visitor_audit(
 
     proposed_adds = len(aggregated.auto_fixed_strays or [])
     proposed_removes = len(aggregated.auto_fixed_strays or []) + len(aggregated.auto_fixed_wanderers or [])
-    actor_normalized = (actor or "").strip().lower()
-    scheduled_actors = {"scheduled", "background", "cron", "startup", "ready"}
     if dry_run or actor_normalized in scheduled_actors:
         log.info(
             "role audit mutations skipped",
@@ -533,7 +672,7 @@ async def run_role_and_visitor_audit(
         },
     )
 
-    embed = _render_report(
+    embeds = _render_report_embeds(
         summary=aggregated,
         raid_role_name=raid_role_name,
         wanderer_role_name=wanderer_role_name,
@@ -541,10 +680,16 @@ async def run_role_and_visitor_audit(
     )
 
     try:
-        await channel.send(embed=embed)
+        for embed in embeds:
+            await channel.send(embed=embed)
     except Exception as exc:
         log.warning("failed to send role audit report", exc_info=True)
         return False, f"send:{type(exc).__name__}"
+    if actor_normalized == "scheduled":
+        try:
+            await fusion_role_cleanup.mark_role_cleanup_summaries_reported(fusion_cleanup_summaries)
+        except Exception:
+            log.warning("failed to mark fusion role cleanup summaries reported", exc_info=True)
 
     return True, "-"
 
@@ -570,6 +715,7 @@ async def preview_role_audit_mutations(
         visitors_no_ticket=[],
         visitors_closed_only=[],
         visitors_extra_roles=[],
+        members_only_everyone=[],
         proposed_role_mutations=[],
         action_roles_removed=[],
         action_roles_added=[],

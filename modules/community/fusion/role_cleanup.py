@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from dataclasses import dataclass, field
 
 import discord
 from discord.ext import commands
@@ -16,6 +17,129 @@ log = logging.getLogger("c1c.community.fusion.role_cleanup")
 
 _ROLE_CLEANUP_EVENT_ID = "__fusion_role_cleanup__"
 _ROLE_CLEANUP_TYPE = "ended"
+_ROLE_CLEANUP_DEDUPE_KEY = (_ROLE_CLEANUP_EVENT_ID, _ROLE_CLEANUP_TYPE)
+
+
+@dataclass(slots=True)
+class FusionRoleCleanupSummary:
+    fusion_id: str
+    fusion_name: str
+    role_id: int | None
+    role_name: str | None = None
+    members_found: int = 0
+    removed_count: int = 0
+    failed_count: int = 0
+    skipped_count: int = 0
+    dedupe_key: str = f"{_ROLE_CLEANUP_EVENT_ID}:{_ROLE_CLEANUP_TYPE}"
+    status: str = "processed"
+    already_processed: bool = False
+    failure_reasons: list[str] = field(default_factory=list)
+    row_number: int | None = None
+
+
+_RECENT_ROLE_CLEANUP_SUMMARIES: list[FusionRoleCleanupSummary] = []
+
+
+def get_recent_role_cleanup_summaries() -> list[FusionRoleCleanupSummary]:
+    return list(_RECENT_ROLE_CLEANUP_SUMMARIES)
+
+
+def clear_recent_role_cleanup_summaries() -> None:
+    _RECENT_ROLE_CLEANUP_SUMMARIES.clear()
+
+
+def _record_summary(summary: FusionRoleCleanupSummary) -> None:
+    for idx, existing in enumerate(_RECENT_ROLE_CLEANUP_SUMMARIES):
+        if existing.fusion_id == summary.fusion_id and existing.dedupe_key == summary.dedupe_key:
+            if summary.already_processed and not existing.already_processed:
+                return
+            _RECENT_ROLE_CLEANUP_SUMMARIES[idx] = summary
+            return
+    _RECENT_ROLE_CLEANUP_SUMMARIES.append(summary)
+
+
+def _summary_to_payload(summary: FusionRoleCleanupSummary) -> dict[str, object]:
+    return {
+        "fusion_id": summary.fusion_id,
+        "fusion_name": summary.fusion_name,
+        "role_id": summary.role_id,
+        "role_name": summary.role_name,
+        "members_found": summary.members_found,
+        "removed_count": summary.removed_count,
+        "failed_count": summary.failed_count,
+        "skipped_count": summary.skipped_count,
+        "dedupe_key": summary.dedupe_key,
+        "status": summary.status,
+        "already_processed": summary.already_processed,
+        "failure_reasons": list(summary.failure_reasons),
+    }
+
+
+def _summary_from_payload(payload: dict[str, object]) -> FusionRoleCleanupSummary:
+    def _to_int(value: object) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    role_id_value = payload.get("role_id")
+    role_id = None if role_id_value in (None, "") else _to_int(role_id_value)
+    failure_reasons = payload.get("failure_reasons")
+    if not isinstance(failure_reasons, list):
+        failure_reasons = []
+    return FusionRoleCleanupSummary(
+        fusion_id=str(payload.get("fusion_id") or ""),
+        fusion_name=str(payload.get("fusion_name") or ""),
+        role_id=role_id,
+        role_name=str(payload.get("role_name") or "") or None,
+        members_found=_to_int(payload.get("members_found")),
+        removed_count=_to_int(payload.get("removed_count")),
+        failed_count=_to_int(payload.get("failed_count")),
+        skipped_count=_to_int(payload.get("skipped_count")),
+        dedupe_key=str(payload.get("dedupe_key") or f"{_ROLE_CLEANUP_EVENT_ID}:{_ROLE_CLEANUP_TYPE}"),
+        status=str(payload.get("status") or "processed"),
+        already_processed=bool(payload.get("already_processed")),
+        failure_reasons=[str(reason) for reason in failure_reasons],
+        row_number=_to_int(payload.get("_row_number")) or None,
+    )
+
+
+async def _persist_summary(summary: FusionRoleCleanupSummary, *, sent_at: dt.datetime) -> None:
+    try:
+        await fusion_sheets.upsert_role_cleanup_summary(
+            summary.fusion_id,
+            payload=_summary_to_payload(summary),
+            sent_at=sent_at,
+        )
+    except Exception as exc:
+        context = {"fusion_id": summary.fusion_id, "role_id": summary.role_id}
+        log.exception("fusion role cleanup summary persist failed", extra=context)
+        try:
+            await fusion_logs.send_ops_alert(
+                component="role_cleanup",
+                summary="summary_persist_failed",
+                dedupe_key=f"fusion:role_cleanup:summary:{summary.fusion_id}",
+                error=exc,
+                fields=context,
+            )
+        except Exception:
+            log.exception("fusion role cleanup summary persist alert failed", extra=context)
+
+
+async def load_unreported_role_cleanup_summaries() -> list[FusionRoleCleanupSummary]:
+    payloads = await fusion_sheets.get_unreported_role_cleanup_summaries()
+    if payloads:
+        return [_summary_from_payload(dict(payload)) for payload in payloads]
+    return get_recent_role_cleanup_summaries()
+
+
+async def mark_role_cleanup_summaries_reported(
+    summaries: list[FusionRoleCleanupSummary],
+) -> None:
+    row_numbers = [summary.row_number for summary in summaries if summary.row_number]
+    if row_numbers:
+        await fusion_sheets.mark_role_cleanup_summaries_reported(row_numbers)
+    clear_recent_role_cleanup_summaries()
 
 
 def _utc_now(now: dt.datetime | None = None) -> dt.datetime:
@@ -93,30 +217,68 @@ async def process_ended_fusion_role_cleanup(
             )
             continue
 
-        cleanup_key = (_ROLE_CLEANUP_EVENT_ID, _ROLE_CLEANUP_TYPE)
-        if cleanup_key in sent_keys:
+        if _ROLE_CLEANUP_DEDUPE_KEY in sent_keys:
+            try:
+                if await fusion_sheets.has_role_cleanup_summary(target.fusion_id):
+                    continue
+            except Exception:
+                log.warning(
+                    "fusion role cleanup summary state lookup failed",
+                    exc_info=True,
+                    extra={"fusion_id": target.fusion_id},
+                )
+            summary = FusionRoleCleanupSummary(
+                fusion_id=target.fusion_id,
+                fusion_name=target.fusion_name,
+                role_id=target.opt_in_role_id,
+                status="skipped",
+                already_processed=True,
+                skipped_count=1,
+            )
+            _record_summary(summary)
+            await _persist_summary(summary, sent_at=reference)
             continue
 
+        summary = FusionRoleCleanupSummary(
+            fusion_id=target.fusion_id,
+            fusion_name=target.fusion_name,
+            role_id=target.opt_in_role_id,
+        )
         try:
             guild = await _resolve_cleanup_guild(bot, target)
             if guild is None:
+                summary.status = "skipped"
+                summary.skipped_count += 1
+                summary.failure_reasons.append("guild unavailable")
                 log.warning(
                     "fusion role cleanup skipped; guild unavailable",
                     extra={"fusion_id": target.fusion_id, "role_id": target.opt_in_role_id},
                 )
+                _record_summary(summary)
+                await _persist_summary(summary, sent_at=reference)
                 continue
 
             role = guild.get_role(target.opt_in_role_id)
             if role is None:
+                summary.status = "skipped"
+                summary.skipped_count += 1
+                summary.failure_reasons.append("role missing")
                 log.warning(
                     "fusion role cleanup role missing",
                     extra={"fusion_id": target.fusion_id, "guild_id": guild.id, "role_id": target.opt_in_role_id},
                 )
             else:
+                summary.role_name = getattr(role, "name", None)
+                summary.members_found = len(list(getattr(role, "members", [])))
                 for member in list(role.members):
                     try:
                         await member.remove_roles(role, reason=f"Fusion ended: {target.fusion_id}")
+                        summary.removed_count += 1
                     except Exception:
+                        summary.failed_count += 1
+                        summary.failure_reasons.append(
+                            f"member {getattr(member, 'id', 'unknown')}: permission/hierarchy/API failure"
+                        )
                         log.exception(
                             "fusion role cleanup failed for member",
                             extra={
@@ -133,8 +295,17 @@ async def process_ended_fusion_role_cleanup(
                 reminder_type=_ROLE_CLEANUP_TYPE,
                 sent_at=reference,
             )
+            if summary.failed_count:
+                summary.status = "partial_failure"
+            _record_summary(summary)
+            await _persist_summary(summary, sent_at=reference)
         except Exception as exc:
             context = {"fusion_id": target.fusion_id, "role_id": target.opt_in_role_id}
+            summary.status = "failed"
+            summary.failed_count += 1
+            summary.failure_reasons.append(str(exc))
+            _record_summary(summary)
+            await _persist_summary(summary, sent_at=reference)
             log.exception(
                 "fusion role cleanup iteration failed",
                 extra=context,
@@ -148,4 +319,11 @@ async def process_ended_fusion_role_cleanup(
             )
 
 
-__all__ = ["process_ended_fusion_role_cleanup"]
+__all__ = [
+    "FusionRoleCleanupSummary",
+    "clear_recent_role_cleanup_summaries",
+    "get_recent_role_cleanup_summaries",
+    "load_unreported_role_cleanup_summaries",
+    "mark_role_cleanup_summaries_reported",
+    "process_ended_fusion_role_cleanup",
+]
