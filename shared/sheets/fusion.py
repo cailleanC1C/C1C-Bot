@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -28,6 +29,8 @@ _LAST_FUSION_PARSE_ERRORS: dict[str, str] = {}
 _FUSION_REMINDER_TAB_KEY = "FUSION_REMINDER_TAB"
 _FUSION_PROGRESS_TAB_KEY = "FUSION_USER_EVENT_PROGRESS_TAB"
 _FUSION_REMINDER_SETTINGS_TAB_KEY = "FUSION_REMINDER_SETTINGS_TAB"
+_FUSION_ROLE_CLEANUP_SUMMARY_UNREPORTED = "__fusion_role_cleanup_summary_unreported__"
+_FUSION_ROLE_CLEANUP_SUMMARY_REPORTED = "__fusion_role_cleanup_summary_reported__"
 _FUSION_REMINDER_SETTINGS_COLUMN_HEADERS: dict[str, tuple[str, ...]] = {
     "setting_key": ("setting_key",),
     "value": ("value",),
@@ -1105,6 +1108,152 @@ async def mark_reminder_sent(
     )
 
 
+async def upsert_role_cleanup_summary(
+    fusion_id: str,
+    *,
+    payload: Mapping[str, object],
+    sent_at: dt.datetime,
+) -> None:
+    """Persist an unreported Fusion role-cleanup summary in existing reminder storage."""
+
+    tab_name, required_fields = _resolve_reminder_sheet_schema(include_sent_at=True)
+    matrix = await afetch_values(_sheet_id(), tab_name)
+    if not matrix:
+        raise RuntimeError(
+            "Fusion reminder sheet is empty "
+            f"(tab={tab_name}, key={_FUSION_REMINDER_TAB_KEY})"
+        )
+
+    header = [str(cell or "").strip().lower() for cell in matrix[0]]
+    index_by_field = {
+        field: _resolve_header_index(tab_name=tab_name, header=header, field=field)
+        for field in required_fields
+    }
+    fusion_idx = index_by_field["fusion_id"]
+    event_idx = index_by_field["event_id"]
+    reminder_idx = index_by_field["reminder_type"]
+    sent_at_idx = index_by_field["sent_at_utc"]
+    target_fusion = str(fusion_id or "").strip()
+    payload_text = json.dumps(dict(payload), sort_keys=True, separators=(",", ":"))
+    sent_token = sent_at.astimezone(dt.timezone.utc).isoformat()
+
+    worksheet = await aget_worksheet(_sheet_id(), tab_name)
+    for row_idx, row in enumerate(matrix[1:], start=2):
+        row_fusion = str(row[fusion_idx] if fusion_idx < len(row) else "").strip()
+        row_event = str(row[event_idx] if event_idx < len(row) else "").strip()
+        if row_fusion != target_fusion or row_event != _FUSION_ROLE_CLEANUP_SUMMARY_UNREPORTED:
+            continue
+        await acall_with_backoff(
+            worksheet.update,
+            f"{_column_label(reminder_idx)}{row_idx}",
+            [[payload_text]],
+            value_input_option="RAW",
+        )
+        await acall_with_backoff(
+            worksheet.update,
+            f"{_column_label(sent_at_idx)}{row_idx}",
+            [[sent_token]],
+            value_input_option="RAW",
+        )
+        return
+
+    row_values = [""] * len(header)
+    row_values[fusion_idx] = target_fusion
+    row_values[event_idx] = _FUSION_ROLE_CLEANUP_SUMMARY_UNREPORTED
+    row_values[reminder_idx] = payload_text
+    row_values[sent_at_idx] = sent_token
+    await acall_with_backoff(
+        worksheet.append_row,
+        row_values,
+        value_input_option="RAW",
+    )
+
+
+async def get_unreported_role_cleanup_summaries() -> list[dict[str, object]]:
+    """Read unreported Fusion role-cleanup summaries from existing reminder storage."""
+
+    tab_name, required_fields = _resolve_reminder_sheet_schema(include_sent_at=True)
+    matrix = await afetch_values(_sheet_id(), tab_name)
+    if not matrix:
+        return []
+
+    header = [str(cell or "").strip().lower() for cell in matrix[0]]
+    index_by_field = {
+        field: _resolve_header_index(tab_name=tab_name, header=header, field=field)
+        for field in required_fields
+    }
+    fusion_idx = index_by_field["fusion_id"]
+    event_idx = index_by_field["event_id"]
+    reminder_idx = index_by_field["reminder_type"]
+    sent_at_idx = index_by_field["sent_at_utc"]
+    results: list[dict[str, object]] = []
+    for row_idx, row in enumerate(matrix[1:], start=2):
+        row_event = str(row[event_idx] if event_idx < len(row) else "").strip()
+        if row_event != _FUSION_ROLE_CLEANUP_SUMMARY_UNREPORTED:
+            continue
+        payload_text = str(row[reminder_idx] if reminder_idx < len(row) else "").strip()
+        try:
+            payload = json.loads(payload_text) if payload_text else {}
+        except json.JSONDecodeError:
+            payload = {"status": "failed", "failure_reasons": ["summary payload malformed"]}
+        if not isinstance(payload, dict):
+            payload = {"status": "failed", "failure_reasons": ["summary payload malformed"]}
+        payload.setdefault("fusion_id", str(row[fusion_idx] if fusion_idx < len(row) else "").strip())
+        payload["_row_number"] = row_idx
+        payload["_sent_at_utc"] = str(row[sent_at_idx] if sent_at_idx < len(row) else "").strip()
+        results.append(payload)
+    return results
+
+
+async def has_role_cleanup_summary(fusion_id: str) -> bool:
+    """Return True when a cleanup summary row already exists for a fusion."""
+
+    tab_name, required_fields = _resolve_reminder_sheet_schema(include_sent_at=False)
+    matrix = await afetch_values(_sheet_id(), tab_name)
+    if not matrix:
+        return False
+    header = [str(cell or "").strip().lower() for cell in matrix[0]]
+    index_by_field = {
+        field: _resolve_header_index(tab_name=tab_name, header=header, field=field)
+        for field in required_fields
+    }
+    fusion_idx = index_by_field["fusion_id"]
+    event_idx = index_by_field["event_id"]
+    target_fusion = str(fusion_id or "").strip()
+    summary_events = {
+        _FUSION_ROLE_CLEANUP_SUMMARY_UNREPORTED,
+        _FUSION_ROLE_CLEANUP_SUMMARY_REPORTED,
+    }
+    for row in matrix[1:]:
+        row_fusion = str(row[fusion_idx] if fusion_idx < len(row) else "").strip()
+        row_event = str(row[event_idx] if event_idx < len(row) else "").strip()
+        if row_fusion == target_fusion and row_event in summary_events:
+            return True
+    return False
+
+
+async def mark_role_cleanup_summaries_reported(row_numbers: list[int]) -> None:
+    """Mark persisted Fusion role-cleanup summary rows as reported."""
+
+    if not row_numbers:
+        return
+    tab_name, required_fields = _resolve_reminder_sheet_schema(include_sent_at=False)
+    matrix = await afetch_values(_sheet_id(), tab_name)
+    if not matrix:
+        return
+    header = [str(cell or "").strip().lower() for cell in matrix[0]]
+    event_idx = _resolve_header_index(tab_name=tab_name, header=header, field="event_id")
+    worksheet = await aget_worksheet(_sheet_id(), tab_name)
+    for row_number in sorted({int(row) for row in row_numbers if int(row) > 1}):
+        cell = f"{_column_label(event_idx)}{row_number}"
+        await acall_with_backoff(
+            worksheet.update,
+            cell,
+            [[_FUSION_ROLE_CLEANUP_SUMMARY_REPORTED]],
+            value_input_option="RAW",
+        )
+
+
 def _normalize_progress_status(value: object) -> str:
     status = str(value or "").strip().lower()
     if status in _PROGRESS_ALLOWED_STATUSES:
@@ -1609,13 +1758,17 @@ __all__ = [
     "get_last_fusion_parse_errors",
     "get_fusion_events",
     "get_sent_reminder_keys",
+    "get_unreported_role_cleanup_summaries",
+    "has_role_cleanup_summary",
     "reminder_dedupe_backend_metadata",
     "get_user_event_progress",
     "get_progress_sheet_diagnostics",
     "get_upcoming_events",
     "get_fusion_reminder_settings",
     "get_last_reminder_sent_at",
+    "mark_role_cleanup_summaries_reported",
     "mark_reminder_sent",
+    "upsert_role_cleanup_summary",
     "upsert_user_event_progress",
     "update_fusion_publication",
     "update_fusion_announcement_refresh_state",

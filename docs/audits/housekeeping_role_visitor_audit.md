@@ -241,3 +241,14 @@ Do not implement code yet. Safest follow-up design:
   * Per-member details should be available in the summary or an attached/truncated detail section when counts are small.
   * Failures should always be both app-logged and admin-visible, including permission/hierarchy failures.
   * Success logs should not be entirely silent for automatic removals. If noise is a concern, aggregate summaries are safer than per-member spam.
+
+## Implementation Follow-Up (2026-06-20)
+
+This follow-up implemented the audit changes recommended by the investigation without adding sheet tabs, sheet columns, or new config keys.
+
+* Members whose only role is the guild `@everyone` role are now collected in the existing Role & Visitor Audit and rendered in a `Members with only @everyone` section. Bot accounts are excluded from this section so automated service users do not create noise in the human housekeeping list.
+* The scheduled Role & Visitor Audit remains report-only/dry-run for role mutations.
+* Fusion ended-role cleanup now persists compact unreported cleanup summaries in the existing Fusion reminder/dedupe storage, while retaining runtime state only as a fallback. The scheduled Role & Visitor Audit reads those summaries and renders them in a `Fusion role cleanup` section using the existing audit destination.
+* Cleanup summaries are marked reported only after the scheduled Role & Visitor Audit successfully sends; manual audit/report runs do not clear scheduled cleanup visibility.
+* No separate Fusion cleanup report or standalone daily Fusion cleanup message was added.
+* No report result counts are capped. The audit renderer can split oversized output across multiple embeds/messages while preserving all section lines.
