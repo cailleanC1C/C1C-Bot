@@ -17,18 +17,26 @@ and long-lived threads active without manual nudges.
 
 ## Thread keepalive
 - **Purpose.** Prevents important threads from auto-archiving when idle.
-- **Cadence.** Runs hourly and acts only when the last activity is older than
-  `KEEPALIVE_INTERVAL_HOURS` (default: 144h).
-- **Targets.**
-  - All threads (active + archived) inside channels listed in `KEEPALIVE_CHANNEL_IDS`.
-  - Explicit thread IDs in `KEEPALIVE_THREAD_IDS`.
-- **Behavior.** Deduplicates targets, checks read/send/manage-thread permissions,
-  unarchives stale threads, and posts the heartbeat message
-  `🔹 Thread 💙-beat (housekeeping)`.
+- **Config source.** Sheet-driven only, using the recruitment/Mirralith workbook
+  Config tab intentionally. Required Config-tab keys are
+  `HOUSEKEEPING_KEEPALIVE_ENABLED`, `HOUSEKEEPING_KEEPALIVE_TAB`,
+  `HOUSEKEEPING_KEEPALIVE_DEFAULT_MESSAGE`,
+  `HOUSEKEEPING_KEEPALIVE_STALE_AFTER_HOURS`, and
+  `HOUSEKEEPING_KEEPALIVE_RUN_EVERY_HOURS`.
+- **Cadence vs staleness.** `HOUSEKEEPING_KEEPALIVE_RUN_EVERY_HOURS` controls
+  how often the bot checks the sheet. `HOUSEKEEPING_KEEPALIVE_STALE_AFTER_HOURS`
+  controls how inactive a thread must be before a keepalive message is posted.
+- **Targets.** The tab named by `HOUSEKEEPING_KEEPALIVE_TAB` contains rows with
+  `enabled`, `target_id`, `target_type`, `target_name`, `parent_name`,
+  `keepalive_message`, `last_seen_at_utc`, `last_keepalive_sent_at_utc`,
+  `last_status`, `last_checked_at_utc`, and `notes` headers.
+- **Behavior.** Enabled rows may target a specific thread or a parent channel
+  whose active and archived child threads are scanned. The bot writes status and
+  human-readable names back to bot-owned columns without overwriting admin-owned
+  `enabled`, `target_id`, `keepalive_message`, or `notes` cells.
 - **Logging.** Summary per run:
-  - `💙 Housekeeping: keepalive — threads_touched=<N> • errors=<E>`
-  WARN lines capture fetch, unarchive, or send failures without blocking later
-  targets.
+  - `💙 Thread keepalive — checked_rows=<N> • posted=<N> • stale_after=<H>h • errors=<E>`
+  WARN lines capture short failure details without blocking later targets.
 
 ## Role & Visitor audit
 - **Purpose.** Realigns members with the expected Raid/Clan/Wandering role

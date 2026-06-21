@@ -1651,24 +1651,35 @@ class Runtime:
 
         if toggles.housekeeping_enabled:
             keepalive_logger = logging.getLogger("c1c.housekeeping.keepalive")
-            keepalive_job = self.scheduler.every(
-                hours=24.0,
-                tag="keepalive",
-                name="housekeeping_keepalive",
+            keepalive_config = housekeeping_keepalive.resolve_keepalive_config(
+                keepalive_logger
             )
-
-            async def keepalive_runner() -> None:
-                await housekeeping_keepalive.run_keepalive(self.bot, keepalive_logger)
-
-            keepalive_job.do(keepalive_runner)
-            successes.append(
-                (
-                    SimpleNamespace(
-                        bucket="housekeeping_keepalive", cadence_label="24h"
-                    ),
-                    keepalive_job,
+            if keepalive_config and keepalive_config.enabled:
+                keepalive_job = self.scheduler.every(
+                    hours=float(keepalive_config.run_every_hours),
+                    tag="keepalive",
+                    name="housekeeping_keepalive",
                 )
-            )
+
+                async def keepalive_runner() -> None:
+                    await housekeeping_keepalive.run_keepalive(
+                        self.bot, keepalive_logger
+                    )
+
+                keepalive_job.do(keepalive_runner)
+                successes.append(
+                    (
+                        SimpleNamespace(
+                            bucket="housekeeping_keepalive",
+                            cadence_label=f"{keepalive_config.run_every_hours:g}h",
+                        ),
+                        keepalive_job,
+                    )
+                )
+            else:
+                log.info(
+                    "thread keepalive not scheduled; required sheet Config is missing, invalid, or disabled"
+                )
         else:
             log.info("housekeeping keepalive disabled via feature toggle")
 
