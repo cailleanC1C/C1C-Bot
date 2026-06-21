@@ -15,10 +15,23 @@ REQUIRED_HEADERS = [
 ]
 
 
+def _toggle_status(*, present=True, enabled=False, invalid=False, invalid_value=None):
+    return {
+        "present": present,
+        "enabled": enabled,
+        "invalid": invalid,
+        "invalid_value": invalid_value,
+        "source_tab": "FeatureToggles",
+    }
+
+
 def test_resolve_keepalive_config_requires_sheet_keys(monkeypatch):
     monkeypatch.setenv("KEEPALIVE_CHANNEL_IDS", "123")
     monkeypatch.setenv("KEEPALIVE_THREAD_IDS", "456")
     monkeypatch.setenv("KEEPALIVE_INTERVAL_HOURS", "1")
+    monkeypatch.setattr(
+        keepalive.feature_flags, "status", lambda key: _toggle_status(enabled=True)
+    )
     monkeypatch.setattr(
         keepalive.recruitment, "get_config_value", lambda _key, default=None: default
     )
@@ -26,22 +39,100 @@ def test_resolve_keepalive_config_requires_sheet_keys(monkeypatch):
     assert keepalive.resolve_keepalive_config() is None
 
 
-def test_resolve_keepalive_config_distinguishes_stale_after_and_run_every(monkeypatch):
+def test_missing_feature_toggle_logs_missing_and_does_not_resolve(monkeypatch, caplog):
+    monkeypatch.setattr(
+        keepalive.feature_flags, "status", lambda key: _toggle_status(present=False)
+    )
+    monkeypatch.setattr(
+        keepalive.recruitment,
+        "get_config_value",
+        lambda key, default=None: (_ for _ in ()).throw(
+            AssertionError("Config must not be read when keepalive toggle is not TRUE")
+        ),
+    )
+
+    assert keepalive.resolve_keepalive_config() is None
+
+    assert (
+        "required Feature Toggle HOUSEKEEPING_KEEPALIVE_ENABLED is missing"
+        in caplog.text
+    )
+
+
+def test_false_feature_toggle_logs_disabled_and_does_not_resolve(monkeypatch, caplog):
+    caplog.set_level("INFO", logger="c1c.housekeeping.keepalive")
+    monkeypatch.setattr(
+        keepalive.feature_flags, "status", lambda key: _toggle_status(enabled=False)
+    )
+    monkeypatch.setattr(
+        keepalive.recruitment,
+        "get_config_value",
+        lambda key, default=None: (_ for _ in ()).throw(
+            AssertionError("Config must not be read when keepalive toggle is not TRUE")
+        ),
+    )
+
+    assert keepalive.resolve_keepalive_config() is None
+
+    assert (
+        "thread keepalive disabled by Feature Toggle HOUSEKEEPING_KEEPALIVE_ENABLED=FALSE"
+        in caplog.text
+    )
+
+
+def test_invalid_feature_toggle_logs_invalid_and_does_not_resolve(monkeypatch, caplog):
+    monkeypatch.setattr(
+        keepalive.feature_flags,
+        "status",
+        lambda key: _toggle_status(invalid=True, invalid_value="sometimes"),
+    )
+    monkeypatch.setattr(
+        keepalive.recruitment,
+        "get_config_value",
+        lambda key, default=None: (_ for _ in ()).throw(
+            AssertionError("Config must not be read when keepalive toggle is not TRUE")
+        ),
+    )
+
+    assert keepalive.resolve_keepalive_config() is None
+
+    assert (
+        "required Feature Toggle HOUSEKEEPING_KEEPALIVE_ENABLED has invalid value"
+        in caplog.text
+    )
+    assert "sometimes" in caplog.text
+
+
+def test_resolve_keepalive_config_reads_enabled_from_feature_toggle_only(monkeypatch):
+    requested_toggles = []
+    config_keys = []
     values = {
-        keepalive.CONFIG_ENABLED: "TRUE",
+        keepalive.CONFIG_ENABLED: "FALSE",
         keepalive.CONFIG_TAB: "ConfiguredBySheet",
         keepalive.CONFIG_DEFAULT_MESSAGE: "bump",
         keepalive.CONFIG_STALE_AFTER_HOURS: "144",
         keepalive.CONFIG_RUN_EVERY_HOURS: "6",
     }
+
+    def fake_status(key):
+        requested_toggles.append(key)
+        return _toggle_status(enabled=True)
+
+    def fake_get_config_value(key, default=None):
+        config_keys.append(key)
+        return values.get(key, default)
+
+    monkeypatch.setattr(keepalive.feature_flags, "status", fake_status)
     monkeypatch.setattr(
         keepalive.recruitment,
         "get_config_value",
-        lambda key, default=None: values.get(key, default),
+        fake_get_config_value,
     )
 
     config = keepalive.resolve_keepalive_config()
 
+    assert requested_toggles == [keepalive.CONFIG_ENABLED]
+    assert keepalive.CONFIG_ENABLED not in config_keys
     assert config is not None
     assert config.tab_name == "ConfiguredBySheet"
     assert config.stale_after_hours == 144

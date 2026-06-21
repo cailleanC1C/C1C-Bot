@@ -143,7 +143,7 @@ sync modules remain available for non-async scripts and cache warmers.
 | `SERVER_MAP_REFRESH_DAYS` | int | `30` | Minimum days between scheduled server map refreshes; enforced alongside sheet runtime state. |
 | `CLEANUP_INTERVAL_HOURS` | int | `24` | Interval (hours) between cleanup sweeps; each run removes all non-pinned messages in configured threads. |
 | `CLEANUP_THREAD_IDS` | csv | — | Comma-separated Discord thread IDs where cleanup wipes all non-pinned messages. |
-| `HOUSEKEEPING_KEEPALIVE_ENABLED` | Config tab bool | — | Required sheet toggle for thread keepalive; missing/blank/invalid disables scheduling without ENV fallback. |
+| `HOUSEKEEPING_KEEPALIVE_ENABLED` | Feature Toggles tab bool | — | Required sheet toggle for thread keepalive; missing/blank/invalid disables scheduling without Config or ENV fallback. |
 | `HOUSEKEEPING_KEEPALIVE_TAB` | Config tab string | — | Required name of the keepalive target tab; no code default or fallback tab name. |
 | `HOUSEKEEPING_KEEPALIVE_DEFAULT_MESSAGE` | Config tab string | — | Required global fallback keepalive message; blank means stale rows without row/parent messages are skipped safely. |
 | `HOUSEKEEPING_KEEPALIVE_STALE_AFTER_HOURS` | Config tab number | — | Required inactivity threshold before posting into a thread. |
@@ -300,7 +300,7 @@ Feature Toggles:
 - `WELCOME_ENABLED`, `ENABLE_WELCOME_HOOK`, `recruitment_welcome`, `welcome_dialog` — welcome watcher activation and dialog control, all gated through `modules.common.feature_flags.is_enabled()`.
 - `PROMO_ENABLED`, `ENABLE_PROMO_HOOK`, `promo_enabled`, `enable_promo_hook`, `promo_dialog` — promo watcher activation + dialog gating.
 - `welcome_dialog`, `promo_dialog` — dialog/panel toggles; promo dialog is reserved for future onboarding steps.
-- `housekeeping_enabled`, `mirralith_overview_enabled` — gate cleanup/keepalive cadences and the Mirralith overview autoposter scheduler.
+- `housekeeping_enabled`, `HOUSEKEEPING_KEEPALIVE_ENABLED`, `mirralith_overview_enabled` — gate cleanup cadences, thread keepalive scheduling, and the Mirralith overview autoposter scheduler.
 - `ops_permissions_enabled` — gate Permissions UI registration.
 - `welcome_watcher_enabled`, `promo_watcher_enabled`, `resume_command_enabled` — gate onboarding watcher registration and `!onb resume`; these default to ON when rows are missing so existing deployments remain unchanged.
 
