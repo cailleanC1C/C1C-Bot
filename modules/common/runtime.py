@@ -56,6 +56,8 @@ from modules.community import COMMUNITY_EXTENSIONS
 log = logging.getLogger("c1c.runtime")
 
 _ACTIVE_RUNTIME: "Runtime | None" = None
+
+
 @dataclass(slots=True)
 class StartupPreloadReport:
     rows: list[dict[str, object]]
@@ -97,7 +99,8 @@ async def create_app(*, runtime: "Runtime | None" = None) -> web.Application:
 
     @web.middleware
     async def tracing_middleware(
-        request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]
+        request: web.Request,
+        handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
     ) -> web.StreamResponse:
         trace = set_trace_id()
         started = time.perf_counter()
@@ -208,7 +211,9 @@ async def _startup_preload(bot: commands.Bot | None = None) -> StartupPreloadRep
     bucket_names = cache_telemetry.list_buckets()
     if not bucket_names:
         log.info("Cache preloader skipped: no cache buckets registered")
-        return StartupPreloadReport(rows=[], total_s=0.0, error="no cache buckets registered")
+        return StartupPreloadReport(
+            rows=[], total_s=0.0, error="no cache buckets registered"
+        )
 
     rows: list[RefreshEmbedRow] = []
     total_ms = 0
@@ -277,7 +282,10 @@ async def _startup_preload(bot: commands.Bot | None = None) -> StartupPreloadRep
 
     startup_rows: list[dict[str, object]] = []
     for bucket in refresh_bucket_results(refresh_results):
-        details: list[str] = [f"{bucket.duration_s:.1f}s", str(bucket.item_count if bucket.item_count is not None else "?")]
+        details: list[str] = [
+            f"{bucket.duration_s:.1f}s",
+            str(bucket.item_count if bucket.item_count is not None else "?"),
+        ]
         if bucket.ttl_ok is True:
             details.append("ttl")
         if bucket.ttl_expired_before_refresh is True:
@@ -316,7 +324,9 @@ def get_active_runtime() -> "Runtime | None":
     return _ACTIVE_RUNTIME
 
 
-def schedule_startup_preload(bot: commands.Bot | None = None) -> asyncio.Task[StartupPreloadReport]:
+def schedule_startup_preload(
+    bot: commands.Bot | None = None,
+) -> asyncio.Task[StartupPreloadReport]:
     """Ensure the startup cache preload task has been scheduled and return it."""
 
     global _PRELOAD_TASK
@@ -327,7 +337,9 @@ def schedule_startup_preload(bot: commands.Bot | None = None) -> asyncio.Task[St
         try:  # pragma: no cover - defensive logging
             task.result()
         except Exception:
-            log.debug("previous cache preloader task completed with error", exc_info=True)
+            log.debug(
+                "previous cache preloader task completed with error", exc_info=True
+            )
     _PRELOAD_TASK = asyncio.create_task(
         _startup_preload(bot), name="cache_startup_preload"
     )
@@ -871,7 +883,10 @@ class Scheduler:
                         coro.close()
                     except Exception:
                         pass
-                    log.debug("scheduler spawn skipped duplicate task", extra={"task_name": name})
+                    log.debug(
+                        "scheduler spawn skipped duplicate task",
+                        extra={"task_name": name},
+                    )
                     return existing
         if name is not None:
             task = asyncio.create_task(coro, name=name)
@@ -899,7 +914,10 @@ class Scheduler:
         if name is not None:
             for existing in self._jobs:
                 if existing.name == name:
-                    log.debug("scheduler registration skipped duplicate job", extra={"job_name": name})
+                    log.debug(
+                        "scheduler registration skipped duplicate job",
+                        extra={"job_name": name},
+                    )
                     return existing
         total_seconds = float(hours) * 3600.0 + float(minutes) * 60.0 + float(seconds)
         if total_seconds <= 0:
@@ -1047,10 +1065,14 @@ class Runtime:
             "keepalive_sec": keepalive,
             "connected": snapshot.connected,
             "disconnect_age": (
-                None if snapshot.disconnect_age is None else round(snapshot.disconnect_age, 3)
+                None
+                if snapshot.disconnect_age is None
+                else round(snapshot.disconnect_age, 3)
             ),
             "last_ready_age": (
-                None if snapshot.last_ready_age is None else round(snapshot.last_ready_age, 3)
+                None
+                if snapshot.last_ready_age is None
+                else round(snapshot.last_ready_age, 3)
             ),
         }
         return payload, healthy
@@ -1074,9 +1096,7 @@ class Runtime:
     async def shutdown_health_server(self) -> None:
         await self.shutdown_webserver()
 
-    async def send_log_message(
-        self, message: str
-    ) -> None:
+    async def send_log_message(self, message: str) -> None:
         try:
             channel_id = get_log_channel_id()
             if not channel_id:
@@ -1151,7 +1171,9 @@ class Runtime:
     ) -> asyncio.Task:
         times_list = _parse_times(times or get_refresh_times())
         if not times_list:
-            log.warning("no valid refresh times supplied; defaulting to hourly schedule")
+            log.warning(
+                "no valid refresh times supplied; defaulting to hourly schedule"
+            )
             times_list = [dt_time(hour=0, minute=0)]
         tz_name = timezone or get_refresh_timezone()
         tz = _resolve_timezone(tz_name)
@@ -1192,7 +1214,9 @@ class Runtime:
         from modules.onboarding import watcher_welcome as onboarding_welcome
         from modules.onboarding import watcher_promo as onboarding_promo
         from modules.onboarding import cmd_resume as onboarding_cmd_resume
-        from modules.onboarding import cmd_finishplacement as onboarding_cmd_finishplacement
+        from modules.onboarding import (
+            cmd_finishplacement as onboarding_cmd_finishplacement,
+        )
         from modules.ops import permissions_ui as ops_permissions
         from c1c_coreops import ops as ops_cog
 
@@ -1289,9 +1313,7 @@ class Runtime:
                     extra=extra_info,
                 )
                 try:
-                    await self.send_log_message(
-                        f"❌ {module_path}.setup failed: {exc}"
-                    )
+                    await self.send_log_message(f"❌ {module_path}.setup failed: {exc}")
                 except Exception:
                     pass
                 raise
@@ -1325,9 +1347,11 @@ class Runtime:
 
         await clanrole_management.setup(self.bot)
         log.info("modules: clanrole_management enabled")
-        await _load_feature_module(
-            "cogs.recruitment_welcome", ("recruitment_welcome",)
-        )
+        await _load_feature_module("cogs.recruitment_welcome", ("recruitment_welcome",))
+        from cogs import recruitment_open_spots
+
+        await recruitment_open_spots.setup(self.bot)
+        log.info("modules: recruitment_open_spots enabled")
         await _load_feature_module(
             "modules.recruitment.reports", ("recruitment_reports",)
         )
@@ -1537,7 +1561,10 @@ class Runtime:
             _startup_phase_log("scheduler registration", "ok")
 
     async def _register_ready_schedulers_inner(self) -> None:
-        from shared.sheets.cache_scheduler import ensure_cache_registration, register_refresh_job
+        from shared.sheets.cache_scheduler import (
+            ensure_cache_registration,
+            register_refresh_job,
+        )
         from modules.housekeeping import cleanup as housekeeping_cleanup
         from modules.housekeeping import keepalive as housekeeping_keepalive
         from modules.housekeeping import mirralith_overview as housekeeping_mirralith
@@ -1545,7 +1572,9 @@ class Runtime:
         from modules.community.leagues import schedule_leagues_jobs
         from modules.community.fusion.scheduler import schedule_fusion_jobs
         from modules.community.shard_tracker.scheduler import schedule_shard_jobs
-        from modules.community.reset_reminders.scheduler import schedule_reset_reminder_jobs
+        from modules.community.reset_reminders.scheduler import (
+            schedule_reset_reminder_jobs,
+        )
 
         toggles = shared_config.features
         ensure_cache_registration()
@@ -1581,7 +1610,12 @@ class Runtime:
 
             cleanup_job.do(cleanup_runner)
             successes.append(
-                (SimpleNamespace(bucket="cleanup", cadence_label=f"{cleanup_interval}h"), cleanup_job)
+                (
+                    SimpleNamespace(
+                        bucket="cleanup", cadence_label=f"{cleanup_interval}h"
+                    ),
+                    cleanup_job,
+                )
             )
         else:
             log.info("housekeeping cleanup disabled via feature toggle")
@@ -1602,12 +1636,16 @@ class Runtime:
             mirralith_job.do(mirralith_runner)
             successes.append(
                 (
-                    SimpleNamespace(bucket="mirralith_overview", cadence_label=mirralith_cron),
+                    SimpleNamespace(
+                        bucket="mirralith_overview", cadence_label=mirralith_cron
+                    ),
                     mirralith_job,
                 )
             )
         elif mirralith_cron:
-            log.info("Mirralith overview disabled via feature toggle; skipping schedule")
+            log.info(
+                "Mirralith overview disabled via feature toggle; skipping schedule"
+            )
         else:
             log.info("Mirralith overview job disabled; MIRRALITH_POST_CRON is not set.")
 
@@ -1620,13 +1658,16 @@ class Runtime:
             )
 
             async def keepalive_runner() -> None:
-                await housekeeping_keepalive.run_keepalive(
-                    self.bot, keepalive_logger
-                )
+                await housekeeping_keepalive.run_keepalive(self.bot, keepalive_logger)
 
             keepalive_job.do(keepalive_runner)
             successes.append(
-                (SimpleNamespace(bucket="housekeeping_keepalive", cadence_label="24h"), keepalive_job)
+                (
+                    SimpleNamespace(
+                        bucket="housekeeping_keepalive", cadence_label="24h"
+                    ),
+                    keepalive_job,
+                )
             )
         else:
             log.info("housekeeping keepalive disabled via feature toggle")
