@@ -18,6 +18,7 @@ from cogs.recruitment_clan_profile import ClanProfileCog
 from cogs.recruitment_member import RecruitmentMember
 from cogs.recruitment_recruiter import RecruiterPanelCog
 from cogs.recruitment_welcome import WelcomeBridge
+from cogs.recruitment_open_spots import RecruitmentOpenSpotsCog
 from cogs.clanrole_management import ClanRoleManagementCog
 from modules.ops.permissions_ui import PermissionsUICog
 from shared.testing.environment import apply_required_test_environment
@@ -49,7 +50,14 @@ class HelpSurfaceSection:
 class _HelpContext:
     """Minimal context object that captures replies from ``CoreOpsCog``."""
 
-    __slots__ = ("bot", "author", "guild", "command", "_replies", "_coreops_suppress_denials")
+    __slots__ = (
+        "bot",
+        "author",
+        "guild",
+        "command",
+        "_replies",
+        "_coreops_suppress_denials",
+    )
 
     def __init__(self, bot: commands.Bot, author: object) -> None:
         self.bot = bot
@@ -73,7 +81,14 @@ class _HelpContext:
 
 
 class _DummyMember:
-    __slots__ = ("display_name", "id", "roles", "guild_permissions", "_is_admin", "_is_staff")
+    __slots__ = (
+        "display_name",
+        "id",
+        "roles",
+        "guild_permissions",
+        "_is_admin",
+        "_is_staff",
+    )
 
     def __init__(self, *, is_admin: bool = False, is_staff: bool = False) -> None:
         self.display_name = "Member"
@@ -124,7 +139,11 @@ def _patched_help_guards() -> Iterator[None]:
     _swap(rbac, "get_admin_role_ids", lambda: set())
     _swap(rbac, "get_staff_role_ids", lambda: set())
     _swap(rbac, "_resolve_member", _resolve_member)
-    _swap(rbac, "_member_has_admin_role", lambda member: bool(getattr(member, "_is_admin", False)))
+    _swap(
+        rbac,
+        "_member_has_admin_role",
+        lambda member: bool(getattr(member, "_is_admin", False)),
+    )
     _swap(
         rbac,
         "_has_administrator_permission",
@@ -132,7 +151,11 @@ def _patched_help_guards() -> Iterator[None]:
             getattr(getattr(member, "guild_permissions", None), "administrator", False)
         ),
     )
-    _swap(rbac, "is_admin_member", lambda target: bool(getattr(_resolve_member(target), "_is_admin", False)))
+    _swap(
+        rbac,
+        "is_admin_member",
+        lambda target: bool(getattr(_resolve_member(target), "_is_admin", False)),
+    )
     _swap(
         rbac,
         "is_staff_member",
@@ -141,14 +164,28 @@ def _patched_help_guards() -> Iterator[None]:
             or getattr(_resolve_member(target), "_is_admin", False)
         ),
     )
-    _swap(rbac, "is_recruiter", lambda target: bool(getattr(_resolve_member(target), "_is_staff", False)))
-    _swap(rbac, "is_lead", lambda target: bool(getattr(_resolve_member(target), "_is_staff", False)))
+    _swap(
+        rbac,
+        "is_recruiter",
+        lambda target: bool(getattr(_resolve_member(target), "_is_staff", False)),
+    )
+    _swap(
+        rbac,
+        "is_lead",
+        lambda target: bool(getattr(_resolve_member(target), "_is_staff", False)),
+    )
     _swap(
         rbac,
         "ops_gate",
-        lambda member: bool(getattr(member, "_is_admin", False) or getattr(member, "_is_staff", False)),
+        lambda member: bool(
+            getattr(member, "_is_admin", False) or getattr(member, "_is_staff", False)
+        ),
     )
-    _swap(rbac, "can_view_admin", lambda target: bool(getattr(_resolve_member(target), "_is_admin", False)))
+    _swap(
+        rbac,
+        "can_view_admin",
+        lambda target: bool(getattr(_resolve_member(target), "_is_admin", False)),
+    )
     _swap(
         rbac,
         "can_view_staff",
@@ -189,6 +226,7 @@ async def _setup_help_bot() -> commands.Bot:
     await bot.add_cog(PermissionsUICog(bot))
     await bot.add_cog(RecruiterPanelCog(bot))
     await bot.add_cog(WelcomeBridge(bot))
+    await bot.add_cog(RecruitmentOpenSpotsCog(bot))
     await bot.add_cog(RecruitmentMember(bot))
     await bot.add_cog(ClanProfileCog(bot))
     await bot.add_cog(ClanRoleManagementCog())
@@ -229,14 +267,18 @@ async def build_admin_help_surface_async(
     raise RuntimeError("Admin help surface not available")
 
 
-def build_admin_help_surface(*, allowlist: str | None = None) -> tuple[HelpSurfaceSection, ...]:
+def build_admin_help_surface(
+    *, allowlist: str | None = None
+) -> tuple[HelpSurfaceSection, ...]:
     """Synchronously gather the admin help surface sections."""
 
     return asyncio.run(build_admin_help_surface_async(allowlist=allowlist))
 
 
 @contextlib.asynccontextmanager
-async def _help_bot_context(*, allowlist: str | None) -> AsyncIterator[list[discord.Embed]]:
+async def _help_bot_context(
+    *, allowlist: str | None
+) -> AsyncIterator[list[discord.Embed]]:
     if allowlist is None:
         manager = contextlib.nullcontext()
     else:

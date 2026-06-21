@@ -478,6 +478,35 @@ async def preflight_manual_open_spots_adjustment(
     )
 
 
+async def set_manual_open_spots(clan_tag: str, open_spots: int) -> tuple[int, int, str]:
+    """Set visible open spots using the existing manual adjustment semantics.
+
+    The existing manual adjustment flow writes the configured visible open-spots
+    value and the manual-open-spots seen marker. It intentionally does not
+    overwrite the manual baseline or reservation-derived fields. This wrapper
+    computes the delta needed to reach the requested exact value, then delegates
+    the actual write to ``adjust_manual_open_spots`` so emergency corrections do
+    not invent a separate sheet mutation pattern.
+    """
+
+    if open_spots < 0:
+        raise ValueError("open_spots must be >= 0")
+
+    plan = await preflight_manual_open_spots_adjustment(clan_tag, 0)
+    old_value = plan.current_available
+    delta = open_spots - plan.new_value
+    new_value = await adjust_manual_open_spots(clan_tag, delta)
+
+    tag_index = plan.headers.header_map.get("clan_tag")
+    resolved_tag = clan_tag
+    if tag_index is not None and tag_index < len(plan.row):
+        candidate = str(plan.row[tag_index]).strip()
+        if candidate:
+            resolved_tag = candidate
+
+    return old_value, new_value, resolved_tag
+
+
 async def adjust_manual_open_spots(clan_tag: str, delta: int) -> int:
     """Adjust manual open spots for ``clan_tag`` and return the new value."""
     plan: ManualOpenSpotAdjustmentPlan | None = None
