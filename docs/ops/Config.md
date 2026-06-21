@@ -143,9 +143,11 @@ sync modules remain available for non-async scripts and cache warmers.
 | `SERVER_MAP_REFRESH_DAYS` | int | `30` | Minimum days between scheduled server map refreshes; enforced alongside sheet runtime state. |
 | `CLEANUP_INTERVAL_HOURS` | int | `24` | Interval (hours) between cleanup sweeps; each run removes all non-pinned messages in configured threads. |
 | `CLEANUP_THREAD_IDS` | csv | — | Comma-separated Discord thread IDs where cleanup wipes all non-pinned messages. |
-| `KEEPALIVE_CHANNEL_IDS` | csv | — | Channels whose threads should receive keepalive heartbeats when stale. |
-| `KEEPALIVE_THREAD_IDS` | csv | — | Additional threads that should be kept alive regardless of parent channel. |
-| `KEEPALIVE_INTERVAL_HOURS` | int | `144` | Max idle hours before the keepalive job posts a heartbeat; archived threads are unarchived first. |
+| `HOUSEKEEPING_KEEPALIVE_ENABLED` | Config tab bool | — | Required sheet toggle for thread keepalive; missing/blank/invalid disables scheduling without ENV fallback. |
+| `HOUSEKEEPING_KEEPALIVE_TAB` | Config tab string | — | Required name of the keepalive target tab; no code default or fallback tab name. |
+| `HOUSEKEEPING_KEEPALIVE_DEFAULT_MESSAGE` | Config tab string | — | Required global fallback keepalive message; blank means stale rows without row/parent messages are skipped safely. |
+| `HOUSEKEEPING_KEEPALIVE_STALE_AFTER_HOURS` | Config tab number | — | Required inactivity threshold before posting into a thread. |
+| `HOUSEKEEPING_KEEPALIVE_RUN_EVERY_HOURS` | Config tab number | — | Required scheduler cadence for checking the keepalive sheet. |
 
 ### Media rendering
 | Key | Type | Default | Notes |

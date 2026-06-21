@@ -1,50 +1,226 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-import os
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Iterable, Set
+from typing import Any, Dict, Iterable, Mapping, Sequence
 
 import discord
 from discord.ext import commands
 
 from modules.common import runtime as runtime_helpers
 from shared.logfmt import channel_label
+from shared.sheets import async_core
+from shared.sheets import recruitment
 
 log = logging.getLogger("c1c.housekeeping.keepalive")
 
+CONFIG_ENABLED = "HOUSEKEEPING_KEEPALIVE_ENABLED"
+CONFIG_TAB = "HOUSEKEEPING_KEEPALIVE_TAB"
+CONFIG_DEFAULT_MESSAGE = "HOUSEKEEPING_KEEPALIVE_DEFAULT_MESSAGE"
+CONFIG_STALE_AFTER_HOURS = "HOUSEKEEPING_KEEPALIVE_STALE_AFTER_HOURS"
+CONFIG_RUN_EVERY_HOURS = "HOUSEKEEPING_KEEPALIVE_RUN_EVERY_HOURS"
+REQUIRED_CONFIG_KEYS = (
+    CONFIG_ENABLED,
+    CONFIG_TAB,
+    CONFIG_DEFAULT_MESSAGE,
+    CONFIG_STALE_AFTER_HOURS,
+    CONFIG_RUN_EVERY_HOURS,
+)
+REQUIRED_HEADERS = (
+    "enabled",
+    "target_id",
+    "target_type",
+    "target_name",
+    "parent_name",
+    "keepalive_message",
+    "last_seen_at_utc",
+    "last_keepalive_sent_at_utc",
+    "last_status",
+    "last_checked_at_utc",
+    "notes",
+)
+BOT_WRITABLE_HEADERS = (
+    "target_type",
+    "target_name",
+    "parent_name",
+    "last_seen_at_utc",
+    "last_keepalive_sent_at_utc",
+    "last_status",
+    "last_checked_at_utc",
+)
+ALLOWED_TARGET_TYPES = {"thread", "channel"}
 
-def _parse_id_set(key: str) -> Set[int]:
-    raw = os.getenv(key)
-    if not raw:
-        return set()
-    values: Set[int] = set()
-    for part in raw.split(","):
-        token = part.strip()
-        if not token:
-            continue
-        try:
-            values.add(int(token))
-        except (TypeError, ValueError):
-            continue
-    return values
+
+@dataclass(frozen=True)
+class KeepaliveConfig:
+    enabled: bool
+    tab_name: str
+    default_message: str
+    stale_after_hours: float
+    run_every_hours: float
 
 
-def get_keepalive_channel_ids() -> set[int]:
-    return _parse_id_set("KEEPALIVE_CHANNEL_IDS")
+@dataclass
+class KeepaliveRow:
+    sheet_row: int
+    values: dict[str, str]
 
 
-def get_keepalive_thread_ids() -> set[int]:
-    return _parse_id_set("KEEPALIVE_THREAD_IDS")
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
-def get_keepalive_interval_hours() -> int:
-    raw = os.getenv("KEEPALIVE_INTERVAL_HOURS")
+def _format_utc(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    return (
+        _normalize_timestamp(value).isoformat().replace("+00:00", "Z")
+        if _normalize_timestamp(value)
+        else ""
+    )
+
+
+def _parse_bool(value: str | None) -> bool | None:
+    text = (value or "").strip().lower()
+    if text in {"true", "1", "yes", "y", "on"}:
+        return True
+    if text in {"false", "0", "no", "n", "off"}:
+        return False
+    return None
+
+
+def _parse_positive_hours(value: str | None) -> float | None:
     try:
-        value = int(raw) if raw is not None else 144
+        parsed = float((value or "").strip())
     except (TypeError, ValueError):
-        value = 144
-    return max(1, value)
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def resolve_keepalive_config(
+    logger: logging.Logger | None = None,
+) -> KeepaliveConfig | None:
+    """Resolve required sheet-driven keepalive Config keys; no ENV fallback."""
+
+    logger = logger or log
+    # Mirralith keepalive lives in the recruitment/Mirralith workbook Config tab,
+    # so this intentionally uses the recruitment sheet Config helper only.
+    raw = {key: recruitment.get_config_value(key, None) for key in REQUIRED_CONFIG_KEYS}
+    missing = [
+        key for key, value in raw.items() if value is None or not str(value).strip()
+    ]
+    if missing:
+        logger.warning(
+            "thread keepalive config missing required Config key(s): %s",
+            ", ".join(missing),
+        )
+        return None
+
+    enabled = _parse_bool(raw[CONFIG_ENABLED])
+    if enabled is None:
+        logger.warning(
+            "thread keepalive config invalid: %s must be TRUE/FALSE", CONFIG_ENABLED
+        )
+        return None
+    if not enabled:
+        logger.info("thread keepalive disabled by %s=FALSE", CONFIG_ENABLED)
+        return KeepaliveConfig(
+            False,
+            str(raw[CONFIG_TAB]).strip(),
+            str(raw[CONFIG_DEFAULT_MESSAGE]).strip(),
+            1,
+            1.0,
+        )
+
+    stale_after_hours = _parse_positive_hours(raw[CONFIG_STALE_AFTER_HOURS])
+    run_every_hours = _parse_positive_hours(raw[CONFIG_RUN_EVERY_HOURS])
+    if stale_after_hours is None:
+        logger.warning(
+            "thread keepalive config invalid: %s must be a positive number",
+            CONFIG_STALE_AFTER_HOURS,
+        )
+        return None
+    if run_every_hours is None:
+        logger.warning(
+            "thread keepalive config invalid: %s must be a positive number",
+            CONFIG_RUN_EVERY_HOURS,
+        )
+        return None
+
+    return KeepaliveConfig(
+        enabled=True,
+        tab_name=str(raw[CONFIG_TAB]).strip(),
+        default_message=str(raw[CONFIG_DEFAULT_MESSAGE]).strip(),
+        stale_after_hours=stale_after_hours,
+        run_every_hours=run_every_hours,
+    )
+
+
+def build_header_map(headers: Sequence[Any]) -> dict[str, int]:
+    mapping = {
+        str(header).strip().lower(): idx
+        for idx, header in enumerate(headers)
+        if str(header).strip()
+    }
+    missing = [header for header in REQUIRED_HEADERS if header not in mapping]
+    if missing:
+        raise ValueError(
+            f"keepalive tab missing required header(s): {', '.join(missing)}"
+        )
+    return mapping
+
+
+def rows_from_values(
+    values: Sequence[Sequence[Any]], header_map: Mapping[str, int]
+) -> list[KeepaliveRow]:
+    rows: list[KeepaliveRow] = []
+    for offset, raw_row in enumerate(values[1:], start=2):
+        row_values = {
+            header: (
+                str(raw_row[idx]).strip()
+                if idx < len(raw_row) and raw_row[idx] is not None
+                else ""
+            )
+            for header, idx in header_map.items()
+        }
+        if any(row_values.values()):
+            rows.append(KeepaliveRow(sheet_row=offset, values=row_values))
+    return rows
+
+
+def select_keepalive_message(
+    thread_message: str, parent_message: str, default_message: str
+) -> str:
+    for candidate in (thread_message, parent_message, default_message):
+        text = (candidate or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def parent_keepalive_message_for_thread(
+    thread: Any, parent_messages: Mapping[int, str]
+) -> str:
+    parent = getattr(thread, "parent", None)
+    parent_id = getattr(parent, "id", None)
+    if parent_id is None:
+        return ""
+    try:
+        return parent_messages.get(int(parent_id), "")
+    except (TypeError, ValueError):
+        return ""
+
+
+def newest_last_seen(current: str, candidate: str) -> str:
+    if not candidate:
+        return current
+    if not current:
+        return candidate
+    return max(current, candidate)
 
 
 def _normalize_timestamp(value: datetime | None) -> datetime | None:
@@ -55,86 +231,37 @@ def _normalize_timestamp(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
-async def _resolve_thread(
-    bot: commands.Bot, thread_id: int, logger: logging.Logger
-) -> tuple[discord.Thread | None, int]:
-    channel = bot.get_channel(thread_id)
+async def _resolve_any(
+    bot: commands.Bot, target_id: int
+) -> tuple[Any | None, str | None, str | None]:
+    channel = bot.get_channel(target_id)
     if channel is None:
         try:
-            channel = await bot.fetch_channel(thread_id)
+            channel = await bot.fetch_channel(target_id)
         except discord.NotFound:
-            logger.warning(
-                f"⚠️ Housekeeping: keepalive — reason=thread_not_found • thread_id={thread_id}",
-                extra={"thread_id": thread_id, "reason": "thread_not_found"},
-            )
-            return None, 1
+            return None, None, "not_found"
         except discord.Forbidden:
-            logger.warning(
-                f"⚠️ Housekeeping: keepalive — reason=missing_permissions • thread_id={thread_id}",
-                extra={"thread_id": thread_id, "reason": "missing_permissions"},
-            )
-            return None, 1
-        except discord.HTTPException as exc:
-            logger.warning(
-                f"⚠️ Housekeeping: keepalive — reason=fetch_failed • thread_id={thread_id}",
-                extra={
-                    "thread_id": thread_id,
-                    "reason": "fetch_failed",
-                    "error": str(exc),
-                },
-            )
-            return None, 1
-    if not isinstance(channel, discord.Thread):
-        logger.warning(
-            f"⚠️ Housekeeping: keepalive — reason=not_a_thread • thread_id={thread_id}",
-            extra={"thread_id": thread_id, "reason": "not_a_thread"},
-        )
-        return None, 1
-    return channel, 0
+            return None, None, "missing_permissions"
+        except discord.HTTPException:
+            return None, None, "fetch_failed"
+    if isinstance(channel, discord.Thread):
+        return channel, "thread", None
+    if isinstance(channel, (discord.TextChannel, discord.ForumChannel)):
+        return channel, "channel", None
+    return channel, None, "not_thread_or_channel"
 
 
 async def _collect_channel_threads(
-    bot: commands.Bot, channel_id: int, logger: logging.Logger
+    channel: Any, logger: logging.Logger
 ) -> tuple[Dict[int, discord.Thread], int]:
     errors = 0
     threads: Dict[int, discord.Thread] = {}
-    channel = bot.get_channel(channel_id)
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(channel_id)
-        except discord.NotFound:
-            logger.warning(
-                f"⚠️ Housekeeping: keepalive — reason=channel_not_found • channel_id={channel_id}",
-                extra={"channel_id": channel_id, "reason": "channel_not_found"},
-            )
-            return threads, 1
-        except discord.Forbidden:
-            logger.warning(
-                f"⚠️ Housekeeping: keepalive — reason=missing_permissions • channel_id={channel_id}",
-                extra={"channel_id": channel_id, "reason": "missing_permissions"},
-            )
-            return threads, 1
-        except discord.HTTPException as exc:
-            logger.warning(
-                f"⚠️ Housekeeping: keepalive — reason=fetch_failed • channel_id={channel_id}",
-                extra={
-                    "channel_id": channel_id,
-                    "reason": "fetch_failed",
-                    "error": str(exc),
-                },
-            )
-            return threads, 1
-    if not isinstance(channel, (discord.TextChannel, discord.ForumChannel)):
-        logger.warning(
-            f"⚠️ Housekeeping: keepalive — reason=not_thread_host • channel_id={channel_id}",
-            extra={"channel_id": channel_id, "reason": "not_thread_host"},
-        )
-        return threads, 1
-
     for thread in getattr(channel, "threads", []) or []:
         threads[thread.id] = thread
 
-    async def _pull_archives(fetcher: Iterable[discord.Thread] | None) -> None:
+    async def _pull_archives(
+        fetcher: Iterable[discord.Thread] | None, reason: str
+    ) -> None:
         nonlocal errors
         if fetcher is None:
             return
@@ -144,23 +271,24 @@ async def _collect_channel_threads(
         except discord.Forbidden:
             label = channel_label(channel.guild, channel.id)
             logger.warning(
-                f"⚠️ Housekeeping: keepalive — reason=archived_forbidden • channel={label}",
-                extra={"channel_id": channel_id, "reason": "archived_forbidden"},
+                "thread keepalive archived fetch forbidden: channel=%s", label
             )
             errors += 1
         except discord.HTTPException as exc:
             label = channel_label(channel.guild, channel.id)
             logger.warning(
-                f"⚠️ Housekeeping: keepalive — reason=archived_fetch_failed • channel={label}",
-                extra={
-                    "channel_id": channel_id,
-                    "reason": "archived_fetch_failed",
-                    "error": str(exc),
-                },
+                "thread keepalive archived fetch failed: channel=%s reason=%s error=%s",
+                label,
+                reason,
+                exc,
             )
             errors += 1
 
-    await _pull_archives(getattr(channel, "archived_threads", None) and channel.archived_threads(limit=None))
+    await _pull_archives(
+        getattr(channel, "archived_threads", None)
+        and channel.archived_threads(limit=None),
+        "public",
+    )
     private_fetcher = None
     if hasattr(channel, "archived_threads"):
         try:
@@ -169,12 +297,56 @@ async def _collect_channel_threads(
             private_fetcher = None
     if private_fetcher is None and hasattr(channel, "private_archived_threads"):
         private_fetcher = channel.private_archived_threads(limit=None)
-    await _pull_archives(private_fetcher)
-
+    await _pull_archives(private_fetcher, "private")
     return threads, errors
 
 
-async def _get_bot_member(thread: discord.Thread, bot: commands.Bot) -> tuple[discord.Member | None, int]:
+async def _build_message_maps(
+    rows: Sequence[KeepaliveRow], bot: commands.Bot
+) -> tuple[dict[int, str], dict[int, str], dict[int, str]]:
+    parent_messages: dict[int, str] = {}
+    explicit_thread_messages: dict[int, str] = {}
+    explicit_thread_keepalive_sent_at: dict[int, str] = {}
+    for row in rows:
+        if not _parse_bool(row.values.get("enabled")):
+            continue
+        try:
+            target_id = int(row.values.get("target_id", ""))
+        except ValueError:
+            continue
+
+        target_type = row.values.get("target_type", "").strip().lower()
+        if target_type == "thread":
+            explicit_thread_messages[target_id] = row.values.get(
+                "keepalive_message", ""
+            )
+            explicit_thread_keepalive_sent_at[target_id] = row.values.get(
+                "last_keepalive_sent_at_utc", ""
+            )
+            continue
+        if target_type == "channel":
+            parent_messages[target_id] = row.values.get("keepalive_message", "")
+            continue
+        if target_type:
+            continue
+
+        _target, detected_type, _resolve_status = await _resolve_any(bot, target_id)
+        if detected_type == "thread":
+            explicit_thread_messages[target_id] = row.values.get(
+                "keepalive_message", ""
+            )
+            explicit_thread_keepalive_sent_at[target_id] = row.values.get(
+                "last_keepalive_sent_at_utc", ""
+            )
+        elif detected_type == "channel":
+            parent_messages[target_id] = row.values.get("keepalive_message", "")
+
+    return parent_messages, explicit_thread_messages, explicit_thread_keepalive_sent_at
+
+
+async def _get_bot_member(
+    thread: discord.Thread, bot: commands.Bot
+) -> tuple[discord.Member | None, int]:
     if thread.guild is None or bot.user is None:
         return None, 1
     member = thread.guild.get_member(bot.user.id)
@@ -182,179 +354,370 @@ async def _get_bot_member(thread: discord.Thread, bot: commands.Bot) -> tuple[di
         return member, 0
     try:
         member = await thread.guild.fetch_member(bot.user.id)
-    except discord.Forbidden:
-        return None, 1
-    except discord.HTTPException:
+    except (discord.Forbidden, discord.HTTPException):
         return None, 1
     return member, 0
 
 
-async def _last_activity_at(thread: discord.Thread, logger: logging.Logger) -> tuple[datetime | None, int]:
+async def _last_activity_at(
+    thread: discord.Thread, logger: logging.Logger
+) -> tuple[datetime | None, int]:
     try:
         async for message in thread.history(limit=1):
             return _normalize_timestamp(message.created_at), 0
     except discord.Forbidden:
-        logger.warning(
-            f"⚠️ Housekeeping: keepalive — reason=history_forbidden • thread_id={thread.id}",
-            extra={"thread_id": thread.id, "reason": "history_forbidden"},
-        )
+        logger.warning("thread keepalive history forbidden: thread_id=%s", thread.id)
         return None, 1
     except discord.HTTPException as exc:
         logger.warning(
-            f"⚠️ Housekeeping: keepalive — reason=history_failed • thread_id={thread.id}",
-            extra={
-                "thread_id": thread.id,
-                "reason": "history_failed",
-                "error": str(exc),
-            },
+            "thread keepalive history failed: thread_id=%s error=%s", thread.id, exc
         )
         return None, 1
-    if thread.created_at:
+    if getattr(thread, "created_at", None):
         return _normalize_timestamp(thread.created_at), 0
     return None, 0
 
 
-async def _post_heartbeat(thread: discord.Thread, logger: logging.Logger) -> tuple[bool, int]:
-    try:
-        await thread.send("🔹 Thread 💙-beat (housekeeping)")
-    except discord.Forbidden:
-        logger.warning(
-            f"⚠️ Housekeeping: keepalive — reason=missing_permissions • thread_id={thread.id}",
-            extra={"thread_id": thread.id, "reason": "missing_permissions"},
-        )
-        return False, 1
-    except discord.HTTPException as exc:
-        logger.warning(
-            f"⚠️ Housekeeping: keepalive — reason=heartbeat_failed • thread_id={thread.id}",
-            extra={
-                "thread_id": thread.id,
-                "reason": "heartbeat_failed",
-                "error": str(exc),
-            },
-        )
-        return False, 1
-    return True, 0
-
-
-async def _ensure_unarchived(thread: discord.Thread, logger: logging.Logger) -> int:
-    if not thread.archived:
-        return 0
+async def _ensure_unarchived(
+    thread: discord.Thread, logger: logging.Logger
+) -> str | None:
+    if not getattr(thread, "archived", False):
+        return None
     try:
         await thread.edit(archived=False)
     except discord.Forbidden:
         logger.warning(
-            f"⚠️ Housekeeping: keepalive — reason=missing_permissions • thread_id={thread.id}",
-            extra={"thread_id": thread.id, "reason": "missing_permissions"},
+            "thread keepalive missing permissions to unarchive: thread_id=%s", thread.id
         )
-        return 1
+        return "missing_permissions"
     except discord.HTTPException as exc:
         logger.warning(
-            f"⚠️ Housekeeping: keepalive — reason=unarchive_failed • thread_id={thread.id}",
-            extra={
-                "thread_id": thread.id,
-                "reason": "unarchive_failed",
-                "error": str(exc),
-            },
+            "thread keepalive unarchive failed: thread_id=%s error=%s", thread.id, exc
         )
-        return 1
-    return 0
+        return "archived_unarchive_failed"
+    return None
 
 
 async def _process_thread(
     thread: discord.Thread,
     *,
-    interval_hours: int,
+    stale_after_delta: timedelta,
+    message: str,
     bot: commands.Bot,
     logger: logging.Logger,
-) -> tuple[bool, int]:
+) -> tuple[str, bool, str, int]:
     errors = 0
+    if not message:
+        logger.warning(
+            "thread keepalive missing message config: thread_id=%s", thread.id
+        )
+        return "missing_message_config", False, "", errors + 1
+
     member, perm_errors = await _get_bot_member(thread, bot)
     errors += perm_errors
     if member is None:
-        return False, errors
+        return "missing_permissions", False, "", errors
     perms = thread.permissions_for(member)
-    if not (perms.read_message_history and perms.send_messages and perms.manage_threads):
-        logger.warning(
-            f"⚠️ Housekeeping: keepalive — reason=insufficient_permissions • thread_id={thread.id}",
-            extra={"thread_id": thread.id, "reason": "insufficient_permissions"},
-        )
-        return False, errors + 1
+    if not (
+        perms.read_message_history and perms.send_messages and perms.manage_threads
+    ):
+        return "missing_permissions", False, "", errors + 1
 
     last_activity, history_errors = await _last_activity_at(thread, logger)
     errors += history_errors
     if last_activity is None:
-        return False, errors
+        return "fetch_failed", False, "", errors
+    if _utc_now() - last_activity < stale_after_delta:
+        return "ok_not_stale", False, _format_utc(last_activity), errors
 
-    age_hours = (datetime.now(timezone.utc) - last_activity).total_seconds() / 3600.0
-    if age_hours < interval_hours:
-        return False, errors
-
-    errors += await _ensure_unarchived(thread, logger)
-    if thread.archived:
-        return False, errors
-
-    posted, post_errors = await _post_heartbeat(thread, logger)
-    errors += post_errors
-    return posted, errors
-
-
-async def run_keepalive(bot: commands.Bot, logger: logging.Logger | None = None) -> None:
-    logger = logger or log
-    channel_ids = get_keepalive_channel_ids()
-    explicit_thread_ids = get_keepalive_thread_ids()
-    interval_hours = get_keepalive_interval_hours()
-
-    errors = 0
-    targets: Dict[int, discord.Thread] = {}
-
-    for channel_id in channel_ids:
-        channel_threads, channel_errors = await _collect_channel_threads(bot, channel_id, logger)
-        errors += channel_errors
-        targets.update(channel_threads)
-
-    for thread_id in explicit_thread_ids:
-        if thread_id in targets:
-            continue
-        thread, resolve_errors = await _resolve_thread(bot, thread_id, logger)
-        errors += resolve_errors
-        if thread is not None:
-            targets[thread.id] = thread
-
-    threads_touched = 0
-    touched_threads: list[discord.Thread] = []
-    for thread in targets.values():
-        posted, thread_errors = await _process_thread(
-            thread, interval_hours=interval_hours, bot=bot, logger=logger
+    unarchive_status = await _ensure_unarchived(thread, logger)
+    if unarchive_status:
+        return unarchive_status, False, _format_utc(last_activity), errors + 1
+    if getattr(thread, "archived", False):
+        return (
+            "archived_unarchive_failed",
+            False,
+            _format_utc(last_activity),
+            errors + 1,
         )
-        errors += thread_errors
-        if posted:
-            threads_touched += 1
-            touched_threads.append(thread)
 
-    parent_channels: set[discord.abc.GuildChannel] = set()
-    for thread in touched_threads:
-        parent = getattr(thread, "parent", None)
-        if parent is not None:
-            parent_channels.add(parent)
+    try:
+        await thread.send(message)
+    except discord.Forbidden:
+        return "missing_permissions", False, _format_utc(last_activity), errors + 1
+    except discord.HTTPException as exc:
+        logger.warning(
+            "thread keepalive send failed: thread_id=%s error=%s", thread.id, exc
+        )
+        return "send_failed", False, _format_utc(last_activity), errors + 1
+    return "posted", True, _format_utc(last_activity), errors
 
-    channel_names = [f"#{channel.name}" for channel in parent_channels if getattr(channel, "name", None)]
-    channel_names.sort()
 
-    channels_count = len(parent_channels)
-    in_clause = f"[{', '.join(channel_names)}]" if channel_names else "[]"
+def _cell_name(row: int, col_zero: int) -> str:
+    col = col_zero + 1
+    letters = ""
+    while col:
+        col, rem = divmod(col - 1, 26)
+        letters = chr(65 + rem) + letters
+    return f"{letters}{row}"
 
-    summary = (
-        "💙 Housekeeping: keepalive "
-        f"— threads_touched={threads_touched} • channels={channels_count} "
-        f"• in={in_clause} • errors={errors}"
+
+def _row_update(
+    row: KeepaliveRow, header_map: Mapping[str, int], updates: Mapping[str, str]
+) -> dict[str, str]:
+    safe_updates = {
+        key: value for key, value in updates.items() if key in BOT_WRITABLE_HEADERS
+    }
+    return {
+        _cell_name(row.sheet_row, header_map[key]): value
+        for key, value in safe_updates.items()
+        if key in header_map
+    }
+
+
+async def _flush_updates(worksheet: Any, updates: Mapping[str, str]) -> None:
+    if not updates:
+        return
+    await asyncio.to_thread(
+        worksheet.batch_update,
+        [{"range": cell, "values": [[value]]} for cell, value in updates.items()],
     )
+
+
+async def run_keepalive(
+    bot: commands.Bot, logger: logging.Logger | None = None
+) -> None:
+    logger = logger or log
+    config = resolve_keepalive_config(logger)
+    if config is None or not config.enabled:
+        return
+
+    checked_rows = posted = errors = 0
+    updates: dict[str, str] = {}
+    stale_after_delta = timedelta(hours=config.stale_after_hours)
+
+    try:
+        worksheet = await async_core.aget_worksheet(
+            recruitment.get_recruitment_sheet_id(), config.tab_name
+        )
+        values = await asyncio.to_thread(worksheet.get_all_values)
+        if not values:
+            raise ValueError("keepalive tab is empty")
+        header_map = build_header_map(values[0])
+        rows = rows_from_values(values, header_map)
+    except Exception as exc:
+        logger.warning("thread keepalive sheet unavailable or invalid: %s", exc)
+        return
+
+    (
+        parent_messages,
+        explicit_thread_messages,
+        explicit_thread_keepalive_sent_at,
+    ) = await _build_message_maps(rows, bot)
+
+    seen_threads: set[int] = set()
+    processed_threads: dict[int, tuple[str, bool, str, str]] = {}
+    for row in rows:
+        enabled = _parse_bool(row.values.get("enabled"))
+        now_text = _format_utc(_utc_now())
+        base_update = {"last_checked_at_utc": now_text}
+        if not enabled:
+            # Disabled rows are still timestamped so admins can tell the bot saw
+            # the row without changing admin-owned cells or target metadata.
+            updates.update(
+                _row_update(row, header_map, base_update | {"last_status": "disabled"})
+            )
+            continue
+        checked_rows += 1
+        try:
+            target_id = int(row.values.get("target_id", ""))
+        except ValueError:
+            errors += 1
+            updates.update(
+                _row_update(
+                    row, header_map, base_update | {"last_status": "invalid_target_id"}
+                )
+            )
+            continue
+
+        explicit_type = row.values.get("target_type", "").strip().lower()
+        if explicit_type and explicit_type not in ALLOWED_TARGET_TYPES:
+            errors += 1
+            updates.update(
+                _row_update(
+                    row,
+                    header_map,
+                    base_update | {"last_status": "invalid_target_type"},
+                )
+            )
+            continue
+
+        target, detected_type, resolve_status = await _resolve_any(bot, target_id)
+        if target is None or detected_type is None:
+            errors += 1
+            updates.update(
+                _row_update(
+                    row,
+                    header_map,
+                    base_update | {"last_status": resolve_status or "not_found"},
+                )
+            )
+            continue
+        if explicit_type and explicit_type != detected_type:
+            errors += 1
+            updates.update(
+                _row_update(
+                    row,
+                    header_map,
+                    base_update | {"last_status": "target_type_mismatch"},
+                )
+            )
+            continue
+
+        effective_type = explicit_type or detected_type
+        name_updates = {
+            "target_type": effective_type,
+            "target_name": getattr(target, "name", "") or "",
+            "parent_name": "",
+        }
+        if effective_type == "thread":
+            parent = getattr(target, "parent", None)
+            name_updates["parent_name"] = getattr(parent, "name", "") or ""
+            parent_message = parent_keepalive_message_for_thread(
+                target, parent_messages
+            )
+            message = select_keepalive_message(
+                row.values.get("keepalive_message", ""),
+                parent_message,
+                config.default_message,
+            )
+            was_processed = target.id in processed_threads
+            if was_processed:
+                status, did_post, last_seen, keepalive_sent_at = processed_threads[
+                    target.id
+                ]
+                thread_errors = 0
+            else:
+                seen_threads.add(target.id)
+                status, did_post, last_seen, thread_errors = await _process_thread(
+                    target,
+                    stale_after_delta=stale_after_delta,
+                    message=message,
+                    bot=bot,
+                    logger=logger,
+                )
+                keepalive_sent_at = (
+                    now_text
+                    if did_post
+                    else row.values.get("last_keepalive_sent_at_utc", "")
+                )
+                processed_threads[target.id] = (
+                    status,
+                    did_post,
+                    last_seen,
+                    keepalive_sent_at,
+                )
+            errors += thread_errors
+            if did_post and not was_processed:
+                posted += 1
+            updates.update(
+                _row_update(
+                    row,
+                    header_map,
+                    base_update
+                    | name_updates
+                    | {
+                        "last_seen_at_utc": last_seen,
+                        "last_keepalive_sent_at_utc": keepalive_sent_at,
+                        "last_status": status,
+                    },
+                )
+            )
+            continue
+
+        channel_threads, channel_errors = await _collect_channel_threads(target, logger)
+        errors += channel_errors
+        row_status = "ok_not_stale"
+        parent_message = row.values.get("keepalive_message", "")
+        channel_last_seen = row.values.get("last_seen_at_utc", "")
+        channel_keepalive_sent_at = row.values.get("last_keepalive_sent_at_utc", "")
+        for thread in channel_threads.values():
+            if thread.id in seen_threads:
+                continue
+            seen_threads.add(thread.id)
+            thread_message = explicit_thread_messages.get(thread.id, "")
+            message = select_keepalive_message(
+                thread_message, parent_message, config.default_message
+            )
+            status, did_post, last_seen, thread_errors = await _process_thread(
+                thread,
+                stale_after_delta=stale_after_delta,
+                message=message,
+                bot=bot,
+                logger=logger,
+            )
+            errors += thread_errors
+            if did_post:
+                posted += 1
+            channel_last_seen = newest_last_seen(channel_last_seen, last_seen)
+            if did_post:
+                row_status = "posted"
+                channel_keepalive_sent_at = now_text
+            elif (
+                status not in {"ok_not_stale", "posted"}
+                and row_status == "ok_not_stale"
+            ):
+                row_status = status
+            keepalive_sent_at = (
+                channel_keepalive_sent_at
+                if did_post
+                else explicit_thread_keepalive_sent_at.get(
+                    thread.id, channel_keepalive_sent_at
+                )
+            )
+            processed_threads[thread.id] = (
+                status,
+                did_post,
+                last_seen,
+                keepalive_sent_at,
+            )
+        updates.update(
+            _row_update(
+                row,
+                header_map,
+                base_update
+                | name_updates
+                | {
+                    "last_seen_at_utc": channel_last_seen,
+                    "last_keepalive_sent_at_utc": channel_keepalive_sent_at,
+                    "last_status": row_status,
+                },
+            )
+        )
+
+    try:
+        await _flush_updates(worksheet, updates)
+    except Exception as exc:
+        errors += 1
+        logger.warning("thread keepalive sheet writeback failed: %s", exc)
+
+    summary = f"💙 Thread keepalive — checked_rows={checked_rows} • posted={posted} • stale_after={config.stale_after_hours:g}h • errors={errors}"
     logger.info(summary)
     await runtime_helpers.send_log_message(summary)
 
 
 __all__ = [
-    "get_keepalive_channel_ids",
-    "get_keepalive_thread_ids",
-    "get_keepalive_interval_hours",
+    "BOT_WRITABLE_HEADERS",
+    "KeepaliveConfig",
+    "REQUIRED_CONFIG_KEYS",
+    "REQUIRED_HEADERS",
+    "build_header_map",
+    "newest_last_seen",
+    "parent_keepalive_message_for_thread",
+    "resolve_keepalive_config",
+    "rows_from_values",
     "run_keepalive",
+    "select_keepalive_message",
+    "_build_message_maps",
+    "_row_update",
 ]
