@@ -17,12 +17,12 @@ and long-lived threads active without manual nudges.
 
 ## Thread keepalive
 - **Purpose.** Prevents important threads from auto-archiving when idle.
-- **Config source.** Sheet-driven only, using the recruitment/Mirralith workbook
-  Config tab intentionally. Required Config-tab keys are
-  `HOUSEKEEPING_KEEPALIVE_ENABLED`, `HOUSEKEEPING_KEEPALIVE_TAB`,
-  `HOUSEKEEPING_KEEPALIVE_DEFAULT_MESSAGE`,
+- **Config source.** Sheet-driven only. `HOUSEKEEPING_KEEPALIVE_ENABLED` must
+  come from the Feature Toggles tab. Required Config-tab keys are
+  `HOUSEKEEPING_KEEPALIVE_TAB`, `HOUSEKEEPING_KEEPALIVE_DEFAULT_MESSAGE`,
   `HOUSEKEEPING_KEEPALIVE_STALE_AFTER_HOURS`, and
-  `HOUSEKEEPING_KEEPALIVE_RUN_EVERY_HOURS`.
+  `HOUSEKEEPING_KEEPALIVE_RUN_EVERY_HOURS`. Missing/invalid toggle or Config
+  values prevent scheduling without Config or legacy ENV fallback for the toggle.
 - **Cadence vs staleness.** `HOUSEKEEPING_KEEPALIVE_RUN_EVERY_HOURS` controls
   how often the bot checks the sheet. `HOUSEKEEPING_KEEPALIVE_STALE_AFTER_HOURS`
   controls how inactive a thread must be before a keepalive message is posted.

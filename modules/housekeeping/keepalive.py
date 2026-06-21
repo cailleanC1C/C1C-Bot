@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, Mapping, Sequence
 import discord
 from discord.ext import commands
 
+from modules.common import feature_flags
 from modules.common import runtime as runtime_helpers
 from shared.logfmt import channel_label
 from shared.sheets import async_core
@@ -22,7 +23,6 @@ CONFIG_DEFAULT_MESSAGE = "HOUSEKEEPING_KEEPALIVE_DEFAULT_MESSAGE"
 CONFIG_STALE_AFTER_HOURS = "HOUSEKEEPING_KEEPALIVE_STALE_AFTER_HOURS"
 CONFIG_RUN_EVERY_HOURS = "HOUSEKEEPING_KEEPALIVE_RUN_EVERY_HOURS"
 REQUIRED_CONFIG_KEYS = (
-    CONFIG_ENABLED,
     CONFIG_TAB,
     CONFIG_DEFAULT_MESSAGE,
     CONFIG_STALE_AFTER_HOURS,
@@ -104,11 +104,35 @@ def _parse_positive_hours(value: str | None) -> float | None:
 def resolve_keepalive_config(
     logger: logging.Logger | None = None,
 ) -> KeepaliveConfig | None:
-    """Resolve required sheet-driven keepalive Config keys; no ENV fallback."""
+    """Resolve sheet-driven keepalive settings; enabled comes from Feature Toggles."""
 
     logger = logger or log
+    toggle = feature_flags.status(CONFIG_ENABLED)
+    if toggle.get("invalid"):
+        logger.warning(
+            "thread keepalive not scheduled; required Feature Toggle %s has invalid value %r in %s",
+            CONFIG_ENABLED,
+            toggle.get("invalid_value"),
+            toggle.get("source_tab") or "Feature Toggles",
+        )
+        return None
+    if not toggle.get("present"):
+        logger.warning(
+            "thread keepalive not scheduled; required Feature Toggle %s is missing from %s",
+            CONFIG_ENABLED,
+            toggle.get("source_tab") or "Feature Toggles",
+        )
+        return None
+    if not toggle.get("enabled"):
+        logger.info(
+            "thread keepalive disabled by Feature Toggle %s=FALSE",
+            CONFIG_ENABLED,
+        )
+        return None
+
     # Mirralith keepalive lives in the recruitment/Mirralith workbook Config tab,
-    # so this intentionally uses the recruitment sheet Config helper only.
+    # so this intentionally uses the recruitment sheet Config helper only for
+    # non-toggle settings.
     raw = {key: recruitment.get_config_value(key, None) for key in REQUIRED_CONFIG_KEYS}
     missing = [
         key for key, value in raw.items() if value is None or not str(value).strip()
@@ -119,22 +143,6 @@ def resolve_keepalive_config(
             ", ".join(missing),
         )
         return None
-
-    enabled = _parse_bool(raw[CONFIG_ENABLED])
-    if enabled is None:
-        logger.warning(
-            "thread keepalive config invalid: %s must be TRUE/FALSE", CONFIG_ENABLED
-        )
-        return None
-    if not enabled:
-        logger.info("thread keepalive disabled by %s=FALSE", CONFIG_ENABLED)
-        return KeepaliveConfig(
-            False,
-            str(raw[CONFIG_TAB]).strip(),
-            str(raw[CONFIG_DEFAULT_MESSAGE]).strip(),
-            1,
-            1.0,
-        )
 
     stale_after_hours = _parse_positive_hours(raw[CONFIG_STALE_AFTER_HOURS])
     run_every_hours = _parse_positive_hours(raw[CONFIG_RUN_EVERY_HOURS])

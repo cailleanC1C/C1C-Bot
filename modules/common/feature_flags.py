@@ -19,6 +19,7 @@ _CONFIG_TAB_ENV = "RECRUITMENT_CONFIG_TAB"
 
 _LOCK = asyncio.Lock()
 _FEATURE_VALUES: Dict[str, bool] = {}
+_INVALID_FEATURE_VALUES: Dict[str, str] = {}
 _LOADED_AT: datetime | None = None
 _ROW_COUNT: int = 0
 _SOURCE_TAB: str = _DEFAULT_TOGGLES_TAB
@@ -141,13 +142,14 @@ def _extract_column(row: Mapping[str, object], column_name: str) -> str:
 async def refresh() -> None:
     """Refresh feature toggles from Sheets (fail-closed)."""
 
-    global _FEATURE_VALUES, _LOADED_AT, _ROW_COUNT
+    global _FEATURE_VALUES, _INVALID_FEATURE_VALUES, _LOADED_AT, _ROW_COUNT
     global _SOURCE_TAB, _DISABLED_BY_DEFAULT, _NOTES, _GLOBAL_FAILURE_REASON
 
     async with _LOCK:
         now = datetime.now(timezone.utc)
         notes: list[str] = []
         feature_values: Dict[str, bool] = {}
+        invalid_feature_values: Dict[str, str] = {}
         row_count = 0
         disabled = True
         failure_reason: str | None = None
@@ -155,7 +157,9 @@ async def refresh() -> None:
 
         sheet_id = (get_recruitment_sheet_id() or "").strip()
         if not sheet_id:
-            failure_reason = "Recruitment sheet ID missing; all feature toggles disabled."
+            failure_reason = (
+                "Recruitment sheet ID missing; all feature toggles disabled."
+            )
             notes.append(failure_reason)
             await _warn_global_once("missing-sheet-id", failure_reason)
         else:
@@ -165,23 +169,22 @@ async def refresh() -> None:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                failure_reason = (
-                    f"Config worksheet '{config_tab}' unavailable: {exc}. All features disabled."
-                )
+                failure_reason = f"Config worksheet '{config_tab}' unavailable: {exc}. All features disabled."
                 notes.append(failure_reason)
                 await _warn_global_once("config-load", failure_reason)
             else:
                 config_map = _parse_config(config_rows)
-                tab_name = config_map.get("feature_toggles_tab", "").strip() or _DEFAULT_TOGGLES_TAB
+                tab_name = (
+                    config_map.get("feature_toggles_tab", "").strip()
+                    or _DEFAULT_TOGGLES_TAB
+                )
                 source_tab = tab_name
                 try:
                     records = await afetch_records(sheet_id, tab_name)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    failure_reason = (
-                        f"Feature toggles worksheet '{tab_name}' unavailable: {exc}. All features disabled."
-                    )
+                    failure_reason = f"Feature toggles worksheet '{tab_name}' unavailable: {exc}. All features disabled."
                     notes.append(failure_reason)
                     await _warn_global_once("tab-missing", failure_reason)
                 else:
@@ -201,9 +204,7 @@ async def refresh() -> None:
                                     headers.add(normalized)
                     required = {"feature_name", "enabled"}
                     if not required.issubset(headers):
-                        failure_reason = (
-                            f"Worksheet '{tab_name}' missing required headers: {sorted(required)}."
-                        )
+                        failure_reason = f"Worksheet '{tab_name}' missing required headers: {sorted(required)}."
                         notes.append(failure_reason)
                         await _warn_global_once("header-missing", failure_reason)
                     else:
@@ -215,27 +216,35 @@ async def refresh() -> None:
                                 continue
                             normalized_key = _normalize_key(feature_label)
                             enabled_raw = _extract_column(row, "enabled")
-                            is_enabled_flag, is_valid_value = _parse_enabled_value(enabled_raw)
+                            is_enabled_flag, is_valid_value = _parse_enabled_value(
+                                enabled_raw
+                            )
                             feature_values[normalized_key] = is_enabled_flag
-                            if not is_valid_value and enabled_raw:
+                            if not is_valid_value:
+                                invalid_feature_values[normalized_key] = enabled_raw
                                 notes.append(
                                     f"{feature_label}: value '{enabled_raw}' treated as disabled"
                                 )
-                                await _warn_invalid_value_once(
-                                    normalized_key, feature_label, enabled_raw, tab_name
-                                )
+                                if enabled_raw:
+                                    await _warn_invalid_value_once(
+                                        normalized_key,
+                                        feature_label,
+                                        enabled_raw,
+                                        tab_name,
+                                    )
                         if not feature_values:
-                            notes.append("No feature rows resolved; defaulting to disabled.")
-                            disabled = True
-                            failure_reason = (
-                                "Feature toggle worksheet returned no rows; treating all features as disabled."
+                            notes.append(
+                                "No feature rows resolved; defaulting to disabled."
                             )
+                            disabled = True
+                            failure_reason = "Feature toggle worksheet returned no rows; treating all features as disabled."
                             await _warn_global_once("no-rows", failure_reason)
 
         for key in _DEFAULT_TRUE_FEATURES:
             feature_values.setdefault(key, True)
 
         _FEATURE_VALUES = feature_values
+        _INVALID_FEATURE_VALUES = invalid_feature_values
         _LOADED_AT = now
         _ROW_COUNT = row_count
         _SOURCE_TAB = source_tab
@@ -269,6 +278,23 @@ async def _warn_invalid_value_once(
     await _emit_admin_alert(detail)
 
 
+def status(key: str) -> Dict[str, Any]:
+    """Return loaded Feature Toggle state without falling back to Config or ENV."""
+
+    normalized = _normalize_key(key)
+    invalid_value = _INVALID_FEATURE_VALUES.get(normalized)
+    present = normalized in _FEATURE_VALUES
+    return {
+        "key": normalized,
+        "present": present,
+        "enabled": bool(_FEATURE_VALUES.get(normalized, False)) if present else False,
+        "invalid": invalid_value is not None,
+        "invalid_value": invalid_value,
+        "global_failure_reason": _GLOBAL_FAILURE_REASON,
+        "source_tab": _SOURCE_TAB,
+    }
+
+
 def is_enabled(key: str) -> bool:
     normalized = _normalize_key(key)
     if not normalized:
@@ -286,9 +312,7 @@ def _warn_missing_feature_once(normalized_key: str, requested_key: str) -> None:
     if normalized_key in _MISSING_WARNINGS_SENT:
         return
     _MISSING_WARNINGS_SENT.add(normalized_key)
-    detail = (
-        f"Toggle '{requested_key}' is not defined in worksheet '{_SOURCE_TAB}'; defaulting to disabled."
-    )
+    detail = f"Toggle '{requested_key}' is not defined in worksheet '{_SOURCE_TAB}'; defaulting to disabled."
     log.warning(detail)
     _schedule_admin_alert(detail)
 
@@ -307,4 +331,4 @@ def values() -> Dict[str, bool]:
     return dict(_FEATURE_VALUES)
 
 
-__all__ = ["is_enabled", "refresh", "snapshot", "values"]
+__all__ = ["is_enabled", "refresh", "snapshot", "status", "values"]
