@@ -1209,6 +1209,7 @@ class Runtime:
         from c1c_coreops import cog as coreops_cog
         from cogs import app_admin
         from cogs import housekeeping_mirralith
+        from cogs import housekeeping_c1c_ad
         from modules.onboarding import ops_check as onboarding_ops_check
         from modules.onboarding import reaction_fallback as onboarding_reaction_fallback
         from modules.onboarding import watcher_welcome as onboarding_welcome
@@ -1244,6 +1245,9 @@ class Runtime:
             log.info("modules: mirralith_overview enabled")
         else:
             log.info("modules: mirralith_overview disabled")
+
+        await housekeeping_c1c_ad.setup(self.bot)
+        log.info("modules: c1c_ad command registered")
 
         async def _load_feature_module(
             module_path: str, feature_keys: Sequence[str]
@@ -1568,6 +1572,8 @@ class Runtime:
         from modules.housekeeping import cleanup as housekeeping_cleanup
         from modules.housekeeping import keepalive as housekeeping_keepalive
         from modules.housekeeping import mirralith_overview as housekeeping_mirralith
+        from modules.housekeeping import c1c_ad as housekeeping_c1c_ad
+        from shared.sheets import recruitment as recruitment_sheets
         from modules.ops import server_map as server_map_module
         from modules.community.leagues import schedule_leagues_jobs
         from modules.community.fusion.scheduler import schedule_fusion_jobs
@@ -1648,6 +1654,37 @@ class Runtime:
             )
         else:
             log.info("Mirralith overview job disabled; MIRRALITH_POST_CRON is not set.")
+
+        try:
+            c1c_refresh_days_raw = recruitment_sheets.get_config_value("C1C_AD_REFRESH_DAYS", None)
+            c1c_refresh_days = int(c1c_refresh_days_raw) if c1c_refresh_days_raw else None
+        except Exception:
+            c1c_refresh_days = None
+            log.exception("C1C ad refresh interval lookup failed; skipping schedule")
+
+        if c1c_refresh_days and c1c_refresh_days > 0:
+            c1c_ad_job = self.scheduler.every(
+                hours=float(c1c_refresh_days) * 24.0,
+                tag="c1c_ad",
+                name="c1c_ad",
+            )
+
+            async def c1c_ad_runner() -> None:
+                await housekeeping_c1c_ad.run_c1c_ad_job(
+                    self.bot, trigger="scheduled", force=False
+                )
+
+            c1c_ad_job.do(c1c_ad_runner)
+            successes.append(
+                (
+                    SimpleNamespace(
+                        bucket="c1c_ad", cadence_label=f"{c1c_refresh_days}d"
+                    ),
+                    c1c_ad_job,
+                )
+            )
+        else:
+            log.info("C1C ad job disabled; C1C_AD_REFRESH_DAYS is not configured.")
 
         if toggles.housekeeping_enabled:
             keepalive_logger = logging.getLogger("c1c.housekeeping.keepalive")
