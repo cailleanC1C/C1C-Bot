@@ -34,6 +34,7 @@ class DummyChannel:
 
     async def send(self, content=None, file=None):
         msg = DummyMessage(100 + len(self.sent))
+        self.messages[msg.id] = msg
         self.sent.append((content, file, msg.id))
         return msg
 
@@ -166,10 +167,38 @@ def test_success_deletes_old_messages_posts_and_stores_state(harness):
     assert harness.channel.messages[10].deleted is True
     assert harness.channel.messages[11].deleted is True
     assert len(harness.channel.sent) == 2
+    text_content, text_file, text_id = harness.channel.sent[0]
+    image_content, image_file, image_id = harness.channel.sent[1]
+    assert text_content == "Join C1C!"
+    assert text_file is None
+    assert image_content is None
+    assert image_file is not None
+    assert text_id == 100
+    assert image_id == 101
+    written = {cell["range"]: cell["values"][0][0] for cell in harness.updates}
+    assert written["C2"] == "101"
+    assert written["D2"] == "100"
+    assert "success" in written.values()
+
+
+def test_image_send_failure_deletes_new_text_and_does_not_write_success(harness):
+    async def send(content=None, file=None):
+        if file is not None:
+            raise RuntimeError("image send failed")
+        return await DummyChannel.send(harness.channel, content=content, file=file)
+
+    harness.channel.send = send
+
+    result = asyncio.run(c1c_ad.run_c1c_ad_job(harness.bot, force=True))
+
+    assert result.status == "failed"
+    assert result.message == "Discord post failed"
+    assert len(harness.channel.sent) == 1
+    assert harness.channel.sent[0][0] == "Join C1C!"
+    assert harness.channel.messages[100].deleted is True
     written_values = [cell["values"][0][0] for cell in harness.updates]
-    assert "100" in written_values
-    assert "101" in written_values
-    assert "success" in written_values
+    assert "success" not in written_values
+    assert "Discord post failed" in written_values
 
 
 def test_scheduled_refresh_not_due_skips_restart_spam(harness):
@@ -194,17 +223,21 @@ def test_missing_old_messages_do_not_block_repost(harness):
     assert len(harness.channel.sent) == 2
 
 
-def test_image_range_comes_from_config(monkeypatch, harness):
+def test_image_range_and_export_options_come_from_config(monkeypatch, harness):
     captured = {}
 
     async def render(sheet_id, gid, cell_range, **kwargs):
         captured["range"] = cell_range
+        captured["kwargs"] = kwargs
         return b"png"
 
     monkeypatch.setattr(c1c_ad, "export_pdf_as_png", render)
     result = asyncio.run(c1c_ad.run_c1c_ad_job(harness.bot, force=True))
     assert result.status == "success"
     assert captured["range"] == "A1:V42"
+    assert captured["kwargs"]["fit_range_to_one_page"] is True
+    assert captured["kwargs"]["fail_on_multi_page"] is True
+    assert captured["kwargs"]["crop_to_content"] is False
 
 
 def _c1cad_check():
@@ -323,7 +356,7 @@ def test_dynamic_placeholders_replace_all_groups(monkeypatch, harness):
     result = asyncio.run(c1c_ad.run_c1c_ad_job(harness.bot, force=True))
 
     assert result.status == "success"
-    posted_text = harness.channel.sent[1][0]
+    posted_text = harness.channel.sent[0][0]
     assert "Open right now: **Torns Valhalla, Shadow Shoguns**" in posted_text
     assert "Open right now: **Late Open**" in posted_text
     assert "Open right now: **Mid Open**" in posted_text
@@ -350,7 +383,7 @@ def test_dynamic_placeholder_empty_result_uses_empty_text(monkeypatch, harness):
 
     assert result.status == "success"
     assert (
-        harness.channel.sent[1][0]
+        harness.channel.sent[0][0]
         == "Early Join us and we’ll help you find the right fit."
     )
 
@@ -372,7 +405,7 @@ def test_dynamic_placeholder_missing_mapping_warns_and_uses_empty_text(
 
     assert result.status == "success"
     assert (
-        harness.channel.sent[1][0]
+        harness.channel.sent[0][0]
         == "End Join us and we’ll help you find the right fit."
     )
     assert "missing bracket mapping placeholder=OPEN_SPOTS_ENDGAME" in caplog.text
