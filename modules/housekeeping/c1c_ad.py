@@ -489,7 +489,7 @@ async def run_c1c_ad_job(
             },
             fit_range_to_one_page=True,
             fail_on_multi_page=True,
-            crop_to_content=False,
+            crop_to_content=True,
         )
     except ImageExportError as exc:
         return fail(str(exc))
