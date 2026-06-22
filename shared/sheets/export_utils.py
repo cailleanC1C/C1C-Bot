@@ -9,7 +9,7 @@ from typing import Any, Dict
 
 import importlib.util
 import requests
-from PIL import Image, ImageChops  # noqa: F401 - provided for potential downstream usage
+from PIL import Image, ImageChops
 from google.auth.transport.requests import Request
 from google.oauth2.service_account import Credentials
 
@@ -28,6 +28,38 @@ if _pdf2image_spec is not None:
     _HAS_PDF2IMAGE = callable(convert_from_bytes)
 
 GOOGLE_EXPORT_URL = "https://docs.google.com/spreadsheets/d/{sheet_id}/export"
+
+
+def _trim_outer_whitespace(image: Image.Image) -> Image.Image:
+    """Trim only the outer near-white page frame from a rasterized PDF page.
+
+    Google Sheets PDF exports render the selected range onto a white PDF page.
+    Comparing against pure white is too brittle because PDF rasterization can leave
+    anti-aliased near-white pixels around sheet content, while aggressive cropping
+    risks shaving off footer rows or side content.  Treat only pixels that are very
+    close to white as page whitespace, and keep a tiny safety pad around the
+    detected content bbox.
+    """
+
+    rgb_image = image.convert("RGB")
+    white = Image.new("RGB", rgb_image.size, (255, 255, 255))
+    diff = ImageChops.difference(rgb_image, white)
+
+    # Ignore tiny rasterization noise in the PDF page background, but consider any
+    # visible sheet fill, borders, text, or image pixels to be content.
+    threshold = 8
+    mask = diff.convert("L").point(lambda pixel: 255 if pixel > threshold else 0)
+    bbox = mask.getbbox()
+    if not bbox:
+        return image
+
+    safety_pad_px = 2
+    left, top, right, bottom = bbox
+    left = max(0, left - safety_pad_px)
+    top = max(0, top - safety_pad_px)
+    right = min(image.width, right + safety_pad_px)
+    bottom = min(image.height, bottom + safety_pad_px)
+    return image.crop((left, top, right, bottom))
 
 
 class ImageExportError(RuntimeError):
@@ -137,11 +169,7 @@ def _convert_pdf_to_png(
         image = images[0]
 
         if crop_to_content:
-            bg = Image.new(image.mode, image.size, (255, 255, 255))
-            diff = ImageChops.difference(image, bg)
-            bbox = diff.getbbox()
-            if bbox:
-                image = image.crop(bbox)
+            image = _trim_outer_whitespace(image)
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         return buffer.getvalue()

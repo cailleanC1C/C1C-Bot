@@ -57,7 +57,32 @@ def test_convert_pdf_to_png_crops_to_content_by_default(monkeypatch):
     assert captured["first_page"] == 1
     assert captured["last_page"] == 2
     rendered = Image.open(BytesIO(png))
-    assert rendered.size == (1, 1)
+    assert rendered.size == (5, 5)
+
+
+def test_convert_pdf_to_png_trims_near_white_page_frame_without_shaving_content(monkeypatch):
+    image = _png_image(size=(20, 20))
+    # Simulate anti-aliased page-background noise that should still be treated as whitespace.
+    image.putpixel((1, 1), (252, 252, 252))
+    # Simulate rendered sheet content reaching the bottom/right of the selected range.
+    for x in range(6, 15):
+        image.putpixel((x, 5), (0, 0, 0))
+        image.putpixel((x, 14), (0, 0, 0))
+    for y in range(5, 15):
+        image.putpixel((6, y), (0, 0, 0))
+        image.putpixel((14, y), (0, 0, 0))
+
+    monkeypatch.setattr(export_utils, "_HAS_PDF2IMAGE", True)
+    monkeypatch.setattr(export_utils, "convert_from_bytes", lambda *args, **kwargs: [image])
+
+    png = export_utils._convert_pdf_to_png(b"%PDF")
+
+    assert png is not None
+    rendered = Image.open(BytesIO(png))
+    assert rendered.size == (13, 14)
+    # The detected content is padded, not clipped at the exact content boundary.
+    assert rendered.getpixel((2, 2)) == (0, 0, 0)
+    assert rendered.getpixel((10, 11)) == (0, 0, 0)
 
 
 def test_convert_pdf_to_png_can_preserve_page_framing(monkeypatch):

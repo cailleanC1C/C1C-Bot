@@ -237,7 +237,7 @@ def test_image_range_and_export_options_come_from_config(monkeypatch, harness):
     assert captured["range"] == "A1:V42"
     assert captured["kwargs"]["fit_range_to_one_page"] is True
     assert captured["kwargs"]["fail_on_multi_page"] is True
-    assert captured["kwargs"]["crop_to_content"] is False
+    assert captured["kwargs"]["crop_to_content"] is True
 
 
 def _c1cad_check():
