@@ -12,7 +12,7 @@ from modules.common import feature_flags
 from shared.sheets import core as sheets_core
 from shared.sheets import recruitment
 from shared.sheets.recruitment import afetch_reports_tab
-from shared.sheets.export_utils import export_pdf_as_png, get_tab_gid
+from shared.sheets.export_utils import ImageExportError, export_pdf_as_png, get_tab_gid
 
 log = logging.getLogger("c1c.housekeeping.c1c_ad")
 
@@ -488,6 +488,8 @@ async def run_c1c_ad_job(
                 "range": config.image_range,
             },
         )
+    except ImageExportError as exc:
+        return fail(str(exc))
     except Exception:
         log.exception("❌ C1C ad failed: image render exception")
         return fail("image render failed")
