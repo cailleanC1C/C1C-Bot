@@ -30,6 +30,10 @@ if _pdf2image_spec is not None:
 GOOGLE_EXPORT_URL = "https://docs.google.com/spreadsheets/d/{sheet_id}/export"
 
 
+class ImageExportError(RuntimeError):
+    """Raised when a sheet image export would be unsafe to post."""
+
+
 def _export_delay_seconds() -> float:
     """
     Read SHEETS_EXPORT_DELAY_MS from the environment and return the delay in seconds.
@@ -112,10 +116,19 @@ def _convert_pdf_to_png(pdf_bytes: bytes) -> bytes | None:
         return None
 
     try:
-        images = convert_from_bytes(pdf_bytes, fmt="png", single_file=True, dpi=150)
+        images = convert_from_bytes(
+            pdf_bytes,
+            fmt="png",
+            dpi=150,
+            first_page=1,
+            last_page=2,
+        )
         if not images:
             log.error("export_pdf_as_png: pdf2image returned no pages")
             return None
+        if len(images) > 1:
+            log.error("export_pdf_as_png: PDF export produced multiple pages")
+            raise ImageExportError("image export produced multiple pages")
         image = images[0]
 
         bg = Image.new(image.mode, image.size, (255, 255, 255))
@@ -126,6 +139,8 @@ def _convert_pdf_to_png(pdf_bytes: bytes) -> bytes | None:
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         return buffer.getvalue()
+    except ImageExportError:
+        raise
     except Exception as exc:
         log.exception(
             "export_pdf_as_png: PDF rasterization failed",
@@ -160,10 +175,20 @@ def _export_pdf_as_png_sync(
             headers=headers,
             params={
                 "format": "pdf",
-                "portrait": "false",
-                "fitw": "true",
                 "gid": gid,
                 "range": cell_range,
+                # Render the configured range as a clean, single-page image source.
+                # scale=4 is Google Sheets' "fit to page" PDF option; fitw alone can
+                # still paginate tall ranges and caused cropped first-page Discord ads.
+                "scale": "4",
+                "portrait": "false",
+                "fitw": "true",
+                "size": "7",
+                "sheetnames": "false",
+                "printtitle": "false",
+                "pagenumbers": "false",
+                "gridlines": "false",
+                "fzr": "false",
             },
             timeout=20,
         )

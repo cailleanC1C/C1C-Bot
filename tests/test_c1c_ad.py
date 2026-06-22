@@ -521,3 +521,22 @@ def test_dynamic_placeholder_missing_reports_tab_config_fails_without_post(harne
     assert result.status == "failed"
     assert result.message == "reports tab config missing"
     assert harness.channel.sent == []
+
+
+def test_multi_page_image_export_fails_before_delete_or_post(monkeypatch, harness):
+    async def render(*args, **kwargs):
+        raise c1c_ad.ImageExportError("image export produced multiple pages")
+
+    monkeypatch.setattr(c1c_ad, "export_pdf_as_png", render)
+
+    result = asyncio.run(c1c_ad.run_c1c_ad_job(harness.bot, force=True))
+
+    assert result.status == "failed"
+    assert result.message == "image export produced multiple pages"
+    assert harness.channel.sent == []
+    assert harness.channel.messages[10].deleted is False
+    assert harness.channel.messages[11].deleted is False
+    assert any(
+        cell["values"] == [["image export produced multiple pages"]]
+        for cell in harness.updates
+    )
