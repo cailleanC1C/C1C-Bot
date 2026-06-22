@@ -54,6 +54,7 @@ def _config_values():
         "C1C_AD_TEXT_ROW": "2",
         "C1C_AD_TARGET_THREAD_ID": "1324313499731755039",
         "C1C_AD_REFRESH_DAYS": "7",
+        "REPORTS_TAB": "Statistics",
     }
 
 
@@ -258,3 +259,265 @@ def test_c1cad_permission_denies_non_staff_non_admin(rbac_members):
     predicate = _c1cad_check()
     with pytest.raises(commands.CheckFailure):
         asyncio.run(predicate(DummyCtx(DummyMember(roles=[3]))))
+
+
+def _extend_c1c_ad_text_headers(harness):
+    headers = harness.rows[0]
+    row = harness.rows[1]
+    extra = [
+        ("open_spots_endgame_brackets", "Elite End Game, Early End Game"),
+        ("open_spots_lategame_brackets", "Late Game"),
+        ("open_spots_midgame_brackets", "Mid Game"),
+        ("open_spots_early_brackets", "Early Game, Beginners"),
+        ("open_spots_empty_text", "Join us and we’ll help you find the right fit."),
+    ]
+    for header, value in extra:
+        if header not in headers:
+            headers.append(header)
+            row.append(value)
+
+
+def _statistics_rows():
+    return [
+        [
+            "H1_Headline",
+            "H2_Headline",
+            "Key",
+            "open_spots",
+            "inactives",
+            "reserved_spots",
+        ],
+        ["Bracket Details", "", "", "", "", ""],
+        ["", "Elite End Game", "", "", "", ""],
+        ["", "", "Torns Valhalla", "2", "99", "99"],
+        ["", "", "Closed Endgame", "0", "0", "0"],
+        ["", "Early End Game", "", "", "", ""],
+        ["", "", "Shadow Shoguns", "1", "5", "7"],
+        ["", "Late Game", "", "", "", ""],
+        ["", "", "Late Open", "3", "1", "1"],
+        ["", "Mid Game", "", "", "", ""],
+        ["", "", "Mid Open", "4", "0", "0"],
+        ["", "Early Game", "", "", "", ""],
+        ["", "", "Early Closed", "0", "0", "0"],
+        ["", "Beginners", "", "", "", ""],
+        ["", "", "Beginner Open", "5", "8", "9"],
+    ]
+
+
+def test_dynamic_placeholders_replace_all_groups(monkeypatch, harness):
+    _extend_c1c_ad_text_headers(harness)
+    harness.rows[1][0] = "\n".join(
+        [
+            "End [OPEN_SPOTS_ENDGAME]",
+            "Late [OPEN_SPOTS_LATEGAME]",
+            "Mid [OPEN_SPOTS_MIDGAME]",
+            "Early [OPEN_SPOTS_EARLY]",
+        ]
+    )
+
+    async def fetch_stats(tab_name=None):
+        return _statistics_rows()
+
+    monkeypatch.setattr(c1c_ad, "afetch_reports_tab", fetch_stats)
+
+    result = asyncio.run(c1c_ad.run_c1c_ad_job(harness.bot, force=True))
+
+    assert result.status == "success"
+    posted_text = harness.channel.sent[1][0]
+    assert "Open right now: **Torns Valhalla, Shadow Shoguns**" in posted_text
+    assert "Open right now: **Late Open**" in posted_text
+    assert "Open right now: **Mid Open**" in posted_text
+    assert "Open right now: **Beginner Open**" in posted_text
+    assert "Closed Endgame" not in posted_text
+    assert "Early Closed" not in posted_text
+    assert "open 2" not in posted_text
+    assert "99" not in posted_text
+    assert harness.rows[1][0].startswith("End [OPEN_SPOTS_ENDGAME]")
+
+
+def test_dynamic_placeholder_empty_result_uses_empty_text(monkeypatch, harness):
+    _extend_c1c_ad_text_headers(harness)
+    harness.rows[1][0] = "Early [OPEN_SPOTS_EARLY]"
+
+    async def fetch_stats(tab_name=None):
+        rows = _statistics_rows()
+        rows[-1][3] = "0"
+        return rows
+
+    monkeypatch.setattr(c1c_ad, "afetch_reports_tab", fetch_stats)
+
+    result = asyncio.run(c1c_ad.run_c1c_ad_job(harness.bot, force=True))
+
+    assert result.status == "success"
+    assert (
+        harness.channel.sent[1][0]
+        == "Early Join us and we’ll help you find the right fit."
+    )
+
+
+def test_dynamic_placeholder_missing_mapping_warns_and_uses_empty_text(
+    monkeypatch, harness, caplog
+):
+    _extend_c1c_ad_text_headers(harness)
+    mapping_col = harness.rows[0].index("open_spots_endgame_brackets")
+    harness.rows[1][mapping_col] = ""
+    harness.rows[1][0] = "End [OPEN_SPOTS_ENDGAME]"
+
+    async def fetch_stats(tab_name=None):
+        return _statistics_rows()
+
+    monkeypatch.setattr(c1c_ad, "afetch_reports_tab", fetch_stats)
+
+    result = asyncio.run(c1c_ad.run_c1c_ad_job(harness.bot, force=True))
+
+    assert result.status == "success"
+    assert (
+        harness.channel.sent[1][0]
+        == "End Join us and we’ll help you find the right fit."
+    )
+    assert "missing bracket mapping placeholder=OPEN_SPOTS_ENDGAME" in caplog.text
+
+
+def test_dynamic_placeholder_statistics_read_failure_fails_without_post(
+    monkeypatch, harness
+):
+    _extend_c1c_ad_text_headers(harness)
+    harness.rows[1][0] = "End [OPEN_SPOTS_ENDGAME]"
+
+    async def fetch_stats(tab_name=None):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(c1c_ad, "afetch_reports_tab", fetch_stats)
+
+    result = asyncio.run(c1c_ad.run_c1c_ad_job(harness.bot, force=True))
+
+    assert result.status == "failed"
+    assert result.message == "Statistics tab read failed"
+    assert harness.channel.sent == []
+    assert any(
+        cell["values"] == [["Statistics tab read failed"]] for cell in harness.updates
+    )
+
+
+def test_dynamic_placeholder_statistics_missing_header_fails_without_post(
+    monkeypatch, harness
+):
+    _extend_c1c_ad_text_headers(harness)
+    harness.rows[1][0] = "End [OPEN_SPOTS_ENDGAME]"
+
+    async def fetch_stats(tab_name=None):
+        rows = _statistics_rows()
+        rows[0][3] = "spots"
+        return rows
+
+    monkeypatch.setattr(c1c_ad, "afetch_reports_tab", fetch_stats)
+
+    result = asyncio.run(c1c_ad.run_c1c_ad_job(harness.bot, force=True))
+
+    assert result.status == "failed"
+    assert result.message == "Statistics headers missing open_spots"
+    assert harness.channel.sent == []
+
+
+def test_dynamic_placeholder_missing_empty_text_fails_without_post(
+    monkeypatch, harness
+):
+    _extend_c1c_ad_text_headers(harness)
+    empty_col = harness.rows[0].index("open_spots_empty_text")
+    harness.rows[1][empty_col] = ""
+    harness.rows[1][0] = "End [OPEN_SPOTS_ENDGAME]"
+
+    async def fetch_stats(tab_name=None):
+        return _statistics_rows()
+
+    monkeypatch.setattr(c1c_ad, "afetch_reports_tab", fetch_stats)
+
+    result = asyncio.run(c1c_ad.run_c1c_ad_job(harness.bot, force=True))
+
+    assert result.status == "failed"
+    assert result.message == "open_spots_empty_text empty"
+    assert harness.channel.sent == []
+
+
+def test_resolved_text_over_discord_limit_fails_before_delete_or_post(
+    monkeypatch, harness, caplog
+):
+    _extend_c1c_ad_text_headers(harness)
+    harness.rows[1][0] = "End [OPEN_SPOTS_ENDGAME]"
+    long_name = "A" * 2010
+
+    async def fetch_stats(tab_name=None):
+        rows = _statistics_rows()
+        rows[3][2] = long_name
+        rows[6][3] = "0"
+        return rows
+
+    async def render(*args, **kwargs):
+        raise AssertionError("image render should not run when text is too long")
+
+    monkeypatch.setattr(c1c_ad, "afetch_reports_tab", fetch_stats)
+    monkeypatch.setattr(c1c_ad, "export_pdf_as_png", render)
+
+    result = asyncio.run(c1c_ad.run_c1c_ad_job(harness.bot, force=True))
+
+    assert result.status == "failed"
+    assert result.message == "resolved ad text exceeds Discord 2000 character limit"
+    assert harness.channel.sent == []
+    assert harness.channel.messages[10].deleted is False
+    assert harness.channel.messages[11].deleted is False
+    assert any(
+        cell["values"] == [["resolved ad text exceeds Discord 2000 character limit"]]
+        for cell in harness.updates
+    )
+    assert "resolved ad text exceeds Discord limit chars=" in caplog.text
+    assert "limit=2000" in caplog.text
+    assert long_name not in caplog.text
+
+
+def test_plain_ad_text_over_discord_limit_fails_before_delete_or_post(
+    monkeypatch, harness
+):
+    harness.rows[1][0] = "x" * 2001
+
+    async def render(*args, **kwargs):
+        raise AssertionError("image render should not run when text is too long")
+
+    monkeypatch.setattr(c1c_ad, "export_pdf_as_png", render)
+
+    result = asyncio.run(c1c_ad.run_c1c_ad_job(harness.bot, force=True))
+
+    assert result.status == "failed"
+    assert result.message == "resolved ad text exceeds Discord 2000 character limit"
+    assert harness.channel.sent == []
+    assert harness.channel.messages[10].deleted is False
+    assert harness.channel.messages[11].deleted is False
+
+
+def test_dynamic_placeholder_uses_configured_reports_tab(harness, monkeypatch):
+    _extend_c1c_ad_text_headers(harness)
+    harness.config["REPORTS_TAB"] = "Configured Stats"
+    harness.rows[1][0] = "End [OPEN_SPOTS_ENDGAME]"
+    captured = {}
+
+    async def fetch_stats(tab_name=None):
+        captured["tab_name"] = tab_name
+        return _statistics_rows()
+
+    monkeypatch.setattr(c1c_ad, "afetch_reports_tab", fetch_stats)
+
+    result = asyncio.run(c1c_ad.run_c1c_ad_job(harness.bot, force=True))
+
+    assert result.status == "success"
+    assert captured["tab_name"] == "Configured Stats"
+
+
+def test_dynamic_placeholder_missing_reports_tab_config_fails_without_post(harness):
+    _extend_c1c_ad_text_headers(harness)
+    del harness.config["REPORTS_TAB"]
+    harness.rows[1][0] = "End [OPEN_SPOTS_ENDGAME]"
+
+    result = asyncio.run(c1c_ad.run_c1c_ad_job(harness.bot, force=True))
+
+    assert result.status == "failed"
+    assert result.message == "reports tab config missing"
+    assert harness.channel.sent == []

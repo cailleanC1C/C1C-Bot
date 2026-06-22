@@ -4,13 +4,14 @@ import datetime as dt
 import io
 import logging
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import discord
 
 from modules.common import feature_flags
 from shared.sheets import core as sheets_core
 from shared.sheets import recruitment
+from shared.sheets.recruitment import afetch_reports_tab
 from shared.sheets.export_utils import export_pdf_as_png, get_tab_gid
 
 log = logging.getLogger("c1c.housekeeping.c1c_ad")
@@ -24,6 +25,24 @@ CONFIG_KEYS = (
     "C1C_AD_TARGET_THREAD_ID",
     "C1C_AD_REFRESH_DAYS",
 )
+
+PLACEHOLDER_CONFIG = {
+    "OPEN_SPOTS_ENDGAME": "open_spots_endgame_brackets",
+    "OPEN_SPOTS_LATEGAME": "open_spots_lategame_brackets",
+    "OPEN_SPOTS_MIDGAME": "open_spots_midgame_brackets",
+    "OPEN_SPOTS_EARLY": "open_spots_early_brackets",
+}
+PLACEHOLDER_TOKENS = {key: f"[{key}]" for key in PLACEHOLDER_CONFIG}
+OPEN_SPOTS_EMPTY_TEXT_HEADER = "open_spots_empty_text"
+DISCORD_TEXT_LIMIT = 2000
+RESOLVED_TEXT_TOO_LONG_ERROR = "resolved ad text exceeds Discord 2000 character limit"
+STATISTICS_REQUIRED_HEADERS = (
+    "h1_headline",
+    "h2_headline",
+    "key",
+    "open_spots",
+)
+
 REQUIRED_HEADERS = (
     "ad_text",
     "last_posted_at_utc",
@@ -155,6 +174,177 @@ def _write_status(
         sheets_core.call_with_backoff(worksheet.batch_update, cells)
 
 
+def _normalize_header(label: str) -> str:
+    return " ".join(str(label or "").strip().lower().replace("_", " ").split())
+
+
+def _cell(row: Sequence[Any], index: int | None) -> str:
+    if index is None:
+        return ""
+    return str(row[index]).strip() if 0 <= index < len(row) else ""
+
+
+def _parse_int(value: Any) -> int:
+    try:
+        return int(str(value or "").strip())
+    except Exception:
+        return 0
+
+
+def _stats_header_map(rows: Sequence[Sequence[Any]]) -> dict[str, int]:
+    required = {_normalize_header(header) for header in STATISTICS_REQUIRED_HEADERS}
+    best: dict[str, int] = {}
+    best_count = 0
+    for row in rows:
+        headers: dict[str, int] = {}
+        for idx, cell in enumerate(row):
+            key = _normalize_header(str(cell or ""))
+            if key:
+                headers[key] = idx
+        count = len(required.intersection(headers))
+        if count > best_count:
+            best = headers
+            best_count = count
+        if count == len(required):
+            return headers
+    return best
+
+
+def _find_bracket_details_start(rows: Sequence[Sequence[Any]]) -> int:
+    for idx, row in enumerate(rows):
+        if any(str(cell or "").strip().lower() == "bracket details" for cell in row):
+            return idx
+    return -1
+
+
+def _open_clans_by_bracket(rows: Sequence[Sequence[Any]]) -> dict[str, list[str]]:
+    headers = _stats_header_map(rows)
+    missing = [
+        header
+        for header in STATISTICS_REQUIRED_HEADERS
+        if _normalize_header(header) not in headers
+    ]
+    if missing:
+        raise ValueError(f"Statistics headers missing {missing[0]}")
+
+    start = _find_bracket_details_start(rows)
+    if start < 0:
+        raise ValueError("Statistics Bracket Details section missing")
+
+    h1_idx = headers[_normalize_header("h1_headline")]
+    h2_idx = headers[_normalize_header("h2_headline")]
+    key_idx = headers[_normalize_header("key")]
+    open_idx = headers[_normalize_header("open_spots")]
+
+    current_bracket = ""
+    result: dict[str, list[str]] = {}
+    for row in rows[start + 1 :]:
+        if not any(str(cell or "").strip() for cell in row):
+            current_bracket = ""
+            continue
+
+        section = _cell(row, h1_idx)
+        bracket = _cell(row, h2_idx)
+        clan = _cell(row, key_idx)
+        if (
+            section
+            and section.lower() != "bracket details"
+            and not bracket
+            and not clan
+        ):
+            break
+        if bracket and not clan:
+            current_bracket = bracket
+            result.setdefault(current_bracket, [])
+            continue
+        if current_bracket and clan and _parse_int(_cell(row, open_idx)) > 0:
+            result.setdefault(current_bracket, []).append(clan)
+    return result
+
+
+def _split_brackets(value: str) -> list[str]:
+    return [part.strip() for part in str(value or "").split(",") if part.strip()]
+
+
+def _get_reports_tab_name_required() -> str:
+    tab_name = recruitment.get_config_value("REPORTS_TAB", None)
+    if not str(tab_name or "").strip():
+        raise ValueError("reports tab config missing")
+    return str(tab_name).strip()
+
+
+def _resolve_placeholder_text(
+    *,
+    placeholder: str,
+    row: Mapping[str, str],
+    open_by_bracket: Mapping[str, Sequence[str]],
+    empty_text: str,
+) -> tuple[str, int]:
+    mapping_header = PLACEHOLDER_CONFIG[placeholder]
+    brackets = _split_brackets(row.get(mapping_header, ""))
+    if not brackets:
+        log.warning(
+            "⚠️ C1C ad placeholder skipped: missing bracket mapping placeholder=%s",
+            placeholder,
+        )
+        return empty_text, 0
+
+    clans: list[str] = []
+    seen: set[str] = set()
+    bracket_names = set(brackets)
+    for bracket, open_clans in open_by_bracket.items():
+        if bracket not in bracket_names:
+            continue
+        for clan in open_clans:
+            if clan not in seen:
+                clans.append(clan)
+                seen.add(clan)
+    if not clans:
+        return empty_text, 0
+    return f"Open right now: **{', '.join(clans)}**", len(clans)
+
+
+async def _resolve_dynamic_placeholders(ad_text: str, row: Mapping[str, str]) -> str:
+    present = [
+        placeholder
+        for placeholder, token in PLACEHOLDER_TOKENS.items()
+        if token in ad_text
+    ]
+    if not present:
+        return ad_text
+
+    empty_text = str(row.get(OPEN_SPOTS_EMPTY_TEXT_HEADER, "")).strip()
+    if not empty_text:
+        raise ValueError("open_spots_empty_text empty")
+
+    tab_name = _get_reports_tab_name_required()
+    try:
+        stats_rows = await afetch_reports_tab(tab_name)
+    except Exception as exc:
+        raise ValueError("Statistics tab read failed") from exc
+    open_by_bracket = _open_clans_by_bracket(stats_rows or [])
+
+    resolved = ad_text
+    counts = {"endgame": 0, "lategame": 0, "midgame": 0, "early": 0}
+    for placeholder in present:
+        replacement, count = _resolve_placeholder_text(
+            placeholder=placeholder,
+            row=row,
+            open_by_bracket=open_by_bracket,
+            empty_text=empty_text,
+        )
+        resolved = resolved.replace(PLACEHOLDER_TOKENS[placeholder], replacement)
+        counts[placeholder.removeprefix("OPEN_SPOTS_").lower()] = count
+    log.info(
+        "✅ C1C ad placeholders resolved: endgame=%s lategame=%s midgame=%s early=%s",
+        counts["endgame"],
+        counts["lategame"],
+        counts["midgame"],
+        counts["early"],
+    )
+    return resolved
+
+
 def _parse_timestamp(value: str) -> dt.datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -253,9 +443,36 @@ async def run_c1c_ad_job(
         log.error("❌ C1C ad failed: %s", reason)
         return C1CAdResult("failed", reason)
 
+    def fail_resolved_text_too_long(char_count: int) -> C1CAdResult:
+        _write_status(
+            sheet_id,
+            config,
+            headers,
+            {
+                "last_post_status": "failed",
+                "last_post_error": RESOLVED_TEXT_TOO_LONG_ERROR,
+                "updated_at_utc": _timestamp(now),
+            },
+        )
+        log.error(
+            "❌ C1C ad failed: resolved ad text exceeds Discord limit chars=%s limit=%s",
+            char_count,
+            DISCORD_TEXT_LIMIT,
+        )
+        return C1CAdResult("failed", RESOLVED_TEXT_TOO_LONG_ERROR)
+
     ad_text = str(row.get("ad_text", "")).strip()
     if not ad_text:
         return fail("ad_text empty")
+
+    try:
+        ad_text = await _resolve_dynamic_placeholders(ad_text, row)
+    except ValueError as exc:
+        return fail(str(exc))
+
+    resolved_text_length = len(ad_text)
+    if resolved_text_length > DISCORD_TEXT_LIMIT:
+        return fail_resolved_text_too_long(resolved_text_length)
 
     if ":" not in config.image_range:
         return fail("image range invalid")
