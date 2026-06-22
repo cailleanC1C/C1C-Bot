@@ -346,6 +346,7 @@ Feature Toggles:
   SERVER_MAP,TRUE
   housekeeping_enabled,TRUE
   mirralith_overview_enabled,TRUE
+  c1c_ad,TRUE
   ops_permissions_enabled,TRUE
   welcome_watcher_enabled,TRUE
   promo_watcher_enabled,TRUE
@@ -355,6 +356,28 @@ Feature Toggles:
   PROMO_ENABLED,TRUE
   ENABLE_PROMO_HOOK,TRUE
   ```
+
+
+### C1C recruitment ad Config rows
+
+Add these rows to the Mirralith workbook `Config` tab before enabling the `c1c_ad` feature:
+
+```text
+C1C_AD_TAB = C1C_AD
+C1C_AD_IMAGE_RANGE = A1:V42
+C1C_AD_TEXT_TAB = C1C_AD_TEXT
+C1C_AD_TEXT_ROW = 2
+C1C_AD_TARGET_THREAD_ID = 1324313499731755039
+C1C_AD_REFRESH_DAYS = 7
+```
+
+Add the `C1C_AD_TEXT` worksheet with row 1 headers:
+
+```text
+ad_text | last_posted_at_utc | last_image_message_id | last_text_message_id | last_post_status | last_post_error | updated_at_utc
+```
+
+The bot treats row 2 as the single active recruitment ad row and resolves all state columns by header name.
 
 **Behavior**
 
