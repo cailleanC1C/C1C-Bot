@@ -30,6 +30,10 @@ if _pdf2image_spec is not None:
 GOOGLE_EXPORT_URL = "https://docs.google.com/spreadsheets/d/{sheet_id}/export"
 
 
+class ImageExportError(RuntimeError):
+    """Raised when a sheet image export would be unsafe to post."""
+
+
 def _export_delay_seconds() -> float:
     """
     Read SHEETS_EXPORT_DELAY_MS from the environment and return the delay in seconds.
@@ -106,26 +110,43 @@ def get_tab_gid(sheet_id: str, tab_name: str) -> str | None:
     return str(gid) if gid is not None else None
 
 
-def _convert_pdf_to_png(pdf_bytes: bytes) -> bytes | None:
+def _convert_pdf_to_png(
+    pdf_bytes: bytes,
+    *,
+    fail_on_multi_page: bool = True,
+    crop_to_content: bool = True,
+) -> bytes | None:
     if not _HAS_PDF2IMAGE:
         log.warning("export_pdf_as_png: pdf2image not installed; skipping PDF rasterization")
         return None
 
     try:
-        images = convert_from_bytes(pdf_bytes, fmt="png", single_file=True, dpi=150)
+        images = convert_from_bytes(
+            pdf_bytes,
+            fmt="png",
+            dpi=150,
+            first_page=1,
+            last_page=2,
+        )
         if not images:
             log.error("export_pdf_as_png: pdf2image returned no pages")
             return None
+        if len(images) > 1 and fail_on_multi_page:
+            log.error("export_pdf_as_png: PDF export produced multiple pages")
+            raise ImageExportError("image export produced multiple pages")
         image = images[0]
 
-        bg = Image.new(image.mode, image.size, (255, 255, 255))
-        diff = ImageChops.difference(image, bg)
-        bbox = diff.getbbox()
-        if bbox:
-            image = image.crop(bbox)
+        if crop_to_content:
+            bg = Image.new(image.mode, image.size, (255, 255, 255))
+            diff = ImageChops.difference(image, bg)
+            bbox = diff.getbbox()
+            if bbox:
+                image = image.crop(bbox)
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         return buffer.getvalue()
+    except ImageExportError:
+        raise
     except Exception as exc:
         log.exception(
             "export_pdf_as_png: PDF rasterization failed",
@@ -134,12 +155,49 @@ def _convert_pdf_to_png(pdf_bytes: bytes) -> bytes | None:
         return None
 
 
+def _build_pdf_export_params(
+    gid: str | int,
+    cell_range: str,
+    *,
+    fit_range_to_one_page: bool,
+) -> dict[str, str | int]:
+    params: dict[str, str | int] = {
+        "format": "pdf",
+        "gid": gid,
+        "range": cell_range,
+        "portrait": "false",
+        "fitw": "true",
+        "sheetnames": "false",
+        "printtitle": "false",
+        "pagenumbers": "false",
+        "gridlines": "false",
+        "fzr": "false",
+    }
+    if fit_range_to_one_page:
+        # Google Sheets scale=4 is "fit to page". Keep it opt-in so existing
+        # callers can preserve prior framing unless they request strict range fitting.
+        params.update(
+            {
+                "scale": "4",
+                "size": "7",
+                "top_margin": "0.25",
+                "bottom_margin": "0.25",
+                "left_margin": "0.25",
+                "right_margin": "0.25",
+            }
+        )
+    return params
+
+
 def _export_pdf_as_png_sync(
     sheet_id: str,
     gid: str | int | None,
     cell_range: str,
     *,
     log_context: dict[str, Any] | None = None,
+    fit_range_to_one_page: bool = False,
+    fail_on_multi_page: bool = True,
+    crop_to_content: bool = True,
 ) -> bytes | None:
     context = {"range": cell_range}
     context.update(log_context or {})
@@ -158,13 +216,11 @@ def _export_pdf_as_png_sync(
         response = requests.get(
             GOOGLE_EXPORT_URL.format(sheet_id=sheet_id),
             headers=headers,
-            params={
-                "format": "pdf",
-                "portrait": "false",
-                "fitw": "true",
-                "gid": gid,
-                "range": cell_range,
-            },
+            params=_build_pdf_export_params(
+                gid,
+                cell_range,
+                fit_range_to_one_page=fit_range_to_one_page,
+            ),
             timeout=20,
         )
     except Exception as exc:  # pragma: no cover - network failure
@@ -183,7 +239,11 @@ def _export_pdf_as_png_sync(
         _log_error("empty_pdf_response", log_context=context)
         return None
 
-    return _convert_pdf_to_png(pdf_content)
+    return _convert_pdf_to_png(
+        pdf_content,
+        fail_on_multi_page=fail_on_multi_page,
+        crop_to_content=crop_to_content,
+    )
 
 
 async def export_pdf_as_png(
@@ -192,6 +252,9 @@ async def export_pdf_as_png(
     cell_range: str,
     *,
     log_context: dict[str, Any] | None = None,
+    fit_range_to_one_page: bool = False,
+    fail_on_multi_page: bool = True,
+    crop_to_content: bool = True,
 ) -> bytes | None:
     label = ""
     if log_context:
@@ -204,6 +267,9 @@ async def export_pdf_as_png(
             gid,
             cell_range,
             log_context=log_context,
+            fit_range_to_one_page=fit_range_to_one_page,
+            fail_on_multi_page=fail_on_multi_page,
+            crop_to_content=crop_to_content,
         )
     finally:
         await _sleep_after_export(label)

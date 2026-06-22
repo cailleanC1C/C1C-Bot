@@ -12,7 +12,7 @@ from modules.common import feature_flags
 from shared.sheets import core as sheets_core
 from shared.sheets import recruitment
 from shared.sheets.recruitment import afetch_reports_tab
-from shared.sheets.export_utils import export_pdf_as_png, get_tab_gid
+from shared.sheets.export_utils import ImageExportError, export_pdf_as_png, get_tab_gid
 
 log = logging.getLogger("c1c.housekeeping.c1c_ad")
 
@@ -487,7 +487,12 @@ async def run_c1c_ad_job(
                 "tab": config.image_tab,
                 "range": config.image_range,
             },
+            fit_range_to_one_page=True,
+            fail_on_multi_page=True,
+            crop_to_content=False,
         )
+    except ImageExportError as exc:
+        return fail(str(exc))
     except Exception:
         log.exception("❌ C1C ad failed: image render exception")
         return fail("image render failed")
@@ -512,12 +517,21 @@ async def run_c1c_ad_job(
 
     await _delete_old_messages(channel, row)
     try:
+        text_message = await channel.send(ad_text)
+    except Exception:
+        log.exception("❌ C1C ad failed: Discord text post failed")
+        return fail("Discord post failed")
+
+    try:
         image_message = await channel.send(
             file=discord.File(io.BytesIO(png_bytes), filename="c1c_recruitment_ad.png")
         )
-        text_message = await channel.send(ad_text)
     except Exception:
-        log.exception("❌ C1C ad failed: Discord post failed")
+        log.exception("❌ C1C ad failed: Discord image post failed")
+        try:
+            await text_message.delete()
+        except Exception:
+            log.warning("⚠️ C1C ad cleanup failed: new text message delete failed")
         return fail("Discord post failed")
 
     stamp = _timestamp(now)
@@ -535,8 +549,8 @@ async def run_c1c_ad_job(
         },
     )
     channel_name = getattr(channel, "name", str(config.target_thread_id))
-    log.info("✅ C1C ad refreshed: image + text posted to #%s", channel_name)
-    return C1CAdResult("success", "image + text posted", posted=True)
+    log.info("✅ C1C ad refreshed: text + image posted to #%s", channel_name)
+    return C1CAdResult("success", "text + image posted", posted=True)
 
 
 __all__ = ["C1CAdConfig", "C1CAdResult", "run_c1c_ad_job"]
