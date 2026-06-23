@@ -5,6 +5,7 @@ import asyncio
 import datetime as dt
 import logging
 from dataclasses import dataclass
+from types import SimpleNamespace
 from time import monotonic
 from typing import Dict, List, Optional, Tuple
 
@@ -27,6 +28,7 @@ from modules.onboarding.watcher_welcome import (
     _channel_readable_label,
     _clan_math_column_indices,
     _NO_PLACEMENT_TAG,
+    _log_clan_math_event,
     _normalize_clan_math_targets,
     _send_placement_log_line,
     build_closed_thread_name,
@@ -1112,6 +1114,25 @@ class PromoTicketWatcher(commands.Cog):
             log.exception("promo finalization state completion update failed", extra={"ticket": ticket_id_final, "thread_id": getattr(thread, "id", None)})
         outcome = "success" if finalization_status == "done" else "partial"
         await _send_placement_log_line(flow="promo", outcome=outcome, ticket=ticket_id_final, player=context.username, source=source_tag or None, destination=final_tag or _NO_PLACEMENT_TAG, trigger=trigger, reservation=reservation_status, clan_update=clan_update_status, finalization_status=finalization_status, action=(None if outcome == "success" else "manual_check"))
+        try:
+            await _log_clan_math_event(
+                SimpleNamespace(
+                    ticket_number=ticket_id_final,
+                    username=context.username,
+                    close_source=context.close_trigger or trigger or "ticket_tool",
+                ),
+                final_display=final_tag if final_tag else _NO_PLACEMENT_TAG,
+                reservation_label=cleanup.reservation_label or "none",
+                reservation_row=cleanup.reservation_row,
+                result=("ok" if outcome == "success" else "error"),
+                reason=(None if outcome == "success" else cleanup.reason or "promo_finalization_partial"),
+                row_change_lines=row_change_lines,
+            )
+        except Exception:
+            log.exception(
+                "failed to emit promo clan math log",
+                extra={"ticket": ticket_id_final, "result": outcome},
+            )
         logging_channel_result = "ok" if logging_channel_result == "skip" else logging_channel_result
 
         channel_name_after = channel_name_before

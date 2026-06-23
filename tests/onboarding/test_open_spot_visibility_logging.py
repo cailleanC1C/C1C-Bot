@@ -46,6 +46,10 @@ def _finalization_and_cache_mocks(monkeypatch):
     monkeypatch.setattr('modules.onboarding.watcher_promo.recruitment_sheets.get_clan_header_map', lambda: {'open_spots':4})
     monkeypatch.setattr("modules.onboarding.watcher_welcome.onboarding_sheets.update_ticket_finalization_state", state_update)
     monkeypatch.setattr("modules.onboarding.watcher_promo.onboarding_sheets.update_ticket_finalization_state", state_update)
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_promo.onboarding_sheets.get_live_promo_headers",
+        lambda: ["ticketnumber", "username", "clantag", "sourceclantag"],
+    )
 
 
 
@@ -377,3 +381,42 @@ def test_promo_non_real_tag_logs_skip_reason(monkeypatch, caplog):
     asyncio.run(watcher._finalize_clan_tag(DummyThread(), ctx, 'C1CZ', actor=None, prompt_message=None, view=None))
     assert 'skip_reason=non_real_final_tag' in caplog.text
     assert 'reason=no_promo_open_spots_reconcile_currently' not in caplog.text
+
+
+def test_promo_finalize_emits_welcome_style_availability_summary(monkeypatch):
+    monkeypatch.setattr('modules.common.feature_flags.is_enabled', lambda *_: True)
+    monkeypatch.setattr('modules.onboarding.watcher_promo.get_promo_channel_id', lambda: 1)
+    monkeypatch.setattr('modules.onboarding.watcher_promo.get_ticket_tool_bot_id', lambda: 1)
+    monkeypatch.setattr('modules.onboarding.watcher_promo.thread_scopes.is_promo_parent', lambda *_: True)
+    monkeypatch.setattr('modules.onboarding.watcher_promo.onboarding_sheets.upsert_promo', lambda *_: 'updated')
+    monkeypatch.setattr('modules.onboarding.watcher_promo.onboarding_sessions.mark_completed', lambda *_: True)
+    monkeypatch.setattr('modules.onboarding.watcher_promo.onboarding_sheets.find_promo_row', lambda *_: (2, {"clantag": ""}))
+    monkeypatch.setattr('modules.onboarding.watcher_promo.onboarding_sheets.get_live_promo_headers', lambda: ['ticketnumber', 'username', 'clantag', 'sourceclantag'])
+    row_state = {"open": "6"}
+
+    def fake_find_clan_row(tag, *args, **kwargs):
+        row = [''] * 36
+        row[2] = tag
+        row[4] = row_state["open"]
+        return (25, row) if tag == 'C1C9' else None
+
+    async def fake_adjust(tag, delta):
+        row_state["open"] = str(int(row_state["open"]) + delta)
+        return int(row_state["open"])
+
+    logs = []
+    monkeypatch.setattr('modules.onboarding.watcher_promo.recruitment_sheets.find_clan_row', fake_find_clan_row)
+    monkeypatch.setattr('modules.onboarding.watcher_promo.availability.adjust_manual_open_spots', fake_adjust)
+    monkeypatch.setattr('modules.onboarding.watcher_promo.availability.recompute_clan_availability', lambda *a, **k: asyncio.sleep(0, result=None))
+    monkeypatch.setattr('modules.onboarding.watcher_welcome.rt.send_log_message', lambda message: logs.append(message) or asyncio.sleep(0))
+
+    watcher = PromoTicketWatcher(bot=DummyBot())
+    ctx = PromoTicketContext(thread_id=1,ticket_number='R9',username='u',promo_type='Returning',thread_created='x',year='2026',month='Jan',state='awaiting_clan')
+    watcher._load_clan_tags = lambda : asyncio.sleep(0, result=['C1C9'])
+
+    asyncio.run(watcher._finalize_clan_tag(DummyThread(), ctx, 'C1C9', actor=None, prompt_message=None, view=None))
+
+    availability_logs = [message for message in logs if 'open_spots:' in message]
+    assert len(availability_logs) == 1
+    assert 'C1C9 row 25: open_spots: 6 → 5' in availability_logs[0]
+    assert '(AF: 6 → 5, AG: - → -, AH: - → -, AI: - → -)' in availability_logs[0]
