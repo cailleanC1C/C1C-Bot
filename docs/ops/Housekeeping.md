@@ -12,7 +12,11 @@ and long-lived threads active without manual nudges.
   `HOUSEKEEPING_CLEANUP_DRY_RUN`; missing/invalid values prevent scheduling
   without ENV fallback or hidden defaults.
 - **Targets.** Each non-empty row in the configured cleanup tab is a cleanup
-  target. Required headers are `enabled`, `target_id`, `target_type`,
+  target. `target_type=thread` cleans that thread's message history;
+  `target_type=channel` scans only the configured target channel's own message
+  history. Channel rows do not discover or traverse child threads
+  automatically; configure a thread as its own row when its history should be
+  cleaned. Required headers are `enabled`, `target_id`, `target_type`,
   `target_name`, `parent_name`, `cleanup_mode`, `min_age_hours`,
   `last_checked_at_utc`, `last_deleted_count`, `last_candidate_count`, `last_skipped_count`,
   `last_status`, and `notes`.

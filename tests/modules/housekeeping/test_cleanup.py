@@ -225,6 +225,31 @@ def test_dry_run_writes_candidate_count_separately_from_skipped(monkeypatch):
     assert [m.deleted for m in msgs] == [False, False]
 
 
+def test_thread_cleanup_scans_configured_thread_only(monkeypatch):
+    thread_msgs = [Msg("bot", author_id=99)]
+    sibling_thread = Thread([Msg("bot", author_id=99)])
+    parent = Channel([])
+    parent.threads = [sibling_thread]
+    thread = Thread(thread_msgs)
+    thread.parent = parent
+
+    ws, msgs, target = run_with_sheet(
+        monkeypatch,
+        [active_row(target_type="thread", cleanup_mode="bot_messages_only")],
+        thread_msgs,
+        dry_run=False,
+        target_type="thread",
+        target=thread,
+    )
+
+    updates = update_map(ws)
+    assert target.history_calls == 1
+    assert sibling_thread.history_calls == 0
+    assert msgs[0].deleted is True
+    assert sibling_thread.messages[0].deleted is False
+    assert updates["C2"] == "thread"
+    assert updates["L2"] == "deleted"
+
 def test_channel_target_type_scans_channel_own_messages_not_child_threads(monkeypatch):
     channel_msgs = [Msg("bot", author_id=99)]
     thread = Thread([Msg("bot", author_id=99)])
@@ -283,6 +308,39 @@ def test_channel_cleanup_modes_match_thread_modes(monkeypatch):
     for mode, msgs, expected in cases:
         run_with_sheet(monkeypatch, [active_row(target_type="channel", cleanup_mode=mode, min_age_hours="0")], msgs, dry_run=False, target_type="channel")
         assert [m.deleted for m in msgs] == expected
+
+
+def test_channel_like_history_target_resolves_as_channel_without_child_traversal(monkeypatch):
+    class ChannelLikeTarget(HistoryTarget):
+        name = "channel-like-name"
+
+    child_thread = Thread([Msg("bot", author_id=99)])
+    target = ChannelLikeTarget([Msg("bot", author_id=99)])
+    target.threads = [child_thread]
+    bot = Bot(target)
+    monkeypatch.setattr(cleanup.discord, "Thread", Thread)
+    monkeypatch.setattr(cleanup.discord, "TextChannel", Channel)
+
+    resolved, detected_type, status = asyncio.run(cleanup._resolve_any(bot, 123))
+    result = asyncio.run(
+        cleanup._scan_channel(
+            resolved,
+            min_age_hours=0,
+            mode="bot_messages_only",
+            dry_run=False,
+            bot=bot,
+            logger=cleanup.log,
+        )
+    )
+
+    assert resolved is target
+    assert detected_type == "channel"
+    assert status is None
+    assert result.status == "deleted"
+    assert target.history_calls == 1
+    assert child_thread.history_calls == 0
+    assert target.messages[0].deleted is True
+    assert child_thread.messages[0].deleted is False
 
 
 def test_unsupported_target_type_still_applies_to_unsupported_resolved_objects(monkeypatch):

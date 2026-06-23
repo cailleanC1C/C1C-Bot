@@ -47,6 +47,8 @@ BOT_WRITABLE_HEADERS = (
     "last_status",
 )
 ALLOWED_TARGET_TYPES = {"thread", "channel"}
+# ``target_type=channel`` means cleanup of the configured target's own
+# message history. Child threads are not discovered or traversed automatically.
 SUPPORTED_TARGET_TYPES = {"thread", "channel"}
 ALLOWED_CLEANUP_MODES = {
     "all_non_pinned",
@@ -194,7 +196,7 @@ async def _resolve_any(bot: commands.Bot, target_id: int) -> tuple[Any | None, s
             return None, None, "fetch_failed"
     if isinstance(channel, discord.Thread):
         return channel, "thread", None
-    if isinstance(channel, discord.TextChannel):
+    if isinstance(channel, discord.TextChannel) or callable(getattr(channel, "history", None)):
         return channel, "channel", None
     return channel, None, "invalid_target_type"
 
@@ -249,7 +251,7 @@ async def _delete_messages(messages: Sequence[discord.Message], logger: logging.
     return CleanupResult("deleted" if deleted else "ok_no_matches", deleted, len(messages), 0, 0)
 
 
-async def _scan_message_history(target: discord.Thread | discord.TextChannel, *, min_age_hours: float, mode: str, dry_run: bool, bot: commands.Bot, logger: logging.Logger) -> CleanupResult:
+async def _scan_message_history(target: Any, *, min_age_hours: float, mode: str, dry_run: bool, bot: commands.Bot, logger: logging.Logger) -> CleanupResult:
     candidates: list[discord.Message] = []
     skipped = 0
     cutoff = _utc_now() - timedelta(hours=min_age_hours)
@@ -277,7 +279,11 @@ async def _scan_thread(thread: discord.Thread, *, min_age_hours: float, mode: st
     return await _scan_message_history(thread, min_age_hours=min_age_hours, mode=mode, dry_run=dry_run, bot=bot, logger=logger)
 
 
-async def _scan_channel(channel: discord.TextChannel, *, min_age_hours: float, mode: str, dry_run: bool, bot: commands.Bot, logger: logging.Logger) -> CleanupResult:
+async def _scan_channel(channel: Any, *, min_age_hours: float, mode: str, dry_run: bool, bot: commands.Bot, logger: logging.Logger) -> CleanupResult:
+    """Clean only the configured channel target's own message history.
+
+    Child threads are not discovered or traversed automatically.
+    """
     return await _scan_message_history(channel, min_age_hours=min_age_hours, mode=mode, dry_run=dry_run, bot=bot, logger=logger)
 
 
