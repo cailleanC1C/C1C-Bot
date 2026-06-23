@@ -270,3 +270,112 @@ def test_share_summary_missing_destination_is_ephemeral_warning(caplog):
         assert any(getattr(record, "component", None) == "shard_tracker.share_to_clan" for record in caplog.records)
 
     asyncio.run(runner())
+
+
+def _button_labels(view):
+    return [getattr(child, "label", None) for child in view.children]
+
+
+def _button_custom_ids(view):
+    return [getattr(child, "custom_id", None) for child in view.children]
+
+
+def test_overview_button_layout_includes_share_to_clan():
+    from modules.community.shard_tracker.views import ShardTrackerView
+
+    tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+    view = ShardTrackerView(
+        owner_id=42,
+        controller=tracker,
+        active_tab="overview",
+        shard_labels={"ancient": "Ancient", "void": "Void", "sacred": "Sacred", "primal": "Primal"},
+        shard_emojis={},
+        timeout=None,
+    )
+
+    labels = _button_labels(view)
+    custom_ids = _button_custom_ids(view)
+    assert labels[0] == "Overview"
+    assert "Last Pulls" in labels
+    assert "Share to Clan" in labels
+    assert "action:share:overview" in custom_ids
+
+
+def test_detail_button_layout_still_includes_share_to_clan():
+    from modules.community.shard_tracker.views import ShardTrackerView
+
+    tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+    view = ShardTrackerView(
+        owner_id=42,
+        controller=tracker,
+        active_tab="ancient",
+        shard_labels={"ancient": "Ancient", "void": "Void", "sacred": "Sacred", "primal": "Primal"},
+        shard_emojis={},
+        timeout=None,
+    )
+
+    assert "Share to Clan" in _button_labels(view)
+    assert "action:share:ancient" in _button_custom_ids(view)
+
+
+def test_share_embed_uses_overview_payload():
+    tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+    record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
+    clan = _share_clan()
+    user = type("User", (), {"id": 42, "display_name": "Tester", "name": "Tester"})()
+
+    embed = tracker._build_share_embed(user, record, clan)
+
+    assert embed.title == "Shard Snapshot — Tester"
+    assert embed.description == "Shared to `alpha`."
+    assert [field.name for field in embed.fields] == ["Ancient", "Void", "Sacred", "Primal"]
+
+
+def test_share_button_action_routes_overview_without_active_tab_payload():
+    async def runner():
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        tracker = ShardTracker(bot)
+        tracker._feature_enabled = lambda: True
+        tracker.store.get_config = AsyncMock(return_value=ShardTrackerConfig(sheet_id="s", tab_name="t", channel_id=999))
+        tracker.store.load_record = AsyncMock(return_value=tracker.store._new_record([], 42, "Tester"))  # type: ignore[arg-type]
+        tracker._handle_share_summary_action = AsyncMock()
+        interaction = _ShareInteraction()
+        interaction.guild = type("Guild", (), {"id": 123})()
+
+        await tracker.handle_button_interaction(
+            interaction=interaction,
+            custom_id="action:share:overview",
+            active_tab="overview",
+        )
+
+        assert "active_tab" not in tracker._handle_share_summary_action.await_args.kwargs
+
+    asyncio.run(runner())
+
+
+def test_detail_share_button_action_preserves_overview_share_behavior():
+    async def runner():
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        tracker = ShardTracker(bot)
+        tracker._feature_enabled = lambda: True
+        tracker.store.get_config = AsyncMock(return_value=ShardTrackerConfig(sheet_id="s", tab_name="t", channel_id=999))
+        tracker.store.load_record = AsyncMock(return_value=tracker.store._new_record([], 42, "Tester"))  # type: ignore[arg-type]
+        tracker._handle_share_summary_action = AsyncMock()
+        interaction = _ShareInteraction()
+        interaction.guild = type("Guild", (), {"id": 123})()
+
+        await tracker.handle_button_interaction(
+            interaction=interaction,
+            custom_id="action:share:ancient",
+            active_tab="ancient",
+        )
+
+        assert "active_tab" not in tracker._handle_share_summary_action.await_args.kwargs
+
+        record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
+        clan = _share_clan()
+        embed = tracker._build_share_embed(interaction.user, record, clan)
+        assert embed.title == "Shard Snapshot — Tester"
+        assert [field.name for field in embed.fields] == ["Ancient", "Void", "Sacred", "Primal"]
+
+    asyncio.run(runner())
