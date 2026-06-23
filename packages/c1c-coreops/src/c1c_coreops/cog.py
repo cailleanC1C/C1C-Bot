@@ -3268,7 +3268,6 @@ class CoreOpsCog(commands.Cog):
                     "CLAN_TAGS_CACHE_TTL_SEC",
                     "REFRESH_TIMES",
                     "REPORT_DAILY_POST_TIME",
-                    "CLEANUP_INTERVAL_HOURS",
                 }
             )
             used_keys.update(
@@ -4846,7 +4845,6 @@ class CoreOpsCog(commands.Cog):
             "CLAN_TAGS_CACHE_TTL_SEC",
             "REFRESH_TIMES",
             "REPORT_DAILY_POST_TIME",
-            "CLEANUP_INTERVAL_HOURS",
         ]
         lines = [
             line

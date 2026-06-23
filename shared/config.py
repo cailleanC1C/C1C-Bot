@@ -61,7 +61,6 @@ __all__ = [
     "get_strict_probe",
     "get_search_results_soft_cap",
     "get_clan_tags_cache_ttl_sec",
-    "get_cleanup_interval_hours",
     "get_perms_blacklist_channel_ids",
     "get_perms_blacklist_category_ids",
     "get_onboarding_cleanup_after_summary",
@@ -492,9 +491,6 @@ def _load_config() -> Dict[str, object]:
         "WATCHDOG_STALL_SEC": stall,
         "WATCHDOG_DISCONNECT_GRACE_SEC": grace,
         "CLAN_TAGS_CACHE_TTL_SEC": _int_env("CLAN_TAGS_CACHE_TTL_SEC", 3600, min_value=60),
-        "CLEANUP_INTERVAL_HOURS": _int_env(
-            "CLEANUP_INTERVAL_HOURS", 24, min_value=1
-        ),
         "PERMS_BLACKLIST_CHANNEL_IDS": _int_set(
             os.getenv("PERMS_BLACKLIST_CHANNEL_IDS")
         ),
@@ -997,13 +993,6 @@ def get_clan_tags_cache_ttl_sec(default: int = 3600) -> int:
     except (TypeError, ValueError):
         return default
 
-
-def get_cleanup_interval_hours(default: int = 24) -> int:
-    value = _CONFIG.get("CLEANUP_INTERVAL_HOURS", default)
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
 
 
 def get_perms_blacklist_channel_ids() -> Set[int]:

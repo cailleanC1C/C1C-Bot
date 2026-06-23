@@ -141,13 +141,15 @@ sync modules remain available for non-async scripts and cache warmers.
 | `CLAN_TAGS_CACHE_TTL_SEC` | int | `3600` | TTL for cached clan tags. |
 | `REPORT_DAILY_POST_TIME` | HH:MM | `09:30` | UTC time for the Daily Recruiter Update scheduler. |
 | `SERVER_MAP_REFRESH_DAYS` | int | `30` | Minimum days between scheduled server map refreshes; enforced alongside sheet runtime state. |
-| `CLEANUP_INTERVAL_HOURS` | int | `24` | Interval (hours) between cleanup sweeps; each run removes all non-pinned messages in configured threads. |
-| `CLEANUP_THREAD_IDS` | csv | — | Comma-separated Discord thread IDs where cleanup wipes all non-pinned messages. |
 | `HOUSEKEEPING_KEEPALIVE_ENABLED` | Feature Toggles tab bool | — | Required sheet toggle for thread keepalive; missing/blank/invalid disables scheduling without Config or ENV fallback. |
 | `HOUSEKEEPING_KEEPALIVE_TAB` | Config tab string | — | Required name of the keepalive target tab; no code default or fallback tab name. |
 | `HOUSEKEEPING_KEEPALIVE_DEFAULT_MESSAGE` | Config tab string | — | Required global fallback keepalive message; blank means stale rows without row/parent messages are skipped safely. |
 | `HOUSEKEEPING_KEEPALIVE_STALE_AFTER_HOURS` | Config tab number | — | Required inactivity threshold before posting into a thread. |
 | `HOUSEKEEPING_KEEPALIVE_RUN_EVERY_HOURS` | Config tab number | — | Required scheduler cadence for checking the keepalive sheet. |
+| `HOUSEKEEPING_CLEANUP_ENABLED` | Feature Toggles tab bool | — | Required sheet toggle for housekeeping cleanup; missing/blank/invalid disables scheduling without Config or ENV fallback. |
+| `HOUSEKEEPING_CLEANUP_TAB` | Config tab string | — | Required cleanup target tab name; no code default or fallback tab name. |
+| `HOUSEKEEPING_CLEANUP_RUN_EVERY_HOURS` | Config tab number | — | Required positive scheduler cadence for cleanup checks. |
+| `HOUSEKEEPING_CLEANUP_DRY_RUN` | Config tab bool | — | Required TRUE/FALSE flag; TRUE scans and writes status without deleting messages. |
 
 ### Media rendering
 | Key | Type | Default | Notes |
