@@ -86,7 +86,9 @@ class ShardTrackerView(discord.ui.View):
             )
 
         # Action rows depend on tab
-        if active_tab in shard_labels:
+        if active_tab == "overview":
+            self._add_share_button(active_tab)
+        elif active_tab in shard_labels:
             self._add_primary_buttons()
             self._add_legendary_button()
             self._add_last_pulls_button()
@@ -112,9 +114,12 @@ class ShardTrackerView(discord.ui.View):
                 controller=self._controller,
             )
         )
+        self._add_share_button(self.active_tab)
+
+    def _add_share_button(self, tab: str) -> None:
         self.add_item(
             _ShardButton(
-                custom_id=f"action:share:{self.active_tab}",
+                custom_id=f"action:share:{tab}",
                 label="Share to Clan",
                 emoji=None,
                 style=discord.ButtonStyle.secondary,
