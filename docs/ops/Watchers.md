@@ -37,7 +37,7 @@ source of truth covers every automation hook:
 
 ### Cleanup watcher
 - **Sheets.** `HOUSEKEEPING_CLEANUP_ENABLED` must be TRUE in Feature Toggles. Config keys `HOUSEKEEPING_CLEANUP_TAB`, `HOUSEKEEPING_CLEANUP_RUN_EVERY_HOURS`, and `HOUSEKEEPING_CLEANUP_DRY_RUN` drive the cleanup tab, cadence, and dry-run mode.
-- **Behavior.** On every run the watcher reads rows from the configured cleanup tab, validates each row, resolves target metadata, and applies the selected cleanup mode for supported thread targets. Pinned messages remain untouched.
+- **Behavior.** On every run the watcher reads rows from the configured cleanup tab, validates each row, resolves target metadata, and applies the selected cleanup mode to the configured target's own message history for supported thread and channel rows. Channel rows do not discover or traverse child threads automatically. Pinned messages remain untouched.
 - **Logging.** Each run emits a single summary line: `🧹 cleanup run complete: checked_rows=<N> dry_run=<bool> deleted=<M> candidates=<C> skipped=<S> errors=<E>`. WARN lines accompany missing/invalid sheet configuration, fetch, permission, or delete issues without logging every message.
 
 ### Thread keepalive
