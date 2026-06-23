@@ -47,7 +47,7 @@ BOT_WRITABLE_HEADERS = (
     "last_status",
 )
 ALLOWED_TARGET_TYPES = {"thread", "channel"}
-SUPPORTED_TARGET_TYPES = {"thread"}
+SUPPORTED_TARGET_TYPES = {"thread", "channel"}
 ALLOWED_CLEANUP_MODES = {
     "all_non_pinned",
     "bot_messages_only",
@@ -194,7 +194,7 @@ async def _resolve_any(bot: commands.Bot, target_id: int) -> tuple[Any | None, s
             return None, None, "fetch_failed"
     if isinstance(channel, discord.Thread):
         return channel, "thread", None
-    if isinstance(channel, (discord.TextChannel, discord.ForumChannel)):
+    if isinstance(channel, discord.TextChannel):
         return channel, "channel", None
     return channel, None, "invalid_target_type"
 
@@ -249,12 +249,12 @@ async def _delete_messages(messages: Sequence[discord.Message], logger: logging.
     return CleanupResult("deleted" if deleted else "ok_no_matches", deleted, len(messages), 0, 0)
 
 
-async def _scan_thread(thread: discord.Thread, *, min_age_hours: float, mode: str, dry_run: bool, bot: commands.Bot, logger: logging.Logger) -> CleanupResult:
+async def _scan_message_history(target: discord.Thread | discord.TextChannel, *, min_age_hours: float, mode: str, dry_run: bool, bot: commands.Bot, logger: logging.Logger) -> CleanupResult:
     candidates: list[discord.Message] = []
     skipped = 0
     cutoff = _utc_now() - timedelta(hours=min_age_hours)
     try:
-        async for message in thread.history(limit=None, oldest_first=True):
+        async for message in target.history(limit=None, oldest_first=True):
             created = _normalize_timestamp(getattr(message, "created_at", None))
             if getattr(message, "pinned", False) or created is None or created > cutoff or not _matches_mode(message, mode, bot):
                 skipped += 1
@@ -263,7 +263,7 @@ async def _scan_thread(thread: discord.Thread, *, min_age_hours: float, mode: st
     except discord.Forbidden:
         return CleanupResult("missing_permissions", 0, len(candidates), skipped, 1)
     except discord.HTTPException as exc:
-        logger.warning("cleanup history fetch failed: target_id=%s error=%s", getattr(thread, "id", None), exc)
+        logger.warning("cleanup history fetch failed: target_id=%s error=%s", getattr(target, "id", None), exc)
         return CleanupResult("fetch_failed", 0, len(candidates), skipped, 1)
     if dry_run:
         return CleanupResult("dry_run_ok", 0, len(candidates), skipped, 0)
@@ -271,6 +271,14 @@ async def _scan_thread(thread: discord.Thread, *, min_age_hours: float, mode: st
     result.candidates = len(candidates)
     result.skipped = skipped
     return result
+
+
+async def _scan_thread(thread: discord.Thread, *, min_age_hours: float, mode: str, dry_run: bool, bot: commands.Bot, logger: logging.Logger) -> CleanupResult:
+    return await _scan_message_history(thread, min_age_hours=min_age_hours, mode=mode, dry_run=dry_run, bot=bot, logger=logger)
+
+
+async def _scan_channel(channel: discord.TextChannel, *, min_age_hours: float, mode: str, dry_run: bool, bot: commands.Bot, logger: logging.Logger) -> CleanupResult:
+    return await _scan_message_history(channel, min_age_hours=min_age_hours, mode=mode, dry_run=dry_run, bot=bot, logger=logger)
 
 
 def _cell_name(row: int, col_zero: int) -> str:
@@ -364,7 +372,10 @@ async def run_cleanup(bot: commands.Bot, logger: logging.Logger | None = None, *
             errors += 1
             updates.update(_row_update(row, header_map, base_update | name_updates | {"last_status": "unsupported_target_type"}))
             continue
-        result = await _scan_thread(target, min_age_hours=min_age, mode=mode, dry_run=effective_dry_run, bot=bot, logger=logger)
+        if effective_type == "thread":
+            result = await _scan_thread(target, min_age_hours=min_age, mode=mode, dry_run=effective_dry_run, bot=bot, logger=logger)
+        else:
+            result = await _scan_channel(target, min_age_hours=min_age, mode=mode, dry_run=effective_dry_run, bot=bot, logger=logger)
         deleted_total += result.deleted
         candidate_total += result.candidates
         skipped_total += result.skipped
