@@ -6,14 +6,29 @@ and long-lived threads active without manual nudges.
 - Feature toggles: `housekeeping_enabled` gates cleanup/keepalive scheduling; `mirralith_overview_enabled` also guards Mirralith overview posting.
 
 ## Cleanup
-- **Scope.** Deletes every non-pinned message in configured threads so panels reset
-  each run. Pinned messages are never removed.
-- **Cadence.** Runs every `CLEANUP_INTERVAL_HOURS` (default: 24h).
-- **Targets.** Threads enumerated via `CLEANUP_THREAD_IDS`.
-- **Logging.** One summary line per run:
-  - `🧹 Cleanup — threads=<N> • messages_deleted=<M> • errors=<E>`
-- **Error handling.** Missing permissions or API failures are logged as WARN lines
-  and counted in the `errors` field, but the job continues to the next thread.
+- **Config source.** Sheet-driven only. `HOUSEKEEPING_CLEANUP_ENABLED` must
+  come from the Feature Toggles tab. Required Config-tab keys are
+  `HOUSEKEEPING_CLEANUP_TAB`, `HOUSEKEEPING_CLEANUP_RUN_EVERY_HOURS`, and
+  `HOUSEKEEPING_CLEANUP_DRY_RUN`; missing/invalid values prevent scheduling
+  without ENV fallback or hidden defaults.
+- **Targets.** Each non-empty row in the configured cleanup tab is a cleanup
+  target. Required headers are `enabled`, `target_id`, `target_type`,
+  `target_name`, `parent_name`, `cleanup_mode`, `min_age_hours`,
+  `last_checked_at_utc`, `last_deleted_count`, `last_candidate_count`, `last_skipped_count`,
+  `last_status`, and `notes`.
+- **Writeback.** The bot writes only `target_type`, `target_name`,
+  `parent_name`, `last_checked_at_utc`, `last_deleted_count`,
+  `last_candidate_count`, `last_skipped_count`, and `last_status`. It never overwrites admin-owned
+  `enabled`, `target_id`, `cleanup_mode`, `min_age_hours`, or `notes` cells.
+- **Modes.** Supported cleanup modes are `all_non_pinned`,
+  `bot_messages_only`, `commands_only`, and `bot_messages_and_commands`.
+  Pinned messages are never deleted, and `min_age_hours` is always respected.
+- **Startup validation.** Startup schedules the recurring job and also runs a
+  safe validation/writeback pass so admins can see resolved target metadata and
+  row status without surprise deletes.
+- **Logging.** One concise summary line per run:
+  - `🧹 cleanup run complete: checked_rows=<N> dry_run=<bool> deleted=<M> candidates=<C> skipped=<S> errors=<E>`
+  Short WARN lines capture missing/invalid sheet configuration and API failures.
 
 ## Thread keepalive
 - **Purpose.** Prevents important threads from auto-archiving when idle.

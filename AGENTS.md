@@ -87,7 +87,6 @@ Use these to reason about health and lifecycle; if you change them, reflect chan
 - `TIMEZONE`
 - `REFRESH_TIMES`
 - `CLAN_TAGS_CACHE_TTL_SEC`
-- `CLEANUP_INTERVAL_HOURS`
 - `EMOJI_MAX_BYTES`
 - `EMOJI_PAD_SIZE`
 - `EMOJI_PAD_BOX`

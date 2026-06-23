@@ -1564,6 +1564,49 @@ class Runtime:
             self._startup_scheduler_registered = True
             _startup_phase_log("scheduler registration", "ok")
 
+    def _register_cleanup_scheduler(
+        self,
+        *,
+        toggles: Any,
+        successes: list[tuple[Any, Any]],
+        housekeeping_cleanup: Any,
+    ) -> None:
+        cleanup_logger = logging.getLogger("c1c.housekeeping.cleanup")
+        if not toggles.housekeeping_enabled:
+            cleanup_logger.info(
+                "housekeeping cleanup disabled via global housekeeping feature toggle"
+            )
+            return
+
+        cleanup_config = housekeeping_cleanup.resolve_cleanup_config(cleanup_logger)
+        if cleanup_config is None or not cleanup_config.enabled:
+            return
+
+        cleanup_job = self.scheduler.every(
+            hours=float(cleanup_config.run_every_hours),
+            tag="cleanup",
+            name="cleanup_watcher",
+        )
+
+        async def cleanup_runner() -> None:
+            await housekeeping_cleanup.run_cleanup(self.bot, cleanup_logger)
+
+        cleanup_job.do(cleanup_runner)
+        self.bot.loop.create_task(
+            housekeeping_cleanup.run_cleanup(
+                self.bot, cleanup_logger, startup_validation=True
+            )
+        )
+        successes.append(
+            (
+                SimpleNamespace(
+                    bucket="cleanup",
+                    cadence_label=f"{cleanup_config.run_every_hours:g}h",
+                ),
+                cleanup_job,
+            )
+        )
+
     async def _register_ready_schedulers_inner(self) -> None:
         from shared.sheets.cache_scheduler import (
             ensure_cache_registration,
@@ -1602,29 +1645,11 @@ class Runtime:
             )
             successes.append((spec, job))
 
-        if toggles.housekeeping_enabled:
-            cleanup_interval = housekeeping_cleanup.get_cleanup_interval_hours()
-            cleanup_logger = logging.getLogger("c1c.housekeeping.cleanup")
-            cleanup_job = self.scheduler.every(
-                hours=float(cleanup_interval),
-                tag="cleanup",
-                name="cleanup_watcher",
-            )
-
-            async def cleanup_runner() -> None:
-                await housekeeping_cleanup.run_cleanup(self.bot, cleanup_logger)
-
-            cleanup_job.do(cleanup_runner)
-            successes.append(
-                (
-                    SimpleNamespace(
-                        bucket="cleanup", cadence_label=f"{cleanup_interval}h"
-                    ),
-                    cleanup_job,
-                )
-            )
-        else:
-            log.info("housekeeping cleanup disabled via feature toggle")
+        self._register_cleanup_scheduler(
+            toggles=toggles,
+            successes=successes,
+            housekeeping_cleanup=housekeeping_cleanup,
+        )
 
         mirralith_cron = os.getenv("MIRRALITH_POST_CRON", "").strip()
         if mirralith_cron and toggles.mirralith_overview_enabled:
