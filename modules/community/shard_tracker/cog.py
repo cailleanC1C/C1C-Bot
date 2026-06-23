@@ -1020,38 +1020,117 @@ class ShardTracker(commands.Cog, ShardTrackerController):
         record: ShardRecord,
         default_clan_key: str | None,
     ) -> None:
+        selected: ShardClanRow | None = None
+        destination: discord.abc.Messageable | None = None
         try:
-            clans = await self.store.get_enabled_clans()
-        except (ShardTrackerConfigError, ShardTrackerSheetError) as exc:
-            await interaction.response.send_message(self._config_error_message(str(exc)), ephemeral=True)
-            await self._notify_admins(str(exc))
-            return
+            try:
+                clans = await self.store.get_enabled_clans()
+            except (ShardTrackerConfigError, ShardTrackerSheetError) as exc:
+                reason = "config_error"
+                await self._send_share_failure(
+                    interaction,
+                    "Shard tracker clan sharing is misconfigured. Please contact an admin.",
+                )
+                await self._notify_admins(str(exc))
+                self._log_share_failure(
+                    interaction=interaction,
+                    clan_key=default_clan_key,
+                    target_id=None,
+                    reason=reason,
+                )
+                return
 
-        selected = await self._resolve_clan_selection(
-            interaction=interaction,
-            clans=clans,
-            default_clan_key=default_clan_key,
-            action="share",
-        )
-        if selected is None:
-            return
-        destination = self._resolve_share_destination(selected)
-        if destination is None:
+            selected = await self._resolve_clan_selection(
+                interaction=interaction,
+                clans=clans,
+                default_clan_key=default_clan_key,
+                action="share",
+            )
+            if selected is None:
+                return
+
+            destination, reason = self._resolve_share_destination(selected)
+            target_id = self._configured_share_target_id(selected)
+            if destination is None:
+                message = self._share_failure_message(selected, reason)
+                await self._send_share_failure(interaction, message)
+                await self._notify_admins(
+                    f"SHARD_CLANS_TAB clan={selected.clan_key} share destination failed: {reason}"
+                )
+                self._log_share_failure(
+                    interaction=interaction,
+                    clan_key=selected.clan_key,
+                    target_id=target_id,
+                    reason=reason or "unknown_destination_failure",
+                )
+                return
+
+            permission_reason = self._share_destination_block_reason(interaction, destination)
+            if permission_reason is not None:
+                await self._send_share_failure(
+                    interaction,
+                    self._share_failure_message(selected, permission_reason),
+                )
+                self._log_share_failure(
+                    interaction=interaction,
+                    clan_key=selected.clan_key,
+                    target_id=getattr(destination, "id", target_id),
+                    reason=permission_reason,
+                )
+                return
+
+            embed = self._build_share_embed(interaction.user, record, selected)
+            try:
+                await destination.send(embed=embed)
+            except discord.NotFound:
+                reason = _SKIP_DESTINATION_NOT_FOUND
+                await self._send_share_failure(interaction, self._share_failure_message(selected, reason))
+                self._log_share_failure(
+                    interaction=interaction,
+                    clan_key=selected.clan_key,
+                    target_id=getattr(destination, "id", target_id),
+                    reason=reason,
+                )
+                return
+            except discord.Forbidden:
+                reason = _SKIP_PERMISSION_FAILURE
+                await self._send_share_failure(interaction, self._share_failure_message(selected, reason))
+                self._log_share_failure(
+                    interaction=interaction,
+                    clan_key=selected.clan_key,
+                    target_id=getattr(destination, "id", target_id),
+                    reason=reason,
+                )
+                return
+
             await interaction.followup.send(
-                f"Clan `{selected.clan_key}` is enabled but has no valid share destination configured.",
+                f"Shared your shard summary to {destination.mention} for `{selected.clan_key}`.",
                 ephemeral=True,
             )
-            await self._notify_admins(
-                f"SHARD_CLANS_TAB clan={selected.clan_key} missing/invalid share destination"
+            log.info(
+                "shard share sent",
+                extra=self._share_log_extra(
+                    interaction=interaction,
+                    clan_key=selected.clan_key,
+                    target_id=getattr(destination, "id", target_id),
+                    reason="sent",
+                ),
             )
-            return
-
-        embed = self._build_share_embed(interaction.user, record, selected)
-        await destination.send(embed=embed)
-        await interaction.followup.send(
-            f"Shared your shard summary to {destination.mention} for `{selected.clan_key}`.",
-            ephemeral=True,
-        )
+        except Exception:
+            await self._send_share_failure(
+                interaction,
+                "Couldn’t share your shard summary right now. Please try again later or contact an admin.",
+            )
+            log.exception(
+                "shard share failed",
+                extra=self._share_log_extra(
+                    interaction=interaction,
+                    clan_key=getattr(selected, "clan_key", default_clan_key),
+                    target_id=getattr(destination, "id", None)
+                    or self._configured_share_target_id(selected),
+                    reason="unexpected_exception",
+                ),
+            )
 
     async def handle_reminder_opt_action(
         self,
@@ -1170,6 +1249,93 @@ class ShardTracker(commands.Cog, ShardTrackerController):
             ephemeral=True,
         )
         return None
+
+    async def _send_share_failure(self, interaction: discord.Interaction, message: str) -> None:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+            return
+        await interaction.response.send_message(message, ephemeral=True)
+
+    def _configured_share_target_id(self, clan: ShardClanRow | None) -> int | None:
+        if clan is None:
+            return None
+        return clan.share_thread_id or clan.share_channel_id
+
+    def _share_failure_message(self, clan: ShardClanRow, reason: str | None) -> str:
+        if reason == _SKIP_MISSING_DESTINATION:
+            return f"Clan `{clan.clan_key}` does not have a share destination configured. Please contact an admin."
+        if reason == _SKIP_DESTINATION_NOT_FOUND:
+            return f"Clan `{clan.clan_key}` share destination no longer exists or is not visible to me. Please contact an admin."
+        if reason == _SKIP_PERMISSION_FAILURE:
+            return f"I don’t have permission to post shard summaries for `{clan.clan_key}`. Please contact an admin."
+        if reason == "thread_archived":
+            return f"Clan `{clan.clan_key}` share thread is archived. Please contact an admin."
+        if reason == "thread_locked":
+            return f"Clan `{clan.clan_key}` share thread is locked. Please contact an admin."
+        return f"Clan `{clan.clan_key}` shard sharing is not available right now. Please contact an admin."
+
+    def _share_destination_block_reason(
+        self,
+        interaction: discord.Interaction,
+        destination: discord.abc.Messageable,
+    ) -> str | None:
+        if isinstance(destination, discord.Thread):
+            if destination.archived:
+                return "thread_archived"
+            if destination.locked:
+                return "thread_locked"
+
+        guild = getattr(destination, "guild", None) or interaction.guild
+        me = getattr(guild, "me", None) if guild is not None else None
+        if me is None:
+            return None
+
+        permissions_for = getattr(destination, "permissions_for", None)
+        if not callable(permissions_for):
+            return None
+        permissions = permissions_for(me)
+        if not getattr(permissions, "send_messages", False):
+            return _SKIP_PERMISSION_FAILURE
+        if isinstance(destination, discord.Thread) and not getattr(permissions, "send_messages_in_threads", False):
+            return _SKIP_PERMISSION_FAILURE
+        if not getattr(permissions, "embed_links", False):
+            return _SKIP_PERMISSION_FAILURE
+        return None
+
+    def _share_log_extra(
+        self,
+        *,
+        interaction: discord.Interaction,
+        clan_key: str | None,
+        target_id: int | None,
+        reason: str,
+    ) -> dict[str, object | None]:
+        return {
+            "component": "shard_tracker.share_to_clan",
+            "user_id": getattr(interaction.user, "id", None),
+            "source_channel_id": getattr(interaction.channel, "id", None),
+            "clan_key": clan_key,
+            "target_channel_id": target_id,
+            "reason": reason,
+        }
+
+    def _log_share_failure(
+        self,
+        *,
+        interaction: discord.Interaction,
+        clan_key: str | None,
+        target_id: int | None,
+        reason: str,
+    ) -> None:
+        log.warning(
+            "shard share blocked",
+            extra=self._share_log_extra(
+                interaction=interaction,
+                clan_key=clan_key,
+                target_id=target_id,
+                reason=reason,
+            ),
+        )
 
     def _resolve_share_destination(
         self, clan: ShardClanRow
