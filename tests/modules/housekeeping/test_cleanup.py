@@ -94,13 +94,31 @@ class Msg:
         self.deleted = True
 
 
-class Thread:
+class HistoryTarget:
     id = 123
-    name = "thread-name"
-    parent = type("Parent", (), {"name": "parent-name"})()
+    name = "target-name"
+    parent = None
+    def __init__(self, messages=None):
+        self.messages = messages or []
+        self.history_calls = 0
     async def history(self, limit=None, oldest_first=True):
+        self.history_calls += 1
         for msg in self.messages:
             yield msg
+
+
+class Thread(HistoryTarget):
+    name = "thread-name"
+    parent = type("Parent", (), {"name": "parent-name"})()
+
+
+class Channel(HistoryTarget):
+    name = "channel-name"
+
+
+class UnsupportedTarget:
+    id = 123
+    name = "voice-name"
 
 
 class Bot:
@@ -114,9 +132,9 @@ class Bot:
         return self.target
 
 
-def run_with_sheet(monkeypatch, rows, messages, *, dry_run=True, startup_validation=False):
+def run_with_sheet(monkeypatch, rows, messages, *, dry_run=True, startup_validation=False, target_type="thread", target=None):
     ws = Worksheet([REQUIRED_HEADERS, *rows])
-    thread = Thread(); thread.messages = messages
+    target = target or (Channel(messages) if target_type == "channel" else Thread(messages))
     cfg = cleanup.CleanupConfig(True, "CleanupRows", 6, dry_run)
     async def fake_sheet(*_): return ws
     async def fake_log(*_): return None
@@ -125,10 +143,12 @@ def run_with_sheet(monkeypatch, rows, messages, *, dry_run=True, startup_validat
     monkeypatch.setattr(cleanup.async_core, "aget_worksheet", fake_sheet)
     monkeypatch.setattr(cleanup.runtime_helpers, "send_log_message", fake_log)
     async def fake_resolve(_bot, target_id):
-        return (thread, "thread", None)
+        if target_type == "unsupported":
+            return (target, None, "invalid_target_type")
+        return (target, target_type, None)
     monkeypatch.setattr(cleanup, "_resolve_any", fake_resolve)
-    asyncio.run(cleanup.run_cleanup(Bot(thread), startup_validation=startup_validation))
-    return ws, messages
+    asyncio.run(cleanup.run_cleanup(Bot(target), startup_validation=startup_validation))
+    return ws, messages, target
 
 
 def active_row(**overrides):
@@ -138,7 +158,7 @@ def active_row(**overrides):
 
 
 def test_blank_target_type_resolved_and_dry_run_deletes_nothing(monkeypatch):
-    ws, msgs = run_with_sheet(monkeypatch, [active_row()], [Msg("bot", author_id=99)])
+    ws, msgs, _target = run_with_sheet(monkeypatch, [active_row()], [Msg("bot", author_id=99)])
     updates = update_map(ws)
     assert updates["C2"] == "thread"
     assert updates["D2"] == "thread-name"
@@ -152,7 +172,7 @@ def test_blank_target_type_resolved_and_dry_run_deletes_nothing(monkeypatch):
 
 def test_invalid_rows_write_statuses(monkeypatch):
     rows = [active_row(target_id="abc"), active_row(cleanup_mode="bad"), active_row(min_age_hours="bad")]
-    ws, _ = run_with_sheet(monkeypatch, rows, [])
+    ws, _, _target = run_with_sheet(monkeypatch, rows, [])
     updates = update_map(ws)
     assert updates["L2"] == "invalid_target_id"
     assert updates["L3"] == "invalid_cleanup_mode"
@@ -161,7 +181,7 @@ def test_invalid_rows_write_statuses(monkeypatch):
 
 def test_cleanup_modes_and_min_age_respected(monkeypatch):
     msgs = [Msg("human", author_id=1), Msg("!cmd", author_id=1), Msg("bot", author_id=99), Msg("pinned", author_id=99, pinned=True), Msg("young", author_id=99, hours_old=0)]
-    ws, msgs = run_with_sheet(monkeypatch, [active_row(cleanup_mode="bot_messages_and_commands", min_age_hours="1")], msgs, dry_run=False)
+    ws, msgs, _target = run_with_sheet(monkeypatch, [active_row(cleanup_mode="bot_messages_and_commands", min_age_hours="1")], msgs, dry_run=False)
     assert [m.deleted for m in msgs] == [False, True, True, False, False]
     updates = update_map(ws)
     assert updates["I2"] == "2"
@@ -184,7 +204,7 @@ def test_bot_messages_only_and_commands_only_filters(monkeypatch):
 
 def test_startup_validation_writeback_does_not_delete_when_dry_run_false(monkeypatch):
     msgs = [Msg("bot", author_id=99)]
-    ws, _ = run_with_sheet(monkeypatch, [active_row()], msgs, dry_run=False, startup_validation=True)
+    ws, _, _target = run_with_sheet(monkeypatch, [active_row()], msgs, dry_run=False, startup_validation=True)
     updates = update_map(ws)
     assert updates["C2"] == "thread"
     assert updates["H2"]
@@ -196,13 +216,87 @@ def test_startup_validation_writeback_does_not_delete_when_dry_run_false(monkeyp
 
 def test_dry_run_writes_candidate_count_separately_from_skipped(monkeypatch):
     msgs = [Msg("bot", author_id=99), Msg("human", author_id=1)]
-    ws, msgs = run_with_sheet(monkeypatch, [active_row()], msgs, dry_run=True)
+    ws, msgs, _target = run_with_sheet(monkeypatch, [active_row()], msgs, dry_run=True)
     updates = update_map(ws)
     assert updates["I2"] == "0"
     assert updates["J2"] == "1"
     assert updates["K2"] == "1"
     assert updates["L2"] == "dry_run_ok"
     assert [m.deleted for m in msgs] == [False, False]
+
+
+def test_channel_target_type_scans_channel_own_messages_not_child_threads(monkeypatch):
+    channel_msgs = [Msg("bot", author_id=99)]
+    thread = Thread([Msg("bot", author_id=99)])
+    channel = Channel(channel_msgs)
+    channel.threads = [thread]
+
+    ws, msgs, target = run_with_sheet(
+        monkeypatch,
+        [active_row(target_type="channel", cleanup_mode="bot_messages_only")],
+        channel_msgs,
+        dry_run=False,
+        target_type="channel",
+        target=channel,
+    )
+
+    updates = update_map(ws)
+    assert target.history_calls == 1
+    assert thread.history_calls == 0
+    assert msgs[0].deleted is True
+    assert thread.messages[0].deleted is False
+    assert updates["C2"] == "channel"
+    assert updates["D2"] == "channel-name"
+    assert updates["E2"] == ""
+    assert updates["I2"] == "1"
+    assert updates["J2"] == "1"
+    assert updates["L2"] == "deleted"
+
+
+def test_blank_target_type_resolving_to_channel_writes_channel(monkeypatch):
+    ws, _msgs, _target = run_with_sheet(monkeypatch, [active_row(target_type="")], [Msg("bot", author_id=99)], target_type="channel")
+    updates = update_map(ws)
+    assert updates["C2"] == "channel"
+    assert updates["D2"] == "channel-name"
+    assert updates["E2"] == ""
+    assert updates["L2"] == "dry_run_ok"
+
+
+def test_channel_dry_run_counts_candidates_and_deletes_nothing(monkeypatch):
+    msgs = [Msg("bot", author_id=99), Msg("human", author_id=1)]
+    ws, msgs, _target = run_with_sheet(monkeypatch, [active_row(target_type="channel")], msgs, target_type="channel")
+    updates = update_map(ws)
+    assert [m.deleted for m in msgs] == [False, False]
+    assert updates["I2"] == "0"
+    assert updates["J2"] == "1"
+    assert updates["K2"] == "1"
+    assert updates["L2"] == "dry_run_ok"
+
+
+def test_channel_cleanup_modes_match_thread_modes(monkeypatch):
+    cases = [
+        ("all_non_pinned", [Msg("human", author_id=1), Msg("pinned", author_id=99, pinned=True)], [True, False]),
+        ("bot_messages_only", [Msg("human", author_id=1), Msg("bot", author_id=99)], [False, True]),
+        ("commands_only", [Msg("normal", author_id=1), Msg("!cmd", author_id=1)], [False, True]),
+        ("bot_messages_and_commands", [Msg("normal", author_id=1), Msg("!cmd", author_id=1), Msg("bot", author_id=99)], [False, True, True]),
+    ]
+    for mode, msgs, expected in cases:
+        run_with_sheet(monkeypatch, [active_row(target_type="channel", cleanup_mode=mode, min_age_hours="0")], msgs, dry_run=False, target_type="channel")
+        assert [m.deleted for m in msgs] == expected
+
+
+def test_unsupported_target_type_still_applies_to_unsupported_resolved_objects(monkeypatch):
+    ws, _msgs, _target = run_with_sheet(monkeypatch, [active_row(target_type="")], [], target_type="unsupported", target=UnsupportedTarget())
+    updates = update_map(ws)
+    assert updates["L2"] == "invalid_target_type"
+
+
+def test_cleanup_headers_and_config_keys_unchanged():
+    assert REQUIRED_HEADERS == [
+        "enabled", "target_id", "target_type", "target_name", "parent_name", "cleanup_mode", "min_age_hours",
+        "last_checked_at_utc", "last_deleted_count", "last_candidate_count", "last_skipped_count", "last_status", "notes",
+    ]
+    assert cleanup.REQUIRED_CONFIG_KEYS == (cleanup.CONFIG_TAB, cleanup.CONFIG_RUN_EVERY_HOURS, cleanup.CONFIG_DRY_RUN)
 
 
 def test_cleanup_config_does_not_fall_back_to_legacy_env(monkeypatch):
