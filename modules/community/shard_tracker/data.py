@@ -67,6 +67,21 @@ SHARD_REMINDER_REQUIRED_HEADERS: tuple[str, ...] = (
     "reminder_type",
     "sent_at_utc",
 )
+SHARD_SHARE_COPY_REQUIRED_HEADERS: tuple[str, ...] = (
+    "voice",
+    "text_type",
+    "condition",
+    "enabled",
+    "weight",
+    "text",
+)
+SHARD_SHARE_VOICE_TARGET_REQUIRED_HEADERS: tuple[str, ...] = (
+    "target_key",
+    "target_type",
+    "voice",
+    "enabled",
+    "notes",
+)
 
 
 @dataclass(slots=True)
@@ -74,6 +89,36 @@ class ShardTrackerConfig:
     sheet_id: str
     tab_name: str
     channel_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class ShardShareConfig:
+    default_voice: str
+    random_copy_enabled: bool
+    stash_low_threshold: int
+    stash_flex_threshold: int
+    mercy_high_percent: int
+
+
+@dataclass(frozen=True, slots=True)
+class ShardShareCopyRow:
+    voice: str
+    text_type: str
+    condition: str
+    enabled: bool
+    weight: int
+    text: str
+    row_number: int
+
+
+@dataclass(frozen=True, slots=True)
+class ShardShareVoiceTargetRow:
+    target_key: str
+    target_type: str
+    voice: str
+    enabled: bool
+    notes: str
+    row_number: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +314,85 @@ class ShardSheetStore:
 
     async def get_clans(self) -> list[ShardClanRow]:
         return await self._load_shard_clans()
+
+    async def get_share_config(self) -> ShardShareConfig:
+        default_voice = _required_config_text("shard_share_default_voice")
+        random_copy_enabled = _required_config_bool("shard_share_random_copy_enabled")
+        stash_low_threshold = _required_config_int("shard_share_stash_low_threshold")
+        stash_flex_threshold = _required_config_int("shard_share_stash_flex_threshold")
+        mercy_high_percent = _required_config_int("shard_share_mercy_high_percent")
+        for key, value in (
+            ("shard_share_stash_low_threshold", stash_low_threshold),
+            ("shard_share_stash_flex_threshold", stash_flex_threshold),
+        ):
+            if value <= 0:
+                raise ShardTrackerConfigError(f"Shard share Config key invalid positive integer: {key}")
+        if mercy_high_percent < 1 or mercy_high_percent > 100:
+            raise ShardTrackerConfigError(
+                "Shard share Config key invalid percent range: shard_share_mercy_high_percent"
+            )
+        return ShardShareConfig(
+            default_voice=default_voice.lower(),
+            random_copy_enabled=random_copy_enabled,
+            stash_low_threshold=stash_low_threshold,
+            stash_flex_threshold=stash_flex_threshold,
+            mercy_high_percent=mercy_high_percent,
+        )
+
+    async def get_share_copy_rows(self) -> list[ShardShareCopyRow]:
+        config = await self.get_config()
+        tab_name = _config_tab_name("shard_share_copy_tab")
+        matrix = await async_core.afetch_values(config.sheet_id, tab_name)
+        if not matrix:
+            raise ShardTrackerSheetError(f"Shard share copy sheet is empty (tab={tab_name})")
+        header = [self._normalize(cell) for cell in matrix[0]]
+        missing = [col for col in SHARD_SHARE_COPY_REQUIRED_HEADERS if col not in header]
+        if missing:
+            raise ShardTrackerSheetError(f"Shard share copy sheet missing required headers (tab={tab_name}, missing={missing})")
+        index = {name: header.index(name) for name in SHARD_SHARE_COPY_REQUIRED_HEADERS}
+        rows: list[ShardShareCopyRow] = []
+        for row_number, row in enumerate(matrix[1:], start=2):
+            weight_raw = self._cell(row, index["weight"])
+            try:
+                weight = int(weight_raw)
+            except (TypeError, ValueError):
+                log.warning("Shard share copy row invalid weight", extra={"tab": tab_name, "row_number": row_number, "weight": weight_raw})
+                weight = 0
+            rows.append(
+                ShardShareCopyRow(
+                    voice=self._cell(row, index["voice"]).lower(),
+                    text_type=self._cell(row, index["text_type"]).lower(),
+                    condition=self._cell(row, index["condition"]).lower(),
+                    enabled=_parse_bool(self._cell(row, index["enabled"])),
+                    weight=weight,
+                    text=self._cell(row, index["text"]),
+                    row_number=row_number,
+                )
+            )
+        return rows
+
+    async def get_share_voice_target_rows(self) -> list[ShardShareVoiceTargetRow]:
+        config = await self.get_config()
+        tab_name = _config_tab_name("shard_share_voice_targets_tab")
+        matrix = await async_core.afetch_values(config.sheet_id, tab_name)
+        if not matrix:
+            raise ShardTrackerSheetError(f"Shard share voice targets sheet is empty (tab={tab_name})")
+        header = [self._normalize(cell) for cell in matrix[0]]
+        missing = [col for col in SHARD_SHARE_VOICE_TARGET_REQUIRED_HEADERS if col not in header]
+        if missing:
+            raise ShardTrackerSheetError(f"Shard share voice targets sheet missing required headers (tab={tab_name}, missing={missing})")
+        index = {name: header.index(name) for name in SHARD_SHARE_VOICE_TARGET_REQUIRED_HEADERS}
+        rows: list[ShardShareVoiceTargetRow] = []
+        for row_number, row in enumerate(matrix[1:], start=2):
+            rows.append(ShardShareVoiceTargetRow(
+                target_key=self._cell(row, index["target_key"]),
+                target_type=self._cell(row, index["target_type"]).lower(),
+                voice=self._cell(row, index["voice"]).lower(),
+                enabled=_parse_bool(self._cell(row, index["enabled"])),
+                notes=self._cell(row, index["notes"]),
+                row_number=row_number,
+            ))
+        return rows
 
     async def get_enabled_clan(self, clan_key: str) -> ShardClanRow | None:
         key = str(clan_key or "").strip().lower()
@@ -505,6 +629,31 @@ def _config_tab_name(key: str) -> str:
         return text
     raise ShardTrackerConfigError(f"{key} missing in milestones Config tab")
 
+
+
+def _required_config_text(key: str) -> str:
+    value = _config_value(key, "")
+    text = str(value or "").strip()
+    if not text:
+        raise ShardTrackerConfigError(f"Shard share Config key missing: {key}")
+    return text
+
+
+def _required_config_int(key: str) -> int:
+    text = _required_config_text(key)
+    try:
+        return int(text)
+    except (TypeError, ValueError) as exc:
+        raise ShardTrackerConfigError(f"Shard share Config key invalid integer: {key}") from exc
+
+
+def _required_config_bool(key: str) -> bool:
+    text = _required_config_text(key).lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ShardTrackerConfigError(f"Shard share Config key invalid boolean: {key}")
 
 def _parse_channel_id(value: object) -> int:
     if value is None:
