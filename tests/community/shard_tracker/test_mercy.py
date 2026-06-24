@@ -31,3 +31,14 @@ def test_mercy_caps_at_hundred_percent():
 def test_format_percent_precision():
     assert format_percent(0.0123) == "1.23%"
     assert format_percent(0.25) == "25.0%"
+
+
+def test_remnant_mythic_mercy_examples():
+    assert mercy_state("remnant_mythic", 0).chance == 0.025
+    assert mercy_state("remnant_mythic", 24).chance == 0.025
+    assert mercy_state("remnant_mythic", 25).chance == 0.035
+    assert mercy_state("remnant_mythic", 26).chance == 0.045
+
+
+def test_remnant_mythic_caps_at_hundred_percent():
+    assert mercy_state("remnant_mythic", 200).chance == 1.0

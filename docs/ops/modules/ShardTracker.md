@@ -8,8 +8,9 @@ keep a private, button-driven tracker thread.
 ## Scope & Responsibilities
 
 - Persist shard stash counts, last pulls, and mercy counters (`ancient`,
-  `void`, `sacred`, `primal`) per Discord user, including separate Legendary
-  and Mythical mercy tracks for Primals.
+  `void`, `sacred`, `primal`, `mystery`, `remnant`) per Discord user,
+  including separate Legendary and Mythical mercy tracks for Primals,
+  count-only Mystery Shards, and Mythical-only Remnant Summons.
 - Enforce channel routing: only the configured Shards & Mercy channel may run
   shard commands, and every user gets a private thread underneath that channel.
 - Surface a mobile-friendly, tabbed embed with shard-icon buttons and a
@@ -35,6 +36,10 @@ keep a private, button-driven tracker thread.
   - `SHARD_MERCY_CHANNEL_ID` — numeric ID for the dedicated Discord channel.
   - `SHARD_CLANS_TAB` — worksheet name for clan sharing + weekly reminders.
   - `SHARD_REMINDER_TAB` — worksheet for durable weekly reminder sent tracking.
+- **Shard tab emoji env/config keys:** `SHARD_EMOJI_ANCIENT`,
+  `SHARD_EMOJI_VOID`, `SHARD_EMOJI_SACRED`, `SHARD_EMOJI_PRIMAL`,
+  `SHARD_EMOJI_MYSTERY`, and `SHARD_EMOJI_REMNANT`. Only tab buttons use
+  these emojis; action buttons remain text-only.
 - **Worksheet schema:** row 1 contains the canonical headers listed below.
   `discord_id` is the primary key and all headers must remain in this order.
 
@@ -42,14 +47,21 @@ keep a private, button-driven tracker thread.
 | --- | --- |
 | `discord_id` | Snowflake ID for the Discord user. |
 | `username_snapshot` | Last display name captured when the bot touched the row. |
-| `ancients_owned`, `voids_owned`, `sacreds_owned`, `primals_owned` | Current stash counts. |
+| `ancients_owned`, `voids_owned`, `sacreds_owned`, `primals_owned` | Current shard stash counts. |
+| `mysteries_owned` | Current Mystery Shard count; count-only, no mercy. |
+| `remnants_owned` | Raw Cursed Remnant currency count. |
 | `ancients_since_lego`, `voids_since_lego`, `sacreds_since_lego`, `primals_since_lego` | Mercy counters per shard type. |
-| `primals_since_mythic` | Mythical mercy counter. |
-| `last_*_lego_iso`, `last_primal_mythic_iso`, `last_updated_iso` | UTC ISO timestamps for the last logged Legendary/Mythical and update time. |
-| `last_*_lego_depth`, `last_primal_mythic_depth` | Mercy depth at the time the pull was logged. |
+| `primals_since_mythic` | Primal Mythical mercy counter. |
+| `remnants_since_mythic` | Remnant Summons since last Mythical; this counts summons/misses, not raw Cursed Remnants. |
+| `last_*_lego_iso`, `last_primal_mythic_iso`, `last_remnant_mythic_iso`, `last_updated_iso` | UTC ISO timestamps for the last logged Legendary/Mythical and update time. |
+| `last_*_lego_depth`, `last_primal_mythic_depth`, `last_remnant_mythic_depth` | Mercy depth at the time the pull/summon was logged. |
 
-Rows are created automatically the first time a user opens the tracker; all
-fields initialize to zero and timestamps stay blank until a LEGO is recorded.
+Rows are created automatically the first time a user opens the tracker; integer
+count/counter fields initialize to zero and timestamp/depth string fields stay
+blank until a matching result is recorded. The main tracker worksheet is strict:
+row 1 must exactly match the expected ordered schema. The bot now writes rows
+through `A{row}:AA{row}`; deploy only after the sheet has the Mystery/Remnant
+columns in place.
 
 ### SHARD_CLANS_TAB schema
 
@@ -70,10 +82,13 @@ Plarium’s official mercy values:
 | Sacred Legendary | 6% | After 12 shards | +2% per shard |
 | Primal Legendary | 1% | After 75 shards | +1% per shard |
 | Primal Mythical | 0.5% | After 200 shards | +10% per shard |
+| Remnant Mythical | 2.5% | After 24 summons | +1% per summon |
 
-Chance increases after crossing the threshold and caps at 100%. Mythical pulls
-reset both primal tracks; Legendary pulls reset only the Legendary track but the
-Mythical counter continues accumulating primal shards.
+Chance increases only after crossing the threshold and caps at 100%. Mythical
+pulls reset both primal tracks; Legendary pulls reset only the Legendary track
+but the Mythical counter continues accumulating primal shards. Remnant Summons
+cost **100 Cursed Remnants** each, use Mythical-only mercy, and do not have any
+Legendary behavior.
 
 ## Commands & Buttons
 
@@ -90,15 +105,19 @@ there, and replies in the parent channel with a short pointer.
 Buttons live on every embed inside the user’s thread and are **locked to the
 thread owner**:
 
-- **Tab buttons** — Text-only Overview tab plus emoji-only shard tabs
-  (Ancient/Void/Sacred/Primal) and a text Last Pulls tab.
-- **+ Stash / - Pulls** — open numeric modals on the active shard tab only.
+- **Tab buttons** — Text-only Overview tab plus emoji-only shard/resource tabs
+  (Ancient/Void/Sacred/Primal/Mystery/Remnants) and a text Last Pulls tab.
+- **+ Stash / - Pulls / - Summons** — open numeric modals on the active tab only.
   + Stash increases stash without touching mercy; - Pulls reduces stash (floored
-  at 0) and increments mercy. Primal pull logging increments Legendary and
-  Mythical mercy separately so Mythical pulls no longer reset Legendary mercy.
-- **Got Legendary** — shard tabs only. Non-Primal resets the legendary mercy to
-  zero; Primal opens a follow-up with Legendary vs Mythical to decide whether to
-  reset only the legendary counter or both mercy tracks.
+  at 0) and increments mercy where applicable. Mystery `- Pulls` only reduces
+  the count and never touches mercy/timestamps. Remnant `- Summons` deducts
+  `summons * 100` Cursed Remnants and increments Mythical mercy by summons.
+  Primal pull logging increments Legendary and Mythical mercy separately so
+  Mythical pulls no longer reset Legendary mercy.
+- **Got Legendary / Got Mythical** — Ancient/Void/Sacred reset Legendary mercy;
+  Primal opens a follow-up with Legendary vs Mythical; Remnants expose only
+  **Got Mythical** and update only Remnant Mythical fields. Mystery has no
+  result or Last Pulls / Mercy button.
 
 Only the thread owner may press the buttons; everyone else receives a friendly
 rejection message. Button handlers write through to Sheets immediately and edit
@@ -124,16 +143,16 @@ the message in place.
   the user with a polite explanation and ping the first ADMIN_ROLE_ID inside a
   `❌` log entry.
 - All Sheets writes run through the shared async backoff helper and use a
-  single-row range update (`A{row}:V{row}`) so the schema stays intact.
+  single-row range update (`A{row}:AA{row}`) so the schema stays intact.
 
 ## Testing Expectations
 
 Automated tests cover:
 
-- Mercy math for every shard type and the primal mythic pity.
+- Mercy math for every shard type, primal mythic pity, and remnant mythical pity.
 - Sheet mapping (row ↔ dataclass) to ensure headers remain stable.
 - Command parsing helpers (`type` aliases, channel gating).
 - Thread routing unit tests verifying channel restrictions and reusing an
   existing thread before creating a new one.
 
-Doc last updated: 2025-11-20 (v0.9.8.2)
+Doc last updated: 2026-06-23 (v0.9.8.2)
