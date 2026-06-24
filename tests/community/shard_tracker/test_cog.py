@@ -9,7 +9,7 @@ from discord.ext import commands
 
 from modules.community.shard_tracker import setup as shard_setup
 from modules.community.shard_tracker.cog import SHARD_KINDS, ShardTracker
-from modules.community.shard_tracker.data import ShardTrackerConfig
+from modules.community.shard_tracker.data import ShardShareConfig, ShardShareCopyRow, ShardShareVoiceTargetRow, ShardTrackerConfig, ShardTrackerConfigError
 from modules.community.shard_tracker.views import FOOTER_TEXT
 
 
@@ -224,6 +224,30 @@ class _ShareInteraction:
         self.followup = _ShareFollowup()
 
 
+def _copy_rows(voice="standard"):
+    return [
+        ShardShareCopyRow(voice=voice, text_type="intro", condition="always", enabled=True, weight=1, text="Intro {display_name} {clan_tag}", row_number=2),
+        ShardShareCopyRow(voice=voice, text_type="shard_comment", condition="stash_zero", enabled=True, weight=1, text="No {shard_type}.", row_number=3),
+        ShardShareCopyRow(voice=voice, text_type="shard_comment", condition="always", enabled=True, weight=1, text="Some {shard_type}.", row_number=4),
+        ShardShareCopyRow(voice=voice, text_type="final_line", condition="always", enabled=True, weight=1, text="Final {target}.", row_number=5),
+    ]
+
+def _voice_rows():
+    return [ShardShareVoiceTargetRow(target_key="default", target_type="fallback", voice="standard", enabled=True, notes="", row_number=2)]
+
+
+def _share_config(**overrides):
+    values = dict(
+        default_voice="standard",
+        random_copy_enabled=True,
+        stash_low_threshold=5,
+        stash_flex_threshold=100,
+        mercy_high_percent=85,
+    )
+    values.update(overrides)
+    return ShardShareConfig(**values)
+
+
 def test_share_summary_sends_to_resolved_destination():
     async def runner():
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
@@ -323,7 +347,10 @@ def test_section_headings_use_configured_icon_sources():
 
     overview, _ = tracker._build_panel(user, record, None, "overview")
     last_pulls, _ = tracker._build_panel(user, record, None, "last_pulls")
-    shared = tracker._build_share_embed(user, record, clan)
+    tracker.store.get_share_voice_target_rows = AsyncMock(return_value=_voice_rows())
+    tracker.store.get_share_config = AsyncMock(return_value=_share_config())
+    tracker.store.get_share_copy_rows = AsyncMock(return_value=_copy_rows())
+    shared = asyncio.run(tracker._build_share_embed(user, record, clan))
 
     assert overview.fields[0].name == "<:mystery:123456789012345678> Mystery"
     assert overview.fields[1].name == "<:ancient:223456789012345678> Ancient"
@@ -338,8 +365,8 @@ def test_section_headings_use_configured_icon_sources():
         "sacred_icon Sacred",
         "remnant_icon Remnants",
     ]
-    assert shared.fields[0].name == "<:mystery:123456789012345678> Mystery"
-    assert shared.fields[1].name == "<:ancient:223456789012345678> Ancient"
+    assert "### <:mystery:123456789012345678> Mystery" in shared.description
+    assert "### <:ancient:223456789012345678> Ancient" in shared.description
 
 
 def test_detail_button_layout_still_includes_share_to_clan():
@@ -359,17 +386,28 @@ def test_detail_button_layout_still_includes_share_to_clan():
     assert "action:share:ancient" in _button_custom_ids(view)
 
 
-def test_share_embed_uses_overview_payload():
+def test_share_embed_uses_sheet_driven_clean_payload():
     tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+    tracker.store.get_share_voice_target_rows = AsyncMock(return_value=_voice_rows())
+    tracker.store.get_share_config = AsyncMock(return_value=_share_config())
+    tracker.store.get_share_copy_rows = AsyncMock(return_value=_copy_rows())
     record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
     clan = _share_clan()
     user = type("User", (), {"id": 42, "display_name": "Tester", "name": "Tester"})()
 
-    embed = tracker._build_share_embed(user, record, clan)
+    embed = asyncio.run(tracker._build_share_embed(user, record, clan))
 
-    assert embed.title == "Shard Snapshot — Tester"
-    assert embed.description == "Shared to `alpha`."
-    assert [field.name for field in embed.fields] == ["Mystery", "Ancient", "Void", "Primal", "Sacred", "Remnants"]
+    assert embed.title == "Shard Stash Report — Tester"
+    assert "Intro Tester alpha" in embed.description
+    assert "### Mystery" in embed.description
+    assert "```text\nOwned: 0\nNo Mystery.\n```" in embed.description
+    assert "```\nNo Mystery." not in embed.description
+    assert "Owned: 0\n\nNo Mystery." not in embed.description
+    assert embed.description.index("Intro Tester alpha") < embed.description.index("```text")
+    assert embed.description.rindex("```") < embed.description.index("Final alpha.")
+    assert embed.description.count("```text") == 5
+    assert "Chance" not in embed.description
+    assert "Final alpha." in embed.description
 
 
 def test_share_button_action_routes_overview_without_active_tab_payload():
@@ -415,9 +453,12 @@ def test_detail_share_button_action_preserves_overview_share_behavior():
 
         record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
         clan = _share_clan()
-        embed = tracker._build_share_embed(interaction.user, record, clan)
-        assert embed.title == "Shard Snapshot — Tester"
-        assert [field.name for field in embed.fields] == ["Mystery", "Ancient", "Void", "Primal", "Sacred", "Remnants"]
+        tracker.store.get_share_voice_target_rows = AsyncMock(return_value=_voice_rows())
+        tracker.store.get_share_config = AsyncMock(return_value=_share_config())
+        tracker.store.get_share_copy_rows = AsyncMock(return_value=_copy_rows())
+        embed = await tracker._build_share_embed(interaction.user, record, clan)
+        assert embed.title == "Shard Stash Report — Tester"
+        assert "### Mystery" in embed.description
 
     asyncio.run(runner())
 
@@ -590,3 +631,138 @@ def test_shards_help_text_covers_user_facing_actions():
     assert "Ancient Legendary: 0.5%" in help_text
     assert "Remnant Mythical: 2.5%" in help_text
     assert "100 Cursed Remnants" in help_text
+
+
+def test_share_voice_uses_fallback_and_target_rows_without_hardcoded_c1cm():
+    tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+    rows = [
+        ShardShareVoiceTargetRow("default", "fallback", "standard", True, "", 2),
+        ShardShareVoiceTargetRow("C1CM", "clan_tag", "pirate", True, "", 3),
+    ]
+    tracker.store.get_share_voice_target_rows = AsyncMock(return_value=rows)
+
+    assert asyncio.run(tracker._resolve_share_voice(_share_clan(clan_key="alpha"), _share_config())) == "standard"
+    assert asyncio.run(tracker._resolve_share_voice(_share_clan(clan_key="C1CM"), _share_config())) == "pirate"
+    source = __import__("pathlib").Path("modules/community/shard_tracker/cog.py").read_text()
+    assert "C1CM" not in source
+
+
+def test_share_copy_weighted_rows_and_random_disabled_first():
+    tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+    rows = [
+        ShardShareCopyRow("standard", "intro", "always", True, 1, "first", 2),
+        ShardShareCopyRow("standard", "intro", "always", True, 5, "second", 3),
+    ]
+    placeholders = {"display_name": "Tester"}
+
+    assert tracker._select_share_copy(rows, "standard", "intro", "always", placeholders, False) == "first"
+    seen = {tracker._select_share_copy(rows, "standard", "intro", "always", placeholders, True) for _ in range(80)}
+    assert seen == {"first", "second"}
+
+
+def test_share_condition_priority_and_primal_mythical_mercy():
+    tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+    record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
+    ancient = tracker._build_display(record, SHARD_KINDS["ancient"])
+    assert tracker._share_comment_condition(ancient, tracker._build_mythic_display(record), _share_config()) == "stash_zero"
+
+    record.voids_owned = 150
+    record.voids_since_lego = 190
+    void = tracker._build_display(record, SHARD_KINDS["void"])
+    assert tracker._share_comment_condition(void, tracker._build_mythic_display(record), _share_config()) == "mercy_high"
+
+    record.primals_owned = 10
+    record.primals_since_lego = 0
+    record.primals_since_mythic = 190
+    primal = tracker._build_display(record, SHARD_KINDS["primal"])
+    assert tracker._share_comment_condition(primal, tracker._build_mythic_display(record), _share_config()) == "mercy_high"
+
+
+def test_share_copy_unresolved_placeholder_skips(caplog):
+    tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+    row = ShardShareCopyRow("standard", "intro", "always", True, 1, "Bad {missing}", 2)
+    with caplog.at_level(logging.WARNING, logger="c1c.shards.cog"):
+        text = tracker._select_share_copy([row], "standard", "intro", "always", {}, False)
+    assert text == ""
+    assert "unavailable placeholders" in caplog.text
+
+
+def test_share_missing_required_config_logs_and_skips_flavor(caplog):
+    async def runner():
+        tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+        tracker.store.get_share_config = AsyncMock(side_effect=ShardTrackerConfigError("Shard share Config key missing: shard_share_default_voice"))
+        tracker.store.get_share_voice_target_rows = AsyncMock(return_value=_voice_rows())
+        tracker.store.get_share_copy_rows = AsyncMock(return_value=_copy_rows())
+        record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
+        user = type("User", (), {"id": 42, "display_name": "Tester", "name": "Tester"})()
+
+        with caplog.at_level(logging.ERROR, logger="c1c.shards.cog"):
+            embed = await tracker._build_share_embed(user, record, _share_clan())
+
+        assert "Shard share Config key missing: shard_share_default_voice" in caplog.text
+        assert "Intro" not in embed.description
+        assert "Final" not in embed.description
+        assert "### Mystery" in embed.description
+
+    asyncio.run(runner())
+
+
+def test_share_invalid_threshold_logs_and_skips_conditional_flavor(caplog):
+    async def runner():
+        tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+        tracker.store.get_share_config = AsyncMock(side_effect=ShardTrackerConfigError("Shard share Config key invalid integer: shard_share_mercy_high_percent"))
+        tracker.store.get_share_voice_target_rows = AsyncMock(return_value=_voice_rows())
+        tracker.store.get_share_copy_rows = AsyncMock(return_value=_copy_rows())
+        record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
+        record.voids_since_lego = 190
+        user = type("User", (), {"id": 42, "display_name": "Tester", "name": "Tester"})()
+
+        with caplog.at_level(logging.ERROR, logger="c1c.shards.cog"):
+            embed = await tracker._build_share_embed(user, record, _share_clan())
+
+        assert "shard_share_mercy_high_percent" in caplog.text
+        assert "Some Void" not in embed.description
+        assert "No Void" not in embed.description
+        assert "### Void" in embed.description
+
+    asyncio.run(runner())
+
+
+def test_share_comment_falls_back_to_always_only_when_stronger_missing():
+    tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+    placeholders = {"shard_type": "Void"}
+    rows = [
+        ShardShareCopyRow("standard", "shard_comment", "always", True, 1, "Always {shard_type}", 2),
+    ]
+    assert tracker._select_share_comment(rows, "standard", "mercy_high", placeholders, False) == "Always Void"
+
+    rows.append(ShardShareCopyRow("standard", "shard_comment", "mercy_high", True, 1, "High {shard_type}", 3))
+    assert tracker._select_share_comment(rows, "standard", "mercy_high", placeholders, False) == "High Void"
+
+
+def test_share_invalid_percent_range_skips_flavor_but_keeps_clean_stats(caplog):
+    async def runner():
+        tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+        tracker.store.get_share_config = AsyncMock(
+            side_effect=ShardTrackerConfigError(
+                "Shard share Config key invalid percent range: shard_share_mercy_high_percent"
+            )
+        )
+        tracker.store.get_share_voice_target_rows = AsyncMock(return_value=_voice_rows())
+        tracker.store.get_share_copy_rows = AsyncMock(return_value=_copy_rows())
+        record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
+        record.voids_owned = 10
+        user = type("User", (), {"id": 42, "display_name": "Tester", "name": "Tester"})()
+
+        with caplog.at_level(logging.ERROR, logger="c1c.shards.cog"):
+            embed = await tracker._build_share_embed(user, record, _share_clan())
+
+        assert "invalid percent range: shard_share_mercy_high_percent" in caplog.text
+        assert "Intro" not in embed.description
+        assert "Final" not in embed.description
+        assert "Some Void" not in embed.description
+        assert "### Void" in embed.description
+        assert "```text\nOwned: 10\nMercy: 0 / 200\nLast Legendary: Never\n```" in embed.description
+        assert "Chance" not in embed.description
+
+    asyncio.run(runner())

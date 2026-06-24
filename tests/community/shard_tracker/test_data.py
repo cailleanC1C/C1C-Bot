@@ -242,3 +242,134 @@ def test_save_record_writes_through_aa(monkeypatch):
         assert len(worksheet.calls[0][1][0]) == len(shard_data.EXPECTED_HEADERS)
 
     asyncio.run(runner())
+
+
+def test_share_config_uses_lowercase_sheet_keys(monkeypatch):
+    async def runner():
+        store = shard_data.ShardSheetStore()
+        monkeypatch.setattr(
+            shard_data,
+            "runtime_config",
+            _RuntimeConfigStub(
+                {
+                    "shard_share_default_voice": "standard",
+                    "shard_share_random_copy_enabled": "TRUE",
+                    "shard_share_stash_low_threshold": "5",
+                    "shard_share_stash_flex_threshold": "100",
+                    "shard_share_mercy_high_percent": "85",
+                }
+            ),
+        )
+
+        config = await store.get_share_config()
+
+        assert config.default_voice == "standard"
+        assert config.random_copy_enabled is True
+        assert config.stash_low_threshold == 5
+        assert config.stash_flex_threshold == 100
+        assert config.mercy_high_percent == 85
+
+    asyncio.run(runner())
+
+
+def test_share_copy_and_voice_tabs_use_lowercase_config_keys(monkeypatch):
+    async def runner():
+        store = shard_data.ShardSheetStore()
+        store.get_config = AsyncMock(return_value=shard_data.ShardTrackerConfig("sheet-1", "main", 123))
+        monkeypatch.setattr(
+            shard_data,
+            "runtime_config",
+            _RuntimeConfigStub(
+                {
+                    "shard_share_copy_tab": "ShardShareCopy",
+                    "shard_share_voice_targets_tab": "ShardShareVoiceTargets",
+                }
+            ),
+        )
+        calls = []
+
+        async def fake_fetch(sheet_id, tab_name):
+            calls.append((sheet_id, tab_name))
+            if tab_name == "ShardShareCopy":
+                return [list(shard_data.SHARD_SHARE_COPY_REQUIRED_HEADERS)]
+            return [list(shard_data.SHARD_SHARE_VOICE_TARGET_REQUIRED_HEADERS)]
+
+        monkeypatch.setattr(shard_data.async_core, "afetch_values", fake_fetch)
+
+        await store.get_share_copy_rows()
+        await store.get_share_voice_target_rows()
+
+        assert calls == [("sheet-1", "ShardShareCopy"), ("sheet-1", "ShardShareVoiceTargets")]
+
+    asyncio.run(runner())
+
+
+def test_share_config_missing_required_key_raises(monkeypatch):
+    async def runner():
+        store = shard_data.ShardSheetStore()
+        monkeypatch.setattr(
+            shard_data,
+            "runtime_config",
+            _RuntimeConfigStub(
+                {
+                    "shard_share_random_copy_enabled": "TRUE",
+                    "shard_share_stash_low_threshold": "5",
+                    "shard_share_stash_flex_threshold": "100",
+                    "shard_share_mercy_high_percent": "85",
+                }
+            ),
+        )
+
+        with pytest.raises(shard_data.ShardTrackerConfigError, match="shard_share_default_voice"):
+            await store.get_share_config()
+
+    asyncio.run(runner())
+
+
+@pytest.mark.parametrize("percent", [1, 85, 100])
+def test_share_config_accepts_valid_mercy_high_percent_range(monkeypatch, percent):
+    async def runner():
+        store = shard_data.ShardSheetStore()
+        monkeypatch.setattr(
+            shard_data,
+            "runtime_config",
+            _RuntimeConfigStub(
+                {
+                    "shard_share_default_voice": "standard",
+                    "shard_share_random_copy_enabled": "TRUE",
+                    "shard_share_stash_low_threshold": "5",
+                    "shard_share_stash_flex_threshold": "100",
+                    "shard_share_mercy_high_percent": str(percent),
+                }
+            ),
+        )
+
+        config = await store.get_share_config()
+
+        assert config.mercy_high_percent == percent
+
+    asyncio.run(runner())
+
+
+@pytest.mark.parametrize("percent", [0, 101])
+def test_share_config_rejects_invalid_mercy_high_percent_range(monkeypatch, percent):
+    async def runner():
+        store = shard_data.ShardSheetStore()
+        monkeypatch.setattr(
+            shard_data,
+            "runtime_config",
+            _RuntimeConfigStub(
+                {
+                    "shard_share_default_voice": "standard",
+                    "shard_share_random_copy_enabled": "TRUE",
+                    "shard_share_stash_low_threshold": "5",
+                    "shard_share_stash_flex_threshold": "100",
+                    "shard_share_mercy_high_percent": str(percent),
+                }
+            ),
+        )
+
+        with pytest.raises(shard_data.ShardTrackerConfigError, match="invalid percent range: shard_share_mercy_high_percent"):
+            await store.get_share_config()
+
+    asyncio.run(runner())

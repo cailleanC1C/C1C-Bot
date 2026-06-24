@@ -7,9 +7,10 @@ import io
 from datetime import datetime, time, timedelta, timezone
 import logging
 import os
+import random
 import re
 from dataclasses import dataclass
-from typing import Dict, Iterable, Literal, Optional
+from typing import Dict, Literal
 
 import discord
 from discord import PartialEmoji
@@ -26,11 +27,13 @@ from shared.logfmt import user_label
 from .data import (
     ShardClanRow,
     ShardRecord,
+    ShardShareConfig,
+    ShardShareCopyRow,
     ShardSheetStore,
     ShardTrackerConfigError,
     ShardTrackerSheetError,
 )
-from .mercy import MERCY_CONFIGS, MercyConfig, MercySnapshot, mercy_state
+from .mercy import MERCY_CONFIGS, MercyConfig, mercy_state
 from .threads import ShardThreadRouter
 from .views import (
     MythicDisplay,
@@ -41,6 +44,7 @@ from .views import (
     build_detail_embed,
     build_last_pulls_embed,
     build_overview_embed,
+    human_time,
 )
 from modules.common import runtime
 
@@ -346,7 +350,7 @@ class ShardTracker(commands.Cog, ShardTrackerController):
 
         async with self._user_lock(ctx_author.id):
             try:
-                config = await self.store.get_config()
+                await self.store.get_config()
                 record = await self.store.load_record(
                     ctx_author.id, ctx_author.display_name or ctx_author.name
                 )
@@ -1192,7 +1196,7 @@ class ShardTracker(commands.Cog, ShardTrackerController):
                 )
                 return
 
-            embed = self._build_share_embed(interaction.user, record, selected)
+            embed = await self._build_share_embed(interaction.user, record, selected)
             try:
                 await destination.send(embed=embed)
             except discord.NotFound:
@@ -1465,7 +1469,7 @@ class ShardTracker(commands.Cog, ShardTrackerController):
             return None, _SKIP_DESTINATION_NOT_FOUND
         return None, _SKIP_MISSING_DESTINATION
 
-    def _build_share_embed(
+    async def _build_share_embed(
         self,
         member: discord.abc.User,
         record: ShardRecord,
@@ -1473,15 +1477,176 @@ class ShardTracker(commands.Cog, ShardTrackerController):
     ) -> discord.Embed:
         displays = [self._build_display(record, kind) for kind in SHARD_KINDS.values()]
         mythic = self._build_mythic_display(record)
-        embed = build_overview_embed(
-            member=member,
-            displays=displays,
-            mythic=mythic,
-            shard_emojis=self._section_emojis(),
-        )
-        embed.title = f"Shard Snapshot — {member.display_name}"
-        embed.description = f"Shared to `{clan.clan_key}`."
+        share_config = await self._load_share_config()
+        voice = await self._resolve_share_voice(clan, share_config)
+        copy_rows = await self._load_share_copy_rows() if share_config is not None and voice else []
+        random_enabled = share_config.random_copy_enabled if share_config is not None else False
+        placeholders = self._share_base_placeholders(member, clan)
+        lines: list[str] = []
+        intro = self._select_share_copy(copy_rows, voice, "intro", "always", placeholders, random_enabled)
+        if intro:
+            lines.extend([intro, ""])
+        by_key = {display.key: display for display in displays}
+        section_emojis = self._section_emojis()
+        for key in ("mystery", "ancient", "void", "sacred", "primal"):
+            display = by_key[key]
+            section_placeholders = {**placeholders, **self._share_shard_placeholders(display, mythic)}
+            heading = self._share_section_heading(display, section_emojis)
+            stat_lines = [f"Owned: {display.owned:,}"]
+            if key == "primal":
+                stat_lines.extend([
+                    f"Legendary Mercy: {display.mercy.pulls_since if display.mercy else 0} / {display.mercy.threshold if display.mercy else 0}",
+                    f"Mythical Mercy: {mythic.mercy.pulls_since} / {mythic.mercy.threshold}",
+                    f"Last Mythical: {section_placeholders['last_mythical']}",
+                ])
+            elif display.mercy is not None:
+                stat_lines.extend([
+                    f"Mercy: {display.mercy.pulls_since} / {display.mercy.threshold}",
+                    f"Last Legendary: {section_placeholders['last_legendary']}",
+                ])
+            condition = self._share_comment_condition(display, mythic, share_config)
+            comment = self._select_share_comment(copy_rows, voice, condition, section_placeholders, random_enabled)
+            if comment:
+                stat_lines.append(comment)
+            lines.append(f"### {heading}")
+            lines.append("```text")
+            lines.extend(stat_lines)
+            lines.append("```")
+            lines.append("")
+        final = self._select_share_copy(copy_rows, voice, "final_line", "always", placeholders, random_enabled)
+        if final:
+            lines.append(final)
+        embed = discord.Embed(title=f"Shard Stash Report — {member.display_name}", description="\n".join(lines).strip())
+        from .views import FOOTER_TEXT
+        embed.set_footer(text=FOOTER_TEXT)
         return embed
+
+
+    async def _resolve_share_voice(self, clan: ShardClanRow, share_config: ShardShareConfig | None) -> str:
+        default_voice = share_config.default_voice if share_config is not None else ""
+        try:
+            rows = await self.store.get_share_voice_target_rows()
+        except (ShardTrackerConfigError, ShardTrackerSheetError) as exc:
+            log.error("shard share voice config unavailable; skipping configured voice", extra={"error": str(exc), "clan_key": clan.clan_key})
+            return default_voice
+        target = str(clan.clan_key or "").strip().lower()
+        fallback = ""
+        for row in rows:
+            if not row.enabled or not row.voice:
+                continue
+            if row.target_type == "fallback":
+                fallback = fallback or row.voice
+                continue
+            if row.target_type in {"clan_tag", "clan_key", "target"} and row.target_key.strip().lower() == target:
+                return row.voice
+        return fallback or default_voice
+
+    async def _load_share_config(self) -> ShardShareConfig | None:
+        try:
+            return await self.store.get_share_config()
+        except ShardTrackerConfigError as exc:
+            log.error("shard share config unavailable; skipping flavor copy: %s", exc, extra={"error": str(exc)})
+            return None
+
+    async def _load_share_copy_rows(self) -> list[ShardShareCopyRow]:
+        try:
+            return await self.store.get_share_copy_rows()
+        except (ShardTrackerConfigError, ShardTrackerSheetError) as exc:
+            log.error("shard share copy config unavailable; skipping flavor copy", extra={"error": str(exc)})
+            return []
+
+    def _select_share_copy(self, rows: list[ShardShareCopyRow], voice: str, text_type: str, condition: str, placeholders: dict[str, str], random_enabled: bool) -> str:
+        candidates = []
+        for row in rows:
+            if not row.enabled or row.voice != voice or row.text_type != text_type or row.condition != condition or row.weight <= 0:
+                continue
+            rendered = self._render_share_copy(row, placeholders)
+            if rendered is not None:
+                candidates.append((row, rendered))
+        if not candidates:
+            log.info("shard share copy row not found", extra={"voice": voice, "text_type": text_type, "condition": condition})
+            return ""
+        if not random_enabled:
+            return candidates[0][1]
+        return random.choices([text for _, text in candidates], weights=[row.weight for row, _ in candidates], k=1)[0]
+
+    def _select_share_comment(
+        self,
+        rows: list[ShardShareCopyRow],
+        voice: str,
+        condition: str | None,
+        placeholders: dict[str, str],
+        random_enabled: bool,
+    ) -> str:
+        if not condition:
+            return ""
+        comment = self._select_share_copy(
+            rows, voice, "shard_comment", condition, placeholders, random_enabled
+        )
+        if comment or condition == "always":
+            return comment
+        return self._select_share_copy(
+            rows, voice, "shard_comment", "always", placeholders, random_enabled
+        )
+
+    def _render_share_copy(self, row: ShardShareCopyRow, placeholders: dict[str, str]) -> str | None:
+        names = set(re.findall(r"\{([A-Za-z0-9_]+)\}", row.text))
+        missing = sorted(name for name in names if name not in placeholders)
+        if missing:
+            log.warning("shard share copy row has unavailable placeholders", extra={"voice": row.voice, "text_type": row.text_type, "condition": row.condition, "row_number": row.row_number, "missing": missing})
+            return None
+        return row.text.format(**placeholders)
+
+    def _share_base_placeholders(self, member: discord.abc.User, clan: ShardClanRow) -> dict[str, str]:
+        display_name = str(getattr(member, "display_name", None) or getattr(member, "name", ""))
+        return {"display_name": display_name, "target": clan.clan_key, "target_name": clan.clan_key, "clan_tag": clan.clan_key}
+
+    def _share_shard_placeholders(self, display: ShardDisplay, mythic: MythicDisplay) -> dict[str, str]:
+        mercy = display.mercy
+        last_legendary = human_time(display.last_timestamp) if display.last_timestamp else "Never"
+        last_mythical = human_time(mythic.last_timestamp) if mythic.last_timestamp else "Never"
+        return {
+            "shard_type": display.label,
+            "owned": f"{display.owned:,}",
+            "mercy_current": str(mercy.pulls_since if mercy else 0),
+            "mercy_max": str(mercy.threshold if mercy else 0),
+            "last_legendary": last_legendary,
+            "last_mythical": last_mythical,
+            "legendary_mercy_current": str(mercy.pulls_since if mercy else 0),
+            "legendary_mercy_max": str(mercy.threshold if mercy else 0),
+            "mythical_mercy_current": str(mythic.mercy.pulls_since),
+            "mythical_mercy_max": str(mythic.mercy.threshold),
+        }
+
+    def _share_comment_condition(
+        self, display: ShardDisplay, mythic: MythicDisplay, share_config: ShardShareConfig | None
+    ) -> str | None:
+        if share_config is None:
+            return None
+        owned = max(display.owned, 0)
+        if owned == 0:
+            return "stash_zero"
+        high_percent = share_config.mercy_high_percent / 100
+        if display.key == "primal":
+            mercies = [m for m in (display.mercy, mythic.mercy) if m]
+        else:
+            mercies = [display.mercy] if display.mercy else []
+        if any((m.pulls_since / max(m.threshold, 1)) >= high_percent for m in mercies):
+            return "mercy_high"
+        if owned >= share_config.stash_flex_threshold:
+            return "stash_flex"
+        if owned < share_config.stash_low_threshold:
+            return "stash_low"
+        if any(m.pulls_since > 0 for m in mercies):
+            return "mercy_started"
+        return "always"
+
+    def _share_section_heading(self, display: ShardDisplay, shard_emojis: dict[str, object]) -> str:
+        emoji = str((shard_emojis or {}).get(display.key) or "").strip()
+        if emoji:
+            return f"{emoji} {display.label}"
+        log.warning("shard share icon missing", extra={"shard_type": display.key})
+        return display.label
 
     def _build_clan_reminder_embed(
         self,
