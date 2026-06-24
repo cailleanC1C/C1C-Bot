@@ -400,6 +400,12 @@ def test_share_embed_uses_sheet_driven_clean_payload():
     assert embed.title == "Shard Stash Report — Tester"
     assert "Intro Tester alpha" in embed.description
     assert "### Mystery" in embed.description
+    assert "```text\nOwned: 0\nNo Mystery.\n```" in embed.description
+    assert "```\nNo Mystery." not in embed.description
+    assert "Owned: 0\n\nNo Mystery." not in embed.description
+    assert embed.description.index("Intro Tester alpha") < embed.description.index("```text")
+    assert embed.description.rindex("```") < embed.description.index("Final alpha.")
+    assert embed.description.count("```text") == 5
     assert "Chance" not in embed.description
     assert "Final alpha." in embed.description
 
@@ -788,6 +794,7 @@ def test_share_invalid_percent_range_skips_flavor_but_keeps_clean_stats(caplog):
         assert "Final" not in embed.description
         assert "Some Void" not in embed.description
         assert "### Void" in embed.description
+        assert "```text\nOwned: 10\nMercy: 0 / 200\nLast Legendary: Never\n```" in embed.description
         assert "Chance" not in embed.description
 
     asyncio.run(runner())
