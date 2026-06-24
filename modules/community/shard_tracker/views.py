@@ -227,7 +227,7 @@ _TAB_COLORS: Mapping[str, discord.Colour] = {
 
 _AUTHOR_NAMES: Mapping[str, str] = {
     "overview": "Shard Overview — C1C",
-    "last_pulls": "Last Pulls & Mercy Info — C1C",
+    "last_pulls": "Last Pulls — C1C",
     "ancient": "Ancient Shards",
     "void": "Void Shards",
     "sacred": "Sacred Shards",
@@ -290,51 +290,54 @@ def build_overview_embed(
     member: discord.abc.User,
     displays: Sequence[ShardDisplay],
     mythic: MythicDisplay,
+    shard_emojis: Mapping[str, object] | None = None,
     author_name: str | None = None,
     author_icon_url: str | None = None,
     color: discord.Colour | None = None,
 ) -> discord.Embed:
     embed = discord.Embed(
         colour=color or _TAB_COLORS.get("overview"),
-        description=(
-            "Snapshot across all shard types. Use the tab buttons for details "
-            "and the Legendary/Mythical buttons to log pulls."
-        ),
+        description="Your shard stash at a glance. May mercy be kinder than usual.",
     )
     embed.set_author(name=author_name or _AUTHOR_NAMES.get("overview"), icon_url=author_icon_url)
 
-    for display in displays:
+    by_key = {display.key: display for display in displays}
+    for key in ("mystery", "ancient", "void", "primal", "sacred", "remnant"):
+        display = by_key.get(key)
+        if display is None:
+            continue
+        field_name = _section_heading(display, shard_emojis)
         if display.mercy is None:
-            line = f"Owned: **{max(display.owned, 0):,}**"
-            embed.add_field(name=display.label, value=line, inline=False)
+            lines = [f"Owned: {max(display.owned, 0):,}"]
+            embed.add_field(name=field_name, value=_code_block(lines), inline=False)
             continue
         if display.key == "primal":
             mythic_mercy = mythic.mercy
             lines = [
-                f"Owned: **{max(display.owned, 0):,}**",
+                f"Owned: {max(display.owned, 0):,}",
+                "",
                 "Legendary",
                 f"Mercy: {display.mercy.pulls_since} / {display.mercy.threshold} | Chance: {format_percent(display.mercy.chance)}",
             ]
             if display.last_timestamp:
                 lines.append(f"Last Legendary: {human_time(display.last_timestamp)}")
             lines += [
+                "",
                 "Mythical",
                 f"Mercy: {mythic_mercy.pulls_since} / {mythic_mercy.threshold} | Chance: {format_percent(mythic_mercy.chance)}",
             ]
             if mythic.last_timestamp:
                 lines.append(f"Last Mythical: {human_time(mythic.last_timestamp)}")
-            lines.append("Details:")
-            embed.add_field(name=display.label, value="\n".join(lines), inline=False)
+            embed.add_field(name=field_name, value=_code_block(lines), inline=False)
             continue
-        line = (
-            f"Owned: **{max(display.owned, 0):,}** | "
-            f"Mercy: {display.mercy.pulls_since} / {display.mercy.threshold} | "
-            f"Chance: {format_percent(display.mercy.chance)}"
-        )
+        lines = [
+            f"Owned: {max(display.owned, 0):,}",
+            f"Mercy: {display.mercy.pulls_since} / {display.mercy.threshold} | Chance: {format_percent(display.mercy.chance)}",
+        ]
         last_label = display.mercy_label
         if display.last_timestamp:
-            line += f"\nLast {last_label}: {human_time(display.last_timestamp)}"
-        embed.add_field(name=display.label, value=line, inline=False)
+            lines.append(f"Last {last_label}: {human_time(display.last_timestamp)}")
+        embed.add_field(name=field_name, value=_code_block(lines), inline=False)
 
     _apply_footer(embed)
     return embed
@@ -375,6 +378,7 @@ def build_last_pulls_embed(
     displays: Sequence[ShardDisplay],
     mythic: MythicDisplay,
     base_rates: Mapping[str, str] = None,
+    shard_emojis: Mapping[str, object] | None = None,
     author_name: str | None = None,
     author_icon_url: str | None = None,
     color: discord.Colour | None = None,
@@ -386,33 +390,43 @@ def build_last_pulls_embed(
         name=author_name or _AUTHOR_NAMES.get("last_pulls"),
         icon_url=author_icon_url,
     )
-    last_lines = []
-    for display in displays:
-        if display.mercy is None:
+    by_key = {display.key: display for display in displays}
+    for key in ("ancient", "void", "primal", "sacred", "remnant"):
+        display = by_key.get(key)
+        if display is None or display.mercy is None:
             continue
-        stamp = human_time(display.last_timestamp) if display.last_timestamp else "Never"
-        depth = f" ({display.last_depth} at pull)" if display.last_depth > 0 else ""
-        last_lines.append(f"{display.label} {display.mercy_label}: {stamp}{depth}")
-    mythic_stamp = human_time(mythic.last_timestamp) if mythic.last_timestamp else "Never"
-    mythic_depth = f" ({mythic.last_depth} at pull)" if mythic.last_depth > 0 else ""
-    last_lines.append(f"Primal Mythical: {mythic_stamp}{mythic_depth}")
-    last_lines.append("")
-    embed.add_field(name="Last Pulls", value="\n".join(last_lines), inline=False)
-
-    info_lines = [
-        "Ancient/Void Legendary: after 200 pulls, +5% per shard",
-        "Sacred Legendary: after 12 pulls, +2% per shard",
-        "Primal Legendary: after 75 pulls, +1% per shard",
-        "Primal Mythical: after 200 pulls, +10% per shard",
-        "Remnant Mythical: after 24 summons, +1% per summon",
-        "",
-        "**Base chances:**",
-    ]
-    for label, rate in (base_rates or {}).items():
-        info_lines.append(f"{label:<18} {rate}")
-    embed.add_field(name="Mercy Info", value="\n".join(info_lines), inline=False)
+        field_name = _section_heading(display, shard_emojis)
+        if key == "primal":
+            leg_stamp = human_time(display.last_timestamp) if display.last_timestamp else "Never"
+            leg_depth = f" ({display.last_depth} at pull)" if display.last_depth > 0 else ""
+            mythic_stamp = human_time(mythic.last_timestamp) if mythic.last_timestamp else "Never"
+            mythic_depth = f" ({mythic.last_depth} at pull)" if mythic.last_depth > 0 else ""
+            lines = [
+                "Legendary",
+                f"Last Legendary: {leg_stamp}{leg_depth}",
+                "",
+                "Mythical",
+                f"Last Mythical: {mythic_stamp}{mythic_depth}",
+            ]
+        else:
+            stamp = human_time(display.last_timestamp) if display.last_timestamp else "Never"
+            depth_label = "summon" if key == "remnant" else "pull"
+            depth = f" ({display.last_depth} at {depth_label})" if display.last_depth > 0 else ""
+            lines = [f"Last {display.mercy_label}: {stamp}{depth}"]
+        embed.add_field(name=field_name, value=_code_block(lines), inline=False)
     _apply_footer(embed)
     return embed
+
+
+def _section_heading(display: ShardDisplay, shard_emojis: Mapping[str, object] | None) -> str:
+    emoji = str((shard_emojis or {}).get(display.key) or "").strip()
+    if emoji:
+        return f"{emoji} {display.label}"
+    return display.label
+
+
+def _code_block(lines: Sequence[str]) -> str:
+    return "```text\n" + "\n".join(lines) + "\n```"
 
 
 def _detail_block(display: ShardDisplay) -> str:
