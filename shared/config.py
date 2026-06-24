@@ -73,6 +73,8 @@ __all__ = [
     "get_shard_emoji_void",
     "get_shard_emoji_sacred",
     "get_shard_emoji_primal",
+    "get_shard_emoji_mystery",
+    "get_shard_emoji_remnant",
     "get_public_base_url",
     "get_render_external_url",
     "get_emoji_max_bytes",
@@ -1080,6 +1082,14 @@ def get_shard_emoji_sacred(default: str = "sacred") -> str:
 
 def get_shard_emoji_primal(default: str = "primal") -> str:
     return _clean_emoji_value("SHARD_EMOJI_PRIMAL", default)
+
+
+def get_shard_emoji_mystery(default: str = "mystery") -> str:
+    return _clean_emoji_value("SHARD_EMOJI_MYSTERY", default)
+
+
+def get_shard_emoji_remnant(default: str = "remnant") -> str:
+    return _clean_emoji_value("SHARD_EMOJI_REMNANT", default)
 
 
 def get_public_base_url() -> str | None:

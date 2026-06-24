@@ -8,7 +8,7 @@ import discord
 from discord.ext import commands
 
 from modules.community.shard_tracker import setup as shard_setup
-from modules.community.shard_tracker.cog import ShardTracker
+from modules.community.shard_tracker.cog import SHARD_KINDS, ShardTracker
 from modules.community.shard_tracker.data import ShardTrackerConfig
 
 
@@ -19,6 +19,8 @@ def test_resolve_kind_aliases():
     assert tracker._resolve_kind_key("Anc") == "ancient"
     assert tracker._resolve_kind("primals").key == "primal"
     assert tracker._resolve_kind("unknown") is None
+    assert tracker._resolve_kind_key("mysteries") == "mystery"
+    assert tracker._resolve_kind_key("cursed_remnants") == "remnant"
 
 
 def test_resolve_thread_rejects_wrong_channel(fake_discord_env):
@@ -328,7 +330,7 @@ def test_share_embed_uses_overview_payload():
 
     assert embed.title == "Shard Snapshot — Tester"
     assert embed.description == "Shared to `alpha`."
-    assert [field.name for field in embed.fields] == ["Ancient", "Void", "Sacred", "Primal"]
+    assert [field.name for field in embed.fields] == ["Ancient", "Void", "Sacred", "Primal", "Mystery", "Remnants"]
 
 
 def test_share_button_action_routes_overview_without_active_tab_payload():
@@ -376,6 +378,115 @@ def test_detail_share_button_action_preserves_overview_share_behavior():
         clan = _share_clan()
         embed = tracker._build_share_embed(interaction.user, record, clan)
         assert embed.title == "Shard Snapshot — Tester"
-        assert [field.name for field in embed.fields] == ["Ancient", "Void", "Sacred", "Primal"]
+        assert [field.name for field in embed.fields] == ["Ancient", "Void", "Sacred", "Primal", "Mystery", "Remnants"]
 
     asyncio.run(runner())
+
+
+def test_mystery_and_remnant_button_layouts_are_capability_aware():
+    from modules.community.shard_tracker.views import ShardTrackerView
+
+    tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+    labels = {kind.key: kind.label for kind in SHARD_KINDS.values()}
+
+    mystery = ShardTrackerView(
+        owner_id=42,
+        controller=tracker,
+        active_tab="mystery",
+        shard_labels=labels,
+        shard_emojis={},
+        action_capabilities=tracker._action_capabilities(),
+        timeout=None,
+    )
+    mystery_action_labels = _button_labels(mystery)[8:]
+    assert mystery_action_labels == ["+ Stash", "- Pulls", "Share to Clan"]
+
+    remnant = ShardTrackerView(
+        owner_id=42,
+        controller=tracker,
+        active_tab="remnant",
+        shard_labels=labels,
+        shard_emojis={},
+        action_capabilities=tracker._action_capabilities(),
+        timeout=None,
+    )
+    remnant_action_labels = _button_labels(remnant)[8:]
+    assert remnant_action_labels == [
+        "+ Stash",
+        "- Summons",
+        "Share to Clan",
+        "Got Mythical",
+        "Last Pulls / Mercy",
+    ]
+
+
+def test_mystery_and_remnant_rendering_shapes():
+    tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+    record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
+    record.mysteries_owned = 12
+    record.remnants_owned = 450
+    record.remnants_since_mythic = 25
+    record.last_remnant_mythic_iso = "2024-01-01T00:00:00+00:00"
+    user = type("User", (), {"id": 42, "display_name": "Tester", "name": "Tester"})()
+
+    overview, _ = tracker._build_panel(user, record, None, "overview")
+    fields = {field.name: field.value for field in overview.fields}
+    assert "Mystery" in fields
+    assert fields["Mystery"] == "Owned: **12**"
+    assert "Remnants" in fields
+    assert "Owned: **450**" in fields["Remnants"]
+    assert "Mercy: 25 / 24" in fields["Remnants"]
+    assert "Chance: 3.50%" in fields["Remnants"]
+    assert "Last Mythical: 2024-01-01 00:00 UTC" in fields["Remnants"]
+
+    mystery, _ = tracker._build_panel(user, record, None, "mystery")
+    assert "Stash: **12**" in (mystery.description or "")
+    assert not mystery.fields
+
+    remnant, _ = tracker._build_panel(user, record, None, "remnant")
+    assert "Each summon costs 100 Cursed Remnants." in (remnant.description or "")
+    assert "Mythical Mercy: 25 / 24" in (remnant.description or "")
+    assert "Mythical Chance: 3.50%" in (remnant.description or "")
+    assert "Last Mythical: 2024-01-01 00:00 UTC" in (remnant.description or "")
+    assert remnant.fields and remnant.fields[0].name == "Progress"
+    assert all("Legendary" not in (field.name + field.value) for field in remnant.fields)
+
+
+def test_mystery_and_remnant_state_mutations():
+    tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+    record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
+
+    tracker._apply_stash_increase(record, SHARD_KINDS["mystery"], 10)
+    assert record.mysteries_owned == 10
+    ok, message = tracker._apply_pull_usage(record, SHARD_KINDS["mystery"], 99)
+    assert ok and message == ""
+    assert record.mysteries_owned == 0
+    assert record.ancients_since_lego == 0
+    assert record.last_ancient_lego_iso == ""
+
+    tracker._apply_stash_increase(record, SHARD_KINDS["remnant"], 250)
+    ok, message = tracker._apply_pull_usage(record, SHARD_KINDS["remnant"], 3)
+    assert not ok
+    assert "2 summons" in message
+    assert record.remnants_owned == 250
+    assert record.remnants_since_mythic == 0
+
+    ok, message = tracker._apply_pull_usage(record, SHARD_KINDS["remnant"], 2)
+    assert ok and message == ""
+    assert record.remnants_owned == 50
+    assert record.remnants_since_mythic == 2
+
+
+def test_last_pulls_embed_includes_remnant_mythical_once():
+    tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+    record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
+    record.remnants_since_mythic = 25
+    record.last_remnant_mythic_iso = "2024-01-01T00:00:00+00:00"
+    record.last_remnant_mythic_depth = 25
+    user = type("User", (), {"id": 42, "display_name": "Tester", "name": "Tester"})()
+
+    embed, _ = tracker._build_panel(user, record, None, "last_pulls")
+    last_pulls = next(field.value for field in embed.fields if field.name == "Last Pulls")
+
+    assert last_pulls.count("Remnants Mythical:") == 1
+    assert "Mystery" not in last_pulls

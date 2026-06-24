@@ -39,6 +39,11 @@ EXPECTED_HEADERS: List[str] = [
     "last_primal_lego_depth",
     "last_primal_mythic_depth",
     "last_updated_iso",
+    "mysteries_owned",
+    "remnants_owned",
+    "remnants_since_mythic",
+    "last_remnant_mythic_iso",
+    "last_remnant_mythic_depth",
 ]
 
 SHARD_CLANS_REQUIRED_HEADERS: tuple[str, ...] = (
@@ -114,6 +119,11 @@ class ShardRecord:
     last_primal_lego_depth: int = 0
     last_primal_mythic_depth: int = 0
     last_updated_iso: str = ""
+    mysteries_owned: int = 0
+    remnants_owned: int = 0
+    remnants_since_mythic: int = 0
+    last_remnant_mythic_iso: str = ""
+    last_remnant_mythic_depth: int = 0
 
     def snapshot_name(self, value: str) -> None:
         self.username_snapshot = (value or "").strip()[:64]
@@ -142,6 +152,11 @@ class ShardRecord:
             "last_primal_lego_depth": str(max(self.last_primal_lego_depth, 0)),
             "last_primal_mythic_depth": str(max(self.last_primal_mythic_depth, 0)),
             "last_updated_iso": self.last_updated_iso,
+            "mysteries_owned": str(max(self.mysteries_owned, 0)),
+            "remnants_owned": str(max(self.remnants_owned, 0)),
+            "remnants_since_mythic": str(max(self.remnants_since_mythic, 0)),
+            "last_remnant_mythic_iso": self.last_remnant_mythic_iso,
+            "last_remnant_mythic_depth": str(max(self.last_remnant_mythic_depth, 0)),
         }
         return [str(mapping.get(name, "")) for name in self.header]
 
@@ -237,7 +252,7 @@ class ShardSheetStore:
 
     async def save_record(self, config: ShardTrackerConfig, record: ShardRecord) -> None:
         record.last_updated_iso = _now_iso()
-        range_label = f"A{record.row_number}:V{record.row_number}"
+        range_label = f"A{record.row_number}:AA{record.row_number}"
         row = record.to_row()
         worksheet = await async_core.aget_worksheet(config.sheet_id, config.tab_name)
         async with self._sheet_lock:
@@ -428,6 +443,11 @@ class ShardSheetStore:
             last_primal_lego_depth=self._parse_int(cell("last_primal_lego_depth")),
             last_primal_mythic_depth=self._parse_int(cell("last_primal_mythic_depth")),
             last_updated_iso=cell("last_updated_iso"),
+            mysteries_owned=self._parse_int(cell("mysteries_owned")),
+            remnants_owned=self._parse_int(cell("remnants_owned")),
+            remnants_since_mythic=self._parse_int(cell("remnants_since_mythic")),
+            last_remnant_mythic_iso=cell("last_remnant_mythic_iso"),
+            last_remnant_mythic_depth=self._parse_int(cell("last_remnant_mythic_depth")),
         )
         record.snapshot_name(username)
         return record

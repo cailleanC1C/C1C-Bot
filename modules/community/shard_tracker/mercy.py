@@ -65,6 +65,13 @@ MERCY_CONFIGS: Dict[str, MercyConfig] = {
         threshold=200,
         increment=0.10,
     ),
+    "remnant_mythic": MercyConfig(
+        key="remnant_mythic",
+        label="Remnant Mythical",
+        base_rate=0.025,
+        threshold=24,
+        increment=0.01,
+    ),
 }
 
 

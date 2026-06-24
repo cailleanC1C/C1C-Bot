@@ -19,6 +19,8 @@ TAB_LABELS: Mapping[str, str] = {
     "void": "Void",
     "sacred": "Sacred",
     "primal": "Primal",
+    "mystery": "Mystery",
+    "remnant": "Remnants",
     "last_pulls": "Last Pulls",
 }
 
@@ -31,16 +33,20 @@ class ShardDisplay:
     key: str
     label: str
     owned: int
-    mercy: MercySnapshot
+    mercy: MercySnapshot | None
     last_timestamp: str
     last_depth: int
+    mercy_label: str = "Legendary"
+    detail_note: str = ""
 
 
 @dataclass(frozen=True)
 class MythicDisplay:
-    mercy: MercySnapshot
+    mercy: MercySnapshot | None
     last_timestamp: str
     last_depth: int
+    mercy_label: str = "Legendary"
+    detail_note: str = ""
 
 
 class ShardTrackerView(discord.ui.View):
@@ -54,6 +60,7 @@ class ShardTrackerView(discord.ui.View):
         active_tab: str,
         shard_labels: Mapping[str, str],
         shard_emojis: Mapping[str, discord.PartialEmoji | None],
+        action_capabilities: Mapping[str, Sequence[str]] | None = None,
         mythic_controls: bool = True,
         timeout: float | None = None,
     ) -> None:
@@ -61,8 +68,9 @@ class ShardTrackerView(discord.ui.View):
         self.owner_id = owner_id
         self.active_tab = active_tab
         self._controller = controller
+        self._action_capabilities = dict(action_capabilities or {})
         # Tab buttons
-        for tab in ("overview", "ancient", "void", "sacred", "primal", "last_pulls"):
+        for tab in ("overview", "ancient", "void", "sacred", "primal", "mystery", "remnant", "last_pulls"):
             label: str | None = None
             emoji = None
 
@@ -89,11 +97,16 @@ class ShardTrackerView(discord.ui.View):
         if active_tab == "overview":
             self._add_share_button(active_tab)
         elif active_tab in shard_labels:
-            self._add_primary_buttons()
-            self._add_legendary_button()
-            self._add_last_pulls_button()
+            actions = tuple(self._action_capabilities.get(active_tab, ("stash", "pulls", "share", "legendary", "last_pulls")))
+            self._add_primary_buttons(actions)
+            if "legendary" in actions:
+                self._add_legendary_button()
+            if "mythical" in actions:
+                self._add_mythical_button()
+            if "last_pulls" in actions:
+                self._add_last_pulls_button()
 
-    def _add_primary_buttons(self) -> None:
+    def _add_primary_buttons(self, actions: Sequence[str]) -> None:
         self.add_item(
             _ShardButton(
                 custom_id=f"action:stash:{self.active_tab}",
@@ -104,17 +117,19 @@ class ShardTrackerView(discord.ui.View):
                 controller=self._controller,
             )
         )
-        self.add_item(
-            _ShardButton(
-                custom_id=f"action:pulls:{self.active_tab}",
-                label="- Pulls",
-                emoji=None,
-                style=discord.ButtonStyle.secondary,
-                owner_id=self.owner_id,
-                controller=self._controller,
+        if "pulls" in actions or "summons" in actions:
+            self.add_item(
+                _ShardButton(
+                    custom_id=f"action:pulls:{self.active_tab}",
+                    label="- Summons" if "summons" in actions else "- Pulls",
+                    emoji=None,
+                    style=discord.ButtonStyle.secondary,
+                    owner_id=self.owner_id,
+                    controller=self._controller,
+                )
             )
-        )
-        self._add_share_button(self.active_tab)
+        if "share" in actions:
+            self._add_share_button(self.active_tab)
 
     def _add_share_button(self, tab: str) -> None:
         self.add_item(
@@ -134,6 +149,18 @@ class ShardTrackerView(discord.ui.View):
             _ShardButton(
                 custom_id=f"action:legendary:{self.active_tab}",
                 label=label,
+                emoji=None,
+                style=discord.ButtonStyle.success,
+                owner_id=self.owner_id,
+                controller=self._controller,
+            )
+        )
+
+    def _add_mythical_button(self) -> None:
+        self.add_item(
+            _ShardButton(
+                custom_id=f"action:mythical:{self.active_tab}",
+                label="Got Mythical",
                 emoji=None,
                 style=discord.ButtonStyle.success,
                 owner_id=self.owner_id,
@@ -193,6 +220,8 @@ _TAB_COLORS: Mapping[str, discord.Colour] = {
     "void": discord.Colour(0xA970FF),
     "sacred": discord.Colour.gold(),
     "primal": discord.Colour.dark_red(),
+    "mystery": discord.Colour.light_grey(),
+    "remnant": discord.Colour.purple(),
 }
 
 
@@ -203,6 +232,8 @@ _AUTHOR_NAMES: Mapping[str, str] = {
     "void": "Void Shards",
     "sacred": "Sacred Shards",
     "primal": "Primal Shards",
+    "mystery": "Mystery Shards",
+    "remnant": "Cursed Remnants",
 }
 
 
@@ -270,52 +301,43 @@ def build_overview_embed(
             "and the Legendary/Mythical buttons to log pulls."
         ),
     )
-    embed.set_author(
-        name=author_name or _AUTHOR_NAMES.get("overview"),
-        icon_url=author_icon_url,
-    )
-    primal = next((display for display in displays if display.key == "primal"), None)
-    other_displays = [display for display in displays if display.key != "primal"]
+    embed.set_author(name=author_name or _AUTHOR_NAMES.get("overview"), icon_url=author_icon_url)
 
-    for display in other_displays:
+    for display in displays:
+        if display.mercy is None:
+            line = f"Owned: **{max(display.owned, 0):,}**"
+            embed.add_field(name=display.label, value=line, inline=False)
+            continue
+        if display.key == "primal":
+            mythic_mercy = mythic.mercy
+            lines = [
+                f"Owned: **{max(display.owned, 0):,}**",
+                "Legendary",
+                f"Mercy: {display.mercy.pulls_since} / {display.mercy.threshold} | Chance: {format_percent(display.mercy.chance)}",
+            ]
+            if display.last_timestamp:
+                lines.append(f"Last Legendary: {human_time(display.last_timestamp)}")
+            lines += [
+                "Mythical",
+                f"Mercy: {mythic_mercy.pulls_since} / {mythic_mercy.threshold} | Chance: {format_percent(mythic_mercy.chance)}",
+            ]
+            if mythic.last_timestamp:
+                lines.append(f"Last Mythical: {human_time(mythic.last_timestamp)}")
+            lines.append("Details:")
+            embed.add_field(name=display.label, value="\n".join(lines), inline=False)
+            continue
         line = (
             f"Owned: **{max(display.owned, 0):,}** | "
             f"Mercy: {display.mercy.pulls_since} / {display.mercy.threshold} | "
             f"Chance: {format_percent(display.mercy.chance)}"
         )
+        last_label = display.mercy_label
         if display.last_timestamp:
-            line += f"\nLast Legendary: {human_time(display.last_timestamp)}"
+            line += f"\nLast {last_label}: {human_time(display.last_timestamp)}"
         embed.add_field(name=display.label, value=line, inline=False)
-
-    if primal:
-        mythic_mercy = mythic.mercy
-        primal_lines = [
-            f"Owned: **{max(primal.owned, 0):,}**",
-            "Legendary",
-            (
-                f"Mercy: {primal.mercy.pulls_since} / {primal.mercy.threshold} | "
-                f"Chance: {format_percent(primal.mercy.chance)}"
-            ),
-        ]
-        if primal.last_timestamp:
-            primal_lines.append(f"Last Legendary: {human_time(primal.last_timestamp)}")
-        primal_lines.extend(
-            [
-                "Mythical",
-                (
-                    f"Mercy: {mythic_mercy.pulls_since} / {mythic_mercy.threshold} | "
-                    f"Chance: {format_percent(mythic_mercy.chance)}"
-                ),
-            ]
-        )
-        if mythic.last_timestamp:
-            primal_lines.append(f"Last Mythical: {human_time(mythic.last_timestamp)}")
-        primal_lines.append("Details:")
-        embed.add_field(name="Primal", value="\n".join(primal_lines), inline=False)
 
     _apply_footer(embed)
     return embed
-
 
 def build_detail_embed(
     *,
@@ -334,13 +356,15 @@ def build_detail_embed(
         icon_url=author_icon_url,
     )
     embed.description = _detail_block(display)
-    embed.add_field(
-        name="Progress",
-        value=_progress_bar(display.mercy),
-        inline=False,
-    )
+    if display.mercy is not None:
+        embed.add_field(
+            name="Progress",
+            value=_progress_bar(display.mercy),
+            inline=False,
+        )
     if mythic:
-        embed.add_field(name="Primal Mythical", value=_mythic_block(mythic), inline=False)
+        name = "Remnant Mythical" if display.key == "remnant" else "Primal Mythical"
+        embed.add_field(name=name, value=_mythic_block(mythic), inline=False)
     _apply_footer(embed)
     return embed
 
@@ -350,7 +374,7 @@ def build_last_pulls_embed(
     member: discord.abc.User,
     displays: Sequence[ShardDisplay],
     mythic: MythicDisplay,
-    base_rates: Mapping[str, str],
+    base_rates: Mapping[str, str] = None,
     author_name: str | None = None,
     author_icon_url: str | None = None,
     color: discord.Colour | None = None,
@@ -364,9 +388,11 @@ def build_last_pulls_embed(
     )
     last_lines = []
     for display in displays:
+        if display.mercy is None:
+            continue
         stamp = human_time(display.last_timestamp) if display.last_timestamp else "Never"
         depth = f" ({display.last_depth} at pull)" if display.last_depth > 0 else ""
-        last_lines.append(f"{display.label} Legendary: {stamp}{depth}")
+        last_lines.append(f"{display.label} {display.mercy_label}: {stamp}{depth}")
     mythic_stamp = human_time(mythic.last_timestamp) if mythic.last_timestamp else "Never"
     mythic_depth = f" ({mythic.last_depth} at pull)" if mythic.last_depth > 0 else ""
     last_lines.append(f"Primal Mythical: {mythic_stamp}{mythic_depth}")
@@ -378,10 +404,11 @@ def build_last_pulls_embed(
         "Sacred Legendary: after 12 pulls, +2% per shard",
         "Primal Legendary: after 75 pulls, +1% per shard",
         "Primal Mythical: after 200 pulls, +10% per shard",
+        "Remnant Mythical: after 24 summons, +1% per summon",
         "",
         "**Base chances:**",
     ]
-    for label, rate in base_rates.items():
+    for label, rate in (base_rates or {}).items():
         info_lines.append(f"{label:<18} {rate}")
     embed.add_field(name="Mercy Info", value="\n".join(info_lines), inline=False)
     _apply_footer(embed)
@@ -389,27 +416,26 @@ def build_last_pulls_embed(
 
 
 def _detail_block(display: ShardDisplay) -> str:
+    parts = [f"Stash: **{max(display.owned, 0):,}**"]
+    if display.detail_note:
+        parts.append(display.detail_note)
+    if display.mercy is None:
+        return "\n".join(parts)
     mercy = display.mercy
     maxed = mercy.pulls_since >= mercy.threshold
-    parts = [
-        f"Stash: **{max(display.owned, 0):,}**",
-    ]
     if display.key == "primal":
-        parts.append("")
-        parts.append("**Primal Legendary**")
-    parts.extend(
-        [
-            f"Legendary Mercy: {mercy.pulls_since} / {mercy.threshold}" + (" (Maxed)" if maxed else ""),
-            f"Legendary Chance: {format_percent(mercy.chance)}",
-        ]
-    )
+        parts += ["", "**Primal Legendary**"]
+    label = display.mercy_label
+    parts += [
+        f"{label} Mercy: {mercy.pulls_since} / {mercy.threshold}" + (" (Maxed)" if maxed else ""),
+        f"{label} Chance: {format_percent(mercy.chance)}",
+    ]
     if display.last_timestamp:
-        last_line = f"Last Legendary: {human_time(display.last_timestamp)}"
-        if display.key != "primal" and display.last_depth:
+        last_line = f"Last {label}: {human_time(display.last_timestamp)}"
+        if display.last_depth:
             last_line += f" ({display.last_depth} depth)"
         parts.append(last_line)
     return "\n".join(parts)
-
 
 def _mythic_block(display: MythicDisplay) -> str:
     mercy = display.mercy

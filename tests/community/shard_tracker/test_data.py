@@ -100,7 +100,17 @@ def test_load_record_existing_row(monkeypatch):
             "2024-01-03T00:00:00+00:00",
             "2024-01-04T00:00:00+00:00",
             "2024-01-05T00:00:00+00:00",
+            "17",
+            "18",
+            "19",
+            "20",
+            "21",
             "2024-01-06T00:00:00+00:00",
+            "22",
+            "2300",
+            "24",
+            "2024-01-07T00:00:00+00:00",
+            "25",
         ]
 
         async def fake_values(sheet_id, tab_name, **kwargs):
@@ -113,6 +123,11 @@ def test_load_record_existing_row(monkeypatch):
         assert record.row_number == 2
         assert record.voids_owned == 6
         assert record.sacreds_since_lego == 12
+        assert record.mysteries_owned == 22
+        assert record.remnants_owned == 2300
+        assert record.remnants_since_mythic == 24
+        assert record.last_remnant_mythic_iso == "2024-01-07T00:00:00+00:00"
+        assert record.last_remnant_mythic_depth == 25
         assert record.username_snapshot.startswith("New Name")
 
     asyncio.run(runner())
@@ -154,6 +169,11 @@ def test_load_record_appends_when_missing(monkeypatch):
         assert record.row_number == 2
         assert worksheet.append_payloads, "append_row should be invoked for new records"
         assert worksheet.append_payloads[0][0] == "99999"
+        assert record.mysteries_owned == 0
+        assert record.remnants_owned == 0
+        assert record.remnants_since_mythic == 0
+        assert record.last_remnant_mythic_iso == ""
+        assert record.last_remnant_mythic_depth == 0
 
     asyncio.run(runner())
 
@@ -173,5 +193,52 @@ def test_load_record_invalid_header(monkeypatch):
 
         with pytest.raises(shard_data.ShardTrackerSheetError):
             await store.load_record(1, "Name")
+
+    asyncio.run(runner())
+
+
+def test_expected_headers_include_mystery_and_remnant_columns():
+    assert shard_data.EXPECTED_HEADERS[-5:] == [
+        "mysteries_owned",
+        "remnants_owned",
+        "remnants_since_mythic",
+        "last_remnant_mythic_iso",
+        "last_remnant_mythic_depth",
+    ]
+
+
+def test_save_record_writes_through_aa(monkeypatch):
+    async def runner():
+        store = shard_data.ShardSheetStore()
+        config = shard_data.ShardTrackerConfig(sheet_id="sheet-1", tab_name="ShardTracker", channel_id=123)
+        record = shard_data.ShardRecord(
+            header=list(shard_data.EXPECTED_HEADERS),
+            discord_id=1,
+            username_snapshot="Tester",
+            row_number=7,
+        )
+
+        class DummyWorksheet:
+            def __init__(self) -> None:
+                self.calls = []
+
+            async def update(self, range_label, rows, value_input_option="RAW"):
+                self.calls.append((range_label, rows, value_input_option))
+
+        worksheet = DummyWorksheet()
+
+        async def fake_worksheet(sheet_id, tab_name, **kwargs):
+            return worksheet
+
+        async def fake_backoff(func, *args, **kwargs):
+            return await func(*args, **kwargs)
+
+        monkeypatch.setattr(shard_data.async_core, "aget_worksheet", fake_worksheet)
+        monkeypatch.setattr(shard_data.async_core, "acall_with_backoff", fake_backoff)
+
+        await store.save_record(config, record)
+
+        assert worksheet.calls[0][0] == "A7:AA7"
+        assert len(worksheet.calls[0][1][0]) == len(shard_data.EXPECTED_HEADERS)
 
     asyncio.run(runner())

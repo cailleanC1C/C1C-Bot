@@ -52,10 +52,12 @@ class ShardKind:
     key: str
     label: str
     stash_field: str
-    mercy_field: str
-    mercy_config: MercyConfig
-    timestamp_field: str
-    depth_field: str
+    mercy_field: str = ""
+    mercy_config: MercyConfig | None = None
+    timestamp_field: str = ""
+    depth_field: str = ""
+    mercy_label: str = "Legendary"
+    detail_note: str = ""
 
 
 SHARD_KINDS: Dict[str, ShardKind] = {
@@ -95,6 +97,22 @@ SHARD_KINDS: Dict[str, ShardKind] = {
         timestamp_field="last_primal_lego_iso",
         depth_field="last_primal_lego_depth",
     ),
+    "mystery": ShardKind(
+        key="mystery",
+        label="Mystery",
+        stash_field="mysteries_owned",
+    ),
+    "remnant": ShardKind(
+        key="remnant",
+        label="Remnants",
+        stash_field="remnants_owned",
+        mercy_field="remnants_since_mythic",
+        mercy_config=MERCY_CONFIGS["remnant_mythic"],
+        timestamp_field="last_remnant_mythic_iso",
+        depth_field="last_remnant_mythic_depth",
+        mercy_label="Mythical",
+        detail_note="Each summon costs 100 Cursed Remnants.",
+    ),
 }
 
 _BASE_RATES = {
@@ -103,6 +121,7 @@ _BASE_RATES = {
     "Sacred Legendary": "6%",
     "Primal Legendary": "1%",
     "Primal Mythical": "0.5%",
+    "Remnant Mythical": "2.5%",
 }
 
 _TYPE_ALIASES = {
@@ -118,6 +137,14 @@ _TYPE_ALIASES = {
     "primals": "primal",
     "myth": "mythic",
     "mythical": "mythic",
+    "mysteries": "mystery",
+    "mystery_shards": "mystery",
+    "mysteryshards": "mystery",
+    "remnants": "remnant",
+    "cursed_remnants": "remnant",
+    "cursedremnants": "remnant",
+    "remnant_summons": "remnant",
+    "remnantsummons": "remnant",
 }
 
 _FEATURE_TOGGLE_KEYS = ("shardtracker", "shard_tracker")
@@ -302,7 +329,7 @@ class ShardTracker(commands.Cog, ShardTrackerController):
                 return
 
             tab = action_tab or active_tab or "overview"
-            if tab not in SHARD_KINDS and action_name in {"stash", "pulls", "legendary"}:
+            if tab not in SHARD_KINDS and action_name in {"stash", "pulls", "legendary", "mythical"}:
                 await interaction.response.send_message(
                     "Pick a shard tab to use these buttons.", ephemeral=True
                 )
@@ -320,6 +347,16 @@ class ShardTracker(commands.Cog, ShardTrackerController):
 
             if action_name == "pulls":
                 modal = _PullsModal(
+                    controller=self,
+                    owner_id=ctx_author.id,
+                    shard_key=tab,
+                    active_tab=tab,
+                )
+                await interaction.response.send_modal(modal)
+                return
+
+            if action_name == "mythical" and tab == "remnant":
+                modal = _LegendaryModal(
                     controller=self,
                     owner_id=ctx_author.id,
                     shard_key=tab,
@@ -350,9 +387,7 @@ class ShardTracker(commands.Cog, ShardTrackerController):
                     owner_id=ctx_author.id,
                     shard_key=tab,
                     active_tab=tab,
-                    legendary_mercy=max(
-                        0, getattr(record, kind.mercy_field, 0)
-                    ),
+                    legendary_mercy=max(0, getattr(record, kind.mercy_field, 0)) if kind.mercy_field else 0,
                     mythical_mercy=max(0, record.primals_since_mythic),
                 )
                 await interaction.response.send_modal(modal)
@@ -525,7 +560,10 @@ class ShardTracker(commands.Cog, ShardTrackerController):
                 await self._notify_admins(str(exc))
                 return
 
-            self._apply_pull_usage(record, kind, amount)
+            ok, message = self._apply_pull_usage(record, kind, amount)
+            if not ok:
+                await interaction.response.send_message(message or "Unable to log pulls.", ephemeral=True)
+                return
             record.snapshot_name(interaction.user.display_name or interaction.user.name)
             await self.store.save_record(config, record)
 
@@ -580,7 +618,22 @@ class ShardTracker(commands.Cog, ShardTrackerController):
             legendary_before = max(0, record.primals_since_lego)
             mythical_before = max(0, record.primals_since_mythic)
 
-            self._apply_pull_usage(record, kind, total_pulls)
+            ok, message = self._apply_pull_usage(record, kind, total_pulls)
+            if not ok:
+                await interaction.response.send_message(message or "Unable to log pulls.", ephemeral=True)
+                return
+
+            if kind.key == "remnant":
+                depth = max(0, record.remnants_since_mythic - after_champion)
+                record.last_remnant_mythic_depth = depth
+                record.last_remnant_mythic_iso = self._now_iso()
+                record.remnants_since_mythic = max(0, after_champion)
+                record.snapshot_name(interaction.user.display_name or interaction.user.name)
+                await self.store.save_record(config, record)
+                embed, view = self._build_panel(interaction.user, record, interaction.channel, active_tab)
+                await interaction.response.edit_message(embed=embed, view=view)
+                await self._log_action("remnant_mythical_reset", interaction.user, interaction.channel, f"Remnant Mythical: summons={total_pulls}, after={after_champion}")
+                return
 
             current_mercy = max(0, getattr(record, kind.mercy_field, 0))
             drop_depth = max(0, current_mercy - after_champion)
@@ -746,14 +799,24 @@ class ShardTracker(commands.Cog, ShardTrackerController):
         owned = max(0, getattr(record, kind.stash_field, 0))
         setattr(record, kind.stash_field, owned + amount)
 
-    def _apply_pull_usage(self, record: ShardRecord, kind: ShardKind, amount: int) -> None:
+    def _apply_pull_usage(self, record: ShardRecord, kind: ShardKind, amount: int) -> tuple[bool, str]:
         owned = max(0, getattr(record, kind.stash_field, 0))
+        if kind.key == "remnant":
+            required = max(0, amount) * 100
+            if owned < required:
+                available = owned // 100
+                return False, f"You only have enough Cursed Remnants for {available:,} summons."
+            setattr(record, kind.stash_field, owned - required)
+            record.remnants_since_mythic = max(0, record.remnants_since_mythic) + amount
+            return True, ""
         new_owned = max(0, owned - amount)
         setattr(record, kind.stash_field, new_owned)
-        current_mercy = max(0, getattr(record, kind.mercy_field, 0))
-        setattr(record, kind.mercy_field, current_mercy + amount)
+        if kind.mercy_field:
+            current_mercy = max(0, getattr(record, kind.mercy_field, 0))
+            setattr(record, kind.mercy_field, current_mercy + amount)
         if kind.key == "primal":
             record.primals_since_mythic = max(0, record.primals_since_mythic) + amount
+        return True, ""
 
     def _apply_legendary_reset(self, record: ShardRecord, kind: ShardKind) -> None:
         current_depth = max(0, getattr(record, kind.mercy_field, 0))
@@ -783,10 +846,10 @@ class ShardTracker(commands.Cog, ShardTrackerController):
     ) -> None:
         if kind.key == "primal":
             record.primals_since_lego = max(0, legendary_mercy)
-            record.primals_since_mythic = max(
-                0, mythical_mercy if mythical_mercy is not None else legendary_mercy
-            )
-        else:
+            record.primals_since_mythic = max(0, mythical_mercy if mythical_mercy is not None else legendary_mercy)
+        elif kind.key == "remnant":
+            record.remnants_since_mythic = max(0, legendary_mercy)
+        elif kind.mercy_field:
             setattr(record, kind.mercy_field, max(0, legendary_mercy))
 
     async def _handle_mercy_set(
@@ -1009,6 +1072,7 @@ class ShardTracker(commands.Cog, ShardTrackerController):
             shard_labels=labels,
             shard_emojis=self._tab_emojis,
             active_tab=tab,
+            action_capabilities=self._action_capabilities(),
             timeout=None,
         )
         return embed, view
@@ -1674,12 +1738,29 @@ class ShardTracker(commands.Cog, ShardTrackerController):
                     return emoji
         return None
 
+    @staticmethod
+    def _action_capabilities() -> dict[str, tuple[str, ...]]:
+        return {
+            "ancient": ("stash", "pulls", "share", "legendary", "last_pulls"),
+            "void": ("stash", "pulls", "share", "legendary", "last_pulls"),
+            "sacred": ("stash", "pulls", "share", "legendary", "last_pulls"),
+            "primal": ("stash", "pulls", "share", "legendary", "last_pulls"),
+            "mystery": ("stash", "pulls", "share"),
+            "remnant": ("stash", "summons", "share", "mythical", "last_pulls"),
+        }
+
     def _build_display(self, record: ShardRecord, kind: ShardKind) -> ShardDisplay:
         owned = max(0, getattr(record, kind.stash_field, 0))
-        since = max(0, getattr(record, kind.mercy_field, 0))
-        mercy = mercy_state(kind.key, since)
-        timestamp = getattr(record, kind.timestamp_field, "")
-        depth = max(0, getattr(record, kind.depth_field, 0))
+        if not kind.mercy_field or kind.mercy_config is None:
+            mercy = None
+            timestamp = ""
+            depth = 0
+        else:
+            since = max(0, getattr(record, kind.mercy_field, 0))
+            mercy_key = "remnant_mythic" if kind.key == "remnant" else kind.key
+            mercy = mercy_state(mercy_key, since)
+            timestamp = getattr(record, kind.timestamp_field, "")
+            depth = max(0, getattr(record, kind.depth_field, 0))
         return ShardDisplay(
             key=kind.key,
             label=kind.label,
@@ -1687,6 +1768,8 @@ class ShardTracker(commands.Cog, ShardTrackerController):
             mercy=mercy,
             last_timestamp=timestamp,
             last_depth=depth,
+            mercy_label=kind.mercy_label,
+            detail_note=kind.detail_note,
         )
 
     def _build_mythic_display(self, record: ShardRecord) -> MythicDisplay:
@@ -1704,6 +1787,8 @@ class ShardTracker(commands.Cog, ShardTrackerController):
             "void": shared_config.get_shard_emoji_void("void"),
             "sacred": shared_config.get_shard_emoji_sacred("sacred"),
             "primal": shared_config.get_shard_emoji_primal("primal"),
+            "mystery": shared_config.get_shard_emoji_mystery("mystery"),
+            "remnant": shared_config.get_shard_emoji_remnant("remnant"),
         }
 
     def _load_tab_emojis(self) -> dict[str, discord.PartialEmoji | None]:
@@ -1712,6 +1797,8 @@ class ShardTracker(commands.Cog, ShardTrackerController):
             "void": self._parse_partial_emoji(os.getenv("SHARD_EMOJI_VOID", "")),
             "sacred": self._parse_partial_emoji(os.getenv("SHARD_EMOJI_SACRED", "")),
             "primal": self._parse_partial_emoji(os.getenv("SHARD_EMOJI_PRIMAL", "")),
+            "mystery": self._parse_partial_emoji(os.getenv("SHARD_EMOJI_MYSTERY", "")),
+            "remnant": self._parse_partial_emoji(os.getenv("SHARD_EMOJI_REMNANT", "")),
         }
 
     def _parse_partial_emoji(self, value: str | None) -> discord.PartialEmoji | None:
@@ -2047,7 +2134,7 @@ class _LastPullsModal(discord.ui.Modal):
         self.active_tab = active_tab
 
         self.legendary_mercy = discord.ui.TextInput(
-            label="Legendary mercy after last pull",
+            label="Mythical mercy after last summon" if shard_key == "remnant" else "Legendary mercy after last pull",
             min_length=1,
             max_length=6,
             required=True,
