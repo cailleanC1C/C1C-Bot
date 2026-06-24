@@ -383,6 +383,33 @@ def test_detail_share_button_action_preserves_overview_share_behavior():
     asyncio.run(runner())
 
 
+def test_shard_tab_order_matches_required_sequence():
+    from modules.community.shard_tracker.views import ShardTrackerView
+
+    tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+    labels = {kind.key: kind.label for kind in SHARD_KINDS.values()}
+    view = ShardTrackerView(
+        owner_id=42,
+        controller=tracker,
+        active_tab="overview",
+        shard_labels=labels,
+        shard_emojis={},
+        action_capabilities=tracker._action_capabilities(),
+        timeout=None,
+    )
+
+    assert _button_labels(view)[:8] == [
+        "Overview",
+        "Mystery",
+        "Ancient",
+        "Void",
+        "Primal",
+        "Sacred",
+        "Remnant",
+        "Last Pulls",
+    ]
+
+
 def test_mystery_and_remnant_button_layouts_are_capability_aware():
     from modules.community.shard_tracker.views import ShardTrackerView
 
@@ -440,10 +467,15 @@ def test_mystery_and_remnant_rendering_shapes():
     assert "Last Mythical: 2024-01-01 00:00 UTC" in fields["Remnants"]
 
     mystery, _ = tracker._build_panel(user, record, None, "mystery")
+    assert mystery.colour == discord.Colour.green()
+    assert mystery.author.name == "Mystery Shards | Tester"
     assert "Stash: **12**" in (mystery.description or "")
     assert not mystery.fields
 
     remnant, _ = tracker._build_panel(user, record, None, "remnant")
+    assert remnant.colour == discord.Colour.red()
+    assert remnant.author.name == "Cursed Remnants | Tester"
+    assert "Shards" not in remnant.author.name
     assert "Each summon costs 100 Cursed Remnants." in (remnant.description or "")
     assert "Mythical Mercy: 25 / 24" in (remnant.description or "")
     assert "Mythical Chance: 3.50%" in (remnant.description or "")
@@ -490,3 +522,16 @@ def test_last_pulls_embed_includes_remnant_mythical_once():
 
     assert last_pulls.count("Remnants Mythical:") == 1
     assert "Mystery" not in last_pulls
+
+
+def test_shards_help_text_covers_user_facing_actions():
+    tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+    help_text = tracker.shards.help or ""
+
+    assert "Mystery" in help_text or "mystery" in help_text
+    assert "Remnant" in help_text or "remnant" in help_text
+    assert "+ Stash" in help_text
+    assert "- Pulls" in help_text
+    assert "- Summons" in help_text
+    assert "Share to Clan" in help_text
+    assert "!shards set <type> <count>" in help_text

@@ -202,14 +202,44 @@ class ShardTracker(commands.Cog, ShardTrackerController):
         function_group="milestones",
         section="community",
         access_tier="user",
-        usage="!shards [type]",
+        usage="!shards | !shards <type> | !shards set <type> <count>",
     )
     @commands.group(
         name="shards",
         invoke_without_command=True,
         help=(
-            "Shard & Mercy tracker with overview and detail tabs. Only runs in the Shards & Mercy "
-            "channel; creates your personal thread when needed."
+            "Open your personal shard tracker panel. It shows your shard counts, mercy counters, "
+            "last tracked Legendary/Mythical pulls, and lets you update everything with buttons.\n\n"
+            "Works in the configured Shards & Mercy channel and your personal shard tracker thread.\n\n"
+            "Usage:\n"
+            "```text\n"
+            "!shards\n"
+            "!shards <type>\n"
+            "!shards set <type> <count>\n"
+            "```\n"
+            "Shard/resource types:\n"
+            "```text\n"
+            "mystery\n"
+            "ancient\n"
+            "void\n"
+            "primal\n"
+            "sacred\n"
+            "remnant\n"
+            "```\n"
+            "Examples: `!shards`, `!shards ancient`, `!shards remnant`, "
+            "`!shards set mystery 1375`, `!shards set remnant 350`.\n\n"
+            "Buttons: `+ Stash` adds shards or Cursed Remnants to your owned count. "
+            "`- Pulls` subtracts normal shard pulls and updates mercy where that shard has mercy; "
+            "for Mystery it only subtracts owned count because Mystery has no mercy. "
+            "`- Summons` is Remnants only: each summon costs 100 Cursed Remnants, logs Remnant Summons, "
+            "and is rejected if you do not have enough Cursed Remnants. "
+            "`Got Legendary` records a Legendary pull and resets that Legendary mercy. "
+            "`Got Legendary/Mythical` is Primal only. `Got Mythical` is Remnants only and resets "
+            "Remnant Mythical mercy. `Last Pulls / Mercy` shows and lets you edit tracked mercy counters; "
+            "Mystery does not appear there because it has no mercy. `Share to Clan` posts the overview snapshot.\n\n"
+            "Notes: Mystery Shards track owned count only. Cursed Remnants track raw Cursed Remnant count "
+            "and Mythical mercy. One Remnant Summon costs 100 Cursed Remnants. "
+            "`!shards set <type> <count>` sets the owned count only."
         ),
     )
     async def shards(self, ctx: commands.Context, *, shard_type: str | None = None) -> None:
@@ -1824,6 +1854,8 @@ class ShardTracker(commands.Cog, ShardTrackerController):
     def _author_meta(self, tab: str, username: str) -> tuple[str, str]:
         if tab in SHARD_KINDS:
             label = SHARD_KINDS[tab].label
+            if tab == "remnant":
+                return (f"Cursed Remnants | {username}", tab)
             return (f"{label} Shards | {username}", tab)
         if tab == "last_pulls":
             return (f"Last Pulls & Mercy Info — C1C | {username}", "overview")
