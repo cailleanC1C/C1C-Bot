@@ -20,7 +20,7 @@ TAB_LABELS: Mapping[str, str] = {
     "sacred": "Sacred",
     "primal": "Primal",
     "mystery": "Mystery",
-    "remnant": "Remnants",
+    "remnant": "Remnant",
     "last_pulls": "Last Pulls",
 }
 
@@ -70,7 +70,7 @@ class ShardTrackerView(discord.ui.View):
         self._controller = controller
         self._action_capabilities = dict(action_capabilities or {})
         # Tab buttons
-        for tab in ("overview", "ancient", "void", "sacred", "primal", "mystery", "remnant", "last_pulls"):
+        for tab in ("overview", "mystery", "ancient", "void", "primal", "sacred", "remnant", "last_pulls"):
             label: str | None = None
             emoji = None
 
@@ -220,8 +220,8 @@ _TAB_COLORS: Mapping[str, discord.Colour] = {
     "void": discord.Colour(0xA970FF),
     "sacred": discord.Colour.gold(),
     "primal": discord.Colour.dark_red(),
-    "mystery": discord.Colour.light_grey(),
-    "remnant": discord.Colour.purple(),
+    "mystery": discord.Colour.green(),
+    "remnant": discord.Colour.red(),
 }
 
 
