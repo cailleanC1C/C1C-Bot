@@ -1493,25 +1493,14 @@ class ShardTracker(commands.Cog, ShardTrackerController):
             section_placeholders = {**placeholders, **self._share_shard_placeholders(display, mythic)}
             heading = self._share_section_heading(display, section_emojis)
             stat_lines = [f"Owned: {display.owned:,}"]
-            if key == "primal":
-                stat_lines.extend([
-                    f"Legendary Mercy: {display.mercy.pulls_since if display.mercy else 0} / {display.mercy.threshold if display.mercy else 0}",
-                    f"Mythical Mercy: {mythic.mercy.pulls_since} / {mythic.mercy.threshold}",
-                    f"Last Mythical: {section_placeholders['last_mythical']}",
-                ])
-            elif display.mercy is not None:
-                stat_lines.extend([
-                    f"Mercy: {display.mercy.pulls_since} / {display.mercy.threshold}",
-                    f"Last Legendary: {section_placeholders['last_legendary']}",
-                ])
             condition = self._share_comment_condition(display, mythic, share_config)
             comment = self._select_share_comment(copy_rows, voice, condition, section_placeholders, random_enabled)
-            if comment:
-                stat_lines.append(comment)
-            lines.append(f"### {heading}")
+            lines.append(f"### **{heading}**")
             lines.append("```text")
             lines.extend(stat_lines)
             lines.append("```")
+            if comment:
+                lines.append(f"-# {comment}")
             lines.append("")
         final = self._select_share_copy(copy_rows, voice, "final_line", "always", placeholders, random_enabled)
         if final:

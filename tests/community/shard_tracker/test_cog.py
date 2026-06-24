@@ -365,8 +365,8 @@ def test_section_headings_use_configured_icon_sources():
         "sacred_icon Sacred",
         "remnant_icon Remnants",
     ]
-    assert "### <:mystery:123456789012345678> Mystery" in shared.description
-    assert "### <:ancient:223456789012345678> Ancient" in shared.description
+    assert "### **<:mystery:123456789012345678> Mystery**" in shared.description
+    assert "### **<:ancient:223456789012345678> Ancient**" in shared.description
 
 
 def test_detail_button_layout_still_includes_share_to_clan():
@@ -399,10 +399,12 @@ def test_share_embed_uses_sheet_driven_clean_payload():
 
     assert embed.title == "Shard Stash Report — Tester"
     assert "Intro Tester alpha" in embed.description
-    assert "### Mystery" in embed.description
-    assert "```text\nOwned: 0\nNo Mystery.\n```" in embed.description
-    assert "```\nNo Mystery." not in embed.description
-    assert "Owned: 0\n\nNo Mystery." not in embed.description
+    assert "### **Mystery**" in embed.description
+    assert "```text\nOwned: 0\n```\n-# No Mystery." in embed.description
+    assert "```\n\n-# No Mystery." not in embed.description
+    assert "Owned: 0\n\n```" not in embed.description
+    assert "Mercy:" not in embed.description
+    assert "Last Legendary:" not in embed.description
     assert embed.description.index("Intro Tester alpha") < embed.description.index("```text")
     assert embed.description.rindex("```") < embed.description.index("Final alpha.")
     assert embed.description.count("```text") == 5
@@ -458,7 +460,7 @@ def test_detail_share_button_action_preserves_overview_share_behavior():
         tracker.store.get_share_copy_rows = AsyncMock(return_value=_copy_rows())
         embed = await tracker._build_share_embed(interaction.user, record, clan)
         assert embed.title == "Shard Stash Report — Tester"
-        assert "### Mystery" in embed.description
+        assert "### **Mystery**" in embed.description
 
     asyncio.run(runner())
 
@@ -734,7 +736,7 @@ def test_share_missing_required_config_logs_and_skips_flavor(caplog):
         assert "Shard share Config key missing: shard_share_default_voice" in caplog.text
         assert "Intro" not in embed.description
         assert "Final" not in embed.description
-        assert "### Mystery" in embed.description
+        assert "### **Mystery**" in embed.description
 
     asyncio.run(runner())
 
@@ -755,7 +757,7 @@ def test_share_invalid_threshold_logs_and_skips_conditional_flavor(caplog):
         assert "shard_share_mercy_high_percent" in caplog.text
         assert "Some Void" not in embed.description
         assert "No Void" not in embed.description
-        assert "### Void" in embed.description
+        assert "### **Void**" in embed.description
 
     asyncio.run(runner())
 
@@ -793,8 +795,10 @@ def test_share_invalid_percent_range_skips_flavor_but_keeps_clean_stats(caplog):
         assert "Intro" not in embed.description
         assert "Final" not in embed.description
         assert "Some Void" not in embed.description
-        assert "### Void" in embed.description
-        assert "```text\nOwned: 10\nMercy: 0 / 200\nLast Legendary: Never\n```" in embed.description
+        assert "### **Void**" in embed.description
+        assert "```text\nOwned: 10\n```" in embed.description
+        assert "Mercy:" not in embed.description
+        assert "Last Legendary:" not in embed.description
         assert "Chance" not in embed.description
 
     asyncio.run(runner())
