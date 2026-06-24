@@ -315,14 +315,12 @@ def build_overview_embed(
             mythic_mercy = mythic.mercy
             lines = [
                 f"Owned: {max(display.owned, 0):,}",
-                "",
                 "Legendary",
                 f"Mercy: {display.mercy.pulls_since} / {display.mercy.threshold} | Chance: {format_percent(display.mercy.chance)}",
             ]
             if display.last_timestamp:
                 lines.append(f"Last Legendary: {human_time(display.last_timestamp)}")
             lines += [
-                "",
                 "Mythical",
                 f"Mercy: {mythic_mercy.pulls_since} / {mythic_mercy.threshold} | Chance: {format_percent(mythic_mercy.chance)}",
             ]
