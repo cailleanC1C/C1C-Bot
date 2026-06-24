@@ -10,6 +10,7 @@ from discord.ext import commands
 from modules.community.shard_tracker import setup as shard_setup
 from modules.community.shard_tracker.cog import SHARD_KINDS, ShardTracker
 from modules.community.shard_tracker.data import ShardTrackerConfig
+from modules.community.shard_tracker.views import FOOTER_TEXT
 
 
 def test_resolve_kind_aliases():
@@ -303,6 +304,44 @@ def test_overview_button_layout_includes_share_to_clan():
     assert "action:share:overview" in custom_ids
 
 
+def test_section_headings_use_configured_icon_sources():
+    tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+    tracker._tab_emojis = {
+        "mystery": discord.PartialEmoji.from_str("<:mystery:123456789012345678>"),
+        "ancient": discord.PartialEmoji.from_str("<:ancient:223456789012345678>"),
+        "primal": discord.PartialEmoji.from_str("<:primal:323456789012345678>"),
+    }
+    tracker._emoji_tags = {
+        **tracker._emoji_tags,
+        "void": "void_icon",
+        "sacred": "sacred_icon",
+        "remnant": "remnant_icon",
+    }
+    record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
+    clan = _share_clan()
+    user = type("User", (), {"id": 42, "display_name": "Tester", "name": "Tester"})()
+
+    overview, _ = tracker._build_panel(user, record, None, "overview")
+    last_pulls, _ = tracker._build_panel(user, record, None, "last_pulls")
+    shared = tracker._build_share_embed(user, record, clan)
+
+    assert overview.fields[0].name == "<:mystery:123456789012345678> Mystery"
+    assert overview.fields[1].name == "<:ancient:223456789012345678> Ancient"
+    assert overview.fields[2].name == "void_icon Void"
+    assert overview.fields[3].name == "<:primal:323456789012345678> Primal"
+    assert overview.fields[4].name == "sacred_icon Sacred"
+    assert overview.fields[5].name == "remnant_icon Remnants"
+    assert [field.name for field in last_pulls.fields] == [
+        "<:ancient:223456789012345678> Ancient",
+        "void_icon Void",
+        "<:primal:323456789012345678> Primal",
+        "sacred_icon Sacred",
+        "remnant_icon Remnants",
+    ]
+    assert shared.fields[0].name == "<:mystery:123456789012345678> Mystery"
+    assert shared.fields[1].name == "<:ancient:223456789012345678> Ancient"
+
+
 def test_detail_button_layout_still_includes_share_to_clan():
     from modules.community.shard_tracker.views import ShardTrackerView
 
@@ -330,7 +369,7 @@ def test_share_embed_uses_overview_payload():
 
     assert embed.title == "Shard Snapshot — Tester"
     assert embed.description == "Shared to `alpha`."
-    assert [field.name for field in embed.fields] == ["Ancient", "Void", "Sacred", "Primal", "Mystery", "Remnants"]
+    assert [field.name for field in embed.fields] == ["Mystery", "Ancient", "Void", "Primal", "Sacred", "Remnants"]
 
 
 def test_share_button_action_routes_overview_without_active_tab_payload():
@@ -378,7 +417,7 @@ def test_detail_share_button_action_preserves_overview_share_behavior():
         clan = _share_clan()
         embed = tracker._build_share_embed(interaction.user, record, clan)
         assert embed.title == "Shard Snapshot — Tester"
-        assert [field.name for field in embed.fields] == ["Ancient", "Void", "Sacred", "Primal", "Mystery", "Remnants"]
+        assert [field.name for field in embed.fields] == ["Mystery", "Ancient", "Void", "Primal", "Sacred", "Remnants"]
 
     asyncio.run(runner())
 
@@ -459,9 +498,12 @@ def test_mystery_and_remnant_rendering_shapes():
     overview, _ = tracker._build_panel(user, record, None, "overview")
     fields = {field.name: field.value for field in overview.fields}
     assert "Mystery" in fields
-    assert fields["Mystery"] == "Owned: **12**"
+    assert overview.description == "Your shard stash at a glance. May mercy be kinder than usual."
+    assert overview.footer.text == FOOTER_TEXT
+    assert FOOTER_TEXT not in (overview.description or "")
+    assert fields["Mystery"] == "```text\nOwned: 12\n```"
     assert "Remnants" in fields
-    assert "Owned: **450**" in fields["Remnants"]
+    assert "Owned: 450" in fields["Remnants"]
     assert "Mercy: 25 / 24" in fields["Remnants"]
     assert "Chance: 3.50%" in fields["Remnants"]
     assert "Last Mythical: 2024-01-01 00:00 UTC" in fields["Remnants"]
@@ -518,10 +560,16 @@ def test_last_pulls_embed_includes_remnant_mythical_once():
     user = type("User", (), {"id": 42, "display_name": "Tester", "name": "Tester"})()
 
     embed, _ = tracker._build_panel(user, record, None, "last_pulls")
-    last_pulls = next(field.value for field in embed.fields if field.name == "Last Pulls")
+    field_values = "\n".join(field.value for field in embed.fields)
+    field_names = [field.name for field in embed.fields]
 
-    assert last_pulls.count("Remnants Mythical:") == 1
-    assert "Mystery" not in last_pulls
+    assert field_values.count("Last Mythical:") >= 1
+    assert "Remnants" in field_names
+    assert "Mystery" not in field_names
+    assert "Mercy Info" not in field_names
+    assert "Base chances" not in field_values
+    assert embed.footer.text == FOOTER_TEXT
+    assert FOOTER_TEXT not in field_values
 
 
 def test_shards_help_text_covers_user_facing_actions():
@@ -535,3 +583,10 @@ def test_shards_help_text_covers_user_facing_actions():
     assert "- Summons" in help_text
     assert "Share to Clan" in help_text
     assert "!shards set <type> <count>" in help_text
+    assert "Mercy rules" in help_text
+    assert "Ancient/Void Legendary: after 200 pulls, +5% per shard" in help_text
+    assert "Remnant Mythical: after 24 summons, +1% per summon" in help_text
+    assert "Base chances" in help_text
+    assert "Ancient Legendary: 0.5%" in help_text
+    assert "Remnant Mythical: 2.5%" in help_text
+    assert "100 Cursed Remnants" in help_text

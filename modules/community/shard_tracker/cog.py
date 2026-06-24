@@ -237,6 +237,23 @@ class ShardTracker(commands.Cog, ShardTrackerController):
             "`Got Legendary/Mythical` is Primal only. `Got Mythical` is Remnants only and resets "
             "Remnant Mythical mercy. `Last Pulls / Mercy` shows and lets you edit tracked mercy counters; "
             "Mystery does not appear there because it has no mercy. `Share to Clan` posts the overview snapshot.\n\n"
+            "Mercy rules:\n"
+            "```text\n"
+            "Ancient/Void Legendary: after 200 pulls, +5% per shard\n"
+            "Sacred Legendary: after 12 pulls, +2% per shard\n"
+            "Primal Legendary: after 75 pulls, +1% per shard\n"
+            "Primal Mythical: after 200 pulls, +10% per shard\n"
+            "Remnant Mythical: after 24 summons, +1% per summon\n"
+            "```\n"
+            "Base chances:\n"
+            "```text\n"
+            "Ancient Legendary: 0.5%\n"
+            "Void Legendary: 0.5%\n"
+            "Sacred Legendary: 6%\n"
+            "Primal Legendary: 1%\n"
+            "Primal Mythical: 0.5%\n"
+            "Remnant Mythical: 2.5%\n"
+            "```\n"
             "Notes: Mystery Shards track owned count only. Cursed Remnants track raw Cursed Remnant count "
             "and Mythical mercy. One Remnant Summon costs 100 Cursed Remnants. "
             "`!shards set <type> <count>` sets the owned count only."
@@ -1071,6 +1088,7 @@ class ShardTracker(commands.Cog, ShardTrackerController):
                 displays=displays,
                 mythic=mythic,
                 base_rates=_BASE_RATES,
+                shard_emojis=self._section_emojis(),
                 author_name=author_name,
                 author_icon_url=author_icon_url,
                 color=color,
@@ -1090,6 +1108,7 @@ class ShardTracker(commands.Cog, ShardTrackerController):
                 member=member,
                 displays=displays,
                 mythic=mythic,
+                shard_emojis=self._section_emojis(),
                 author_name=author_name,
                 author_icon_url=author_icon_url,
                 color=color,
@@ -1454,7 +1473,12 @@ class ShardTracker(commands.Cog, ShardTrackerController):
     ) -> discord.Embed:
         displays = [self._build_display(record, kind) for kind in SHARD_KINDS.values()]
         mythic = self._build_mythic_display(record)
-        embed = build_overview_embed(member=member, displays=displays, mythic=mythic)
+        embed = build_overview_embed(
+            member=member,
+            displays=displays,
+            mythic=mythic,
+            shard_emojis=self._section_emojis(),
+        )
         embed.title = f"Shard Snapshot — {member.display_name}"
         embed.description = f"Shared to `{clan.clan_key}`."
         return embed
@@ -1844,6 +1868,18 @@ class ShardTracker(commands.Cog, ShardTrackerController):
                 self._emoji_warning_emitted = True
         return None
 
+    def _section_emojis(self) -> dict[str, str]:
+        icons: dict[str, str] = {}
+        for key in SHARD_KINDS:
+            tab_emoji = self._tab_emojis.get(key)
+            if tab_emoji:
+                icons[key] = str(tab_emoji)
+                continue
+            raw_tag = str(self._emoji_tags.get(key, "")).strip()
+            if raw_tag and raw_tag != key:
+                icons[key] = self._emoji_tag_value(key)
+        return icons
+
     def _emoji_tag_value(self, key: str) -> str:
         raw = self._emoji_tags.get(key, "")
         parsed = self._parse_partial_emoji(raw)
@@ -1858,7 +1894,7 @@ class ShardTracker(commands.Cog, ShardTrackerController):
                 return (f"Cursed Remnants | {username}", tab)
             return (f"{label} Shards | {username}", tab)
         if tab == "last_pulls":
-            return (f"Last Pulls & Mercy Info — C1C | {username}", "overview")
+            return (f"Last Pulls — C1C | {username}", "overview")
         return (f"Shard Overview — C1C | {username}", "overview")
 
     @staticmethod
