@@ -567,6 +567,38 @@ def test_mystery_and_remnant_rendering_shapes():
     assert all("Legendary" not in (field.name + field.value) for field in remnant.fields)
 
 
+def test_overview_code_blocks_keep_single_label_spacing_and_primal_sections_tight():
+    tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+    record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
+    record.ancients_owned = 1127
+    record.ancients_since_lego = 36
+    record.primals_owned = 5
+    record.primals_since_lego = 16
+    record.primals_since_mythic = 21
+    record.last_primal_mythic_iso = "2026-06-05T11:05:00+00:00"
+    user = type("User", (), {"id": 42, "display_name": "Tester", "name": "Tester"})()
+
+    overview, _ = tracker._build_panel(user, record, None, "overview")
+    fields = {field.name: field.value for field in overview.fields}
+
+    assert overview.footer.text == FOOTER_TEXT
+    assert FOOTER_TEXT not in (overview.description or "")
+    assert all("Owned:  " not in field.value for field in overview.fields)
+    assert all("Mercy:  " not in field.value for field in overview.fields)
+    assert "Owned: 1,127" in fields["Ancient"]
+    assert "Mercy: 36 / 200 | Chance: 0.50%" in fields["Ancient"]
+    assert fields["Primal"] == (
+        "```text\n"
+        "Owned: 5\n"
+        "Legendary\n"
+        "Mercy: 16 / 75 | Chance: 1.00%\n"
+        "Mythical\n"
+        "Mercy: 21 / 200 | Chance: 0.50%\n"
+        "Last Mythical: 2026-06-05 11:05 UTC\n"
+        "```"
+    )
+
+
 def test_mystery_and_remnant_state_mutations():
     tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
     record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
