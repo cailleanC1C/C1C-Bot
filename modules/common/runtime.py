@@ -40,12 +40,7 @@ from shared.config import (
 from shared.logfmt import fmt_duration
 from shared.ports import get_port
 from shared.logging import get_trace_id, set_trace_id, setup_logging
-from shared.obs.events import (
-    format_refresh_message,
-    refresh_bucket_results,
-    refresh_dedupe_key,
-    refresh_deduper,
-)
+from shared.obs.events import refresh_bucket_results
 from c1c_coreops.helpers import audit_tiers, rehydrate_tiers
 from shared.web_routes import mount_emoji_pad
 from . import keepalive
@@ -1589,13 +1584,61 @@ class Runtime:
         )
 
         async def cleanup_runner() -> None:
-            await housekeeping_cleanup.run_cleanup(self.bot, cleanup_logger)
+            try:
+                await housekeeping_cleanup.run_cleanup(
+                    self.bot, cleanup_logger, startup_validation=False, writeback=True
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                cleanup_logger.exception(
+                    "cleanup watcher run failed; scheduled cleanup will retry on next tick"
+                )
+
+        async def startup_validation_runner() -> None:
+            try:
+                await housekeeping_cleanup.run_cleanup(
+                    self.bot, cleanup_logger, startup_validation=True, writeback=False
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                cleanup_logger.exception(
+                    "cleanup startup validation failed; recurring cleanup remains scheduled"
+                )
 
         cleanup_job.do(cleanup_runner)
-        self.bot.loop.create_task(
-            housekeeping_cleanup.run_cleanup(
-                self.bot, cleanup_logger, startup_validation=True, writeback=False
-            )
+        self.scheduler.spawn(
+            startup_validation_runner(), name="cleanup_startup_validation"
+        )
+
+        next_run = getattr(cleanup_job, "next_run", None)
+        next_run_text = (
+            next_run.isoformat().replace("+00:00", "Z")
+            if isinstance(next_run, datetime)
+            else "unknown"
+        )
+        registration_summary = (
+            "cleanup watcher scheduled: "
+            f"every={cleanup_config.run_every_hours:g}h "
+            f"dry_run={str(cleanup_config.dry_run).lower()} "
+            f"tab={cleanup_config.tab_name} "
+            f"next_run={next_run_text}"
+        )
+        cleanup_logger.info(registration_summary)
+
+        async def registration_notice_runner() -> None:
+            try:
+                await send_log_message(f"🧹 {registration_summary}")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                cleanup_logger.exception(
+                    "cleanup watcher registration notice failed; recurring cleanup remains scheduled"
+                )
+
+        self.scheduler.spawn(
+            registration_notice_runner(), name="cleanup_registration_notice"
         )
         successes.append(
             (

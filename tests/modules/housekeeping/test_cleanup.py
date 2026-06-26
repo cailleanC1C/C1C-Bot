@@ -42,7 +42,7 @@ def test_enabled_feature_toggle_reads_config_not_toggle_from_config(monkeypatch)
         cleanup.CONFIG_DRY_RUN: "TRUE",
     }
     monkeypatch.setattr(cleanup.feature_flags, "status", lambda key: requested_toggles.append(key) or _toggle_status(enabled=True))
-    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None: config_keys.append(key) or values.get(key, default))
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: config_keys.append(key) or values.get(key, default))
     cfg = cleanup.resolve_cleanup_config()
     assert requested_toggles == [cleanup.CONFIG_ENABLED]
     assert cleanup.CONFIG_ENABLED not in config_keys
@@ -51,7 +51,7 @@ def test_enabled_feature_toggle_reads_config_not_toggle_from_config(monkeypatch)
 
 def test_enabled_feature_toggle_missing_config_prevents_scheduling(monkeypatch):
     monkeypatch.setattr(cleanup.feature_flags, "status", lambda key: _toggle_status(enabled=True))
-    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None: default)
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
     assert cleanup.resolve_cleanup_config() is None
 
 
@@ -361,13 +361,14 @@ def test_cleanup_config_does_not_fall_back_to_legacy_env(monkeypatch):
     monkeypatch.setenv("CLEANUP_THREAD_IDS", "123")
     monkeypatch.setenv("CLEANUP_INTERVAL_HOURS", "1")
     monkeypatch.setattr(cleanup.feature_flags, "status", lambda key: _toggle_status(enabled=True))
-    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None: default)
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
     assert cleanup.resolve_cleanup_config() is None
 
 
 class _FakeJob:
     def __init__(self):
         self.runner = None
+        self.next_run = datetime(2026, 6, 26, 12, 0, tzinfo=timezone.utc)
     def do(self, runner):
         self.runner = runner
 
@@ -375,9 +376,16 @@ class _FakeJob:
 class _FakeScheduler:
     def __init__(self):
         self.calls = []
+        self.jobs = []
+        self.spawned = []
     def every(self, **kwargs):
         self.calls.append(kwargs)
-        return _FakeJob()
+        job = _FakeJob()
+        self.jobs.append(job)
+        return job
+    def spawn(self, coro, *, name=None):
+        self.spawned.append({"coro": coro, "name": name})
+        return SimpleNamespace(name=name)
 
 
 class _FakeLoop:
@@ -408,16 +416,26 @@ def test_global_housekeeping_disabled_prevents_cleanup_resolution_and_startup_va
     assert successes == []
     assert rt.scheduler.calls == []
     assert rt.bot.loop.created == []
+    assert rt.scheduler.spawned == []
     assert "housekeeping cleanup disabled via global housekeeping feature toggle" in caplog.text
 
 
-def test_cleanup_schedules_only_when_global_and_cleanup_toggles_enabled():
+def test_cleanup_schedules_only_when_global_and_cleanup_toggles_enabled(monkeypatch, caplog):
+    caplog.set_level("INFO", logger="c1c.housekeeping.cleanup")
     rt = object.__new__(runtime.Runtime)
     rt.scheduler = _FakeScheduler()
     rt.bot = type("Bot", (), {"loop": _FakeLoop()})()
     calls = {"resolved": 0}
+    run_cleanup_calls = []
+    sent_logs = []
 
-    async def fake_run_cleanup(*_args, **_kwargs):
+    async def fake_send_log(message):
+        sent_logs.append(message)
+
+    monkeypatch.setattr(runtime, "send_log_message", fake_send_log)
+
+    async def fake_run_cleanup(*args, **kwargs):
+        run_cleanup_calls.append((args, kwargs))
         return None
 
     def fake_resolve(_logger=None):
@@ -438,5 +456,36 @@ def test_cleanup_schedules_only_when_global_and_cleanup_toggles_enabled():
 
     assert calls["resolved"] == 1
     assert rt.scheduler.calls == [{"hours": 6.0, "tag": "cleanup", "name": "cleanup_watcher"}]
-    assert len(rt.bot.loop.created) == 1
+    assert [task["name"] for task in rt.scheduler.spawned] == [
+        "cleanup_startup_validation",
+        "cleanup_registration_notice",
+    ]
+    assert rt.bot.loop.created == []
+    assert rt.scheduler.jobs[0].runner is not None
     assert successes[0][0].bucket == "cleanup"
+    assert (
+        "cleanup watcher scheduled: every=6h dry_run=true tab=CleanupRows "
+        "next_run=2026-06-26T12:00:00Z"
+    ) in caplog.text
+
+    startup_validation = rt.scheduler.spawned[0]["coro"]
+    asyncio.run(startup_validation)
+    assert run_cleanup_calls[-1][1] == {
+        "startup_validation": True,
+        "writeback": False,
+    }
+
+    asyncio.run(rt.scheduler.jobs[0].runner())
+
+    assert run_cleanup_calls[-1][0] == (rt.bot, cleanup.log)
+    assert run_cleanup_calls[-1][1] == {
+        "startup_validation": False,
+        "writeback": True,
+    }
+
+    registration_notice = rt.scheduler.spawned[1]["coro"]
+    asyncio.run(registration_notice)
+    assert sent_logs == [
+        "🧹 cleanup watcher scheduled: every=6h dry_run=true "
+        "tab=CleanupRows next_run=2026-06-26T12:00:00Z"
+    ]
