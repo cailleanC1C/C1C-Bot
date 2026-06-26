@@ -1594,7 +1594,7 @@ class Runtime:
         cleanup_job.do(cleanup_runner)
         self.bot.loop.create_task(
             housekeeping_cleanup.run_cleanup(
-                self.bot, cleanup_logger, startup_validation=True
+                self.bot, cleanup_logger, startup_validation=True, writeback=False
             )
         )
         successes.append(

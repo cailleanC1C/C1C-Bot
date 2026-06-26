@@ -64,6 +64,7 @@ class CleanupConfig:
     tab_name: str
     run_every_hours: float
     dry_run: bool
+    source: str = "Config"
 
 
 @dataclass
@@ -117,7 +118,11 @@ def _parse_nonnegative_hours(value: str | None) -> float | None:
     return parsed if parsed >= 0 else None
 
 
-def resolve_cleanup_config(logger: logging.Logger | None = None) -> CleanupConfig | None:
+def resolve_cleanup_config(
+    logger: logging.Logger | None = None,
+    *,
+    force_refresh: bool = True,
+) -> CleanupConfig | None:
     logger = logger or log
     toggle = feature_flags.status(CONFIG_ENABLED)
     if toggle.get("invalid"):
@@ -138,7 +143,10 @@ def resolve_cleanup_config(logger: logging.Logger | None = None) -> CleanupConfi
         logger.info("cleanup disabled by Feature Toggle %s=FALSE", CONFIG_ENABLED)
         return None
 
-    raw = {key: recruitment.get_config_value(key, None) for key in REQUIRED_CONFIG_KEYS}
+    raw = {
+        key: recruitment.get_config_value(key, None, force=force_refresh)
+        for key in REQUIRED_CONFIG_KEYS
+    }
     missing = [key for key, value in raw.items() if value is None or not str(value).strip()]
     if missing:
         logger.warning("cleanup not scheduled; missing Config key(s): %s", ", ".join(missing))
@@ -152,7 +160,21 @@ def resolve_cleanup_config(logger: logging.Logger | None = None) -> CleanupConfi
     if dry_run is None:
         logger.warning("cleanup not scheduled; invalid Config key %s", CONFIG_DRY_RUN)
         return None
-    return CleanupConfig(True, str(raw[CONFIG_TAB]).strip(), run_every, dry_run)
+    config = CleanupConfig(
+        True,
+        str(raw[CONFIG_TAB]).strip(),
+        run_every,
+        dry_run,
+        source=f"{recruitment.get_config_tab_name()}:Config",
+    )
+    logger.info(
+        "cleanup config resolved: tab=%s run_every_hours=%s dry_run=%s source=%s",
+        config.tab_name,
+        f"{config.run_every_hours:g}",
+        str(config.dry_run).lower(),
+        config.source,
+    )
+    return config
 
 
 def build_header_map(headers: Sequence[Any]) -> dict[str, int]:
@@ -307,7 +329,13 @@ async def _flush_updates(worksheet: Any, updates: Mapping[str, str]) -> None:
     await asyncio.to_thread(worksheet.batch_update, [{"range": cell, "values": [[value]]} for cell, value in updates.items()])
 
 
-async def run_cleanup(bot: commands.Bot, logger: logging.Logger | None = None, *, startup_validation: bool = False) -> None:
+async def run_cleanup(
+    bot: commands.Bot,
+    logger: logging.Logger | None = None,
+    *,
+    startup_validation: bool = False,
+    writeback: bool = True,
+) -> None:
     logger = logger or log
     config = resolve_cleanup_config(logger)
     if config is None or not config.enabled:
@@ -394,11 +422,14 @@ async def run_cleanup(bot: commands.Bot, logger: logging.Logger | None = None, *
         }))
 
     try:
-        await _flush_updates(worksheet, updates)
+        if writeback:
+            await _flush_updates(worksheet, updates)
     except Exception as exc:
         errors += 1
         logger.warning("cleanup sheet writeback failed: %s", exc)
-    summary = f"cleanup run complete: checked_rows={checked_rows} dry_run={str(effective_dry_run).lower()} deleted={deleted_total} candidates={candidate_total} skipped={skipped_total} errors={errors}"
+    trigger = "startup_validation" if startup_validation else "scheduled_or_manual"
+    writeback_label = str(writeback).lower()
+    summary = f"cleanup run complete: trigger={trigger} checked_rows={checked_rows} dry_run={str(effective_dry_run).lower()} writeback={writeback_label} deleted={deleted_total} candidates={candidate_total} skipped={skipped_total} errors={errors}"
     logger.info(summary)
     await runtime_helpers.send_log_message(f"🧹 {summary}")
 
