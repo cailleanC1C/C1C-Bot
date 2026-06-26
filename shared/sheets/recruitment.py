@@ -380,6 +380,12 @@ def _config_tab() -> str:
     return os.getenv("RECRUITMENT_CONFIG_TAB", "Config")
 
 
+def get_config_tab_name() -> str:
+    """Return the recruitment Config worksheet name."""
+
+    return (_config_tab() or "Config").strip() or "Config"
+
+
 def _load_config(force: bool = False) -> Dict[str, str]:
     global _CONFIG_CACHE, _CONFIG_CACHE_TS
     now = time.time()
@@ -416,11 +422,11 @@ def _load_config(force: bool = False) -> Dict[str, str]:
     return parsed
 
 
-def _config_lookup(key: str, default: Optional[str] = None) -> Optional[str]:
+def _config_lookup(key: str, default: Optional[str] = None, *, force: bool = False) -> Optional[str]:
     want = (key or "").strip().lower()
     if not want:
         return default
-    config = _load_config()
+    config = _load_config(force=force)
     return config.get(want, default)
 
 
@@ -438,10 +444,10 @@ def _config_lookup_bool(key: str, default: bool = False) -> bool:
     return default
 
 
-def get_config_value(key: str, default: Optional[str] = None) -> Optional[str]:
+def get_config_value(key: str, default: Optional[str] = None, *, force: bool = False) -> Optional[str]:
     """Return a trimmed Config-tab value keyed by ``key`` (case-insensitive)."""
 
-    value = _config_lookup(key, default)
+    value = _config_lookup(key, default, force=force)
     if value is None:
         return default
     text = str(value).strip()

@@ -28,11 +28,11 @@ and long-lived threads active without manual nudges.
   `bot_messages_only`, `commands_only`, and `bot_messages_and_commands`.
   Pinned messages are never deleted, and `min_age_hours` is always respected.
 - **Startup validation.** Startup schedules the recurring job and also runs a
-  safe validation/writeback pass so admins can see resolved target metadata and
-  row status without surprise deletes.
+  safe validation pass without sheet writeback, so scheduled cleanup is the
+  path that records row status and deletes when dry-run is disabled.
 - **Logging.** One concise summary line per run:
-  - `🧹 cleanup run complete: checked_rows=<N> dry_run=<bool> deleted=<M> candidates=<C> skipped=<S> errors=<E>`
-  Short WARN lines capture missing/invalid sheet configuration and API failures.
+  - `🧹 cleanup run complete: trigger=<scheduled_or_manual|startup_validation> checked_rows=<N> dry_run=<bool> writeback=<bool> deleted=<M> candidates=<C> skipped=<S> errors=<E>`
+  Config resolution also logs `cleanup config resolved: tab=<tab> run_every_hours=<hours> dry_run=<bool> source=<source>`. Short WARN lines capture missing/invalid sheet configuration and API failures.
 
 ## Thread keepalive
 - **Purpose.** Prevents important threads from auto-archiving when idle.
