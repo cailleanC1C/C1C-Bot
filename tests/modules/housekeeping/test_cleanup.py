@@ -92,6 +92,96 @@ def test_enabled_feature_toggle_reads_config_not_toggle_from_config(monkeypatch)
     )
 
 
+
+
+def test_cleanup_config_missing_optional_pacing_uses_defaults(monkeypatch):
+    values = {
+        cleanup.CONFIG_TAB: "CleanupRows",
+        cleanup.CONFIG_RUN_EVERY_HOURS: "6",
+        cleanup.CONFIG_DRY_RUN: "TRUE",
+    }
+    monkeypatch.setattr(
+        cleanup.feature_flags, "status", lambda key: _toggle_status(enabled=True)
+    )
+    monkeypatch.setattr(
+        cleanup.recruitment,
+        "get_config_value",
+        lambda key, default=None, **_kwargs: values.get(key, default),
+    )
+
+    cfg = cleanup.resolve_cleanup_config()
+
+    assert cfg is not None
+    assert cfg.delete_batch_size == cleanup.CLEANUP_DELETE_BATCH_SIZE
+    assert cfg.delete_batch_pause_seconds == cleanup.CLEANUP_DELETE_BATCH_PAUSE_SECONDS
+    assert (
+        cfg.delete_per_message_pause_seconds
+        == cleanup.CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS
+    )
+
+
+def test_cleanup_config_invalid_optional_pacing_warns_and_uses_defaults(
+    monkeypatch, caplog
+):
+    values = {
+        cleanup.CONFIG_TAB: "CleanupRows",
+        cleanup.CONFIG_RUN_EVERY_HOURS: "6",
+        cleanup.CONFIG_DRY_RUN: "FALSE",
+        cleanup.CONFIG_DELETE_BATCH_SIZE: "0",
+        cleanup.CONFIG_DELETE_BATCH_PAUSE_SECONDS: "nope",
+        cleanup.CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS: "-1",
+    }
+    monkeypatch.setattr(
+        cleanup.feature_flags, "status", lambda key: _toggle_status(enabled=True)
+    )
+    monkeypatch.setattr(
+        cleanup.recruitment,
+        "get_config_value",
+        lambda key, default=None, **_kwargs: values.get(key, default),
+    )
+
+    cfg = cleanup.resolve_cleanup_config()
+
+    assert cfg is not None
+    assert cfg.dry_run is False
+    assert cfg.delete_batch_size == cleanup.CLEANUP_DELETE_BATCH_SIZE
+    assert cfg.delete_batch_pause_seconds == cleanup.CLEANUP_DELETE_BATCH_PAUSE_SECONDS
+    assert (
+        cfg.delete_per_message_pause_seconds
+        == cleanup.CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS
+    )
+    assert caplog.text.count("cleanup pacing config invalid; using default") == 3
+
+
+def test_cleanup_config_valid_optional_pacing_overrides_defaults(monkeypatch, caplog):
+    values = {
+        cleanup.CONFIG_TAB: "CleanupRows",
+        cleanup.CONFIG_RUN_EVERY_HOURS: "6",
+        cleanup.CONFIG_DRY_RUN: "FALSE",
+        cleanup.CONFIG_DELETE_BATCH_SIZE: "10",
+        cleanup.CONFIG_DELETE_BATCH_PAUSE_SECONDS: "1.5",
+        cleanup.CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS: "0",
+    }
+    monkeypatch.setattr(
+        cleanup.feature_flags, "status", lambda key: _toggle_status(enabled=True)
+    )
+    monkeypatch.setattr(
+        cleanup.recruitment,
+        "get_config_value",
+        lambda key, default=None, **_kwargs: values.get(key, default),
+    )
+    caplog.set_level("INFO", logger="c1c.housekeeping.cleanup")
+
+    cfg = cleanup.resolve_cleanup_config()
+
+    assert cfg is not None
+    assert cfg.delete_batch_size == 10
+    assert cfg.delete_batch_pause_seconds == 1.5
+    assert cfg.delete_per_message_pause_seconds == 0
+    assert "delete_batch_size=10" in caplog.text
+    assert "delete_batch_pause_seconds=1.5" in caplog.text
+    assert "delete_per_message_pause_seconds=0.0" in caplog.text
+
 def test_enabled_feature_toggle_missing_config_prevents_scheduling(monkeypatch):
     monkeypatch.setattr(
         cleanup.feature_flags, "status", lambda key: _toggle_status(enabled=True)
@@ -161,7 +251,9 @@ class Msg:
     ):
         self.content = content
         self.system_content = system_content if system_content is not None else content
-        self.author = type("Author", (), {"id": author_id, "bot": author_bot, "roles": roles})()
+        self.author = type(
+            "Author", (), {"id": author_id, "bot": author_bot, "roles": roles}
+        )()
         self.pinned = pinned
         self.created_at = datetime.now(timezone.utc) - timedelta(hours=hours_old)
         self.channel = type("Channel", (), {"id": 123})()
@@ -170,6 +262,7 @@ class Msg:
         self.type = message_type
         self.application_id = application_id
         self.automod_rule_id = automod_rule_id
+
     async def delete(self, reason=None):
         self.deleted = True
 
@@ -194,6 +287,24 @@ class MsgWithReason(Msg):
 class MsgUnexpectedTypeError(Msg):
     async def delete(self, reason=None):
         raise TypeError("network adapter exploded")
+
+
+class MsgDeleteRaises(Msg):
+    def __init__(self, content, exc, *, author_id=99):
+        super().__init__(content, author_id=author_id)
+        self.exc = exc
+
+    async def delete(self, reason=None):
+        raise self.exc
+
+
+def _discord_exc(exc_type):
+    response = SimpleNamespace(status=500, reason="test")
+    return exc_type(response, "test error")
+
+
+async def _collecting_sleep(calls, delay):
+    calls.append(delay)
 
 
 class HistoryTarget:
@@ -463,6 +574,112 @@ def test_delete_messages_counts_unexpected_type_error_and_continues(caplog):
     assert "cleanup delete failed unexpectedly" in caplog.text
 
 
+def test_delete_messages_small_set_deletes_without_batch_pause(monkeypatch):
+    messages = [Msg(f"bot {index}", author_id=99) for index in range(3)]
+    sleep_calls = []
+    monkeypatch.setattr(cleanup, "CLEANUP_DELETE_BATCH_SIZE", 25)
+    monkeypatch.setattr(cleanup, "CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS", 0)
+    monkeypatch.setattr(
+        cleanup.asyncio, "sleep", lambda delay: _collecting_sleep(sleep_calls, delay)
+    )
+
+    result = asyncio.run(cleanup._delete_messages(messages, cleanup.log))
+
+    assert result.status == "deleted"
+    assert result.deleted == 3
+    assert [message.deleted for message in messages] == [True, True, True]
+    assert cleanup.CLEANUP_DELETE_BATCH_PAUSE_SECONDS not in sleep_calls
+    assert sleep_calls == []
+
+
+def test_delete_messages_large_set_pauses_between_batches(monkeypatch, caplog):
+    messages = [Msg(f"bot {index}", author_id=99) for index in range(6)]
+    sleep_calls = []
+    monkeypatch.setattr(cleanup, "CLEANUP_DELETE_BATCH_SIZE", 2)
+    monkeypatch.setattr(cleanup, "CLEANUP_DELETE_BATCH_PAUSE_SECONDS", 1.25)
+    monkeypatch.setattr(cleanup, "CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS", 0)
+    monkeypatch.setattr(
+        cleanup.asyncio, "sleep", lambda delay: _collecting_sleep(sleep_calls, delay)
+    )
+    caplog.set_level("INFO", logger="c1c.housekeeping.cleanup")
+
+    result = asyncio.run(cleanup._delete_messages(messages, cleanup.log))
+
+    assert result.status == "deleted"
+    assert result.deleted == 6
+    assert [message.deleted for message in messages] == [True] * 6
+    assert sleep_calls == [1.25, 1.25]
+    assert "cleanup delete batch run: target_id=123 candidates=6" in caplog.text
+    assert (
+        "cleanup delete batch complete: target_id=123 deleted=6 errors=0" in caplog.text
+    )
+
+
+def test_delete_messages_per_message_pacing(monkeypatch):
+    messages = [Msg(f"bot {index}", author_id=99) for index in range(3)]
+    sleep_calls = []
+    monkeypatch.setattr(cleanup, "CLEANUP_DELETE_BATCH_SIZE", 25)
+    monkeypatch.setattr(cleanup, "CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS", 0.4)
+    monkeypatch.setattr(
+        cleanup.asyncio, "sleep", lambda delay: _collecting_sleep(sleep_calls, delay)
+    )
+
+    result = asyncio.run(cleanup._delete_messages(messages, cleanup.log))
+
+    assert result.status == "deleted"
+    assert result.deleted == 3
+    assert sleep_calls == [0.4, 0.4]
+
+
+def test_delete_messages_not_found_does_not_count_as_error(monkeypatch):
+    messages = [
+        MsgDeleteRaises("gone", _discord_exc(cleanup.discord.NotFound)),
+        Msg("ok"),
+    ]
+    monkeypatch.setattr(cleanup, "CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS", 0)
+
+    result = asyncio.run(cleanup._delete_messages(messages, cleanup.log))
+
+    assert result.status == "deleted"
+    assert result.deleted == 1
+    assert result.errors == 0
+    assert messages[1].deleted is True
+
+
+def test_delete_messages_forbidden_returns_missing_permissions(monkeypatch):
+    messages = [
+        Msg("ok"),
+        MsgDeleteRaises("forbidden", _discord_exc(cleanup.discord.Forbidden)),
+        Msg("not reached"),
+    ]
+    monkeypatch.setattr(cleanup, "CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS", 0)
+
+    result = asyncio.run(cleanup._delete_messages(messages, cleanup.log))
+
+    assert result.status == "missing_permissions"
+    assert result.deleted == 1
+    assert result.errors == 1
+    assert messages[2].deleted is False
+
+
+def test_delete_messages_http_exception_counts_errors(monkeypatch, caplog):
+    monkeypatch.setattr(cleanup, "CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS", 0)
+    failed = MsgDeleteRaises("fail", _discord_exc(cleanup.discord.HTTPException))
+    result = asyncio.run(cleanup._delete_messages([failed], cleanup.log))
+
+    assert result.status == "delete_failed"
+    assert result.deleted == 0
+    assert result.errors == 1
+
+    good = Msg("ok")
+    result = asyncio.run(cleanup._delete_messages([failed, good], cleanup.log))
+
+    assert result.status == "partial_delete_failed"
+    assert result.deleted == 1
+    assert result.errors == 1
+    assert "cleanup delete failed: target_id=123" in caplog.text
+
+
 def test_all_non_pinned_skips_pinned(monkeypatch):
     msgs = [Msg("human", author_id=1), Msg("pinned", author_id=1, pinned=True)]
     run_with_sheet(
@@ -685,36 +902,6 @@ def test_automod_system_and_webhook_combined_mode_includes_webhooks(monkeypatch)
     )
 
 
-
-
-def test_automod_system_messages_only_matches_auto_moderation_enum(monkeypatch):
-    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
-    automod_type = getattr(cleanup.discord.MessageType, "auto_moderation_action")
-    assert cleanup._matches_mode(Msg("", author_id=1, message_type=automod_type), "automod_system_messages_only", Bot()) is True
-
-
-def test_automod_system_messages_only_uses_conservative_fallbacks(monkeypatch):
-    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
-    generic_system_type = cleanup.discord.MessageType.pins_add
-    assert cleanup._matches_mode(Msg("", author_id=1, message_type=generic_system_type, automod_rule_id=123), "automod_system_messages_only", Bot()) is True
-    assert cleanup._matches_mode(Msg("AutoMod blocked a message", author_id=1, message_type=generic_system_type), "automod_system_messages_only", Bot()) is True
-
-
-def test_automod_system_messages_only_rejects_non_automod_sources(monkeypatch):
-    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
-    automod_type = getattr(cleanup.discord.MessageType, "auto_moderation_action")
-    generic_system_type = cleanup.discord.MessageType.pins_add
-    assert cleanup._matches_mode(Msg("human", author_id=1), "automod_system_messages_only", Bot()) is False
-    assert cleanup._matches_mode(Msg("bot", author_id=42, author_bot=True), "automod_system_messages_only", Bot()) is False
-    assert cleanup._matches_mode(Msg("", author_id=1, webhook_id=555), "automod_system_messages_only", Bot()) is False
-    assert cleanup._matches_mode(Msg("", author_id=1, message_type=generic_system_type), "automod_system_messages_only", Bot()) is False
-    assert cleanup._matches_mode(Msg("", author_id=1, pinned=True, message_type=automod_type), "automod_system_messages_only", Bot()) is False
-
-
-def test_automod_system_and_webhook_combined_mode_includes_webhooks(monkeypatch):
-    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
-    assert cleanup._matches_mode(Msg("", author_id=1, webhook_id=555), "automod_system_and_webhook_messages_only", Bot()) is True
-
 def test_commands_only_uses_project_prefix_fallback_not_hardcoded(monkeypatch):
     bot = Bot()
     bot.command_prefix = None
@@ -831,10 +1018,14 @@ def test_zero_match_diagnostics_counts_webhooks_empty_content_and_bounded_author
     assert sample.startswith("1:2:false:2")
 
 
-
-
-def test_zero_match_diagnostics_counts_system_automod_and_message_types(monkeypatch, caplog):
-    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
+def test_zero_match_diagnostics_counts_system_automod_and_message_types(
+    monkeypatch, caplog
+):
+    monkeypatch.setattr(
+        cleanup.recruitment,
+        "get_config_value",
+        lambda key, default=None, **_kwargs: default,
+    )
     automod_type = getattr(cleanup.discord.MessageType, "auto_moderation_action")
     messages = [
         Msg("", author_id=1, message_type=automod_type, pinned=True),
@@ -856,12 +1047,17 @@ def test_zero_match_diagnostics_counts_system_automod_and_message_types(monkeypa
     )
 
     assert result.candidates == 0
-    record = next(record for record in caplog.records if record.message.startswith("cleanup row scan complete"))
+    record = next(
+        record
+        for record in caplog.records
+        if record.message.startswith("cleanup row scan complete")
+    )
     assert "system_message_count=2" in record.message
     assert "automod_system_seen=1" in record.message
     assert "message_type_counts=" in record.message
     assert "auto_moderation_action:1" in record.message
     assert "pins_add:1" in record.message
+
 
 def test_zero_match_diagnostics_counts_prefix_and_role_matches(monkeypatch, caplog):
     role = type("Role", (), {"id": 12345})()
