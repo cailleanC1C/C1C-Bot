@@ -59,6 +59,7 @@ ALLOWED_CLEANUP_MODES = {
     "commands_only",
     "bot_messages_and_commands",
 }
+_CLEANUP_RUN_LOCK = asyncio.Lock()
 
 
 @dataclass(frozen=True)
@@ -107,6 +108,38 @@ def _short_error(exc: BaseException, *, limit: int = 180) -> str:
     if len(text) > limit:
         text = text[: max(0, limit - 1)].rstrip() + "…"
     return text
+
+
+def _format_summary_error(summary: CleanupRunSummary, *, limit: int = 180) -> str:
+    first_error = " ".join((summary.first_error or "").split())
+    if not first_error:
+        return ""
+    stage_marker = " stage="
+    if stage_marker in first_error:
+        first_error, stage = first_error.split(stage_marker, 1)
+        stage = stage.split()[0].strip()
+        first_error = f"{first_error.strip()} at {stage}" if stage else first_error.strip()
+    if len(first_error) > limit:
+        first_error = first_error[: max(0, limit - 1)].rstrip() + "…"
+    return first_error
+
+
+def _manual_finished_message(summary: CleanupRunSummary) -> str:
+    has_errors = summary.errors > 0 or bool(summary.first_error)
+    prefix = "Cleanup run finished with errors: " if has_errors else "Cleanup run finished: "
+    message = (
+        prefix +
+        f"deleted={summary.deleted} candidates={summary.candidates} "
+        f"skipped={summary.skipped} errors={summary.errors}"
+    )
+    if has_errors:
+        message += f" status={summary.status}"
+        first_error = _format_summary_error(summary)
+        if first_error:
+            message += f" first_error={first_error}"
+    if summary.summary_notice_failed:
+        message += "; Discord summary notice failed. See app logs."
+    return message
 
 
 def _utc_now() -> datetime:
@@ -282,7 +315,13 @@ async def _delete_messages(messages: Sequence[discord.Message], logger: logging.
     deleted = errors = 0
     for message in messages:
         try:
-            await message.delete(reason="housekeeping cleanup")
+            try:
+                await message.delete(reason="housekeeping cleanup")
+            except TypeError as exc:
+                error_text = str(exc)
+                if "reason" not in error_text or "unexpected" not in error_text:
+                    raise
+                await message.delete()
         except discord.NotFound:
             continue
         except discord.Forbidden:
@@ -290,6 +329,14 @@ async def _delete_messages(messages: Sequence[discord.Message], logger: logging.
             return CleanupResult("missing_permissions", deleted, len(messages), 0, errors)
         except discord.HTTPException as exc:
             logger.warning("cleanup delete failed: target_id=%s error=%s", getattr(getattr(message, "channel", None), "id", None), exc)
+            errors += 1
+        except Exception as exc:
+            logger.warning(
+                "cleanup delete failed unexpectedly: target_id=%s error_type=%s error=%s",
+                getattr(getattr(message, "channel", None), "id", None),
+                exc.__class__.__name__,
+                _short_error(exc),
+            )
             errors += 1
         else:
             deleted += 1
@@ -357,10 +404,29 @@ def _row_update(row: CleanupRow, header_map: Mapping[str, int], updates: Mapping
 async def _flush_updates(worksheet: Any, updates: Mapping[str, str]) -> None:
     if not updates:
         return
-    await asyncio.to_thread(worksheet.batch_update, [{"range": cell, "values": [[value]]} for cell, value in updates.items()])
+    await async_core.acall_with_backoff(
+        worksheet.batch_update,
+        [{"range": cell, "values": [[value]]} for cell, value in updates.items()],
+    )
 
 
 async def run_cleanup(
+    bot: commands.Bot,
+    logger: logging.Logger | None = None,
+    *,
+    startup_validation: bool = False,
+    writeback: bool = True,
+) -> CleanupRunSummary:
+    logger = logger or log
+    if startup_validation and _CLEANUP_RUN_LOCK.locked():
+        summary = CleanupRunSummary(writeback=writeback, dry_run=True, status="startup_validation_skipped", first_error="cleanup run already in progress stage=startup_validation")
+        logger.info("cleanup startup validation skipped; another cleanup run is already in progress")
+        return summary
+    async with _CLEANUP_RUN_LOCK:
+        return await _run_cleanup_locked(bot, logger, startup_validation=startup_validation, writeback=writeback)
+
+
+async def _run_cleanup_locked(
     bot: commands.Bot,
     logger: logging.Logger | None = None,
     *,
@@ -386,7 +452,7 @@ async def run_cleanup(
             worksheet = await async_core.aget_worksheet(recruitment.get_recruitment_sheet_id(), config.tab_name)
             stage = "read_values"
             context["stage"] = stage
-            values = await asyncio.to_thread(worksheet.get_all_values)
+            values = await async_core.acall_with_backoff(worksheet.get_all_values)
             if not values:
                 raise ValueError("cleanup tab is empty")
             stage = "build_headers"
@@ -398,7 +464,7 @@ async def run_cleanup(
         except Exception as exc:
             summary.status = "sheet_unavailable_or_invalid"
             summary.errors += 1
-            summary.first_error = f"{exc.__class__.__name__}: {_short_error(exc)}"
+            summary.first_error = f"{exc.__class__.__name__}: {_short_error(exc)} stage={context.get('stage')}"
             logger.warning(
                 "cleanup sheet unavailable or invalid: error_type=%s error=%s stage=%s",
                 exc.__class__.__name__,
@@ -488,7 +554,7 @@ async def run_cleanup(
         except Exception as exc:
             summary.errors += 1
             if not summary.first_error:
-                summary.first_error = f"{exc.__class__.__name__}: {_short_error(exc)}"
+                summary.first_error = f"{exc.__class__.__name__}: {_short_error(exc)} stage={stage}"
             logger.warning(
                 "cleanup sheet writeback failed: error_type=%s error=%s stage=%s",
                 exc.__class__.__name__, _short_error(exc), stage,
@@ -497,6 +563,11 @@ async def run_cleanup(
         trigger = "startup_validation" if startup_validation else "scheduled_or_manual"
         writeback_label = str(writeback).lower()
         summary_text = f"cleanup run complete: trigger={trigger} checked_rows={summary.checked_rows} dry_run={str(effective_dry_run).lower()} writeback={writeback_label} deleted={summary.deleted} candidates={summary.candidates} skipped={summary.skipped} errors={summary.errors}"
+        if summary.errors > 0 or summary.first_error:
+            summary_text += f" status={summary.status}"
+            first_error = _format_summary_error(summary)
+            if first_error:
+                summary_text += f" first_error={first_error}"
         logger.info(summary_text)
         try:
             stage = "send_summary_log"
@@ -595,13 +666,11 @@ class CleanupCog(commands.Cog):
             await ctx.reply(f"Cleanup run failed: {error_type}. See logs.", mention_author=False)
             return
 
-        finished = (
-            "Cleanup run finished: "
-            f"deleted={summary.deleted} candidates={summary.candidates} "
-            f"skipped={summary.skipped} errors={summary.errors}"
-        )
-        if summary.summary_notice_failed:
-            finished += "; Discord summary notice failed. See app logs."
+        finished = _manual_finished_message(summary)
+        try:
+            await runtime_helpers.send_log_message(f"🧹 {finished}")
+        except Exception:
+            log.warning("cleanup manual completion notice failed", exc_info=True)
         await ctx.reply(finished, mention_author=False)
 
 

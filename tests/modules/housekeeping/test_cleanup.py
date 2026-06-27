@@ -96,6 +96,26 @@ class Msg:
         self.deleted = True
 
 
+class PartialMsgNoReason(Msg):
+    async def delete(self):
+        self.deleted = True
+
+
+class MsgWithReason(Msg):
+    def __init__(self, content, *, author_id=10, pinned=False, hours_old=10):
+        super().__init__(content, author_id=author_id, pinned=pinned, hours_old=hours_old)
+        self.delete_reasons = []
+
+    async def delete(self, reason=None):
+        self.delete_reasons.append(reason)
+        self.deleted = True
+
+
+class MsgUnexpectedTypeError(Msg):
+    async def delete(self, reason=None):
+        raise TypeError("network adapter exploded")
+
+
 class HistoryTarget:
     id = 123
     name = "target-name"
@@ -190,6 +210,40 @@ def test_cleanup_modes_and_min_age_respected(monkeypatch):
     assert updates["J2"] == "2"
     assert updates["K2"] == "3"
     assert updates["L2"] == "deleted"
+
+
+def test_delete_messages_retries_partial_message_without_reason():
+    msg = PartialMsgNoReason("bot", author_id=99)
+
+    result = asyncio.run(cleanup._delete_messages([msg], cleanup.log))
+
+    assert result.status == "deleted"
+    assert result.deleted == 1
+    assert result.errors == 0
+    assert msg.deleted is True
+
+
+def test_delete_messages_still_passes_reason_when_supported():
+    msg = MsgWithReason("bot", author_id=99)
+
+    result = asyncio.run(cleanup._delete_messages([msg], cleanup.log))
+
+    assert result.status == "deleted"
+    assert result.deleted == 1
+    assert msg.delete_reasons == ["housekeeping cleanup"]
+
+
+def test_delete_messages_counts_unexpected_type_error_and_continues(caplog):
+    bad = MsgUnexpectedTypeError("bad", author_id=99)
+    good = Msg("good", author_id=99)
+
+    result = asyncio.run(cleanup._delete_messages([bad, good], cleanup.log))
+
+    assert result.status == "partial_delete_failed"
+    assert result.deleted == 1
+    assert result.errors == 1
+    assert good.deleted is True
+    assert "cleanup delete failed unexpectedly" in caplog.text
 
 
 def test_all_non_pinned_skips_pinned(monkeypatch):
@@ -547,10 +601,53 @@ def test_cleanup_manual_command_calls_real_cleanup(monkeypatch, caplog):
         ("Cleanup run started.", False),
         ("Cleanup run finished: deleted=0 candidates=0 skipped=0 errors=0", False),
     ]
-    assert sent_logs == ["🧹 cleanup manual run requested: actor=1234 channel=5678"]
+    assert sent_logs == [
+        "🧹 cleanup manual run requested: actor=1234 channel=5678",
+        "🧹 Cleanup run finished: deleted=0 candidates=0 skipped=0 errors=0",
+    ]
     assert "cleanup manual run requested: actor=1234 channel=5678" in caplog.text
     assert calls[0][0] == (Ctx.bot, cleanup.log)
     assert calls[0][1] == {"startup_validation": False, "writeback": True}
+
+
+def test_cleanup_manual_command_surfaces_summary_errors(monkeypatch):
+    replies = []
+    sent_logs = []
+    summary = cleanup.CleanupRunSummary(
+        deleted=0,
+        candidates=0,
+        skipped=0,
+        errors=1,
+        status="sheet_unavailable_or_invalid",
+        first_error="APIError: quota exceeded stage=read_values",
+    )
+
+    async def fake_run_cleanup(*_args, **_kwargs):
+        return summary
+
+    async def fake_send_log(message):
+        sent_logs.append(message)
+
+    class Ctx:
+        bot = object()
+        author = SimpleNamespace(id=1234)
+        channel = SimpleNamespace(id=5678)
+
+        async def reply(self, message, *, mention_author=False):
+            replies.append((message, mention_author))
+
+    monkeypatch.setattr(cleanup, "run_cleanup", fake_run_cleanup)
+    monkeypatch.setattr(cleanup.runtime_helpers, "send_log_message", fake_send_log)
+
+    cog = cleanup.CleanupCog(object())
+    asyncio.run(cog.cleanup_run.callback(cog, Ctx()))
+
+    expected = (
+        "Cleanup run finished with errors: deleted=0 candidates=0 skipped=0 errors=1 "
+        "status=sheet_unavailable_or_invalid first_error=APIError: quota exceeded at read_values"
+    )
+    assert replies[-1] == (expected, False)
+    assert sent_logs[-1] == f"🧹 {expected}"
 
 
 def test_cleanup_manual_command_handles_failure(monkeypatch, caplog):
@@ -619,6 +716,35 @@ def test_run_cleanup_summary_notice_failure_does_not_fail_cleanup(monkeypatch, c
     assert summary.summary_notice_failed is True
     assert "cleanup summary notice failed; cleanup completed" in caplog.text
     assert target.messages[0].deleted is True
+
+
+def test_run_cleanup_read_values_api_error_sets_actionable_first_error(monkeypatch):
+    class APIError(Exception):
+        pass
+
+    class FailingWorksheet:
+        def get_all_values(self):
+            raise APIError("quota exceeded")
+
+    cfg = cleanup.CleanupConfig(True, "CleanupRows", 6, True)
+
+    async def fake_sheet(*_):
+        return FailingWorksheet()
+
+    async def fake_acall(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(cleanup, "resolve_cleanup_config", lambda logger=None: cfg)
+    monkeypatch.setattr(cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
+    monkeypatch.setattr(cleanup.async_core, "aget_worksheet", fake_sheet)
+    monkeypatch.setattr(cleanup.async_core, "acall_with_backoff", fake_acall)
+
+    summary = asyncio.run(cleanup.run_cleanup(Bot(Thread([]))))
+
+    assert summary.status == "sheet_unavailable_or_invalid"
+    assert summary.errors == 1
+    assert summary.first_error == "APIError: quota exceeded stage=read_values"
+    assert cleanup._format_summary_error(summary) == "APIError: quota exceeded at read_values"
 
 
 def test_run_cleanup_unexpected_failure_logs_stage_and_context(monkeypatch, caplog):
