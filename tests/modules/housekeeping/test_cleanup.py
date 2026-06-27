@@ -59,6 +59,47 @@ def test_enabled_feature_toggle_missing_config_prevents_scheduling(monkeypatch):
     assert cleanup.resolve_cleanup_config() is None
 
 
+
+
+def test_aresolve_cleanup_config_awaits_inside_active_loop(monkeypatch):
+    monkeypatch.setattr(cleanup.feature_flags, "status", lambda key: _toggle_status(enabled=True))
+    monkeypatch.setattr(cleanup.recruitment, "get_config_tab_name", lambda: "Config")
+    monkeypatch.setattr(cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
+
+    async def fake_afetch_records(sheet_id, worksheet, **_kwargs):
+        assert (sheet_id, worksheet) == ("sheet", "Config")
+        return [
+            {"Key": cleanup.CONFIG_TAB, "Value": "CleanupRows"},
+            {"Key": cleanup.CONFIG_RUN_EVERY_HOURS, "Value": "6"},
+            {"Key": cleanup.CONFIG_DRY_RUN, "Value": "TRUE"},
+        ]
+
+    monkeypatch.setattr(cleanup.async_core, "afetch_records", fake_afetch_records)
+    cfg = asyncio.run(cleanup.aresolve_cleanup_config())
+    assert cfg == cleanup.CleanupConfig(True, "CleanupRows", 6, True, source="Config:Config")
+
+
+def test_aresolve_cleanup_config_does_not_call_sync_config_lookup(monkeypatch):
+    monkeypatch.setattr(cleanup.feature_flags, "status", lambda key: _toggle_status(enabled=True))
+    monkeypatch.setattr(cleanup.recruitment, "get_config_tab_name", lambda: "Config")
+    monkeypatch.setattr(cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
+    monkeypatch.setattr(
+        cleanup.recruitment,
+        "get_config_value",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("sync config lookup must not be used")),
+    )
+
+    async def fake_afetch_records(*_args, **_kwargs):
+        return [
+            {"key": cleanup.CONFIG_TAB, "value": "CleanupRows"},
+            {"key": cleanup.CONFIG_RUN_EVERY_HOURS, "value": "1"},
+            {"key": cleanup.CONFIG_DRY_RUN, "value": "false"},
+        ]
+
+    monkeypatch.setattr(cleanup.async_core, "afetch_records", fake_afetch_records)
+    cfg = asyncio.run(cleanup.aresolve_cleanup_config())
+    assert cfg and cfg.tab_name == "CleanupRows" and cfg.dry_run is False
+
 def test_header_lookup_requires_headers_without_column_position_fallback():
     header_map = cleanup.build_header_map(list(reversed(REQUIRED_HEADERS)))
     assert header_map["enabled"] == len(REQUIRED_HEADERS) - 1
@@ -99,8 +140,11 @@ class Msg:
         webhook_id=None,
         message_type=None,
         application_id=None,
+        system_content=None,
+        automod_rule_id=None,
     ):
         self.content = content
+        self.system_content = system_content if system_content is not None else content
         self.author = type("Author", (), {"id": author_id, "bot": author_bot, "roles": roles})()
         self.pinned = pinned
         self.created_at = datetime.now(timezone.utc) - timedelta(hours=hours_old)
@@ -109,6 +153,7 @@ class Msg:
         self.webhook_id = webhook_id
         self.type = message_type
         self.application_id = application_id
+        self.automod_rule_id = automod_rule_id
     async def delete(self, reason=None):
         self.deleted = True
 
@@ -160,6 +205,14 @@ class UnsupportedTarget:
     name = "voice-name"
 
 
+
+
+def patch_async_cleanup_config(monkeypatch, cfg):
+    async def fake_aresolve_cleanup_config(logger=None, *, force_refresh=False):
+        return cfg
+    monkeypatch.setattr(cleanup, "aresolve_cleanup_config", fake_aresolve_cleanup_config)
+
+
 class Bot:
     command_prefix = "!"
     user = type("User", (), {"id": 99})()
@@ -177,7 +230,7 @@ def run_with_sheet(monkeypatch, rows, messages, *, dry_run=True, startup_validat
     cfg = cleanup.CleanupConfig(True, "CleanupRows", 6, dry_run)
     async def fake_sheet(*_): return ws
     async def fake_log(*_): return None
-    monkeypatch.setattr(cleanup, "resolve_cleanup_config", lambda logger=None: cfg)
+    patch_async_cleanup_config(monkeypatch, cfg)
     monkeypatch.setattr(cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
     monkeypatch.setattr(cleanup.async_core, "aget_worksheet", fake_sheet)
     monkeypatch.setattr(cleanup.runtime_helpers, "send_log_message", fake_log)
@@ -218,7 +271,7 @@ def test_run_cleanup_uses_async_safe_sheets_helper_for_read_and_write(monkeypatc
     async def fail_acall_with_backoff(*_args, **_kwargs):
         raise AssertionError("cleanup must use a_to_thread_with_backoff")
 
-    monkeypatch.setattr(cleanup, "resolve_cleanup_config", lambda logger=None: cfg)
+    patch_async_cleanup_config(monkeypatch, cfg)
     monkeypatch.setattr(cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
     monkeypatch.setattr(cleanup.async_core, "aget_worksheet", fake_sheet)
     monkeypatch.setattr(cleanup.async_core, "a_to_thread_with_backoff", fake_to_thread_with_backoff)
@@ -253,7 +306,7 @@ def test_run_cleanup_does_not_raise_active_loop_retry_runtime_error(monkeypatch)
     def fail_sync_retry(*_args, **_kwargs):
         raise RuntimeError("_retry_with_backoff must not run inside an active event loop; use the async variant")
 
-    monkeypatch.setattr(cleanup, "resolve_cleanup_config", lambda logger=None: cfg)
+    patch_async_cleanup_config(monkeypatch, cfg)
     monkeypatch.setattr(cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
     monkeypatch.setattr(cleanup.async_core, "aget_worksheet", fake_sheet)
     monkeypatch.setattr(cleanup.runtime_helpers, "send_log_message", fake_log)
@@ -266,6 +319,23 @@ def test_run_cleanup_does_not_raise_active_loop_retry_runtime_error(monkeypatch)
     assert summary.status == "ok"
     assert update_map(ws)["L2"] == "deleted"
 
+
+
+
+def test_run_cleanup_reaches_scan_for_automod_system_mode(monkeypatch):
+    automod_type = getattr(cleanup.discord.MessageType, "auto_moderation_action")
+    msgs = [Msg("", author_id=1, message_type=automod_type)]
+    ws, msgs, _target = run_with_sheet(
+        monkeypatch,
+        [active_row(cleanup_mode="automod_system_messages_only", min_age_hours="0")],
+        msgs,
+        dry_run=False,
+    )
+
+    updates = update_map(ws)
+    assert msgs[0].deleted is True
+    assert updates["J2"] == "1"
+    assert updates["L2"] == "deleted"
 
 def test_blank_target_type_resolved_and_dry_run_deletes_nothing(monkeypatch):
     ws, msgs, _target = run_with_sheet(monkeypatch, [active_row()], [Msg("bot", author_id=99)])
@@ -373,6 +443,36 @@ def test_webhook_inclusive_modes_match_webhook_messages(monkeypatch):
     assert cleanup._matches_mode(Msg("!cmd", author_id=1), "bot_webhook_messages_and_commands", Bot()) is True
 
 
+
+
+def test_automod_system_messages_only_matches_auto_moderation_enum(monkeypatch):
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
+    automod_type = getattr(cleanup.discord.MessageType, "auto_moderation_action")
+    assert cleanup._matches_mode(Msg("", author_id=1, message_type=automod_type), "automod_system_messages_only", Bot()) is True
+
+
+def test_automod_system_messages_only_uses_conservative_fallbacks(monkeypatch):
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
+    generic_system_type = cleanup.discord.MessageType.pins_add
+    assert cleanup._matches_mode(Msg("", author_id=1, message_type=generic_system_type, automod_rule_id=123), "automod_system_messages_only", Bot()) is True
+    assert cleanup._matches_mode(Msg("AutoMod blocked a message", author_id=1, message_type=generic_system_type), "automod_system_messages_only", Bot()) is True
+
+
+def test_automod_system_messages_only_rejects_non_automod_sources(monkeypatch):
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
+    automod_type = getattr(cleanup.discord.MessageType, "auto_moderation_action")
+    generic_system_type = cleanup.discord.MessageType.pins_add
+    assert cleanup._matches_mode(Msg("human", author_id=1), "automod_system_messages_only", Bot()) is False
+    assert cleanup._matches_mode(Msg("bot", author_id=42, author_bot=True), "automod_system_messages_only", Bot()) is False
+    assert cleanup._matches_mode(Msg("", author_id=1, webhook_id=555), "automod_system_messages_only", Bot()) is False
+    assert cleanup._matches_mode(Msg("", author_id=1, message_type=generic_system_type), "automod_system_messages_only", Bot()) is False
+    assert cleanup._matches_mode(Msg("", author_id=1, pinned=True, message_type=automod_type), "automod_system_messages_only", Bot()) is False
+
+
+def test_automod_system_and_webhook_combined_mode_includes_webhooks(monkeypatch):
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
+    assert cleanup._matches_mode(Msg("", author_id=1, webhook_id=555), "automod_system_and_webhook_messages_only", Bot()) is True
+
 def test_commands_only_uses_project_prefix_fallback_not_hardcoded(monkeypatch):
     bot = Bot()
     bot.command_prefix = None
@@ -424,6 +524,7 @@ def test_zero_match_diagnostics_counts_webhooks_empty_content_and_bounded_author
     assert result.candidates == 0
     record = next(record for record in caplog.records if record.message.startswith("cleanup row scan complete"))
     assert "webhook_message_count=2" in record.message
+    assert "message_type_counts=none:8" in record.message
     assert "empty_content_count=3" in record.message
     assert "messages_with_content_count=5" in record.message
     assert "unique_author_count=7" in record.message
@@ -431,6 +532,38 @@ def test_zero_match_diagnostics_counts_webhooks_empty_content_and_bounded_author
     assert sample.count(",") == 4
     assert sample.startswith("1:2:false:2")
 
+
+
+
+def test_zero_match_diagnostics_counts_system_automod_and_message_types(monkeypatch, caplog):
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
+    automod_type = getattr(cleanup.discord.MessageType, "auto_moderation_action")
+    messages = [
+        Msg("", author_id=1, message_type=automod_type, pinned=True),
+        Msg("", author_id=2, message_type=cleanup.discord.MessageType.pins_add),
+        Msg("normal", author_id=3),
+    ]
+    caplog.set_level("INFO", logger="c1c.housekeeping.cleanup")
+
+    result = asyncio.run(
+        cleanup._scan_message_history(
+            Thread(messages),
+            min_age_hours=0,
+            mode="automod_system_messages_only",
+            dry_run=True,
+            bot=Bot(),
+            logger=cleanup.log,
+            context={"row": 5},
+        )
+    )
+
+    assert result.candidates == 0
+    record = next(record for record in caplog.records if record.message.startswith("cleanup row scan complete"))
+    assert "system_message_count=2" in record.message
+    assert "automod_system_seen=1" in record.message
+    assert "message_type_counts=" in record.message
+    assert "auto_moderation_action:1" in record.message
+    assert "pins_add:1" in record.message
 
 def test_zero_match_diagnostics_counts_prefix_and_role_matches(monkeypatch, caplog):
     role = type("Role", (), {"id": 12345})()
@@ -900,7 +1033,7 @@ def test_run_cleanup_summary_notice_failure_does_not_fail_cleanup(monkeypatch, c
     async def fake_log(_message):
         raise RuntimeError("discord log down")
 
-    monkeypatch.setattr(cleanup, "resolve_cleanup_config", lambda logger=None: cfg)
+    patch_async_cleanup_config(monkeypatch, cfg)
     monkeypatch.setattr(cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
     monkeypatch.setattr(cleanup.async_core, "aget_worksheet", fake_sheet)
     monkeypatch.setattr(cleanup, "_resolve_any", fake_resolve)
@@ -932,7 +1065,7 @@ def test_run_cleanup_read_values_api_error_sets_actionable_first_error(monkeypat
     async def fake_to_thread_with_backoff(func, *args, **kwargs):
         return func(*args, **kwargs)
 
-    monkeypatch.setattr(cleanup, "resolve_cleanup_config", lambda logger=None: cfg)
+    patch_async_cleanup_config(monkeypatch, cfg)
     monkeypatch.setattr(cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
     monkeypatch.setattr(cleanup.async_core, "aget_worksheet", fake_sheet)
     monkeypatch.setattr(cleanup.async_core, "a_to_thread_with_backoff", fake_to_thread_with_backoff)
@@ -959,7 +1092,7 @@ def test_run_cleanup_unexpected_failure_logs_stage_and_context(monkeypatch, capl
     async def fake_log(_message):
         return None
 
-    monkeypatch.setattr(cleanup, "resolve_cleanup_config", lambda logger=None: cfg)
+    patch_async_cleanup_config(monkeypatch, cfg)
     monkeypatch.setattr(cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
     monkeypatch.setattr(cleanup.async_core, "aget_worksheet", fake_sheet)
     monkeypatch.setattr(cleanup, "_resolve_any", fake_resolve)

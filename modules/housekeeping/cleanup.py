@@ -62,6 +62,8 @@ ALLOWED_CLEANUP_MODES = {
     "bot_messages_and_commands",
     "bot_and_webhook_messages_only",
     "bot_webhook_messages_and_commands",
+    "automod_system_messages_only",
+    "automod_system_and_webhook_messages_only",
 }
 _CLEANUP_RUN_LOCK = asyncio.Lock()
 
@@ -117,6 +119,8 @@ class ZeroMatchDiagnostics:
     own_bot_author_count: int = 0
     webhook_message_count: int = 0
     system_message_count: int = 0
+    automod_system_seen: int = 0
+    message_type_counts: str = "-"
     empty_content_count: int = 0
     messages_with_content_count: int = 0
     prefix_matched_count: int = 0
@@ -206,13 +210,7 @@ def _parse_nonnegative_hours(value: str | None) -> float | None:
     return parsed if parsed >= 0 else None
 
 
-def resolve_cleanup_config(
-    logger: logging.Logger | None = None,
-    *,
-    force_refresh: bool = True,
-) -> CleanupConfig | None:
-    logger = logger or log
-    toggle = feature_flags.status(CONFIG_ENABLED)
+def _validate_cleanup_toggle(toggle: Mapping[str, Any], logger: logging.Logger) -> bool:
     if toggle.get("invalid"):
         logger.warning(
             "cleanup not scheduled; required Feature Toggle %s has invalid value %r in %s",
@@ -220,21 +218,20 @@ def resolve_cleanup_config(
             toggle.get("invalid_value"),
             toggle.get("source_tab") or "Feature Toggles",
         )
-        return None
+        return False
     if not toggle.get("present"):
         logger.warning(
             "cleanup not scheduled; missing Feature Toggle %s",
             CONFIG_ENABLED,
         )
-        return None
+        return False
     if not toggle.get("enabled"):
         logger.info("cleanup disabled by Feature Toggle %s=FALSE", CONFIG_ENABLED)
-        return None
+        return False
+    return True
 
-    raw = {
-        key: recruitment.get_config_value(key, None, force=force_refresh)
-        for key in REQUIRED_CONFIG_KEYS
-    }
+
+def _cleanup_config_from_raw(raw: Mapping[str, str | None], *, source: str, logger: logging.Logger) -> CleanupConfig | None:
     missing = [key for key, value in raw.items() if value is None or not str(value).strip()]
     if missing:
         logger.warning("cleanup not scheduled; missing Config key(s): %s", ", ".join(missing))
@@ -253,7 +250,7 @@ def resolve_cleanup_config(
         str(raw[CONFIG_TAB]).strip(),
         run_every,
         dry_run,
-        source=f"{recruitment.get_config_tab_name()}:Config",
+        source=source,
     )
     logger.info(
         "cleanup config resolved: tab=%s run_every_hours=%s dry_run=%s source=%s",
@@ -263,6 +260,67 @@ def resolve_cleanup_config(
         config.source,
     )
     return config
+
+
+def _parse_config_records(records: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for row in records:
+        key_value: str | None = None
+        stored_value: str | None = None
+        for col, value in row.items():
+            col_norm = str(col or "").strip().lower()
+            if col_norm == "key":
+                key_value = str(value).strip().lower() if value is not None else ""
+            elif col_norm in {"value", "val"}:
+                stored_value = str(value).strip() if value is not None else ""
+        if key_value:
+            if stored_value:
+                parsed[key_value] = stored_value
+                continue
+            for col, value in row.items():
+                if str(col or "").strip().lower() == "key" or value is None:
+                    continue
+                candidate = str(value).strip()
+                if candidate:
+                    parsed[key_value] = candidate
+                    break
+    return parsed
+
+
+def resolve_cleanup_config(
+    logger: logging.Logger | None = None,
+    *,
+    force_refresh: bool = True,
+) -> CleanupConfig | None:
+    logger = logger or log
+    toggle = feature_flags.status(CONFIG_ENABLED)
+    if not _validate_cleanup_toggle(toggle, logger):
+        return None
+
+    raw = {
+        key: recruitment.get_config_value(key, None, force=force_refresh)
+        for key in REQUIRED_CONFIG_KEYS
+    }
+    return _cleanup_config_from_raw(raw, source=f"{recruitment.get_config_tab_name()}:Config", logger=logger)
+
+
+async def aresolve_cleanup_config(
+    logger: logging.Logger | None = None,
+    *,
+    force_refresh: bool = False,
+) -> CleanupConfig | None:
+    logger = logger or log
+    # feature_flags.status is cache-only; feature_flags.refresh is the async
+    # Sheets path that populates this status before cleanup scheduling/runs.
+    toggle = feature_flags.status(CONFIG_ENABLED)
+    if not _validate_cleanup_toggle(toggle, logger):
+        return None
+
+    config_tab = recruitment.get_config_tab_name()
+    records = await async_core.afetch_records(recruitment.get_recruitment_sheet_id(), config_tab)
+    config_map = _parse_config_records(records)
+    raw = {key: config_map.get(key.lower()) for key in REQUIRED_CONFIG_KEYS}
+    return _cleanup_config_from_raw(raw, source=f"{config_tab}:Config", logger=logger)
 
 
 def build_header_map(headers: Sequence[Any]) -> dict[str, int]:
@@ -388,6 +446,66 @@ def _is_system_message(message: discord.Message) -> bool:
     return message_type is not None and message_type != default_type
 
 
+def _message_type_name(message: discord.Message) -> str:
+    message_type = getattr(message, "type", None)
+    name = getattr(message_type, "name", None)
+    if name:
+        return str(name)
+    if message_type is None:
+        return "none"
+    return str(message_type).rsplit(".", 1)[-1]
+
+
+def _has_automod_indicator(message: discord.Message) -> bool:
+    for attr in (
+        "automod_rule_id",
+        "auto_moderation_rule_id",
+        "automod_action",
+        "auto_moderation_action",
+        "automod_rule",
+        "auto_moderation_rule",
+    ):
+        if getattr(message, attr, None) is not None:
+            return True
+    return False
+
+
+def _has_automod_alert_phrase(message: discord.Message) -> bool:
+    # Do not log or return message content; this is only a conservative local
+    # fallback for discord.py versions without a dedicated AutoMod enum.
+    text = " ".join(str(getattr(message, attr, "") or "") for attr in ("system_content", "content")).lower()
+    return bool(text) and any(
+        phrase in text
+        for phrase in (
+            "automod",
+            "auto mod",
+            "auto moderation",
+            "automoderation",
+            "blocked a message",
+            "flagged by auto",
+        )
+    )
+
+
+def _is_automod_system_message(message: discord.Message) -> bool:
+    if not _is_system_message(message):
+        return False
+    message_type = getattr(message, "type", None)
+    message_type_name = _message_type_name(message).lower()
+    if message_type_name in {"auto_moderation_action", "automod_action", "auto_moderation_alert"}:
+        return True
+    message_type_enum = getattr(discord, "MessageType", None)
+    for enum_name in ("auto_moderation_action", "automod_action", "auto_moderation_alert"):
+        enum_value = getattr(message_type_enum, enum_name, None)
+        if enum_value is not None and message_type == enum_value:
+            return True
+    default_type = getattr(message_type_enum, "default", None)
+    author = getattr(message, "author", None)
+    if message_type == default_type or getattr(author, "bot", False) is True or _is_webhook_message(message):
+        return False
+    return _has_automod_indicator(message) or _has_automod_alert_phrase(message)
+
+
 def _is_cleanup_bot_message(message: discord.Message, bot: commands.Bot, target: Any | None = None) -> bool:
     author = getattr(message, "author", None)
     if author is None:
@@ -429,6 +547,10 @@ def _matches_mode(message: discord.Message, mode: str, bot: commands.Bot, target
         return _is_cleanup_bot_or_webhook_message(message, bot, target)
     if mode == "bot_webhook_messages_and_commands":
         return _is_cleanup_bot_or_webhook_message(message, bot, target) or _is_cleanup_command_message(message, bot)
+    if mode == "automod_system_messages_only":
+        return _is_automod_system_message(message)
+    if mode == "automod_system_and_webhook_messages_only":
+        return _is_automod_system_message(message) or _is_webhook_message(message)
     return False
 
 
@@ -442,6 +564,13 @@ def _masked_prefix_values(prefixes: Sequence[str]) -> str:
         else:
             values.append(f"{prefix[:1]}…({len(prefix)})")
     return ",".join(values)
+
+
+def _format_message_type_counts(message_type_counts: Mapping[str, int]) -> str:
+    if not message_type_counts:
+        return "-"
+    ranked = sorted(message_type_counts.items(), key=lambda item: (-item[1], item[0]))[:8]
+    return ",".join(f"{name}:{count}" for name, count in ranked)
 
 
 def _format_top_author_sample(author_counts: Mapping[str, _AuthorSourceCounts]) -> str:
@@ -507,6 +636,8 @@ async def _scan_message_history(target: Any, *, min_age_hours: float, mode: str,
         own_bot_author_count = 0
         webhook_message_count = 0
         system_message_count = 0
+        automod_system_seen = 0
+        message_type_counts: dict[str, int] = {}
         empty_content_count = 0
         messages_with_content_count = 0
         prefix_matched_count = 0
@@ -526,12 +657,16 @@ async def _scan_message_history(target: Any, *, min_age_hours: float, mode: str,
                 author_bucket.bot_true_count += 1
             if bot_user_id is not None and getattr(author, "id", None) == bot_user_id:
                 own_bot_author_count += 1
+            message_type = _message_type_name(message)
+            message_type_counts[message_type] = message_type_counts.get(message_type, 0) + 1
             webhook_message = _is_webhook_message(message)
             if webhook_message:
                 webhook_message_count += 1
                 author_bucket.webhook_count += 1
             if _is_system_message(message):
                 system_message_count += 1
+            if _is_automod_system_message(message):
+                automod_system_seen += 1
             content = getattr(message, "content", "") or ""
             prefix_match = False
             if content:
@@ -571,6 +706,8 @@ async def _scan_message_history(target: Any, *, min_age_hours: float, mode: str,
             own_bot_author_count=own_bot_author_count,
             webhook_message_count=webhook_message_count,
             system_message_count=system_message_count,
+            automod_system_seen=automod_system_seen,
+            message_type_counts=_format_message_type_counts(message_type_counts),
             empty_content_count=empty_content_count,
             messages_with_content_count=messages_with_content_count,
             prefix_matched_count=prefix_matched_count,
@@ -578,7 +715,7 @@ async def _scan_message_history(target: Any, *, min_age_hours: float, mode: str,
             top_author_sample=_format_top_author_sample(author_counts),
         )
         logger.info(
-            "cleanup row scan complete: row=%s target_id=%s mode=%s total_seen=%s candidates=0 skipped=%s bot_author_seen=%s command_seen=%s unique_author_count=%s author_bot_true_count=%s own_bot_author_count=%s webhook_message_count=%s system_message_count=%s empty_content_count=%s messages_with_content_count=%s prefix_matched_count=%s prefix_count=%s prefix_values_used=%s role_matched_count=%s top_author_sample=%s",
+            "cleanup row scan complete: row=%s target_id=%s mode=%s total_seen=%s candidates=0 skipped=%s bot_author_seen=%s command_seen=%s unique_author_count=%s author_bot_true_count=%s own_bot_author_count=%s webhook_message_count=%s system_message_count=%s automod_system_seen=%s message_type_counts=%s empty_content_count=%s messages_with_content_count=%s prefix_matched_count=%s prefix_count=%s prefix_values_used=%s role_matched_count=%s top_author_sample=%s",
             (context or {}).get("row"),
             getattr(target, "id", None),
             mode,
@@ -591,6 +728,8 @@ async def _scan_message_history(target: Any, *, min_age_hours: float, mode: str,
             diagnostics.own_bot_author_count,
             diagnostics.webhook_message_count,
             diagnostics.system_message_count,
+            diagnostics.automod_system_seen,
+            diagnostics.message_type_counts,
             diagnostics.empty_content_count,
             diagnostics.messages_with_content_count,
             diagnostics.prefix_matched_count,
@@ -672,7 +811,7 @@ async def _run_cleanup_locked(
     context: dict[str, Any] = {"stage": stage, "target_id": None, "target_type": None, "row": None}
     summary = CleanupRunSummary(writeback=writeback)
     try:
-        config = resolve_cleanup_config(logger)
+        config = await aresolve_cleanup_config(logger)
         if config is None or not config.enabled:
             summary.status = "disabled"
             return summary
@@ -914,5 +1053,5 @@ async def setup(bot: commands.Bot) -> None:
 
 __all__ = [
     "BOT_WRITABLE_HEADERS", "CleanupConfig", "CleanupRunSummary", "REQUIRED_CONFIG_KEYS", "REQUIRED_HEADERS",
-    "CleanupCog", "build_header_map", "resolve_cleanup_config", "rows_from_values", "run_cleanup", "setup", "_matches_mode", "_row_update",
+    "CleanupCog", "build_header_map", "resolve_cleanup_config", "aresolve_cleanup_config", "rows_from_values", "run_cleanup", "setup", "_matches_mode", "_row_update",
 ]
