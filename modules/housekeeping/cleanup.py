@@ -14,6 +14,7 @@ from c1c_coreops.rbac import admin_only
 
 from modules.common import feature_flags
 from modules.common import runtime as runtime_helpers
+from shared.config import get_command_prefix
 from shared.sheets import async_core
 from shared.sheets import recruitment
 
@@ -23,6 +24,7 @@ CONFIG_ENABLED = "HOUSEKEEPING_CLEANUP_ENABLED"
 CONFIG_TAB = "HOUSEKEEPING_CLEANUP_TAB"
 CONFIG_RUN_EVERY_HOURS = "HOUSEKEEPING_CLEANUP_RUN_EVERY_HOURS"
 CONFIG_DRY_RUN = "HOUSEKEEPING_CLEANUP_DRY_RUN"
+CONFIG_BOT_ROLE_IDS = "HOUSEKEEPING_CLEANUP_BOT_ROLE_IDS"
 REQUIRED_CONFIG_KEYS = (CONFIG_TAB, CONFIG_RUN_EVERY_HOURS, CONFIG_DRY_RUN)
 REQUIRED_HEADERS = (
     "enabled",
@@ -283,31 +285,103 @@ async def _resolve_any(bot: commands.Bot, target_id: int) -> tuple[Any | None, s
     return channel, None, "invalid_target_type"
 
 
-def _command_prefixes(bot: commands.Bot) -> tuple[str, ...]:
-    prefix = getattr(bot, "command_prefix", None)
-    if isinstance(prefix, str):
-        return (prefix,)
-    if isinstance(prefix, Iterable):
-        return tuple(str(item) for item in prefix if str(item))
+def _normalize_prefixes(values: Any) -> tuple[str, ...]:
+    if values is None:
+        return ()
+    if isinstance(values, str):
+        text = values.strip()
+        return (text,) if text else ()
+    if isinstance(values, Iterable):
+        prefixes: list[str] = []
+        for item in values:
+            text = str(item).strip()
+            if text:
+                prefixes.append(text)
+        return tuple(dict.fromkeys(prefixes))
     return ()
 
 
-def _matches_mode(message: discord.Message, mode: str, bot: commands.Bot) -> bool:
+def _command_prefixes(bot: commands.Bot) -> tuple[str, ...]:
+    prefix = getattr(bot, "command_prefix", None)
+    prefixes: tuple[str, ...] = ()
+    if isinstance(prefix, str) or isinstance(prefix, Iterable):
+        prefixes = _normalize_prefixes(prefix)
+    elif callable(prefix):
+        try:
+            maybe_prefixes = prefix(bot, None)
+        except Exception:
+            maybe_prefixes = None
+        prefixes = _normalize_prefixes(maybe_prefixes)
+    fallback = _normalize_prefixes(get_command_prefix())
+    return prefixes or fallback
+
+
+def _cleanup_bot_role_ids() -> set[int]:
+    raw = recruitment.get_config_value(CONFIG_BOT_ROLE_IDS, "")
+    role_ids: set[int] = set()
+    for part in str(raw or "").split(","):
+        text = part.strip()
+        if not text:
+            continue
+        try:
+            role_ids.add(int(text))
+        except ValueError:
+            continue
+    return role_ids
+
+
+def _author_has_cleanup_bot_role(author: Any, target: Any | None, role_ids: set[int]) -> bool:
+    if not role_ids:
+        return False
+    member = author
+    roles = getattr(member, "roles", None)
+    if roles is None:
+        guild = getattr(target, "guild", None) if target is not None else None
+        get_member = getattr(guild, "get_member", None)
+        if callable(get_member):
+            try:
+                member = get_member(getattr(author, "id", None))
+            except Exception:
+                member = None
+            roles = getattr(member, "roles", None)
+    if roles is None:
+        return False
+    return any(getattr(role, "id", None) in role_ids for role in roles)
+
+
+def _is_cleanup_bot_message(message: discord.Message, bot: commands.Bot, target: Any | None = None) -> bool:
+    author = getattr(message, "author", None)
+    if author is None:
+        return False
+    bot_user = getattr(bot, "user", None)
+    if bot_user is not None and getattr(author, "id", None) == getattr(bot_user, "id", None):
+        return True
+    if getattr(author, "bot", False) is True:
+        return True
+    try:
+        return _author_has_cleanup_bot_role(author, target, _cleanup_bot_role_ids())
+    except Exception:
+        return False
+
+
+def _is_cleanup_command_message(message: discord.Message, bot: commands.Bot) -> bool:
+    content = getattr(message, "content", "") or ""
+    if not content:
+        return False
+    return any(content.startswith(prefix) for prefix in _command_prefixes(bot))
+
+
+def _matches_mode(message: discord.Message, mode: str, bot: commands.Bot, target: Any | None = None) -> bool:
     if getattr(message, "pinned", False):
         return False
-    author = getattr(message, "author", None)
-    bot_user = getattr(bot, "user", None)
-    is_bot_message = bool(bot_user is not None and getattr(author, "id", None) == getattr(bot_user, "id", None))
-    content = getattr(message, "content", "") or ""
-    is_command = any(content.startswith(prefix) for prefix in _command_prefixes(bot))
     if mode == "all_non_pinned":
         return True
     if mode == "bot_messages_only":
-        return is_bot_message
+        return _is_cleanup_bot_message(message, bot, target)
     if mode == "commands_only":
-        return is_command
+        return _is_cleanup_command_message(message, bot)
     if mode == "bot_messages_and_commands":
-        return is_bot_message or is_command
+        return _is_cleanup_bot_message(message, bot, target) or _is_cleanup_command_message(message, bot)
     return False
 
 
@@ -354,9 +428,17 @@ async def _scan_message_history(target: Any, *, min_age_hours: float, mode: str,
     try:
         if context is not None:
             context["stage"] = "scan_history"
+        total_seen = 0
+        bot_author_seen = 0
+        command_seen = 0
         async for message in target.history(limit=None, oldest_first=True):
+            total_seen += 1
+            if _is_cleanup_bot_message(message, bot, target):
+                bot_author_seen += 1
+            if _is_cleanup_command_message(message, bot):
+                command_seen += 1
             created = _normalize_timestamp(getattr(message, "created_at", None))
-            if getattr(message, "pinned", False) or created is None or created > cutoff or not _matches_mode(message, mode, bot):
+            if getattr(message, "pinned", False) or created is None or created > cutoff or not _matches_mode(message, mode, bot, target):
                 skipped += 1
                 continue
             candidates.append(message)
@@ -365,6 +447,17 @@ async def _scan_message_history(target: Any, *, min_age_hours: float, mode: str,
     except discord.HTTPException as exc:
         logger.warning("cleanup history fetch failed: target_id=%s error=%s", getattr(target, "id", None), exc)
         return CleanupResult("fetch_failed", 0, len(candidates), skipped, 1)
+    if not candidates:
+        logger.info(
+            "cleanup row scan complete: row=%s target_id=%s mode=%s total_seen=%s candidates=0 skipped=%s bot_author_seen=%s command_seen=%s",
+            (context or {}).get("row"),
+            getattr(target, "id", None),
+            mode,
+            total_seen,
+            skipped,
+            bot_author_seen,
+            command_seen,
+        )
     if dry_run:
         return CleanupResult("dry_run_ok", 0, len(candidates), skipped, 0)
     if context is not None:

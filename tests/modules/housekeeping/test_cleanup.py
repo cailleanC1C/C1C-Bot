@@ -87,9 +87,9 @@ def update_map(ws):
 
 
 class Msg:
-    def __init__(self, content, *, author_id=10, pinned=False, hours_old=10):
+    def __init__(self, content, *, author_id=10, pinned=False, hours_old=10, author_bot=False, roles=None):
         self.content = content
-        self.author = type("Author", (), {"id": author_id})()
+        self.author = type("Author", (), {"id": author_id, "bot": author_bot, "roles": roles})()
         self.pinned = pinned
         self.created_at = datetime.now(timezone.utc) - timedelta(hours=hours_old)
         self.channel = type("Channel", (), {"id": 123})()
@@ -325,10 +325,46 @@ def test_all_non_pinned_skips_pinned(monkeypatch):
     assert [m.deleted for m in msgs] == [True, False]
 
 
-def test_bot_messages_only_and_commands_only_filters(monkeypatch):
-    assert cleanup._matches_mode(Msg("human", author_id=1), "bot_messages_only", Bot(),) is False
-    assert cleanup._matches_mode(Msg("!cmd", author_id=1), "commands_only", Bot(),) is True
-    assert cleanup._matches_mode(Msg("normal", author_id=1), "commands_only", Bot(),) is False
+def test_bot_messages_only_matches_own_bot_messages(monkeypatch):
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
+    assert cleanup._matches_mode(Msg("bot", author_id=99), "bot_messages_only", Bot()) is True
+
+
+def test_bot_messages_only_matches_other_discord_bot_accounts(monkeypatch):
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
+    assert cleanup._matches_mode(Msg("bot", author_id=42, author_bot=True), "bot_messages_only", Bot()) is True
+
+
+def test_bot_messages_only_matches_configured_common_bot_role(monkeypatch):
+    role = type("Role", (), {"id": 12345})()
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: "12345" if key == cleanup.CONFIG_BOT_ROLE_IDS else default)
+    assert cleanup._matches_mode(Msg("role bot", author_id=42, roles=[role]), "bot_messages_only", Bot()) is True
+
+
+def test_bot_messages_only_rejects_non_bot_user_without_role(monkeypatch):
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
+    assert cleanup._matches_mode(Msg("human", author_id=1, author_bot=False, roles=[]), "bot_messages_only", Bot()) is False
+
+
+def test_commands_only_uses_project_prefix_fallback_not_hardcoded(monkeypatch):
+    bot = Bot()
+    bot.command_prefix = None
+    monkeypatch.setattr(cleanup, "get_command_prefix", lambda default="!": "?")
+    assert cleanup._matches_mode(Msg("?cleanup run", author_id=1), "commands_only", bot) is True
+    assert cleanup._matches_mode(Msg("!cleanup run", author_id=1), "commands_only", bot) is False
+
+
+def test_combined_mode_uses_bot_or_command_helpers(monkeypatch):
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
+    assert cleanup._matches_mode(Msg("bot", author_id=99), "bot_messages_and_commands", Bot()) is True
+    assert cleanup._matches_mode(Msg("!cmd", author_id=1), "bot_messages_and_commands", Bot()) is True
+    assert cleanup._matches_mode(Msg("normal", author_id=1), "bot_messages_and_commands", Bot()) is False
+
+
+def test_pinned_bot_and_command_messages_do_not_match_for_deletion(monkeypatch):
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
+    assert cleanup._matches_mode(Msg("bot", author_id=99, pinned=True), "bot_messages_only", Bot()) is False
+    assert cleanup._matches_mode(Msg("!cmd", author_id=1, pinned=True), "commands_only", Bot()) is False
 
 
 def test_startup_validation_writeback_does_not_delete_when_dry_run_false(monkeypatch):
