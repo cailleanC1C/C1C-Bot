@@ -543,7 +543,10 @@ def test_cleanup_manual_command_calls_real_cleanup(monkeypatch, caplog):
     cog = cleanup.CleanupCog(object())
     asyncio.run(cog.cleanup_run.callback(cog, Ctx()))
 
-    assert replies == [("Cleanup run started.", False)]
+    assert replies == [
+        ("Cleanup run started.", False),
+        ("Cleanup run finished: deleted=0 candidates=0 skipped=0 errors=0", False),
+    ]
     assert sent_logs == ["🧹 cleanup manual run requested: actor=1234 channel=5678"]
     assert "cleanup manual run requested: actor=1234 channel=5678" in caplog.text
     assert calls[0][0] == (Ctx.bot, cleanup.log)
@@ -575,9 +578,76 @@ def test_cleanup_manual_command_handles_failure(monkeypatch, caplog):
     cog = cleanup.CleanupCog(object())
     asyncio.run(cog.cleanup_run.callback(cog, Ctx()))
 
-    assert replies == [("Cleanup run started.", False), ("Cleanup run failed; see logs.", False)]
+    assert replies == [("Cleanup run started.", False), ("Cleanup run failed: RuntimeError. See logs.", False)]
     assert sent_logs == [
         "🧹 cleanup manual run requested: actor=1234 channel=5678",
-        "🧹 cleanup manual run failed; see app logs",
+        "🧹 cleanup manual run failed: RuntimeError: boom",
     ]
-    assert "cleanup manual run failed" in caplog.text
+    assert "cleanup manual run failed: error_type=RuntimeError error=boom" in caplog.text
+    failure_record = next(record for record in caplog.records if record.message.startswith("cleanup manual run failed"))
+    assert failure_record.error_type == "RuntimeError"
+    assert failure_record.error == "boom"
+    assert failure_record.actor == 1234
+    assert failure_record.channel == 5678
+
+
+def test_run_cleanup_summary_notice_failure_does_not_fail_cleanup(monkeypatch, caplog):
+    ws = Worksheet([REQUIRED_HEADERS, active_row()])
+    target = Thread([Msg("bot", author_id=99)])
+    cfg = cleanup.CleanupConfig(True, "CleanupRows", 6, False)
+
+    async def fake_sheet(*_):
+        return ws
+
+    async def fake_resolve(_bot, _target_id):
+        return target, "thread", None
+
+    async def fake_log(_message):
+        raise RuntimeError("discord log down")
+
+    monkeypatch.setattr(cleanup, "resolve_cleanup_config", lambda logger=None: cfg)
+    monkeypatch.setattr(cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
+    monkeypatch.setattr(cleanup.async_core, "aget_worksheet", fake_sheet)
+    monkeypatch.setattr(cleanup, "_resolve_any", fake_resolve)
+    monkeypatch.setattr(cleanup.runtime_helpers, "send_log_message", fake_log)
+    caplog.set_level("WARNING", logger="c1c.housekeeping.cleanup")
+
+    summary = asyncio.run(cleanup.run_cleanup(Bot(target)))
+
+    assert summary.deleted == 1
+    assert summary.candidates == 1
+    assert summary.summary_notice_failed is True
+    assert "cleanup summary notice failed; cleanup completed" in caplog.text
+    assert target.messages[0].deleted is True
+
+
+def test_run_cleanup_unexpected_failure_logs_stage_and_context(monkeypatch, caplog):
+    ws = Worksheet([REQUIRED_HEADERS, active_row()])
+    target = Thread([])
+    cfg = cleanup.CleanupConfig(True, "CleanupRows", 6, False)
+
+    async def fake_sheet(*_):
+        return ws
+
+    async def fake_resolve(_bot, _target_id):
+        raise TypeError("target blew up")
+
+    async def fake_log(_message):
+        return None
+
+    monkeypatch.setattr(cleanup, "resolve_cleanup_config", lambda logger=None: cfg)
+    monkeypatch.setattr(cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
+    monkeypatch.setattr(cleanup.async_core, "aget_worksheet", fake_sheet)
+    monkeypatch.setattr(cleanup, "_resolve_any", fake_resolve)
+    monkeypatch.setattr(cleanup.runtime_helpers, "send_log_message", fake_log)
+    caplog.set_level("ERROR", logger="c1c.housekeeping.cleanup")
+
+    with pytest.raises(TypeError):
+        asyncio.run(cleanup.run_cleanup(Bot(target)))
+
+    record = next(record for record in caplog.records if record.message.startswith("cleanup run unexpected failure"))
+    assert record.error_type == "TypeError"
+    assert record.error == "target blew up"
+    assert record.stage == "resolve_target"
+    assert record.row == 2
+    assert record.target_id == 123
