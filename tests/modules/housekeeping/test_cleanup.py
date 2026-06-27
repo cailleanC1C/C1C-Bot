@@ -161,9 +161,7 @@ class Msg:
     ):
         self.content = content
         self.system_content = system_content if system_content is not None else content
-        self.author = type(
-            "Author", (), {"id": author_id, "bot": author_bot, "roles": roles}
-        )()
+        self.author = type("Author", (), {"id": author_id, "bot": author_bot, "roles": roles})()
         self.pinned = pinned
         self.created_at = datetime.now(timezone.utc) - timedelta(hours=hours_old)
         self.channel = type("Channel", (), {"id": 123})()
@@ -172,7 +170,6 @@ class Msg:
         self.type = message_type
         self.application_id = application_id
         self.automod_rule_id = automod_rule_id
-
     async def delete(self, reason=None):
         self.deleted = True
 
@@ -688,6 +685,36 @@ def test_automod_system_and_webhook_combined_mode_includes_webhooks(monkeypatch)
     )
 
 
+
+
+def test_automod_system_messages_only_matches_auto_moderation_enum(monkeypatch):
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
+    automod_type = getattr(cleanup.discord.MessageType, "auto_moderation_action")
+    assert cleanup._matches_mode(Msg("", author_id=1, message_type=automod_type), "automod_system_messages_only", Bot()) is True
+
+
+def test_automod_system_messages_only_uses_conservative_fallbacks(monkeypatch):
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
+    generic_system_type = cleanup.discord.MessageType.pins_add
+    assert cleanup._matches_mode(Msg("", author_id=1, message_type=generic_system_type, automod_rule_id=123), "automod_system_messages_only", Bot()) is True
+    assert cleanup._matches_mode(Msg("AutoMod blocked a message", author_id=1, message_type=generic_system_type), "automod_system_messages_only", Bot()) is True
+
+
+def test_automod_system_messages_only_rejects_non_automod_sources(monkeypatch):
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
+    automod_type = getattr(cleanup.discord.MessageType, "auto_moderation_action")
+    generic_system_type = cleanup.discord.MessageType.pins_add
+    assert cleanup._matches_mode(Msg("human", author_id=1), "automod_system_messages_only", Bot()) is False
+    assert cleanup._matches_mode(Msg("bot", author_id=42, author_bot=True), "automod_system_messages_only", Bot()) is False
+    assert cleanup._matches_mode(Msg("", author_id=1, webhook_id=555), "automod_system_messages_only", Bot()) is False
+    assert cleanup._matches_mode(Msg("", author_id=1, message_type=generic_system_type), "automod_system_messages_only", Bot()) is False
+    assert cleanup._matches_mode(Msg("", author_id=1, pinned=True, message_type=automod_type), "automod_system_messages_only", Bot()) is False
+
+
+def test_automod_system_and_webhook_combined_mode_includes_webhooks(monkeypatch):
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
+    assert cleanup._matches_mode(Msg("", author_id=1, webhook_id=555), "automod_system_and_webhook_messages_only", Bot()) is True
+
 def test_commands_only_uses_project_prefix_fallback_not_hardcoded(monkeypatch):
     bot = Bot()
     bot.command_prefix = None
@@ -804,14 +831,10 @@ def test_zero_match_diagnostics_counts_webhooks_empty_content_and_bounded_author
     assert sample.startswith("1:2:false:2")
 
 
-def test_zero_match_diagnostics_counts_system_automod_and_message_types(
-    monkeypatch, caplog
-):
-    monkeypatch.setattr(
-        cleanup.recruitment,
-        "get_config_value",
-        lambda key, default=None, **_kwargs: default,
-    )
+
+
+def test_zero_match_diagnostics_counts_system_automod_and_message_types(monkeypatch, caplog):
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
     automod_type = getattr(cleanup.discord.MessageType, "auto_moderation_action")
     messages = [
         Msg("", author_id=1, message_type=automod_type, pinned=True),
@@ -833,17 +856,12 @@ def test_zero_match_diagnostics_counts_system_automod_and_message_types(
     )
 
     assert result.candidates == 0
-    record = next(
-        record
-        for record in caplog.records
-        if record.message.startswith("cleanup row scan complete")
-    )
+    record = next(record for record in caplog.records if record.message.startswith("cleanup row scan complete"))
     assert "system_message_count=2" in record.message
     assert "automod_system_seen=1" in record.message
     assert "message_type_counts=" in record.message
     assert "auto_moderation_action:1" in record.message
     assert "pins_add:1" in record.message
-
 
 def test_zero_match_diagnostics_counts_prefix_and_role_matches(monkeypatch, caplog):
     role = type("Role", (), {"id": 12345})()

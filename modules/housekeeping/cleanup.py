@@ -444,11 +444,9 @@ def _has_automod_indicator(message: discord.Message) -> bool:
 
 
 def _has_automod_alert_phrase(message: discord.Message) -> bool:
-    # Do not log or return message content; this is only used as a conservative
-    # local fallback for Discord.py versions without a dedicated AutoMod enum.
-    text = " ".join(
-        str(getattr(message, attr, "") or "") for attr in ("system_content", "content")
-    ).lower()
+    # Do not log or return message content; this is only a conservative local
+    # fallback for discord.py versions without a dedicated AutoMod enum.
+    text = " ".join(str(getattr(message, attr, "") or "") for attr in ("system_content", "content")).lower()
     return bool(text) and any(
         phrase in text
         for phrase in (
@@ -467,35 +465,21 @@ def _is_automod_system_message(message: discord.Message) -> bool:
         return False
     message_type = getattr(message, "type", None)
     message_type_name = _message_type_name(message).lower()
-    if message_type_name in {
-        "auto_moderation_action",
-        "automod_action",
-        "auto_moderation_alert",
-    }:
+    if message_type_name in {"auto_moderation_action", "automod_action", "auto_moderation_alert"}:
         return True
     message_type_enum = getattr(discord, "MessageType", None)
-    for enum_name in (
-        "auto_moderation_action",
-        "automod_action",
-        "auto_moderation_alert",
-    ):
+    for enum_name in ("auto_moderation_action", "automod_action", "auto_moderation_alert"):
         enum_value = getattr(message_type_enum, enum_name, None)
         if enum_value is not None and message_type == enum_value:
             return True
     default_type = getattr(message_type_enum, "default", None)
     author = getattr(message, "author", None)
-    if (
-        message_type == default_type
-        or getattr(author, "bot", False) is True
-        or _is_webhook_message(message)
-    ):
+    if message_type == default_type or getattr(author, "bot", False) is True or _is_webhook_message(message):
         return False
     return _has_automod_indicator(message) or _has_automod_alert_phrase(message)
 
 
-def _is_cleanup_bot_message(
-    message: discord.Message, bot: commands.Bot, target: Any | None = None
-) -> bool:
+def _is_cleanup_bot_message(message: discord.Message, bot: commands.Bot, target: Any | None = None) -> bool:
     author = getattr(message, "author", None)
     if author is None:
         return False
@@ -543,9 +527,7 @@ def _matches_mode(
     if mode == "bot_and_webhook_messages_only":
         return _is_cleanup_bot_or_webhook_message(message, bot, target)
     if mode == "bot_webhook_messages_and_commands":
-        return _is_cleanup_bot_or_webhook_message(
-            message, bot, target
-        ) or _is_cleanup_command_message(message, bot)
+        return _is_cleanup_bot_or_webhook_message(message, bot, target) or _is_cleanup_command_message(message, bot)
     if mode == "automod_system_messages_only":
         return _is_automod_system_message(message)
     if mode == "automod_system_and_webhook_messages_only":
@@ -568,9 +550,7 @@ def _masked_prefix_values(prefixes: Sequence[str]) -> str:
 def _format_message_type_counts(message_type_counts: Mapping[str, int]) -> str:
     if not message_type_counts:
         return "-"
-    ranked = sorted(message_type_counts.items(), key=lambda item: (-item[1], item[0]))[
-        :8
-    ]
+    ranked = sorted(message_type_counts.items(), key=lambda item: (-item[1], item[0]))[:8]
     return ",".join(f"{name}:{count}" for name, count in ranked)
 
 
@@ -679,9 +659,8 @@ async def _scan_message_history(
                 author_bucket.bot_true_count += 1
             if bot_user_id is not None and getattr(author, "id", None) == bot_user_id:
                 own_bot_author_count += 1
-            message_type_counts[_message_type_name(message)] = (
-                message_type_counts.get(_message_type_name(message), 0) + 1
-            )
+            message_type = _message_type_name(message)
+            message_type_counts[message_type] = message_type_counts.get(message_type, 0) + 1
             webhook_message = _is_webhook_message(message)
             if webhook_message:
                 webhook_message_count += 1
