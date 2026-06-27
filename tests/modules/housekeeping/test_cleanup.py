@@ -87,13 +87,28 @@ def update_map(ws):
 
 
 class Msg:
-    def __init__(self, content, *, author_id=10, pinned=False, hours_old=10, author_bot=False, roles=None):
+    def __init__(
+        self,
+        content,
+        *,
+        author_id=10,
+        pinned=False,
+        hours_old=10,
+        author_bot=False,
+        roles=None,
+        webhook_id=None,
+        message_type=None,
+        application_id=None,
+    ):
         self.content = content
         self.author = type("Author", (), {"id": author_id, "bot": author_bot, "roles": roles})()
         self.pinned = pinned
         self.created_at = datetime.now(timezone.utc) - timedelta(hours=hours_old)
         self.channel = type("Channel", (), {"id": 123})()
         self.deleted = False
+        self.webhook_id = webhook_id
+        self.type = message_type
+        self.application_id = application_id
     async def delete(self, reason=None):
         self.deleted = True
 
@@ -346,6 +361,18 @@ def test_bot_messages_only_rejects_non_bot_user_without_role(monkeypatch):
     assert cleanup._matches_mode(Msg("human", author_id=1, author_bot=False, roles=[]), "bot_messages_only", Bot()) is False
 
 
+def test_bot_messages_only_does_not_match_webhook_messages(monkeypatch):
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
+    assert cleanup._matches_mode(Msg("", author_id=1, webhook_id=555), "bot_messages_only", Bot()) is False
+
+
+def test_webhook_inclusive_modes_match_webhook_messages(monkeypatch):
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
+    assert cleanup._matches_mode(Msg("", author_id=1, webhook_id=555), "bot_and_webhook_messages_only", Bot()) is True
+    assert cleanup._matches_mode(Msg("", author_id=1, webhook_id=555), "bot_webhook_messages_and_commands", Bot()) is True
+    assert cleanup._matches_mode(Msg("!cmd", author_id=1), "bot_webhook_messages_and_commands", Bot()) is True
+
+
 def test_commands_only_uses_project_prefix_fallback_not_hardcoded(monkeypatch):
     bot = Bot()
     bot.command_prefix = None
@@ -365,6 +392,68 @@ def test_pinned_bot_and_command_messages_do_not_match_for_deletion(monkeypatch):
     monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
     assert cleanup._matches_mode(Msg("bot", author_id=99, pinned=True), "bot_messages_only", Bot()) is False
     assert cleanup._matches_mode(Msg("!cmd", author_id=1, pinned=True), "commands_only", Bot()) is False
+    assert cleanup._matches_mode(Msg("", author_id=1, pinned=True, webhook_id=555), "bot_and_webhook_messages_only", Bot()) is False
+
+
+def test_zero_match_diagnostics_counts_webhooks_empty_content_and_bounded_authors(monkeypatch, caplog):
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: default)
+    messages = [
+        Msg("", author_id=1, webhook_id=101),
+        Msg("", author_id=1, webhook_id=102),
+        Msg("plain", author_id=2),
+        Msg("", author_id=3),
+        Msg("plain", author_id=4),
+        Msg("plain", author_id=5),
+        Msg("plain", author_id=6),
+        Msg("plain", author_id=7),
+    ]
+    caplog.set_level("INFO", logger="c1c.housekeeping.cleanup")
+
+    result = asyncio.run(
+        cleanup._scan_message_history(
+            Thread(messages),
+            min_age_hours=0,
+            mode="bot_messages_only",
+            dry_run=True,
+            bot=Bot(),
+            logger=cleanup.log,
+            context={"row": 5},
+        )
+    )
+
+    assert result.candidates == 0
+    record = next(record for record in caplog.records if record.message.startswith("cleanup row scan complete"))
+    assert "webhook_message_count=2" in record.message
+    assert "empty_content_count=3" in record.message
+    assert "messages_with_content_count=5" in record.message
+    assert "unique_author_count=7" in record.message
+    sample = record.message.split("top_author_sample=", 1)[1]
+    assert sample.count(",") == 4
+    assert sample.startswith("1:2:false:2")
+
+
+def test_zero_match_diagnostics_counts_prefix_and_role_matches(monkeypatch, caplog):
+    role = type("Role", (), {"id": 12345})()
+    monkeypatch.setattr(cleanup.recruitment, "get_config_value", lambda key, default=None, **_kwargs: "12345" if key == cleanup.CONFIG_BOT_ROLE_IDS else default)
+    caplog.set_level("INFO", logger="c1c.housekeeping.cleanup")
+
+    asyncio.run(
+        cleanup._scan_message_history(
+            Thread([Msg("?cmd", author_id=1), Msg("role", author_id=2, roles=[role])]),
+            min_age_hours=0,
+            mode="commands_only",
+            dry_run=True,
+            bot=Bot(),
+            logger=cleanup.log,
+            context={"row": 5},
+        )
+    )
+
+    record = next(record for record in caplog.records if record.message.startswith("cleanup row scan complete"))
+    assert "prefix_matched_count=0" in record.message
+    assert "prefix_count=1" in record.message
+    assert "prefix_values_used=!" in record.message
+    assert "role_matched_count=1" in record.message
 
 
 def test_startup_validation_writeback_does_not_delete_when_dry_run_false(monkeypatch):
