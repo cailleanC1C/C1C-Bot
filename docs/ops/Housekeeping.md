@@ -25,14 +25,17 @@ and long-lived threads active without manual nudges.
   `last_candidate_count`, `last_skipped_count`, and `last_status`. It never overwrites admin-owned
   `enabled`, `target_id`, `cleanup_mode`, `min_age_hours`, or `notes` cells.
 - **Modes.** Supported cleanup modes are `all_non_pinned`,
-  `bot_messages_only`, `commands_only`, and `bot_messages_and_commands`.
+  `bot_messages_only`, `commands_only`, `bot_messages_and_commands`,
+  `bot_and_webhook_messages_only`, and `bot_webhook_messages_and_commands`.
+  Webhook-authored messages are diagnosed for all modes but are only eligible
+  for deletion in the explicit webhook-inclusive modes.
   Pinned messages are never deleted, and `min_age_hours` is always respected.
 - **Startup validation.** Startup schedules the recurring job and also runs a
   safe validation pass without sheet writeback, so scheduled cleanup is the
   path that records row status and deletes when dry-run is disabled.
 - **Logging.** One concise summary line per run:
   - `🧹 cleanup run complete: trigger=<scheduled_or_manual|startup_validation> checked_rows=<N> dry_run=<bool> writeback=<bool> deleted=<M> candidates=<C> skipped=<S> errors=<E>`
-  Config resolution also logs `cleanup config resolved: tab=<tab> run_every_hours=<hours> dry_run=<bool> source=<source>`. Short WARN lines capture missing/invalid sheet configuration and API failures.
+  Config resolution also logs `cleanup config resolved: tab=<tab> run_every_hours=<hours> dry_run=<bool> source=<source>`. If a row scans readable history but finds zero candidates, one compact diagnostic line adds author/source aggregates (`unique_author_count`, bot/webhook/system/content/prefix/role counters, safe masked prefix values, and a bounded `top_author_sample`) without logging message content or per-message details. Short WARN lines capture missing/invalid sheet configuration and API failures.
 
 ## Thread keepalive
 - **Purpose.** Prevents important threads from auto-archiving when idle.

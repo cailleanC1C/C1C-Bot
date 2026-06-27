@@ -60,6 +60,8 @@ ALLOWED_CLEANUP_MODES = {
     "bot_messages_only",
     "commands_only",
     "bot_messages_and_commands",
+    "bot_and_webhook_messages_only",
+    "bot_webhook_messages_and_commands",
 }
 _CLEANUP_RUN_LOCK = asyncio.Lock()
 
@@ -103,6 +105,30 @@ class CleanupRunSummary:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class ZeroMatchDiagnostics:
+    total_seen: int = 0
+    bot_author_seen: int = 0
+    command_seen: int = 0
+    unique_author_count: int = 0
+    author_bot_true_count: int = 0
+    own_bot_author_count: int = 0
+    webhook_message_count: int = 0
+    system_message_count: int = 0
+    empty_content_count: int = 0
+    messages_with_content_count: int = 0
+    prefix_matched_count: int = 0
+    role_matched_count: int = 0
+    top_author_sample: str = "-"
+
+
+@dataclass
+class _AuthorSourceCounts:
+    count: int = 0
+    bot_true_count: int = 0
+    webhook_count: int = 0
 
 
 def _short_error(exc: BaseException, *, limit: int = 180) -> str:
@@ -317,7 +343,10 @@ def _command_prefixes(bot: commands.Bot) -> tuple[str, ...]:
 
 
 def _cleanup_bot_role_ids() -> set[int]:
-    raw = recruitment.get_config_value(CONFIG_BOT_ROLE_IDS, "")
+    try:
+        raw = recruitment.get_config_value(CONFIG_BOT_ROLE_IDS, "")
+    except Exception:
+        raw = ""
     role_ids: set[int] = set()
     for part in str(raw or "").split(","):
         text = part.strip()
@@ -349,6 +378,16 @@ def _author_has_cleanup_bot_role(author: Any, target: Any | None, role_ids: set[
     return any(getattr(role, "id", None) in role_ids for role in roles)
 
 
+def _is_webhook_message(message: discord.Message) -> bool:
+    return getattr(message, "webhook_id", None) is not None
+
+
+def _is_system_message(message: discord.Message) -> bool:
+    message_type = getattr(message, "type", None)
+    default_type = getattr(getattr(discord, "MessageType", None), "default", None)
+    return message_type is not None and message_type != default_type
+
+
 def _is_cleanup_bot_message(message: discord.Message, bot: commands.Bot, target: Any | None = None) -> bool:
     author = getattr(message, "author", None)
     if author is None:
@@ -362,6 +401,10 @@ def _is_cleanup_bot_message(message: discord.Message, bot: commands.Bot, target:
         return _author_has_cleanup_bot_role(author, target, _cleanup_bot_role_ids())
     except Exception:
         return False
+
+
+def _is_cleanup_bot_or_webhook_message(message: discord.Message, bot: commands.Bot, target: Any | None = None) -> bool:
+    return _is_cleanup_bot_message(message, bot, target) or _is_webhook_message(message)
 
 
 def _is_cleanup_command_message(message: discord.Message, bot: commands.Bot) -> bool:
@@ -382,7 +425,34 @@ def _matches_mode(message: discord.Message, mode: str, bot: commands.Bot, target
         return _is_cleanup_command_message(message, bot)
     if mode == "bot_messages_and_commands":
         return _is_cleanup_bot_message(message, bot, target) or _is_cleanup_command_message(message, bot)
+    if mode == "bot_and_webhook_messages_only":
+        return _is_cleanup_bot_or_webhook_message(message, bot, target)
+    if mode == "bot_webhook_messages_and_commands":
+        return _is_cleanup_bot_or_webhook_message(message, bot, target) or _is_cleanup_command_message(message, bot)
     return False
+
+
+def _masked_prefix_values(prefixes: Sequence[str]) -> str:
+    if not prefixes:
+        return "-"
+    values: list[str] = []
+    for prefix in prefixes[:5]:
+        if len(prefix) <= 1:
+            values.append(prefix)
+        else:
+            values.append(f"{prefix[:1]}…({len(prefix)})")
+    return ",".join(values)
+
+
+def _format_top_author_sample(author_counts: Mapping[str, _AuthorSourceCounts]) -> str:
+    if not author_counts:
+        return "-"
+    parts: list[str] = []
+    ranked = sorted(author_counts.items(), key=lambda item: (-item[1].count, item[0]))[:5]
+    for author_id, counts in ranked:
+        bot_flag = "true" if counts.bot_true_count else "false"
+        parts.append(f"{author_id}:{counts.count}:{bot_flag}:{counts.webhook_count}")
+    return ",".join(parts)
 
 
 async def _delete_messages(messages: Sequence[discord.Message], logger: logging.Logger) -> CleanupResult:
@@ -425,17 +495,61 @@ async def _scan_message_history(target: Any, *, min_age_hours: float, mode: str,
     candidates: list[discord.Message] = []
     skipped = 0
     cutoff = _utc_now() - timedelta(hours=min_age_hours)
+    prefixes = _command_prefixes(bot)
     try:
         if context is not None:
             context["stage"] = "scan_history"
         total_seen = 0
         bot_author_seen = 0
         command_seen = 0
+        author_counts: dict[str, _AuthorSourceCounts] = {}
+        author_bot_true_count = 0
+        own_bot_author_count = 0
+        webhook_message_count = 0
+        system_message_count = 0
+        empty_content_count = 0
+        messages_with_content_count = 0
+        prefix_matched_count = 0
+        role_matched_count = 0
+        role_ids = _cleanup_bot_role_ids()
+        bot_user = getattr(bot, "user", None)
+        bot_user_id = getattr(bot_user, "id", None)
         async for message in target.history(limit=None, oldest_first=True):
             total_seen += 1
+            author = getattr(message, "author", None)
+            author_id = str(getattr(author, "id", "unknown"))
+            author_bucket = author_counts.setdefault(author_id, _AuthorSourceCounts())
+            author_bucket.count += 1
+            author_bot = getattr(author, "bot", False) is True
+            if author_bot:
+                author_bot_true_count += 1
+                author_bucket.bot_true_count += 1
+            if bot_user_id is not None and getattr(author, "id", None) == bot_user_id:
+                own_bot_author_count += 1
+            webhook_message = _is_webhook_message(message)
+            if webhook_message:
+                webhook_message_count += 1
+                author_bucket.webhook_count += 1
+            if _is_system_message(message):
+                system_message_count += 1
+            content = getattr(message, "content", "") or ""
+            prefix_match = False
+            if content:
+                messages_with_content_count += 1
+                prefix_match = any(content.startswith(prefix) for prefix in prefixes)
+                if prefix_match:
+                    prefix_matched_count += 1
+            else:
+                empty_content_count += 1
+            try:
+                role_matched = _author_has_cleanup_bot_role(author, target, role_ids)
+            except Exception:
+                role_matched = False
+            if role_matched:
+                role_matched_count += 1
             if _is_cleanup_bot_message(message, bot, target):
                 bot_author_seen += 1
-            if _is_cleanup_command_message(message, bot):
+            if prefix_match:
                 command_seen += 1
             created = _normalize_timestamp(getattr(message, "created_at", None))
             if getattr(message, "pinned", False) or created is None or created > cutoff or not _matches_mode(message, mode, bot, target):
@@ -447,16 +561,43 @@ async def _scan_message_history(target: Any, *, min_age_hours: float, mode: str,
     except discord.HTTPException as exc:
         logger.warning("cleanup history fetch failed: target_id=%s error=%s", getattr(target, "id", None), exc)
         return CleanupResult("fetch_failed", 0, len(candidates), skipped, 1)
-    if not candidates:
+    if total_seen > 0 and not candidates:
+        diagnostics = ZeroMatchDiagnostics(
+            total_seen=total_seen,
+            bot_author_seen=bot_author_seen,
+            command_seen=command_seen,
+            unique_author_count=len(author_counts),
+            author_bot_true_count=author_bot_true_count,
+            own_bot_author_count=own_bot_author_count,
+            webhook_message_count=webhook_message_count,
+            system_message_count=system_message_count,
+            empty_content_count=empty_content_count,
+            messages_with_content_count=messages_with_content_count,
+            prefix_matched_count=prefix_matched_count,
+            role_matched_count=role_matched_count,
+            top_author_sample=_format_top_author_sample(author_counts),
+        )
         logger.info(
-            "cleanup row scan complete: row=%s target_id=%s mode=%s total_seen=%s candidates=0 skipped=%s bot_author_seen=%s command_seen=%s",
+            "cleanup row scan complete: row=%s target_id=%s mode=%s total_seen=%s candidates=0 skipped=%s bot_author_seen=%s command_seen=%s unique_author_count=%s author_bot_true_count=%s own_bot_author_count=%s webhook_message_count=%s system_message_count=%s empty_content_count=%s messages_with_content_count=%s prefix_matched_count=%s prefix_count=%s prefix_values_used=%s role_matched_count=%s top_author_sample=%s",
             (context or {}).get("row"),
             getattr(target, "id", None),
             mode,
-            total_seen,
+            diagnostics.total_seen,
             skipped,
-            bot_author_seen,
-            command_seen,
+            diagnostics.bot_author_seen,
+            diagnostics.command_seen,
+            diagnostics.unique_author_count,
+            diagnostics.author_bot_true_count,
+            diagnostics.own_bot_author_count,
+            diagnostics.webhook_message_count,
+            diagnostics.system_message_count,
+            diagnostics.empty_content_count,
+            diagnostics.messages_with_content_count,
+            diagnostics.prefix_matched_count,
+            len(prefixes),
+            _masked_prefix_values(prefixes),
+            diagnostics.role_matched_count,
+            diagnostics.top_author_sample,
         )
     if dry_run:
         return CleanupResult("dry_run_ok", 0, len(candidates), skipped, 0)
