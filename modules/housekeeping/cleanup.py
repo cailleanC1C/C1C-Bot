@@ -404,7 +404,7 @@ def _row_update(row: CleanupRow, header_map: Mapping[str, int], updates: Mapping
 async def _flush_updates(worksheet: Any, updates: Mapping[str, str]) -> None:
     if not updates:
         return
-    await async_core.acall_with_backoff(
+    await async_core.a_to_thread_with_backoff(
         worksheet.batch_update,
         [{"range": cell, "values": [[value]]} for cell, value in updates.items()],
     )
@@ -452,7 +452,7 @@ async def _run_cleanup_locked(
             worksheet = await async_core.aget_worksheet(recruitment.get_recruitment_sheet_id(), config.tab_name)
             stage = "read_values"
             context["stage"] = stage
-            values = await async_core.acall_with_backoff(worksheet.get_all_values)
+            values = await async_core.a_to_thread_with_backoff(worksheet.get_all_values)
             if not values:
                 raise ValueError("cleanup tab is empty")
             stage = "build_headers"
