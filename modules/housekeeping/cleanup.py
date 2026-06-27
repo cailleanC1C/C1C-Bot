@@ -24,6 +24,9 @@ CONFIG_ENABLED = "HOUSEKEEPING_CLEANUP_ENABLED"
 CONFIG_TAB = "HOUSEKEEPING_CLEANUP_TAB"
 CONFIG_RUN_EVERY_HOURS = "HOUSEKEEPING_CLEANUP_RUN_EVERY_HOURS"
 CONFIG_DRY_RUN = "HOUSEKEEPING_CLEANUP_DRY_RUN"
+CONFIG_DELETE_BATCH_SIZE = "HOUSEKEEPING_CLEANUP_DELETE_BATCH_SIZE"
+CONFIG_DELETE_BATCH_PAUSE_SECONDS = "HOUSEKEEPING_CLEANUP_DELETE_BATCH_PAUSE_SECONDS"
+CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS = "HOUSEKEEPING_CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS"
 CONFIG_BOT_ROLE_IDS = "HOUSEKEEPING_CLEANUP_BOT_ROLE_IDS"
 REQUIRED_CONFIG_KEYS = (CONFIG_TAB, CONFIG_RUN_EVERY_HOURS, CONFIG_DRY_RUN)
 REQUIRED_HEADERS = (
@@ -55,6 +58,9 @@ ALLOWED_TARGET_TYPES = {"thread", "channel"}
 # ``target_type=channel`` means cleanup of the configured target's own
 # message history. Child threads are not discovered or traversed automatically.
 SUPPORTED_TARGET_TYPES = {"thread", "channel"}
+CLEANUP_DELETE_BATCH_SIZE = 25
+CLEANUP_DELETE_BATCH_PAUSE_SECONDS = 2.0
+CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS = 0.15
 ALLOWED_CLEANUP_MODES = {
     "all_non_pinned",
     "bot_messages_only",
@@ -75,6 +81,9 @@ class CleanupConfig:
     run_every_hours: float
     dry_run: bool
     source: str = "Config"
+    delete_batch_size: int = CLEANUP_DELETE_BATCH_SIZE
+    delete_batch_pause_seconds: float = CLEANUP_DELETE_BATCH_PAUSE_SECONDS
+    delete_per_message_pause_seconds: float = CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS
 
 
 @dataclass
@@ -213,6 +222,70 @@ def _parse_nonnegative_hours(value: str | None) -> float | None:
     return parsed if parsed >= 0 else None
 
 
+def _parse_positive_int(value: str | None) -> int | None:
+    try:
+        parsed = int((value or "").strip())
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _resolve_optional_pacing_config(
+    logger: logging.Logger,
+    *,
+    force_refresh: bool,
+) -> tuple[int, float, float]:
+    raw = {
+        CONFIG_DELETE_BATCH_SIZE: recruitment.get_config_value(
+            CONFIG_DELETE_BATCH_SIZE, None, force=force_refresh
+        ),
+        CONFIG_DELETE_BATCH_PAUSE_SECONDS: recruitment.get_config_value(
+            CONFIG_DELETE_BATCH_PAUSE_SECONDS, None, force=force_refresh
+        ),
+        CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS: recruitment.get_config_value(
+            CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS, None, force=force_refresh
+        ),
+    }
+    batch_size = CLEANUP_DELETE_BATCH_SIZE
+    batch_pause = CLEANUP_DELETE_BATCH_PAUSE_SECONDS
+    per_message_pause = CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS
+
+    if raw[CONFIG_DELETE_BATCH_SIZE] is not None and str(raw[CONFIG_DELETE_BATCH_SIZE]).strip():
+        parsed_batch_size = _parse_positive_int(raw[CONFIG_DELETE_BATCH_SIZE])
+        if parsed_batch_size is None:
+            logger.warning(
+                "cleanup pacing config invalid; using default: key=%s value=%r default=%s",
+                CONFIG_DELETE_BATCH_SIZE,
+                raw[CONFIG_DELETE_BATCH_SIZE],
+                CLEANUP_DELETE_BATCH_SIZE,
+            )
+        else:
+            batch_size = parsed_batch_size
+    if raw[CONFIG_DELETE_BATCH_PAUSE_SECONDS] is not None and str(raw[CONFIG_DELETE_BATCH_PAUSE_SECONDS]).strip():
+        parsed_batch_pause = _parse_nonnegative_hours(raw[CONFIG_DELETE_BATCH_PAUSE_SECONDS])
+        if parsed_batch_pause is None:
+            logger.warning(
+                "cleanup pacing config invalid; using default: key=%s value=%r default=%s",
+                CONFIG_DELETE_BATCH_PAUSE_SECONDS,
+                raw[CONFIG_DELETE_BATCH_PAUSE_SECONDS],
+                CLEANUP_DELETE_BATCH_PAUSE_SECONDS,
+            )
+        else:
+            batch_pause = parsed_batch_pause
+    if raw[CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS] is not None and str(raw[CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS]).strip():
+        parsed_per_message_pause = _parse_nonnegative_hours(raw[CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS])
+        if parsed_per_message_pause is None:
+            logger.warning(
+                "cleanup pacing config invalid; using default: key=%s value=%r default=%s",
+                CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS,
+                raw[CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS],
+                CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS,
+            )
+        else:
+            per_message_pause = parsed_per_message_pause
+    return batch_size, batch_pause, per_message_pause
+
+
 def resolve_cleanup_config(
     logger: logging.Logger | None = None,
     *,
@@ -261,18 +334,29 @@ def resolve_cleanup_config(
     if dry_run is None:
         logger.warning("cleanup not scheduled; invalid Config key %s", CONFIG_DRY_RUN)
         return None
+    batch_size, batch_pause, per_message_pause = _resolve_optional_pacing_config(
+        logger, force_refresh=force_refresh
+    )
     config = CleanupConfig(
         True,
         str(raw[CONFIG_TAB]).strip(),
         run_every,
         dry_run,
+        delete_batch_size=batch_size,
+        delete_batch_pause_seconds=batch_pause,
+        delete_per_message_pause_seconds=per_message_pause,
         source=f"{recruitment.get_config_tab_name()}:Config",
     )
     logger.info(
-        "cleanup config resolved: tab=%s run_every_hours=%s dry_run=%s source=%s",
+        "cleanup config resolved: tab=%s run_every_hours=%s dry_run=%s "
+        "delete_batch_size=%s delete_batch_pause_seconds=%s "
+        "delete_per_message_pause_seconds=%s source=%s",
         config.tab_name,
         f"{config.run_every_hours:g}",
         str(config.dry_run).lower(),
+        config.delete_batch_size,
+        config.delete_batch_pause_seconds,
+        config.delete_per_message_pause_seconds,
         config.source,
     )
     return config
@@ -568,10 +652,40 @@ def _format_top_author_sample(author_counts: Mapping[str, _AuthorSourceCounts]) 
 
 
 async def _delete_messages(
-    messages: Sequence[discord.Message], logger: logging.Logger
+    messages: Sequence[discord.Message],
+    logger: logging.Logger,
+    *,
+    batch_size: int | None = None,
+    batch_pause_seconds: float | None = None,
+    per_message_pause_seconds: float | None = None,
 ) -> CleanupResult:
     deleted = errors = 0
-    for message in messages:
+    total_messages = len(messages)
+    batch_size = max(1, batch_size or CLEANUP_DELETE_BATCH_SIZE)
+    batch_pause_seconds = (
+        CLEANUP_DELETE_BATCH_PAUSE_SECONDS
+        if batch_pause_seconds is None
+        else batch_pause_seconds
+    )
+    per_message_pause_seconds = (
+        CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS
+        if per_message_pause_seconds is None
+        else per_message_pause_seconds
+    )
+    target_id = (
+        getattr(getattr(messages[0], "channel", None), "id", None) if messages else None
+    )
+    if total_messages > batch_size:
+        logger.info(
+            "cleanup delete batch run: target_id=%s candidates=%s batch_size=%s "
+            "batch_pause=%s per_message_pause=%s",
+            target_id,
+            total_messages,
+            batch_size,
+            batch_pause_seconds,
+            per_message_pause_seconds,
+        )
+    for index, message in enumerate(messages):
         try:
             try:
                 await message.delete(reason="housekeeping cleanup")
@@ -581,7 +695,7 @@ async def _delete_messages(
                     raise
                 await message.delete()
         except discord.NotFound:
-            continue
+            pass
         except discord.Forbidden:
             errors += 1
             return CleanupResult(
@@ -604,6 +718,22 @@ async def _delete_messages(
             errors += 1
         else:
             deleted += 1
+
+        has_more_messages = index < total_messages - 1
+        if not has_more_messages:
+            continue
+        if (index + 1) % batch_size == 0:
+            await asyncio.sleep(batch_pause_seconds)
+        elif per_message_pause_seconds > 0:
+            await asyncio.sleep(per_message_pause_seconds)
+
+    if total_messages > batch_size:
+        logger.info(
+            "cleanup delete batch complete: target_id=%s deleted=%s errors=%s",
+            target_id,
+            deleted,
+            errors,
+        )
     if errors and deleted:
         return CleanupResult("partial_delete_failed", deleted, len(messages), 0, errors)
     if errors:
@@ -622,6 +752,7 @@ async def _scan_message_history(
     bot: commands.Bot,
     logger: logging.Logger,
     context: dict[str, Any] | None = None,
+    cleanup_config: CleanupConfig | None = None,
 ) -> CleanupResult:
     candidates: list[discord.Message] = []
     skipped = 0
@@ -753,7 +884,17 @@ async def _scan_message_history(
         return CleanupResult("dry_run_ok", 0, len(candidates), skipped, 0)
     if context is not None:
         context["stage"] = "delete_messages"
-    result = await _delete_messages(candidates, logger)
+    result = await _delete_messages(
+        candidates,
+        logger,
+        batch_size=(cleanup_config.delete_batch_size if cleanup_config else None),
+        batch_pause_seconds=(
+            cleanup_config.delete_batch_pause_seconds if cleanup_config else None
+        ),
+        per_message_pause_seconds=(
+            cleanup_config.delete_per_message_pause_seconds if cleanup_config else None
+        ),
+    )
     result.candidates = len(candidates)
     result.skipped = skipped
     return result
@@ -768,6 +909,7 @@ async def _scan_thread(
     bot: commands.Bot,
     logger: logging.Logger,
     context: dict[str, Any] | None = None,
+    cleanup_config: CleanupConfig | None = None,
 ) -> CleanupResult:
     return await _scan_message_history(
         thread,
@@ -777,6 +919,7 @@ async def _scan_thread(
         bot=bot,
         logger=logger,
         context=context,
+        cleanup_config=cleanup_config,
     )
 
 
@@ -789,6 +932,7 @@ async def _scan_channel(
     bot: commands.Bot,
     logger: logging.Logger,
     context: dict[str, Any] | None = None,
+    cleanup_config: CleanupConfig | None = None,
 ) -> CleanupResult:
     """Clean only the configured channel target's own message history.
 
@@ -802,6 +946,7 @@ async def _scan_channel(
         bot=bot,
         logger=logger,
         context=context,
+        cleanup_config=cleanup_config,
     )
 
 
@@ -1051,6 +1196,7 @@ async def _run_cleanup_locked(
                     bot=bot,
                     logger=logger,
                     context=context,
+                    cleanup_config=config,
                 )
             else:
                 result = await _scan_channel(
@@ -1061,6 +1207,7 @@ async def _run_cleanup_locked(
                     bot=bot,
                     logger=logger,
                     context=context,
+                    cleanup_config=config,
                 )
             summary.deleted += result.deleted
             summary.candidates += result.candidates
