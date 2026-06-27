@@ -469,3 +469,54 @@ def test_empty_thread_id_posts_to_channel_id(monkeypatch) -> None:
 
     assert len(channel.sent) == 1
     assert updates[-1]["reset_time"] == reference
+
+
+def test_reset_reminder_load_timeout_ops_log_is_rate_limited_and_recovers(monkeypatch) -> None:
+    now = dt.datetime(2026, 5, 29, 8, 0, tzinfo=dt.timezone.utc)
+    sent_logs = []
+    outcomes = [TimeoutError(), TimeoutError(), ("ResetTab", {}, [])]
+
+    async def _load(*, active_only: bool):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            setattr(outcome, "reset_reminder_stage", "sheet_fetch")
+            setattr(outcome, "reset_reminder_tab", "ResetTab")
+            setattr(outcome, "reset_reminder_elapsed", 30.0)
+            raise outcome
+        return outcome
+
+    async def _send(message: str):
+        sent_logs.append(message)
+
+    monkeypatch.setattr(scheduler, "_is_feature_enabled", lambda: True)
+    monkeypatch.setattr(scheduler, "_load_reset_reminder_records", _load)
+    monkeypatch.setattr(scheduler, "_send_ops_log", _send)
+    monkeypatch.setattr(scheduler, "_load_failure_state", {"key": None, "last_alert": 0.0, "failures": 0})
+    monkeypatch.setattr(scheduler, "time", SimpleNamespace(monotonic=lambda: 100.0))
+
+    bot = _DummyBot(_DummyChannel())
+    asyncio.run(scheduler.process_reset_reminders(bot, now=now))
+    asyncio.run(scheduler.process_reset_reminders(bot, now=now))
+    asyncio.run(scheduler.process_reset_reminders(bot, now=now))
+
+    assert sent_logs == [
+        "⚠️ Reset reminders failed to load; scheduler tick skipped. See app logs. error=TimeoutError",
+        "✅ Reset reminders loaded again after 2 failed tick(s).",
+    ]
+
+
+def test_reset_reminder_scheduler_runner_continues_after_timeout(monkeypatch) -> None:
+    runtime = SimpleNamespace(bot=_DummyBot(_DummyChannel()), scheduler=_FakeScheduler())
+    calls = {"count": 0}
+
+    async def _process(_bot):
+        calls["count"] += 1
+
+    monkeypatch.setattr(scheduler, "_is_feature_enabled", lambda: True)
+    monkeypatch.setattr(scheduler, "process_reset_reminders", _process)
+
+    scheduler.schedule_reset_reminder_jobs(runtime)
+    asyncio.run(runtime.scheduler.jobs[0]._runner())
+    asyncio.run(runtime.scheduler.jobs[0]._runner())
+
+    assert calls["count"] == 2

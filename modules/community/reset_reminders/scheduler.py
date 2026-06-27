@@ -4,6 +4,7 @@ import datetime as dt
 import logging
 import math
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -27,6 +28,8 @@ log = logging.getLogger("c1c.community.reset_reminders.scheduler")
 _RESET_REMINDER_TAB_KEY = "RESET_REMINDER_TAB"
 _FEATURE_TOGGLE_KEY = "reset_reminders"
 _INVALID_ROW_ALERT_DEDUPER = EventDeduper(window_s=900.0, max_keys=128)
+_LOAD_FAILURE_ALERT_COOLDOWN_SEC = 1800.0
+_load_failure_state: dict[str, Any] = {"key": None, "last_alert": 0.0, "failures": 0}
 _PROCESS_LOCK = asyncio.Lock()
 _REQUIRED_COLUMNS: tuple[str, ...] = (
     "reset_id",
@@ -136,12 +139,36 @@ def _resolve_header_map(header: list[Any]) -> dict[str, int]:
 
 
 async def _load_reset_reminder_records(*, active_only: bool) -> tuple[str, dict[str, int], list[_ResetReminderRecord]]:
-    tab_name = _tab_name()
-    matrix = await afetch_values(_sheet_id(), tab_name)
-    if not matrix:
-        return tab_name, {}, []
+    stage = "config_load"
+    started = time.monotonic()
+    tab_name = "unknown"
+    try:
+        tab_name = _tab_name()
+        sheet_id = _sheet_id()
+        stage = "sheet_fetch"
+        matrix = await afetch_values(sheet_id, tab_name)
+        if not matrix:
+            return tab_name, {}, []
 
-    header_map = _resolve_header_map(matrix[0])
+        stage = "parse_rows"
+        header_map = _resolve_header_map(matrix[0])
+    except Exception as exc:
+        elapsed = time.monotonic() - started
+        setattr(exc, "reset_reminder_stage", stage)
+        setattr(exc, "reset_reminder_tab", tab_name)
+        setattr(exc, "reset_reminder_elapsed", elapsed)
+        log.exception(
+            "reset reminder load failed",
+            extra={
+                "scheduler": "reset_reminders",
+                "config_key": _RESET_REMINDER_TAB_KEY,
+                "tab": tab_name,
+                "operation": stage,
+                "timeout_type": type(exc).__name__ if isinstance(exc, TimeoutError) else "",
+                "elapsed_s": round(elapsed, 3),
+            },
+        )
+        raise
     records: list[_ResetReminderRecord] = []
     invalid_rows: list[dict[str, Any]] = []
 
@@ -270,6 +297,52 @@ async def _send_ops_log(message: str) -> None:
         await rt.send_log_message(message)
     except Exception:
         log.warning("failed to send reset reminder ops alert", exc_info=True)
+
+
+def _load_failure_key(exc: Exception) -> str:
+    stage = getattr(exc, "reset_reminder_stage", "unknown")
+    tab = getattr(exc, "reset_reminder_tab", "unknown")
+    return f"{type(exc).__name__}:{stage}:{tab}"
+
+
+async def _record_load_failure(exc: Exception) -> None:
+    state = _load_failure_state
+    key = _load_failure_key(exc)
+    now = time.monotonic()
+    previous_key = state.get("key")
+    state["key"] = key
+    state["failures"] = (int(state.get("failures") or 0) + 1) if previous_key == key else 1
+
+    stage = getattr(exc, "reset_reminder_stage", "unknown")
+    tab = getattr(exc, "reset_reminder_tab", "unknown")
+    elapsed = getattr(exc, "reset_reminder_elapsed", None)
+    log.exception(
+        "failed to load reset reminders; scheduler tick skipped",
+        extra={
+            "scheduler": "reset_reminders",
+            "config_key": _RESET_REMINDER_TAB_KEY,
+            "tab": tab,
+            "operation": stage,
+            "timeout_type": type(exc).__name__ if isinstance(exc, TimeoutError) else "",
+            "elapsed_s": round(float(elapsed), 3) if isinstance(elapsed, (int, float)) else None,
+            "failure_count": state["failures"],
+        },
+    )
+
+    last_alert = float(state.get("last_alert") or 0.0)
+    if previous_key != key or now - last_alert >= _LOAD_FAILURE_ALERT_COOLDOWN_SEC:
+        state["last_alert"] = now
+        await _send_ops_log(
+            "⚠️ Reset reminders failed to load; scheduler tick skipped. "
+            f"See app logs. error={type(exc).__name__}"
+        )
+
+
+async def _record_load_success() -> None:
+    failures = int(_load_failure_state.get("failures") or 0)
+    if failures > 0:
+        await _send_ops_log(f"✅ Reset reminders loaded again after {failures} failed tick(s).")
+    _load_failure_state.update({"key": None, "last_alert": 0.0, "failures": 0})
 
 
 async def _resolve_target_channel(bot: commands.Bot, reminder: ResetReminder) -> discord.abc.Messageable | None:
@@ -407,12 +480,9 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
         try:
             tab_name, header_map, records = await _load_reset_reminder_records(active_only=True)
         except Exception as exc:
-            log.exception("failed to load reset reminders; scheduler tick skipped")
-            await _send_ops_log(
-                "⚠️ Reset reminders failed to load; scheduler tick skipped "
-                f"• error={type(exc).__name__}: {str(exc)[:180]}"
-            )
+            await _record_load_failure(exc)
             return
+        await _record_load_success()
 
         if not records:
             return
@@ -582,4 +652,5 @@ __all__ = [
     "process_reset_reminders",
     "register_persistent_reset_views",
     "schedule_reset_reminder_jobs",
+    "_load_failure_state",
 ]

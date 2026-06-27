@@ -1,4 +1,6 @@
 import asyncio
+import pytest
+from discord.ext import commands
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 
@@ -486,6 +488,96 @@ def test_cleanup_schedules_only_when_global_and_cleanup_toggles_enabled(monkeypa
     registration_notice = rt.scheduler.spawned[1]["coro"]
     asyncio.run(registration_notice)
     assert sent_logs == [
+        "🧹 cleanup watcher tick: startup_validation=false writeback=true",
         "🧹 cleanup watcher scheduled: every=6h dry_run=true "
-        "tab=CleanupRows next_run=2026-06-26T12:00:00Z"
+        "tab=CleanupRows next_run=2026-06-26T12:00:00Z",
     ]
+
+
+def test_cleanup_manual_command_is_admin_only():
+    admin_checks = [
+        check for check in cleanup.CleanupCog.cleanup_run.checks
+        if getattr(check, "__module__", "") == "c1c_coreops.rbac"
+        and getattr(check, "__qualname__", "").startswith("admin_only")
+    ]
+    assert admin_checks, "!cleanup run must use the shared admin_only gate"
+
+    replies = []
+
+    class Ctx:
+        guild = object()
+        author = object()
+        command = cleanup.CleanupCog.cleanup_run
+
+        async def reply(self, message, *, mention_author=False):
+            replies.append((message, mention_author))
+
+    with pytest.raises(commands.CheckFailure):
+        asyncio.run(admin_checks[0](Ctx()))
+    assert replies == [("Admins only.", False)]
+
+
+def test_cleanup_manual_command_calls_real_cleanup(monkeypatch, caplog):
+    calls = []
+    replies = []
+    sent_logs = []
+
+    async def fake_run_cleanup(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    async def fake_send_log(message):
+        sent_logs.append(message)
+
+    class Ctx:
+        bot = object()
+        author = SimpleNamespace(id=1234)
+        channel = SimpleNamespace(id=5678)
+
+        async def reply(self, message, *, mention_author=False):
+            replies.append((message, mention_author))
+
+    monkeypatch.setattr(cleanup, "run_cleanup", fake_run_cleanup)
+    monkeypatch.setattr(cleanup.runtime_helpers, "send_log_message", fake_send_log)
+    caplog.set_level("INFO", logger="c1c.housekeeping.cleanup")
+
+    cog = cleanup.CleanupCog(object())
+    asyncio.run(cog.cleanup_run.callback(cog, Ctx()))
+
+    assert replies == [("Cleanup run started.", False)]
+    assert sent_logs == ["🧹 cleanup manual run requested: actor=1234 channel=5678"]
+    assert "cleanup manual run requested: actor=1234 channel=5678" in caplog.text
+    assert calls[0][0] == (Ctx.bot, cleanup.log)
+    assert calls[0][1] == {"startup_validation": False, "writeback": True}
+
+
+def test_cleanup_manual_command_handles_failure(monkeypatch, caplog):
+    replies = []
+    sent_logs = []
+
+    async def fake_run_cleanup(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    async def fake_send_log(message):
+        sent_logs.append(message)
+
+    class Ctx:
+        bot = object()
+        author = SimpleNamespace(id=1234)
+        channel = SimpleNamespace(id=5678)
+
+        async def reply(self, message, *, mention_author=False):
+            replies.append((message, mention_author))
+
+    monkeypatch.setattr(cleanup, "run_cleanup", fake_run_cleanup)
+    monkeypatch.setattr(cleanup.runtime_helpers, "send_log_message", fake_send_log)
+    caplog.set_level("ERROR", logger="c1c.housekeeping.cleanup")
+
+    cog = cleanup.CleanupCog(object())
+    asyncio.run(cog.cleanup_run.callback(cog, Ctx()))
+
+    assert replies == [("Cleanup run started.", False), ("Cleanup run failed; see logs.", False)]
+    assert sent_logs == [
+        "🧹 cleanup manual run requested: actor=1234 channel=5678",
+        "🧹 cleanup manual run failed; see app logs",
+    ]
+    assert "cleanup manual run failed" in caplog.text
