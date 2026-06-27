@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -83,6 +83,30 @@ class CleanupResult:
     candidates: int = 0
     skipped: int = 0
     errors: int = 0
+
+
+@dataclass
+class CleanupRunSummary:
+    checked_rows: int = 0
+    dry_run: bool = False
+    writeback: bool = True
+    deleted: int = 0
+    candidates: int = 0
+    skipped: int = 0
+    errors: int = 0
+    status: str = "ok"
+    first_error: str = ""
+    summary_notice_failed: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def _short_error(exc: BaseException, *, limit: int = 180) -> str:
+    text = " ".join(str(exc).split()) or exc.__class__.__name__
+    if len(text) > limit:
+        text = text[: max(0, limit - 1)].rstrip() + "…"
+    return text
 
 
 def _utc_now() -> datetime:
@@ -276,11 +300,13 @@ async def _delete_messages(messages: Sequence[discord.Message], logger: logging.
     return CleanupResult("deleted" if deleted else "ok_no_matches", deleted, len(messages), 0, 0)
 
 
-async def _scan_message_history(target: Any, *, min_age_hours: float, mode: str, dry_run: bool, bot: commands.Bot, logger: logging.Logger) -> CleanupResult:
+async def _scan_message_history(target: Any, *, min_age_hours: float, mode: str, dry_run: bool, bot: commands.Bot, logger: logging.Logger, context: dict[str, Any] | None = None) -> CleanupResult:
     candidates: list[discord.Message] = []
     skipped = 0
     cutoff = _utc_now() - timedelta(hours=min_age_hours)
     try:
+        if context is not None:
+            context["stage"] = "scan_history"
         async for message in target.history(limit=None, oldest_first=True):
             created = _normalize_timestamp(getattr(message, "created_at", None))
             if getattr(message, "pinned", False) or created is None or created > cutoff or not _matches_mode(message, mode, bot):
@@ -294,22 +320,24 @@ async def _scan_message_history(target: Any, *, min_age_hours: float, mode: str,
         return CleanupResult("fetch_failed", 0, len(candidates), skipped, 1)
     if dry_run:
         return CleanupResult("dry_run_ok", 0, len(candidates), skipped, 0)
+    if context is not None:
+        context["stage"] = "delete_messages"
     result = await _delete_messages(candidates, logger)
     result.candidates = len(candidates)
     result.skipped = skipped
     return result
 
 
-async def _scan_thread(thread: discord.Thread, *, min_age_hours: float, mode: str, dry_run: bool, bot: commands.Bot, logger: logging.Logger) -> CleanupResult:
-    return await _scan_message_history(thread, min_age_hours=min_age_hours, mode=mode, dry_run=dry_run, bot=bot, logger=logger)
+async def _scan_thread(thread: discord.Thread, *, min_age_hours: float, mode: str, dry_run: bool, bot: commands.Bot, logger: logging.Logger, context: dict[str, Any] | None = None) -> CleanupResult:
+    return await _scan_message_history(thread, min_age_hours=min_age_hours, mode=mode, dry_run=dry_run, bot=bot, logger=logger, context=context)
 
 
-async def _scan_channel(channel: Any, *, min_age_hours: float, mode: str, dry_run: bool, bot: commands.Bot, logger: logging.Logger) -> CleanupResult:
+async def _scan_channel(channel: Any, *, min_age_hours: float, mode: str, dry_run: bool, bot: commands.Bot, logger: logging.Logger, context: dict[str, Any] | None = None) -> CleanupResult:
     """Clean only the configured channel target's own message history.
 
     Child threads are not discovered or traversed automatically.
     """
-    return await _scan_message_history(channel, min_age_hours=min_age_hours, mode=mode, dry_run=dry_run, bot=bot, logger=logger)
+    return await _scan_message_history(channel, min_age_hours=min_age_hours, mode=mode, dry_run=dry_run, bot=bot, logger=logger, context=context)
 
 
 def _cell_name(row: int, col_zero: int) -> str:
@@ -338,103 +366,171 @@ async def run_cleanup(
     *,
     startup_validation: bool = False,
     writeback: bool = True,
-) -> None:
+) -> CleanupRunSummary:
     logger = logger or log
-    config = resolve_cleanup_config(logger)
-    if config is None or not config.enabled:
-        return
-
-    checked_rows = deleted_total = candidate_total = skipped_total = errors = 0
-    updates: dict[str, str] = {}
+    stage = "resolve_config"
+    context: dict[str, Any] = {"stage": stage, "target_id": None, "target_type": None, "row": None}
+    summary = CleanupRunSummary(writeback=writeback)
     try:
-        worksheet = await async_core.aget_worksheet(recruitment.get_recruitment_sheet_id(), config.tab_name)
-        values = await asyncio.to_thread(worksheet.get_all_values)
-        if not values:
-            raise ValueError("cleanup tab is empty")
-        header_map = build_header_map(values[0])
-        rows = rows_from_values(values, header_map)
-    except Exception as exc:
-        logger.warning("cleanup sheet unavailable or invalid: %s", exc)
-        return
+        config = resolve_cleanup_config(logger)
+        if config is None or not config.enabled:
+            summary.status = "disabled"
+            return summary
 
-    effective_dry_run = config.dry_run or startup_validation
-    for row in rows:
-        now_text = _format_utc(_utc_now())
-        base_update = {"last_checked_at_utc": now_text, "last_deleted_count": "0", "last_candidate_count": "0", "last_skipped_count": "0"}
-        enabled = _parse_bool(row.values.get("enabled"))
-        if enabled is None:
-            errors += 1
-            updates.update(_row_update(row, header_map, base_update | {"last_status": "invalid_enabled"}))
-            continue
-        if not enabled:
-            updates.update(_row_update(row, header_map, base_update | {"last_status": "disabled"}))
-            continue
-        checked_rows += 1
+        effective_dry_run = config.dry_run or startup_validation
+        summary.dry_run = effective_dry_run
+        updates: dict[str, str] = {}
         try:
-            target_id = int(row.values.get("target_id", ""))
-        except ValueError:
-            errors += 1
-            updates.update(_row_update(row, header_map, base_update | {"last_status": "invalid_target_id"}))
-            continue
-        explicit_type = row.values.get("target_type", "").strip().lower()
-        if explicit_type and explicit_type not in ALLOWED_TARGET_TYPES:
-            errors += 1
-            updates.update(_row_update(row, header_map, base_update | {"last_status": "invalid_target_type"}))
-            continue
-        mode = row.values.get("cleanup_mode", "").strip().lower()
-        if mode not in ALLOWED_CLEANUP_MODES:
-            errors += 1
-            updates.update(_row_update(row, header_map, base_update | {"last_status": "invalid_cleanup_mode"}))
-            continue
-        min_age = _parse_nonnegative_hours(row.values.get("min_age_hours"))
-        if min_age is None:
-            errors += 1
-            updates.update(_row_update(row, header_map, base_update | {"last_status": "invalid_min_age_hours"}))
-            continue
-        target, detected_type, resolve_status = await _resolve_any(bot, target_id)
-        if target is None or detected_type is None:
-            errors += 1
-            updates.update(_row_update(row, header_map, base_update | {"last_status": resolve_status or "not_found"}))
-            continue
-        if explicit_type and explicit_type != detected_type:
-            errors += 1
-            updates.update(_row_update(row, header_map, base_update | {"last_status": "target_type_mismatch"}))
-            continue
-        effective_type = explicit_type or detected_type
-        name_updates = {"target_type": effective_type, "target_name": getattr(target, "name", "") or "", "parent_name": ""}
-        if effective_type == "thread":
-            parent = getattr(target, "parent", None)
-            name_updates["parent_name"] = getattr(parent, "name", "") or ""
-        if effective_type not in SUPPORTED_TARGET_TYPES:
-            errors += 1
-            updates.update(_row_update(row, header_map, base_update | name_updates | {"last_status": "unsupported_target_type"}))
-            continue
-        if effective_type == "thread":
-            result = await _scan_thread(target, min_age_hours=min_age, mode=mode, dry_run=effective_dry_run, bot=bot, logger=logger)
-        else:
-            result = await _scan_channel(target, min_age_hours=min_age, mode=mode, dry_run=effective_dry_run, bot=bot, logger=logger)
-        deleted_total += result.deleted
-        candidate_total += result.candidates
-        skipped_total += result.skipped
-        errors += result.errors
-        updates.update(_row_update(row, header_map, base_update | name_updates | {
-            "last_deleted_count": str(0 if effective_dry_run else result.deleted),
-            "last_candidate_count": str(result.candidates),
-            "last_skipped_count": str(result.skipped),
-            "last_status": result.status,
-        }))
+            stage = "get_worksheet"
+            context["stage"] = stage
+            worksheet = await async_core.aget_worksheet(recruitment.get_recruitment_sheet_id(), config.tab_name)
+            stage = "read_values"
+            context["stage"] = stage
+            values = await asyncio.to_thread(worksheet.get_all_values)
+            if not values:
+                raise ValueError("cleanup tab is empty")
+            stage = "build_headers"
+            context["stage"] = stage
+            header_map = build_header_map(values[0])
+            stage = "parse_rows"
+            context["stage"] = stage
+            rows = rows_from_values(values, header_map)
+        except Exception as exc:
+            summary.status = "sheet_unavailable_or_invalid"
+            summary.errors += 1
+            summary.first_error = f"{exc.__class__.__name__}: {_short_error(exc)}"
+            logger.warning(
+                "cleanup sheet unavailable or invalid: error_type=%s error=%s stage=%s",
+                exc.__class__.__name__,
+                _short_error(exc),
+                context.get("stage"),
+                extra={"error_type": exc.__class__.__name__, "error": _short_error(exc), "stage": context.get("stage")},
+            )
+            return summary
 
-    try:
-        if writeback:
-            await _flush_updates(worksheet, updates)
+        for row in rows:
+            context.update({"row": row.sheet_row, "target_id": None, "target_type": None})
+            now_text = _format_utc(_utc_now())
+            base_update = {"last_checked_at_utc": now_text, "last_deleted_count": "0", "last_candidate_count": "0", "last_skipped_count": "0"}
+            enabled = _parse_bool(row.values.get("enabled"))
+            if enabled is None:
+                summary.errors += 1
+                updates.update(_row_update(row, header_map, base_update | {"last_status": "invalid_enabled"}))
+                continue
+            if not enabled:
+                updates.update(_row_update(row, header_map, base_update | {"last_status": "disabled"}))
+                continue
+            summary.checked_rows += 1
+            try:
+                target_id = int(row.values.get("target_id", ""))
+            except ValueError:
+                summary.errors += 1
+                updates.update(_row_update(row, header_map, base_update | {"last_status": "invalid_target_id"}))
+                continue
+            context["target_id"] = target_id
+            explicit_type = row.values.get("target_type", "").strip().lower()
+            if explicit_type and explicit_type not in ALLOWED_TARGET_TYPES:
+                summary.errors += 1
+                updates.update(_row_update(row, header_map, base_update | {"last_status": "invalid_target_type"}))
+                continue
+            mode = row.values.get("cleanup_mode", "").strip().lower()
+            if mode not in ALLOWED_CLEANUP_MODES:
+                summary.errors += 1
+                updates.update(_row_update(row, header_map, base_update | {"last_status": "invalid_cleanup_mode"}))
+                continue
+            min_age = _parse_nonnegative_hours(row.values.get("min_age_hours"))
+            if min_age is None:
+                summary.errors += 1
+                updates.update(_row_update(row, header_map, base_update | {"last_status": "invalid_min_age_hours"}))
+                continue
+            stage = "resolve_target"
+            context["stage"] = stage
+            target, detected_type, resolve_status = await _resolve_any(bot, target_id)
+            context["target_type"] = detected_type or explicit_type or None
+            if target is None or detected_type is None:
+                summary.errors += 1
+                updates.update(_row_update(row, header_map, base_update | {"last_status": resolve_status or "not_found"}))
+                continue
+            if explicit_type and explicit_type != detected_type:
+                summary.errors += 1
+                updates.update(_row_update(row, header_map, base_update | {"last_status": "target_type_mismatch"}))
+                continue
+            effective_type = explicit_type or detected_type
+            context["target_type"] = effective_type
+            name_updates = {"target_type": effective_type, "target_name": getattr(target, "name", "") or "", "parent_name": ""}
+            if effective_type == "thread":
+                parent = getattr(target, "parent", None)
+                name_updates["parent_name"] = getattr(parent, "name", "") or ""
+            if effective_type not in SUPPORTED_TARGET_TYPES:
+                summary.errors += 1
+                updates.update(_row_update(row, header_map, base_update | name_updates | {"last_status": "unsupported_target_type"}))
+                continue
+            if effective_type == "thread":
+                result = await _scan_thread(target, min_age_hours=min_age, mode=mode, dry_run=effective_dry_run, bot=bot, logger=logger, context=context)
+            else:
+                result = await _scan_channel(target, min_age_hours=min_age, mode=mode, dry_run=effective_dry_run, bot=bot, logger=logger, context=context)
+            summary.deleted += result.deleted
+            summary.candidates += result.candidates
+            summary.skipped += result.skipped
+            summary.errors += result.errors
+            updates.update(_row_update(row, header_map, base_update | name_updates | {
+                "last_deleted_count": str(0 if effective_dry_run else result.deleted),
+                "last_candidate_count": str(result.candidates),
+                "last_skipped_count": str(result.skipped),
+                "last_status": result.status,
+            }))
+
+        try:
+            if writeback:
+                stage = "sheet_writeback"
+                context["stage"] = stage
+                await _flush_updates(worksheet, updates)
+        except Exception as exc:
+            summary.errors += 1
+            if not summary.first_error:
+                summary.first_error = f"{exc.__class__.__name__}: {_short_error(exc)}"
+            logger.warning(
+                "cleanup sheet writeback failed: error_type=%s error=%s stage=%s",
+                exc.__class__.__name__, _short_error(exc), stage,
+                extra={"error_type": exc.__class__.__name__, "error": _short_error(exc), "stage": stage},
+            )
+        trigger = "startup_validation" if startup_validation else "scheduled_or_manual"
+        writeback_label = str(writeback).lower()
+        summary_text = f"cleanup run complete: trigger={trigger} checked_rows={summary.checked_rows} dry_run={str(effective_dry_run).lower()} writeback={writeback_label} deleted={summary.deleted} candidates={summary.candidates} skipped={summary.skipped} errors={summary.errors}"
+        logger.info(summary_text)
+        try:
+            stage = "send_summary_log"
+            context["stage"] = stage
+            await runtime_helpers.send_log_message(f"🧹 {summary_text}")
+        except Exception as exc:
+            summary.summary_notice_failed = True
+            if not summary.first_error:
+                summary.first_error = f"summary_notice_failed: {exc.__class__.__name__}: {_short_error(exc)}"
+            logger.warning(
+                "cleanup summary notice failed; cleanup completed: error_type=%s error=%s stage=%s",
+                exc.__class__.__name__, _short_error(exc), stage,
+                exc_info=True,
+                extra={"error_type": exc.__class__.__name__, "error": _short_error(exc), "stage": stage},
+            )
+        return summary
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
-        errors += 1
-        logger.warning("cleanup sheet writeback failed: %s", exc)
-    trigger = "startup_validation" if startup_validation else "scheduled_or_manual"
-    writeback_label = str(writeback).lower()
-    summary = f"cleanup run complete: trigger={trigger} checked_rows={checked_rows} dry_run={str(effective_dry_run).lower()} writeback={writeback_label} deleted={deleted_total} candidates={candidate_total} skipped={skipped_total} errors={errors}"
-    logger.info(summary)
-    await runtime_helpers.send_log_message(f"🧹 {summary}")
+        error_text = _short_error(exc)
+        setattr(exc, "cleanup_stage", context.get("stage"))
+        logger.exception(
+            "cleanup run unexpected failure: error_type=%s error=%s stage=%s row=%s target_id=%s target_type=%s",
+            exc.__class__.__name__, error_text, context.get("stage"), context.get("row"), context.get("target_id"), context.get("target_type"),
+            extra={
+                "error_type": exc.__class__.__name__,
+                "error": error_text,
+                "stage": context.get("stage"),
+                "row": context.get("row"),
+                "target_id": context.get("target_id"),
+                "target_type": context.get("target_type"),
+            },
+        )
+        raise
 
 
 class CleanupCog(commands.Cog):
@@ -469,16 +565,44 @@ class CleanupCog(commands.Cog):
 
         await ctx.reply("Cleanup run started.", mention_author=False)
         try:
-            await run_cleanup(ctx.bot, log, startup_validation=False, writeback=True)
+            summary = await run_cleanup(ctx.bot, log, startup_validation=False, writeback=True)
+            if summary is None:  # Compatibility for tests or external monkeypatches.
+                summary = CleanupRunSummary()
         except asyncio.CancelledError:
             raise
-        except Exception:
-            log.exception("cleanup manual run failed")
+        except Exception as exc:
+            error_type = exc.__class__.__name__
+            error_text = _short_error(exc)
+            stage = getattr(exc, "cleanup_stage", None)
+            log.exception(
+                "cleanup manual run failed: error_type=%s error=%s",
+                error_type,
+                error_text,
+                extra={
+                    "error_type": error_type,
+                    "error": error_text,
+                    "actor": actor_id,
+                    "channel": channel_id,
+                    "stage": stage,
+                },
+            )
             try:
-                await runtime_helpers.send_log_message("🧹 cleanup manual run failed; see app logs")
+                await runtime_helpers.send_log_message(
+                    f"🧹 cleanup manual run failed: {error_type}: {error_text}"
+                )
             except Exception:
                 log.warning("cleanup manual failure notice failed", exc_info=True)
-            await ctx.reply("Cleanup run failed; see logs.", mention_author=False)
+            await ctx.reply(f"Cleanup run failed: {error_type}. See logs.", mention_author=False)
+            return
+
+        finished = (
+            "Cleanup run finished: "
+            f"deleted={summary.deleted} candidates={summary.candidates} "
+            f"skipped={summary.skipped} errors={summary.errors}"
+        )
+        if summary.summary_notice_failed:
+            finished += "; Discord summary notice failed. See app logs."
+        await ctx.reply(finished, mention_author=False)
 
 
 async def setup(bot: commands.Bot) -> None:
@@ -486,6 +610,6 @@ async def setup(bot: commands.Bot) -> None:
 
 
 __all__ = [
-    "BOT_WRITABLE_HEADERS", "CleanupConfig", "REQUIRED_CONFIG_KEYS", "REQUIRED_HEADERS",
+    "BOT_WRITABLE_HEADERS", "CleanupConfig", "CleanupRunSummary", "REQUIRED_CONFIG_KEYS", "REQUIRED_HEADERS",
     "CleanupCog", "build_header_map", "resolve_cleanup_config", "rows_from_values", "run_cleanup", "setup", "_matches_mode", "_row_update",
 ]
