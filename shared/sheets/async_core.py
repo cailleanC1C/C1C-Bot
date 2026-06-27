@@ -75,6 +75,30 @@ async def acall_with_backoff(
     )
 
 
+async def a_to_thread_with_backoff(
+    func: Callable[P, T],
+    *args: P.args,
+    attempts: int | None = None,
+    base_delay: float | None = None,
+    factor: float | None = None,
+    timeout: float | None = None,
+    **kwargs: P.kwargs,
+) -> T:
+    """Run a synchronous Sheets callable off-loop with async retry/backoff."""
+
+    async def _invoke() -> T:
+        if timeout is None:
+            return await _core.async_adapter.arun(func, *args, **kwargs)
+        return await _core.async_adapter.arun(func, *args, timeout=timeout, **kwargs)
+
+    return await _core._retry_with_backoff_async(
+        _invoke,
+        attempts=attempts,
+        base_delay=base_delay,
+        factor=factor,
+    )
+
+
 __all__ = [
     "aopen_by_key",
     "aget_worksheet",
@@ -82,4 +106,5 @@ __all__ = [
     "afetch_values",
     "asheets_read",
     "acall_with_backoff",
+    "a_to_thread_with_backoff",
 ]

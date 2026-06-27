@@ -1,8 +1,10 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
 import pytest
 from discord.ext import commands
-from types import SimpleNamespace
-from datetime import datetime, timedelta, timezone
+import shared.sheets.core as sheets_core
 
 from modules.common import runtime
 from modules.housekeeping import cleanup
@@ -177,6 +179,77 @@ def active_row(**overrides):
     data = {"enabled":"TRUE","target_id":"123","target_type":"","target_name":"","parent_name":"","cleanup_mode":"bot_messages_only","min_age_hours":"1","last_checked_at_utc":"","last_deleted_count":"","last_candidate_count":"","last_skipped_count":"","last_status":"","notes":"admin"}
     data.update(overrides)
     return [data[h] for h in REQUIRED_HEADERS]
+
+
+def test_run_cleanup_uses_async_safe_sheets_helper_for_read_and_write(monkeypatch):
+    ws = Worksheet([REQUIRED_HEADERS, active_row()])
+    target = Thread([Msg("bot", author_id=99)])
+    cfg = cleanup.CleanupConfig(True, "CleanupRows", 6, False)
+    calls = []
+
+    async def fake_sheet(*_):
+        return ws
+
+    async def fake_log(*_):
+        return None
+
+    async def fake_resolve(_bot, _target_id):
+        return target, "thread", None
+
+    async def fake_to_thread_with_backoff(func, *args, **kwargs):
+        calls.append(func.__name__)
+        return func(*args, **kwargs)
+
+    async def fail_acall_with_backoff(*_args, **_kwargs):
+        raise AssertionError("cleanup must use a_to_thread_with_backoff")
+
+    monkeypatch.setattr(cleanup, "resolve_cleanup_config", lambda logger=None: cfg)
+    monkeypatch.setattr(cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
+    monkeypatch.setattr(cleanup.async_core, "aget_worksheet", fake_sheet)
+    monkeypatch.setattr(cleanup.async_core, "a_to_thread_with_backoff", fake_to_thread_with_backoff)
+    monkeypatch.setattr(cleanup.async_core, "acall_with_backoff", fail_acall_with_backoff)
+    monkeypatch.setattr(cleanup.runtime_helpers, "send_log_message", fake_log)
+    monkeypatch.setattr(cleanup, "_resolve_any", fake_resolve)
+
+    summary = asyncio.run(cleanup.run_cleanup(Bot(target)))
+
+    assert summary.status == "ok"
+    assert calls == ["get_all_values", "batch_update"]
+    assert update_map(ws)["L2"] == "deleted"
+
+
+def test_run_cleanup_does_not_raise_active_loop_retry_runtime_error(monkeypatch):
+    ws = Worksheet([REQUIRED_HEADERS, active_row()])
+    target = Thread([Msg("bot", author_id=99)])
+    cfg = cleanup.CleanupConfig(True, "CleanupRows", 6, False)
+
+    async def fake_sheet(*_):
+        return ws
+
+    async def fake_log(*_):
+        return None
+
+    async def fake_resolve(_bot, _target_id):
+        return target, "thread", None
+
+    async def fake_arun(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    def fail_sync_retry(*_args, **_kwargs):
+        raise RuntimeError("_retry_with_backoff must not run inside an active event loop; use the async variant")
+
+    monkeypatch.setattr(cleanup, "resolve_cleanup_config", lambda logger=None: cfg)
+    monkeypatch.setattr(cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
+    monkeypatch.setattr(cleanup.async_core, "aget_worksheet", fake_sheet)
+    monkeypatch.setattr(cleanup.runtime_helpers, "send_log_message", fake_log)
+    monkeypatch.setattr(cleanup, "_resolve_any", fake_resolve)
+    monkeypatch.setattr(sheets_core.async_adapter, "arun", fake_arun)
+    monkeypatch.setattr(sheets_core, "_retry_with_backoff", fail_sync_retry)
+
+    summary = asyncio.run(cleanup.run_cleanup(Bot(target)))
+
+    assert summary.status == "ok"
+    assert update_map(ws)["L2"] == "deleted"
 
 
 def test_blank_target_type_resolved_and_dry_run_deletes_nothing(monkeypatch):
@@ -731,13 +804,13 @@ def test_run_cleanup_read_values_api_error_sets_actionable_first_error(monkeypat
     async def fake_sheet(*_):
         return FailingWorksheet()
 
-    async def fake_acall(func, *args, **kwargs):
+    async def fake_to_thread_with_backoff(func, *args, **kwargs):
         return func(*args, **kwargs)
 
     monkeypatch.setattr(cleanup, "resolve_cleanup_config", lambda logger=None: cfg)
     monkeypatch.setattr(cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
     monkeypatch.setattr(cleanup.async_core, "aget_worksheet", fake_sheet)
-    monkeypatch.setattr(cleanup.async_core, "acall_with_backoff", fake_acall)
+    monkeypatch.setattr(cleanup.async_core, "a_to_thread_with_backoff", fake_to_thread_with_backoff)
 
     summary = asyncio.run(cleanup.run_cleanup(Bot(Thread([]))))
 
