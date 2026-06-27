@@ -9,6 +9,9 @@ from typing import Any, Iterable, Mapping, Sequence
 import discord
 from discord.ext import commands
 
+from c1c_coreops.helpers import help_metadata, tier
+from c1c_coreops.rbac import admin_only
+
 from modules.common import feature_flags
 from modules.common import runtime as runtime_helpers
 from shared.sheets import async_core
@@ -434,7 +437,55 @@ async def run_cleanup(
     await runtime_helpers.send_log_message(f"🧹 {summary}")
 
 
+class CleanupCog(commands.Cog):
+    """Admin commands for housekeeping cleanup."""
+
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+
+    @tier("admin")
+    @help_metadata(function_group="operational", section="housekeeping", access_tier="admin")
+    @commands.group(name="cleanup", invoke_without_command=True, help="Housekeeping cleanup admin commands.")
+    @commands.guild_only()
+    @admin_only()
+    async def cleanup(self, ctx: commands.Context) -> None:
+        await ctx.reply("Usage: `!cleanup run`", mention_author=False)
+
+    @tier("admin")
+    @help_metadata(function_group="operational", section="housekeeping", access_tier="admin")
+    @cleanup.command(name="run", help="Run housekeeping cleanup immediately.")
+    @commands.guild_only()
+    @admin_only()
+    async def cleanup_run(self, ctx: commands.Context) -> None:
+        actor_id = getattr(getattr(ctx, "author", None), "id", None)
+        channel_id = getattr(getattr(ctx, "channel", None), "id", None)
+        log.info("cleanup manual run requested: actor=%s channel=%s", actor_id, channel_id)
+        try:
+            await runtime_helpers.send_log_message(
+                f"🧹 cleanup manual run requested: actor={actor_id} channel={channel_id}"
+            )
+        except Exception:
+            log.warning("cleanup manual run notice failed", exc_info=True)
+
+        await ctx.reply("Cleanup run started.", mention_author=False)
+        try:
+            await run_cleanup(ctx.bot, log, startup_validation=False, writeback=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("cleanup manual run failed")
+            try:
+                await runtime_helpers.send_log_message("🧹 cleanup manual run failed; see app logs")
+            except Exception:
+                log.warning("cleanup manual failure notice failed", exc_info=True)
+            await ctx.reply("Cleanup run failed; see logs.", mention_author=False)
+
+
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(CleanupCog(bot))
+
+
 __all__ = [
     "BOT_WRITABLE_HEADERS", "CleanupConfig", "REQUIRED_CONFIG_KEYS", "REQUIRED_HEADERS",
-    "build_header_map", "resolve_cleanup_config", "rows_from_values", "run_cleanup", "_matches_mode", "_row_update",
+    "CleanupCog", "build_header_map", "resolve_cleanup_config", "rows_from_values", "run_cleanup", "setup", "_matches_mode", "_row_update",
 ]

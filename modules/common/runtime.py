@@ -1205,6 +1205,7 @@ class Runtime:
         from cogs import app_admin
         from cogs import housekeeping_mirralith
         from cogs import housekeeping_c1c_ad
+        from modules.housekeeping import cleanup as housekeeping_cleanup_commands
         from modules.onboarding import ops_check as onboarding_ops_check
         from modules.onboarding import reaction_fallback as onboarding_reaction_fallback
         from modules.onboarding import watcher_welcome as onboarding_welcome
@@ -1243,6 +1244,9 @@ class Runtime:
 
         await housekeeping_c1c_ad.setup(self.bot)
         log.info("modules: c1c_ad command registered")
+
+        await housekeeping_cleanup_commands.setup(self.bot)
+        log.info("modules: housekeeping cleanup command registered")
 
         async def _load_feature_module(
             module_path: str, feature_keys: Sequence[str]
@@ -1584,6 +1588,14 @@ class Runtime:
         )
 
         async def cleanup_runner() -> None:
+            tick_message = "cleanup watcher tick: startup_validation=false writeback=true"
+            cleanup_logger.info(tick_message)
+            try:
+                await send_log_message(f"🧹 {tick_message}")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                cleanup_logger.exception("cleanup watcher tick notice failed; cleanup still running")
             try:
                 await housekeeping_cleanup.run_cleanup(
                     self.bot, cleanup_logger, startup_validation=False, writeback=True
@@ -1594,6 +1606,12 @@ class Runtime:
                 cleanup_logger.exception(
                     "cleanup watcher run failed; scheduled cleanup will retry on next tick"
                 )
+                try:
+                    await send_log_message("🧹 cleanup watcher failed; see app logs")
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    cleanup_logger.exception("cleanup watcher failure notice failed")
 
         async def startup_validation_runner() -> None:
             try:
