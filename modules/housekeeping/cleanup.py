@@ -62,6 +62,8 @@ ALLOWED_CLEANUP_MODES = {
     "bot_messages_and_commands",
     "bot_and_webhook_messages_only",
     "bot_webhook_messages_and_commands",
+    "automod_system_messages_only",
+    "automod_system_and_webhook_messages_only",
 }
 _CLEANUP_RUN_LOCK = asyncio.Lock()
 
@@ -117,6 +119,8 @@ class ZeroMatchDiagnostics:
     own_bot_author_count: int = 0
     webhook_message_count: int = 0
     system_message_count: int = 0
+    automod_system_seen: int = 0
+    message_type_counts: str = "-"
     empty_content_count: int = 0
     messages_with_content_count: int = 0
     prefix_matched_count: int = 0
@@ -388,6 +392,66 @@ def _is_system_message(message: discord.Message) -> bool:
     return message_type is not None and message_type != default_type
 
 
+def _message_type_name(message: discord.Message) -> str:
+    message_type = getattr(message, "type", None)
+    name = getattr(message_type, "name", None)
+    if name:
+        return str(name)
+    if message_type is None:
+        return "none"
+    return str(message_type).rsplit(".", 1)[-1]
+
+
+def _has_automod_indicator(message: discord.Message) -> bool:
+    for attr in (
+        "automod_rule_id",
+        "auto_moderation_rule_id",
+        "automod_action",
+        "auto_moderation_action",
+        "automod_rule",
+        "auto_moderation_rule",
+    ):
+        if getattr(message, attr, None) is not None:
+            return True
+    return False
+
+
+def _has_automod_alert_phrase(message: discord.Message) -> bool:
+    # Do not log or return message content; this is only a conservative local
+    # fallback for discord.py versions without a dedicated AutoMod enum.
+    text = " ".join(str(getattr(message, attr, "") or "") for attr in ("system_content", "content")).lower()
+    return bool(text) and any(
+        phrase in text
+        for phrase in (
+            "automod",
+            "auto mod",
+            "auto moderation",
+            "automoderation",
+            "blocked a message",
+            "flagged by auto",
+        )
+    )
+
+
+def _is_automod_system_message(message: discord.Message) -> bool:
+    if not _is_system_message(message):
+        return False
+    message_type = getattr(message, "type", None)
+    message_type_name = _message_type_name(message).lower()
+    if message_type_name in {"auto_moderation_action", "automod_action", "auto_moderation_alert"}:
+        return True
+    message_type_enum = getattr(discord, "MessageType", None)
+    for enum_name in ("auto_moderation_action", "automod_action", "auto_moderation_alert"):
+        enum_value = getattr(message_type_enum, enum_name, None)
+        if enum_value is not None and message_type == enum_value:
+            return True
+    default_type = getattr(message_type_enum, "default", None)
+    author = getattr(message, "author", None)
+    if message_type == default_type or getattr(author, "bot", False) is True or _is_webhook_message(message):
+        return False
+    return _has_automod_indicator(message) or _has_automod_alert_phrase(message)
+
+
 def _is_cleanup_bot_message(message: discord.Message, bot: commands.Bot, target: Any | None = None) -> bool:
     author = getattr(message, "author", None)
     if author is None:
@@ -429,6 +493,10 @@ def _matches_mode(message: discord.Message, mode: str, bot: commands.Bot, target
         return _is_cleanup_bot_or_webhook_message(message, bot, target)
     if mode == "bot_webhook_messages_and_commands":
         return _is_cleanup_bot_or_webhook_message(message, bot, target) or _is_cleanup_command_message(message, bot)
+    if mode == "automod_system_messages_only":
+        return _is_automod_system_message(message)
+    if mode == "automod_system_and_webhook_messages_only":
+        return _is_automod_system_message(message) or _is_webhook_message(message)
     return False
 
 
@@ -442,6 +510,13 @@ def _masked_prefix_values(prefixes: Sequence[str]) -> str:
         else:
             values.append(f"{prefix[:1]}…({len(prefix)})")
     return ",".join(values)
+
+
+def _format_message_type_counts(message_type_counts: Mapping[str, int]) -> str:
+    if not message_type_counts:
+        return "-"
+    ranked = sorted(message_type_counts.items(), key=lambda item: (-item[1], item[0]))[:8]
+    return ",".join(f"{name}:{count}" for name, count in ranked)
 
 
 def _format_top_author_sample(author_counts: Mapping[str, _AuthorSourceCounts]) -> str:
@@ -507,6 +582,8 @@ async def _scan_message_history(target: Any, *, min_age_hours: float, mode: str,
         own_bot_author_count = 0
         webhook_message_count = 0
         system_message_count = 0
+        automod_system_seen = 0
+        message_type_counts: dict[str, int] = {}
         empty_content_count = 0
         messages_with_content_count = 0
         prefix_matched_count = 0
@@ -526,12 +603,16 @@ async def _scan_message_history(target: Any, *, min_age_hours: float, mode: str,
                 author_bucket.bot_true_count += 1
             if bot_user_id is not None and getattr(author, "id", None) == bot_user_id:
                 own_bot_author_count += 1
+            message_type = _message_type_name(message)
+            message_type_counts[message_type] = message_type_counts.get(message_type, 0) + 1
             webhook_message = _is_webhook_message(message)
             if webhook_message:
                 webhook_message_count += 1
                 author_bucket.webhook_count += 1
             if _is_system_message(message):
                 system_message_count += 1
+            if _is_automod_system_message(message):
+                automod_system_seen += 1
             content = getattr(message, "content", "") or ""
             prefix_match = False
             if content:
@@ -571,6 +652,8 @@ async def _scan_message_history(target: Any, *, min_age_hours: float, mode: str,
             own_bot_author_count=own_bot_author_count,
             webhook_message_count=webhook_message_count,
             system_message_count=system_message_count,
+            automod_system_seen=automod_system_seen,
+            message_type_counts=_format_message_type_counts(message_type_counts),
             empty_content_count=empty_content_count,
             messages_with_content_count=messages_with_content_count,
             prefix_matched_count=prefix_matched_count,
@@ -578,7 +661,7 @@ async def _scan_message_history(target: Any, *, min_age_hours: float, mode: str,
             top_author_sample=_format_top_author_sample(author_counts),
         )
         logger.info(
-            "cleanup row scan complete: row=%s target_id=%s mode=%s total_seen=%s candidates=0 skipped=%s bot_author_seen=%s command_seen=%s unique_author_count=%s author_bot_true_count=%s own_bot_author_count=%s webhook_message_count=%s system_message_count=%s empty_content_count=%s messages_with_content_count=%s prefix_matched_count=%s prefix_count=%s prefix_values_used=%s role_matched_count=%s top_author_sample=%s",
+            "cleanup row scan complete: row=%s target_id=%s mode=%s total_seen=%s candidates=0 skipped=%s bot_author_seen=%s command_seen=%s unique_author_count=%s author_bot_true_count=%s own_bot_author_count=%s webhook_message_count=%s system_message_count=%s automod_system_seen=%s message_type_counts=%s empty_content_count=%s messages_with_content_count=%s prefix_matched_count=%s prefix_count=%s prefix_values_used=%s role_matched_count=%s top_author_sample=%s",
             (context or {}).get("row"),
             getattr(target, "id", None),
             mode,
@@ -591,6 +674,8 @@ async def _scan_message_history(target: Any, *, min_age_hours: float, mode: str,
             diagnostics.own_bot_author_count,
             diagnostics.webhook_message_count,
             diagnostics.system_message_count,
+            diagnostics.automod_system_seen,
+            diagnostics.message_type_counts,
             diagnostics.empty_content_count,
             diagnostics.messages_with_content_count,
             diagnostics.prefix_matched_count,
