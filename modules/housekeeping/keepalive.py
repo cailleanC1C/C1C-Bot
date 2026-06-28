@@ -367,23 +367,73 @@ async def _get_bot_member(
     return member, 0
 
 
-async def _last_activity_at(
+async def _latest_message(
     thread: discord.Thread, logger: logging.Logger
-) -> tuple[datetime | None, int]:
+) -> tuple[Any | None, datetime | None, int]:
     try:
         async for message in thread.history(limit=1):
-            return _normalize_timestamp(message.created_at), 0
+            return message, _normalize_timestamp(message.created_at), 0
     except discord.Forbidden:
         logger.warning("thread keepalive history forbidden: thread_id=%s", thread.id)
-        return None, 1
+        return None, None, 1
     except discord.HTTPException as exc:
         logger.warning(
             "thread keepalive history failed: thread_id=%s error=%s", thread.id, exc
         )
-        return None, 1
+        return None, None, 1
     if getattr(thread, "created_at", None):
-        return _normalize_timestamp(thread.created_at), 0
-    return None, 0
+        return None, _normalize_timestamp(thread.created_at), 0
+    return None, None, 0
+
+
+def _is_bot_keepalive_message(
+    message_obj: Any | None, *, bot: commands.Bot, keepalive_text: str
+) -> bool:
+    if message_obj is None or bot.user is None:
+        return False
+    author = getattr(message_obj, "author", None)
+    if getattr(author, "id", None) != getattr(bot.user, "id", None):
+        return False
+    return (getattr(message_obj, "content", "") or "").strip() == keepalive_text.strip()
+
+
+async def _delete_previous_keepalive_if_latest(
+    thread: discord.Thread,
+    latest_message: Any | None,
+    *,
+    bot: commands.Bot,
+    keepalive_text: str,
+    logger: logging.Logger,
+) -> int:
+    if not _is_bot_keepalive_message(
+        latest_message, bot=bot, keepalive_text=keepalive_text
+    ):
+        return 0
+    try:
+        await latest_message.delete()
+    except discord.Forbidden:
+        logger.warning(
+            "thread keepalive previous message delete forbidden: thread_id=%s message_id=%s",
+            thread.id,
+            getattr(latest_message, "id", None),
+        )
+        return 1
+    except discord.HTTPException as exc:
+        logger.warning(
+            "thread keepalive previous message delete failed: thread_id=%s message_id=%s error=%s",
+            thread.id,
+            getattr(latest_message, "id", None),
+            exc,
+        )
+        return 1
+    return 0
+
+
+async def _last_activity_at(
+    thread: discord.Thread, logger: logging.Logger
+) -> tuple[datetime | None, int]:
+    _message, last_activity, errors = await _latest_message(thread, logger)
+    return last_activity, errors
 
 
 async def _ensure_unarchived(
@@ -431,7 +481,7 @@ async def _process_thread(
     ):
         return "missing_permissions", False, "", errors + 1
 
-    last_activity, history_errors = await _last_activity_at(thread, logger)
+    _message, last_activity, history_errors = await _latest_message(thread, logger)
     errors += history_errors
     if last_activity is None:
         return "fetch_failed", False, "", errors
@@ -448,6 +498,14 @@ async def _process_thread(
             _format_utc(last_activity),
             errors + 1,
         )
+
+    latest_message, _latest_activity, latest_errors = await _latest_message(
+        thread, logger
+    )
+    errors += latest_errors
+    errors += await _delete_previous_keepalive_if_latest(
+        thread, latest_message, bot=bot, keepalive_text=message, logger=logger
+    )
 
     try:
         await thread.send(message)
@@ -722,6 +780,7 @@ __all__ = [
     "build_header_map",
     "newest_last_seen",
     "parent_keepalive_message_for_thread",
+    "_delete_previous_keepalive_if_latest",
     "resolve_keepalive_config",
     "rows_from_values",
     "run_keepalive",

@@ -520,3 +520,195 @@ def test_parent_not_stale_preserves_explicit_child_keepalive_sent_at(monkeypatch
     assert sent_messages == [(200, "child msg")]
     assert updates["H3"] == prior_sent_at
     assert updates["I3"] == "ok_not_stale"
+
+class _KeepalivePerms:
+    read_message_history = True
+    send_messages = True
+    manage_threads = True
+
+
+class _KeepaliveAuthor:
+    def __init__(self, author_id):
+        self.id = author_id
+
+
+class _KeepaliveMessage:
+    def __init__(self, *, content, author_id, created_at, message_id=10):
+        self.content = content
+        self.author = _KeepaliveAuthor(author_id)
+        self.created_at = created_at
+        self.id = message_id
+        self.deleted = False
+
+    async def delete(self):
+        self.deleted = True
+
+
+class _KeepaliveGuild:
+    def __init__(self, member):
+        self._member = member
+
+    def get_member(self, _user_id):
+        return self._member
+
+
+class _KeepaliveThread:
+    def __init__(self, latest_message):
+        self.id = 1234
+        self.archived = False
+        self.guild = _KeepaliveGuild(_KeepaliveAuthor(42))
+        if isinstance(latest_message, list):
+            self._latest_messages = latest_message
+        else:
+            self._latest_messages = [latest_message]
+        self.sent = []
+
+    def permissions_for(self, _member):
+        return _KeepalivePerms()
+
+    async def history(self, *, limit):
+        assert limit == 1
+        latest_message = (
+            self._latest_messages.pop(0)
+            if len(self._latest_messages) > 1
+            else self._latest_messages[0]
+        )
+        if latest_message is not None:
+            yield latest_message
+
+    async def send(self, message):
+        self.sent.append(message)
+
+
+class _KeepaliveBot:
+    user = _KeepaliveAuthor(42)
+
+
+def _old_timestamp():
+    from datetime import datetime, timedelta, timezone
+
+    return datetime.now(timezone.utc) - timedelta(days=30)
+
+
+def test_process_thread_deletes_previous_keepalive_when_latest():
+    import asyncio
+    import logging
+    from datetime import timedelta
+
+    latest = _KeepaliveMessage(
+        content="🔹 KeepAlive, preventing archive",
+        author_id=42,
+        created_at=_old_timestamp(),
+    )
+    thread = _KeepaliveThread(latest)
+
+    status, did_post, _last_seen, errors = asyncio.run(
+        keepalive._process_thread(
+            thread,
+            stale_after_delta=timedelta(hours=1),
+            message="🔹 KeepAlive, preventing archive",
+            bot=_KeepaliveBot(),
+            logger=logging.getLogger("test.keepalive"),
+        )
+    )
+
+    assert status == "posted"
+    assert did_post is True
+    assert errors == 0
+    assert latest.deleted is True
+    assert thread.sent == ["🔹 KeepAlive, preventing archive"]
+
+
+def test_process_thread_keeps_previous_keepalive_when_user_message_is_latest():
+    import asyncio
+    import logging
+    from datetime import timedelta
+
+    latest = _KeepaliveMessage(
+        content="user follow-up",
+        author_id=99,
+        created_at=_old_timestamp(),
+    )
+    thread = _KeepaliveThread(latest)
+
+    status, did_post, _last_seen, errors = asyncio.run(
+        keepalive._process_thread(
+            thread,
+            stale_after_delta=timedelta(hours=1),
+            message="🔹 KeepAlive, preventing archive",
+            bot=_KeepaliveBot(),
+            logger=logging.getLogger("test.keepalive"),
+        )
+    )
+
+    assert status == "posted"
+    assert did_post is True
+    assert errors == 0
+    assert latest.deleted is False
+    assert thread.sent == ["🔹 KeepAlive, preventing archive"]
+
+
+def test_process_thread_never_deletes_non_keepalive_bot_message():
+    import asyncio
+    import logging
+    from datetime import timedelta
+
+    latest = _KeepaliveMessage(
+        content="regular bot update",
+        author_id=42,
+        created_at=_old_timestamp(),
+    )
+    thread = _KeepaliveThread(latest)
+
+    status, did_post, _last_seen, errors = asyncio.run(
+        keepalive._process_thread(
+            thread,
+            stale_after_delta=timedelta(hours=1),
+            message="🔹 KeepAlive, preventing archive",
+            bot=_KeepaliveBot(),
+            logger=logging.getLogger("test.keepalive"),
+        )
+    )
+
+    assert status == "posted"
+    assert did_post is True
+    assert errors == 0
+    assert latest.deleted is False
+    assert thread.sent == ["🔹 KeepAlive, preventing archive"]
+
+
+def test_process_thread_refetches_latest_before_deleting_keepalive():
+    import asyncio
+    import logging
+    from datetime import timedelta
+
+    old_keepalive = _KeepaliveMessage(
+        content="🔹 KeepAlive, preventing archive",
+        author_id=42,
+        created_at=_old_timestamp(),
+        message_id=10,
+    )
+    newer_user_message = _KeepaliveMessage(
+        content="user arrived after stale check",
+        author_id=99,
+        created_at=_old_timestamp(),
+        message_id=11,
+    )
+    thread = _KeepaliveThread([old_keepalive, newer_user_message])
+
+    status, did_post, _last_seen, errors = asyncio.run(
+        keepalive._process_thread(
+            thread,
+            stale_after_delta=timedelta(hours=1),
+            message="🔹 KeepAlive, preventing archive",
+            bot=_KeepaliveBot(),
+            logger=logging.getLogger("test.keepalive"),
+        )
+    )
+
+    assert status == "posted"
+    assert did_post is True
+    assert errors == 0
+    assert old_keepalive.deleted is False
+    assert newer_user_message.deleted is False
+    assert thread.sent == ["🔹 KeepAlive, preventing archive"]
