@@ -24,3 +24,4 @@ class ResetReminder:
     last_sent_for_reset_utc: Optional[datetime]
     next_scheduled_post_utc: Optional[datetime]
     last_message_id: Optional[int]
+    emoji_name_or_id: Optional[str] = None

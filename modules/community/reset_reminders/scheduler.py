@@ -200,6 +200,7 @@ async def _load_reset_reminder_records(*, active_only: bool) -> tuple[str, dict[
                 last_sent_for_reset_utc=_parse_dt_optional(_cell(row, header_map["last_sent_for_reset_utc"])),
                 next_scheduled_post_utc=_parse_dt_optional(_cell(row, header_map["next_scheduled_post_utc"])),
                 last_message_id=_parse_optional_int(_cell(row, header_map["last_message_id"])),
+                emoji_name_or_id=_cell(row, header_map["emojinameorid"]) if "emojinameorid" in header_map else None,
             )
             records.append(_ResetReminderRecord(row_number=row_number, reminder=reminder))
         except Exception as exc:
@@ -240,6 +241,61 @@ async def _load_reset_reminder_records(*, active_only: bool) -> tuple[str, dict[
                 log.warning("failed to send reset reminder invalid-row ops alert", exc_info=True)
 
     return tab_name, header_map, records
+
+
+def _next_reset_description(base_description: str, reset_time_utc: dt.datetime | None) -> str:
+    if reset_time_utc is None:
+        return base_description
+    unix_seconds = int(reset_time_utc.astimezone(dt.timezone.utc).timestamp())
+    countdown = f"Next reset: <t:{unix_seconds}:F>\nTime left: <t:{unix_seconds}:R>"
+    base = str(base_description or "").rstrip()
+    return f"{base}\n\n{countdown}" if base else countdown
+
+
+def _resolve_custom_emoji(target: discord.abc.Messageable | None, value: str | None) -> discord.Emoji | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    guild = getattr(target, "guild", None)
+    if guild is None:
+        return None
+
+    emojis = getattr(guild, "emojis", []) or []
+    if text.isdigit():
+        wanted_id = int(text)
+        for emoji in emojis:
+            if getattr(emoji, "id", None) == wanted_id:
+                return emoji
+        return None
+
+    for emoji in emojis:
+        if getattr(emoji, "name", None) == text:
+            return emoji
+    return None
+
+
+def _message_content_for_reminder(target: discord.abc.Messageable | None, reminder: ResetReminder) -> str:
+    role_mention = f"<@&{reminder.role_id}>"
+    configured = str(reminder.emoji_name_or_id or "").strip()
+    if not configured:
+        return role_mention
+
+    if getattr(target, "guild", None) is None:
+        log.warning(
+            "reset reminder emoji could not be resolved; target guild unavailable",
+            extra={"reset_id": reminder.reset_id, "emoji_name_or_id": configured},
+        )
+        return role_mention
+
+    emoji = _resolve_custom_emoji(target, configured)
+    if emoji is None:
+        log.warning(
+            "reset reminder emoji could not be resolved",
+            extra={"reset_id": reminder.reset_id, "emoji_name_or_id": configured},
+        )
+        return role_mention
+    return f"{emoji} {role_mention}"
 
 
 def _utc_now(now: dt.datetime | None = None) -> dt.datetime:
@@ -578,7 +634,7 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
 
             embed = discord.Embed(
                 title=reminder.embed_title or reminder.label,
-                description=reminder.embed_description,
+                description=_next_reset_description(reminder.embed_description, reset_time),
                 color=get_embed_colour("community"),
                 timestamp=reset_time,
             )
@@ -593,7 +649,7 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
 
             try:
                 message = await target.send(
-                    content=f"<@&{reminder.role_id}>",
+                    content=_message_content_for_reminder(target, reminder),
                     embed=embed,
                     view=view,
                 )
