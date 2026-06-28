@@ -66,8 +66,10 @@ def test_build_embeds_from_rows_filters_and_groups():
     assert elite_end_game.name == "Elite End Game"
     assert elite_end_game.inline is False
     assert "🔹 **Clan Alpha:** open 5 | inactives 0 | reserved 1" in elite_end_game.value
-    assert "🔹 **Elders:** open 0 | inactives 0 | reserved 0" in elite_end_game.value
-    assert "🔹 **Cambions:** open 0 | inactives 0 | reserved 0" in elite_end_game.value
+    assert "🔹 **Elders:** open 0 | inactives 0 | reserved 0" not in elite_end_game.value
+    assert "🔹 **Cambions:** open 0 | inactives 0 | reserved 0" not in elite_end_game.value
+    assert details_embed.footer.text == dru.DETAILS_FILTER_FOOTER
+    assert summary_embed.footer.text != dru.DETAILS_FILTER_FOOTER
 
     mid_game = details_embed.fields[1]
     assert mid_game.name == "Mid Game"
@@ -75,7 +77,7 @@ def test_build_embeds_from_rows_filters_and_groups():
     assert "🔹 **Clan Delta:** open 2 | inactives 2 | reserved 0" in mid_game.value
 
 
-def test_bracket_details_include_zero_rows_and_preserve_sheet_order():
+def test_bracket_details_hide_zero_rows_and_empty_brackets():
     rows = [
         [
             "H1_Headline",
@@ -99,18 +101,11 @@ def test_bracket_details_include_zero_rows_and_preserve_sheet_order():
     sections = dru._extract_report_sections(rows, headers)
     details_embed = dru._build_details_embed(sections)
 
-    assert [field.name for field in details_embed.fields] == [
-        "First Sheet Bracket",
-        "Second Sheet Bracket",
-    ]
+    assert [field.name for field in details_embed.fields] == ["First Sheet Bracket"]
     first_value = details_embed.fields[0].value
-    assert "🔹 **Island Arena:** open 0 | inactives 0 | reserved 0" in first_value
+    assert "🔹 **Island Arena:** open 0 | inactives 0 | reserved 0" not in first_value
     assert "🔹 **Active Clan:** open 4 | inactives 1 | reserved 2" in first_value
-    assert first_value.index("Island Arena") < first_value.index("Active Clan")
-    second_value = details_embed.fields[1].value
-    assert "🔹 **Vindicators:** open 0 | inactives 0 | reserved 0" in second_value
-    assert "🔹 **Warlords:** open 0 | inactives 0 | reserved 0" in second_value
-    assert "🔹 **Eff-It:** open 0 | inactives 0 | reserved 0" in second_value
+    assert "Second Sheet Bracket" not in [field.name for field in details_embed.fields]
 
 
 def test_live_headers_drive_sections_brackets_and_clan_names_without_grouping():
@@ -137,14 +132,49 @@ def test_live_headers_drive_sections_brackets_and_clan_names_without_grouping():
     assert len(details_embed.fields) == 1
     assert details_embed.fields[0].name == "Configured H2 Bracket"
     value = details_embed.fields[0].value
-    assert "🔹 **Key Clan Zero:** open 0 | inactives 0 | reserved 0" in value
+    assert "🔹 **Key Clan Zero:** open 0 | inactives 0 | reserved 0" not in value
     assert "🔹 **Key Clan Active:** open 2 | inactives 1 | reserved 3" in value
 
 
-def test_open_spots_pager_switches_pages():
+def test_bracket_details_keep_each_mixed_non_zero_case():
+    rows = [
+        [
+            "H1_Headline",
+            "H2_Headline",
+            "Key",
+            "open_spots",
+            "inactives",
+            "reserved_spots",
+        ],
+        ["Bracket Details", "", "", "", "", ""],
+        ["", "Mixed Bracket", "", "", "", ""],
+        ["", "", "Only Inactives", "0", "3", "0"],
+        ["", "", "Only Reserved", "0", "0", "2"],
+        ["", "", "Only Open", "1", "0", "0"],
+        ["", "", "All Zero", "0", "0", "0"],
+    ]
+    headers = dru._headers_map(rows[0])
+
+    sections = dru._extract_report_sections(rows, headers)
+    details_embed = dru._build_details_embed(sections)
+
+    assert len(details_embed.fields) == 1
+    value = details_embed.fields[0].value
+    assert "🔹 **Only Inactives:** open 0 | inactives 3 | reserved 0" in value
+    assert "🔹 **Only Reserved:** open 0 | inactives 0 | reserved 2" in value
+    assert "🔹 **Only Open:** open 1 | inactives 0 | reserved 0" in value
+    assert "🔹 **All Zero:** open 0 | inactives 0 | reserved 0" not in value
+
+
+def test_open_spots_pager_switches_pages(monkeypatch):
     rows = _sample_rows()
     headers = dru._headers_map(rows[0])
     sections = dru._extract_report_sections(rows, headers)
+
+    async def fake_load_sections():
+        return sections
+
+    monkeypatch.setattr(dru, "_load_report_sections", fake_load_sections)
 
     async def runner():
         pager = dru.OpenSpotsPager(sections)
@@ -176,6 +206,56 @@ def test_open_spots_pager_switches_pages():
 
     args, kwargs = interaction_summary.response.edit_message.await_args
     assert kwargs["embeds"][0].title == "Summary Open Spots"
+
+
+def test_open_spots_pager_is_persistent_and_registered_once(monkeypatch):
+    add_view_calls = []
+
+    class DummyBot:
+        def add_view(self, view):
+            add_view_calls.append(view)
+
+    monkeypatch.setattr(dru, "_PERSISTENT_VIEW_REGISTERED", False)
+    bot = DummyBot()
+    dru.register_persistent_views(bot)
+    dru.register_persistent_views(bot)
+
+    assert len(add_view_calls) == 1
+    view = add_view_calls[0]
+    assert isinstance(view, dru.OpenSpotsPager)
+    assert view.timeout is None
+    custom_ids = {item.custom_id for item in view.children}
+    assert custom_ids == {"open_spots_summary", "open_spots_details"}
+
+
+def test_open_spots_pager_registration_skips_bot_marked_registered(monkeypatch):
+    add_view_calls = []
+
+    class DummyBot:
+        _c1c_open_spots_pager_registered = True
+
+        def add_view(self, view):
+            add_view_calls.append(view)
+
+    monkeypatch.setattr(dru, "_PERSISTENT_VIEW_REGISTERED", False)
+    dru.register_persistent_views(DummyBot())
+
+    assert add_view_calls == []
+
+
+def test_open_spots_pager_registration_tolerates_duplicate_value_error(monkeypatch):
+    class DummyBot:
+        def __init__(self):
+            self.marked = False
+
+        def add_view(self, view):
+            raise ValueError("duplicate custom_id open_spots_summary already registered")
+
+    monkeypatch.setattr(dru, "_PERSISTENT_VIEW_REGISTERED", False)
+    bot = DummyBot()
+    dru.register_persistent_views(bot)
+
+    assert getattr(bot, "_c1c_open_spots_pager_registered") is True
 
 
 def test_post_daily_recruiter_update_sends_pager(monkeypatch):
