@@ -30,7 +30,13 @@ log = logging.getLogger("c1c.recruitment.reporting.daily")
 
 UTC = timezone.utc
 
+DETAILS_FILTER_FOOTER = (
+    "Clans with 0 openings, 0 inactives, and 0 reserved seats are hidden here."
+)
+
 _BOT_REFERENCE: Optional[discord.Client] = None
+_PERSISTENT_VIEW_REGISTERED = False
+_PERSISTENT_VIEW_ATTR = "_c1c_open_spots_pager_registered"
 
 
 def feature_enabled() -> bool:
@@ -323,7 +329,7 @@ def _extract_report_sections(
         formatted = [
             line
             for row in entries
-            if (line := _format_line(headers, row, always=True))
+            if (line := _format_line(headers, row, always=False))
         ]
         if formatted:
             detail_blocks.append((label, formatted))
@@ -388,6 +394,8 @@ def _build_details_embed(sections: ReportSections) -> discord.Embed:
             value="\n".join(formatted),
         )
 
+    embed.set_footer(text=DETAILS_FILTER_FOOTER)
+
     for field in getattr(embed, "fields", []):
         try:
             field.inline = False
@@ -397,8 +405,13 @@ def _build_details_embed(sections: ReportSections) -> discord.Embed:
     return embed
 
 
+async def _load_report_sections() -> ReportSections:
+    rows, headers = await _fetch_report_rows()
+    return _extract_report_sections(rows, headers)
+
+
 class OpenSpotsPager(discord.ui.View):
-    def __init__(self, sections: ReportSections) -> None:
+    def __init__(self, sections: ReportSections | None = None) -> None:
         super().__init__(timeout=None)
         self.sections = sections
         self.current_page = "summary"
@@ -411,20 +424,27 @@ class OpenSpotsPager(discord.ui.View):
         self.summary_button.disabled = page == "summary"
         self.details_button.disabled = page == "details"
 
+    async def _resolve_sections(self) -> ReportSections:
+        try:
+            sections = await _load_report_sections()
+        except Exception:
+            if self.sections is None:
+                raise
+            log.debug("failed to refresh recruiter report sections for pager", exc_info=True)
+            return self.sections
+        self.sections = sections
+        return sections
+
     async def set_summary(self, interaction: discord.Interaction) -> None:
-        if self.current_page == "summary":
-            await interaction.response.defer()
-            return
+        sections = await self._resolve_sections()
         self._set_page_state("summary")
-        embed = _build_summary_embed(self.sections)
+        embed = _build_summary_embed(sections)
         await interaction.response.edit_message(embeds=[embed], view=self)
 
     async def set_details(self, interaction: discord.Interaction) -> None:
-        if self.current_page == "details":
-            await interaction.response.defer()
-            return
+        sections = await self._resolve_sections()
         self._set_page_state("details")
-        embed = _build_details_embed(self.sections)
+        embed = _build_details_embed(sections)
         await interaction.response.edit_message(embeds=[embed], view=self)
 
     @discord.ui.button(
@@ -623,9 +643,24 @@ async def scheduler_daily_recruiter_update() -> None:
     await run_full_recruiter_reports(bot, actor="scheduled")
 
 
+def register_persistent_views(bot: discord.Client) -> None:
+    global _PERSISTENT_VIEW_REGISTERED
+    if _PERSISTENT_VIEW_REGISTERED or getattr(bot, _PERSISTENT_VIEW_ATTR, False):
+        return
+    try:
+        bot.add_view(OpenSpotsPager())
+    except ValueError as exc:
+        if "already" not in str(exc).lower() and "duplicate" not in str(exc).lower():
+            raise
+        log.debug("open spots persistent view was already registered", exc_info=True)
+    setattr(bot, _PERSISTENT_VIEW_ATTR, True)
+    _PERSISTENT_VIEW_REGISTERED = True
+
+
 async def ensure_scheduler_started(bot: discord.Client) -> None:
     global _BOT_REFERENCE
     _BOT_REFERENCE = bot
+    register_persistent_views(bot)
 
     if not feature_enabled():
         if scheduler_daily_recruiter_update.is_running():
@@ -664,6 +699,7 @@ __all__ = [
     "feature_enabled",
     "log_manual_result",
     "OpenSpotsPager",
+    "register_persistent_views",
     "post_daily_recruiter_update",
     "run_full_recruiter_reports",
     "scheduler_daily_recruiter_update",
