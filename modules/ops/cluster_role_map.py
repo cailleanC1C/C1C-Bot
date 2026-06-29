@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Mapping, Sequence
 
 import discord
@@ -58,6 +58,18 @@ class RoleMapRender:
     category_count: int
     role_count: int
     unassigned_roles: int
+    notices: List["RoleMapRenderNotice"] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class RoleMapRenderNotice:
+    """Non-member render decision safe for operational logging."""
+
+    category_key: str
+    category_name: str
+    role_id: int
+    sheet_role_name: str
+    reason: str
 
 
 @dataclass(slots=True)
@@ -178,14 +190,34 @@ def _category_emoji(name: str) -> str:
     return CATEGORY_EMOJIS.get(normalized, "•")
 
 
+def _member_currently_has_role(member: object, role: object) -> bool:
+    """Return whether a live Discord member object currently includes the role."""
+
+    roles = getattr(member, "roles", None)
+    if roles is None:
+        return True
+    role_id = getattr(role, "id", None)
+    for member_role in roles:
+        if member_role is role:
+            return True
+        if role_id is not None and getattr(member_role, "id", None) == role_id:
+            return True
+    return False
+
+
+def _member_mention(member: object) -> str:
+    return str(getattr(member, "mention", getattr(member, "name", "")) or "").strip()
+
+
 def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleMapRow]) -> RoleMapRender:
-    """Compose the Discord message for the supplied WhoWeAre rows."""
+    """Compose the Discord message from current guild roles and live role holders only."""
 
     order, grouped = _category_order(entries)
     category_display: Dict[str, str] = {}
     role_count = 0
     unassigned_roles = 0
     categories: List[RoleMapCategoryRender] = []
+    notices: List[RoleMapRenderNotice] = []
 
     get_role = getattr(guild, "get_role", None)
 
@@ -195,28 +227,53 @@ def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleM
         for row in grouped.get(category, []):
             if category not in category_display:
                 category_display[category] = row.category_display or row.category
+            category_name = category_display[category]
             role_count += 1
             role = get_role(row.role_id) if callable(get_role) else None
-            display_name = _normalize_text(row.sheet_role_name)
-            if role is not None:
-                members = list(getattr(role, "members", []) or [])
-                if not display_name:
-                    display_name = _normalize_text(getattr(role, "name", ""))
-            if not display_name:
-                display_name = _normalize_text(getattr(role, "name", "")) if role is not None else ""
+            if role is None:
+                notices.append(
+                    RoleMapRenderNotice(
+                        category_key=row.category,
+                        category_name=category_name,
+                        role_id=row.role_id,
+                        sheet_role_name=row.sheet_role_name,
+                        reason="role_missing",
+                    )
+                )
+                log.warning(
+                    "cluster_role_map: configured role could not be resolved; hiding role row",
+                    extra={
+                        "category_key": row.category,
+                        "category_name": category_name,
+                        "role_id": row.role_id,
+                        "sheet_role_name": row.sheet_role_name,
+                    },
+                )
+                continue
+
+            display_name = _normalize_text(getattr(role, "name", "")) or _normalize_text(row.sheet_role_name)
             if not display_name:
                 display_name = f"role {row.role_id}"
             description = row.role_description or DEFAULT_DESCRIPTION
             usage = row.role_usage
-            mentions: List[str] = []
-            if members:
-                mentions = [
-                    str(getattr(member, "mention", getattr(member, "name", "")))
-                    for member in members
-                    if str(getattr(member, "mention", getattr(member, "name", "")))
-                ]
+
+            members = [
+                member
+                for member in list(getattr(role, "members", []) or [])
+                if _member_currently_has_role(member, role)
+            ]
+            mentions = [mention for member in members if (mention := _member_mention(member))]
             if not mentions:
                 unassigned_roles += 1
+                notices.append(
+                    RoleMapRenderNotice(
+                        category_key=row.category,
+                        category_name=category_name,
+                        role_id=row.role_id,
+                        sheet_role_name=row.sheet_role_name,
+                        reason="role_empty",
+                    )
+                )
             role_rows.append(
                 RoleEntryRender(
                     role_id=row.role_id,
@@ -237,6 +294,7 @@ def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleM
         category_count=len(categories),
         role_count=role_count,
         unassigned_roles=unassigned_roles,
+        notices=notices,
     )
 
 
@@ -296,7 +354,7 @@ def _build_role_block(role: RoleEntryRender) -> List[str]:
         for member in role.members:
             lines.append(f":small_blue_diamond: {member}")
     else:
-        lines.append(":small_blue_diamond: (currently unassigned)")
+        lines.append(":small_blue_diamond: No members currently assigned")
     if usage:
         lines.append(f"↳ Use <@&{role.role_id}> for {usage}")
     return lines
@@ -466,6 +524,7 @@ __all__ = [
     "RoleEntryRender",
     "RoleMapCategoryRender",
     "IndexLink",
+    "RoleMapRenderNotice",
     "RoleMapLoadError",
     "build_role_map_render",
     "build_index_placeholder",
