@@ -95,6 +95,30 @@ class FakeGuild:
         self.name = name
 
 
+class FakeRole:
+    def __init__(self, role_id: int, name: str, members: list[object] | None = None) -> None:
+        self.id = role_id
+        self.name = name
+        self.members = members or []
+
+
+class FakeRoleMember:
+    def __init__(self, user_id: int, roles: list[FakeRole] | None = None) -> None:
+        self.id = user_id
+        self.mention = f"<@{user_id}>"
+        self.name = f"member-{user_id}"
+        self.roles = roles or []
+
+
+class FakeRoleGuild(FakeGuild):
+    def __init__(self, roles: list[FakeRole]) -> None:
+        super().__init__()
+        self._roles = {role.id: role for role in roles}
+
+    def get_role(self, role_id: int):
+        return self._roles.get(role_id)
+
+
 class FakeBot:
     def __init__(self) -> None:
         self.user = FakeAuthor(999)
@@ -385,7 +409,7 @@ def test_whoweare_command_posts_multi_message_map(monkeypatch):
         assert category_message.content.rstrip().endswith(cluster_role_map.INVISIBLE_MARKER)
         assert log_messages[-1] == (
             "📘 **Cluster role map** — cmd=whoweare • guild=Guild • categories=1 "
-            "• roles=1 • unassigned_roles=0 • category_messages=1 • target_channel=#Guild:321"
+            "• roles=1 • unassigned_roles=0 • category_messages=1 • target_channel=<#321>"
         )
 
     asyncio.run(_run())
@@ -442,7 +466,7 @@ def test_whoweare_command_marks_unassigned_with_blue_diamond(monkeypatch):
         assert len(channel.sent_messages) == 2
         category_message = channel.sent_messages[1]
         assert category_message.embed is not None
-        assert ":small_blue_diamond: (currently unassigned)" in category_message.embed.description
+        assert ":small_blue_diamond: No members currently assigned" in category_message.embed.description
         assert category_message.content.rstrip().endswith(cluster_role_map.INVISIBLE_MARKER)
 
     asyncio.run(_run())
@@ -494,7 +518,7 @@ def test_whoweare_command_handles_empty_categories(monkeypatch):
         assert len(channel.sent_messages) == 1
         assert "No categories are currently available" in channel.sent_messages[0].content
         ctx.reply.assert_awaited_once_with("Cluster role map updated.", mention_author=False)
-        assert log_messages[-1].endswith("category_messages=0 • target_channel=#Guild:222")
+        assert log_messages[-1].endswith("category_messages=0 • target_channel=<#222>")
 
     asyncio.run(_run())
 
@@ -695,9 +719,79 @@ def test_whoweare_command_falls_back_for_foreign_channel(monkeypatch):
 
         assert channel.sent_messages == []
         assert len(foreign.sent_messages) == 2
-        assert "channel_fallback=#Elsewhere:777" in log_messages[0]
+        assert "channel_fallback=<#777>" in log_messages[0]
         ctx.reply.assert_awaited_once_with(
             "Cluster role map refreshed in <#777>.", mention_author=False
         )
 
     asyncio.run(_run())
+
+
+def test_build_role_map_render_hides_missing_role_members_and_logs_notice():
+    guild = FakeRoleGuild([])
+    rows = [
+        cluster_role_map.RoleMapRow(
+            category="ClusterSupport",
+            category_display="Cluster Support",
+            role_id=12345,
+            sheet_role_name="@unknown-role",
+            role_description="Helps",
+            role_usage="support",
+        )
+    ]
+
+    render = cluster_role_map.build_role_map_render(guild, rows)
+
+    assert render.categories == []
+    assert render.role_count == 1
+    assert render.unassigned_roles == 0
+    assert len(render.notices) == 1
+    assert render.notices[0].reason == "role_missing"
+
+
+def test_build_role_map_render_uses_only_current_role_members():
+    role = FakeRole(42, "Live Role")
+    current_member = FakeRoleMember(1001, roles=[role])
+    stale_member = FakeRoleMember(1002, roles=[])
+    role.members = [current_member, stale_member]
+    guild = FakeRoleGuild([role])
+    rows = [
+        cluster_role_map.RoleMapRow(
+            category="ClusterSupport",
+            category_display="Cluster Support",
+            role_id=42,
+            sheet_role_name="Stale Sheet Name",
+            role_description="Helps",
+            role_usage="support",
+        )
+    ]
+
+    render = cluster_role_map.build_role_map_render(guild, rows)
+
+    assert render.category_count == 1
+    entry = render.categories[0].roles[0]
+    assert entry.display_name == "Live Role"
+    assert entry.members == ["<@1001>"]
+    assert "<@1002>" not in entry.members
+
+
+def test_build_role_map_render_keeps_real_empty_role_without_fallback_members():
+    role = FakeRole(84, "Empty Role", members=[])
+    guild = FakeRoleGuild([role])
+    rows = [
+        cluster_role_map.RoleMapRow(
+            category="Recruitment",
+            category_display="Recruitment",
+            role_id=84,
+            sheet_role_name="Recruiter",
+            role_description="Recruits",
+            role_usage="recruiting",
+        )
+    ]
+
+    render = cluster_role_map.build_role_map_render(guild, rows)
+
+    assert render.category_count == 1
+    assert render.categories[0].roles[0].members == []
+    assert render.unassigned_roles == 1
+    assert render.notices[0].reason == "role_empty"
