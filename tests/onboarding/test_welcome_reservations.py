@@ -13,6 +13,7 @@ from modules.onboarding.watcher_welcome import (
     _NO_PLACEMENT_TAG,
     _determine_reservation_decision,
     cleanup_reservation_for_ticket_close,
+    is_welcome_ticket_thread_name,
     parse_welcome_thread_name,
     rename_thread_to_reserved,
     _clan_math_column_indices,
@@ -159,6 +160,73 @@ def test_parse_thread_name_closed() -> None:
 
 def test_parse_thread_name_invalid() -> None:
     assert parse_welcome_thread_name("welcome-caillean") is None
+
+
+def test_welcome_ticket_thread_name_guard_requires_canonical_prefix() -> None:
+    assert is_welcome_ticket_thread_name("W0861-something") is True
+    assert is_welcome_ticket_thread_name("W1234-") is True
+    assert is_welcome_ticket_thread_name("[WK§]ᴹʸᵍᵃʳᵈᴼᴳ") is False
+    assert is_welcome_ticket_thread_name("0861-something") is False
+    assert is_welcome_ticket_thread_name("Closed-W0861-something") is False
+
+
+def test_ensure_context_ignores_non_welcome_ticket_thread_before_sheet_lookup(
+    monkeypatch, caplog
+) -> None:
+    watcher = WelcomeTicketWatcher(bot=SimpleNamespace())
+    thread = SimpleNamespace(id=9876, name="[WK§]ᴹʸᵍᵃʳᵈᴼᴳ")
+    sheet_lookups = []
+
+    async def fake_to_thread(func, *args, **kwargs):
+        sheet_lookups.append((func, args, kwargs))
+        return None
+
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.asyncio.to_thread",
+        fake_to_thread,
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="c1c.onboarding.welcome_watcher"):
+        context = asyncio.run(watcher._ensure_context(thread))
+
+    assert context is None
+    assert sheet_lookups == []
+    assert "ignored_non_welcome_ticket_thread_name" in caplog.text
+    assert "close_context_unresolved" not in caplog.text
+    assert "close_context_resolved failed reading welcome row by thread_id" not in caplog.text
+
+
+def test_ensure_context_keeps_lookup_errors_visible_for_valid_ticket_threads(
+    monkeypatch, caplog
+) -> None:
+    watcher = WelcomeTicketWatcher(bot=SimpleNamespace())
+    thread = SimpleNamespace(id=9877, name="W0861-something")
+    sheet_lookups = []
+
+    async def fake_to_thread(func, *args, **kwargs):
+        sheet_lookups.append((func, args, kwargs))
+        if func is onboarding_sheets.find_welcome_row_by_thread_id:
+            raise RuntimeError("sheet unavailable")
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.asyncio.to_thread",
+        fake_to_thread,
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.onboarding_sessions.get_by_thread_id",
+        lambda _thread_id: None,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="c1c.onboarding.welcome_watcher"):
+        context = asyncio.run(watcher._ensure_context(thread))
+
+    assert context is not None
+    assert context.ticket_number == "W0861"
+    assert [call[0] for call in sheet_lookups] == [
+        onboarding_sheets.find_welcome_row_by_thread_id
+    ]
+    assert "close_context_resolved failed reading welcome row by thread_id" in caplog.text
 
 
 def test_decision_reservation_same_clan() -> None:
