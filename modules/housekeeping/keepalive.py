@@ -519,6 +519,72 @@ async def _process_thread(
     return "posted", True, _format_utc(last_activity), errors
 
 
+async def resolve_keepalive_config_async(
+    logger: logging.Logger | None = None,
+) -> KeepaliveConfig | None:
+    """Async variant of resolve_keepalive_config for startup/runtime code."""
+
+    logger = logger or log
+    toggle = feature_flags.status(CONFIG_ENABLED)
+    if toggle.get("invalid"):
+        logger.warning(
+            "thread keepalive not scheduled; required Feature Toggle %s has invalid value %r in %s",
+            CONFIG_ENABLED,
+            toggle.get("invalid_value"),
+            toggle.get("source_tab") or "Feature Toggles",
+        )
+        return None
+    if not toggle.get("present"):
+        logger.warning(
+            "thread keepalive not scheduled; required Feature Toggle %s is missing from %s",
+            CONFIG_ENABLED,
+            toggle.get("source_tab") or "Feature Toggles",
+        )
+        return None
+    if not toggle.get("enabled"):
+        logger.info(
+            "thread keepalive disabled by Feature Toggle %s=FALSE",
+            CONFIG_ENABLED,
+        )
+        return None
+
+    raw = {
+        key: await recruitment.get_config_value_async(key, None)
+        for key in REQUIRED_CONFIG_KEYS
+    }
+    missing = [
+        key for key, value in raw.items() if value is None or not str(value).strip()
+    ]
+    if missing:
+        logger.warning(
+            "thread keepalive config missing required Config key(s): %s",
+            ", ".join(missing),
+        )
+        return None
+
+    stale_after_hours = _parse_positive_hours(raw[CONFIG_STALE_AFTER_HOURS])
+    run_every_hours = _parse_positive_hours(raw[CONFIG_RUN_EVERY_HOURS])
+    if stale_after_hours is None:
+        logger.warning(
+            "thread keepalive config invalid: %s must be a positive number",
+            CONFIG_STALE_AFTER_HOURS,
+        )
+        return None
+    if run_every_hours is None:
+        logger.warning(
+            "thread keepalive config invalid: %s must be a positive number",
+            CONFIG_RUN_EVERY_HOURS,
+        )
+        return None
+
+    return KeepaliveConfig(
+        True,
+        str(raw[CONFIG_TAB]).strip(),
+        str(raw[CONFIG_DEFAULT_MESSAGE]).strip(),
+        stale_after_hours,
+        run_every_hours,
+    )
+
 def _cell_name(row: int, col_zero: int) -> str:
     col = col_zero + 1
     letters = ""
@@ -554,7 +620,7 @@ async def run_keepalive(
     bot: commands.Bot, logger: logging.Logger | None = None
 ) -> None:
     logger = logger or log
-    config = resolve_keepalive_config(logger)
+    config = await resolve_keepalive_config_async(logger)
     if config is None or not config.enabled:
         return
 
@@ -782,6 +848,7 @@ __all__ = [
     "parent_keepalive_message_for_thread",
     "_delete_previous_keepalive_if_latest",
     "resolve_keepalive_config",
+    "resolve_keepalive_config_async",
     "rows_from_values",
     "run_keepalive",
     "select_keepalive_message",

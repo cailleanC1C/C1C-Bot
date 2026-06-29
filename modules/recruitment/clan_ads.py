@@ -212,7 +212,10 @@ async def build_clan_card(
 async def load_config(
     reporter: RunReporter | None = None, *, force: bool = False
 ) -> Config | None:
-    vals = {k: recruitment.get_config_value(k, None, force=force) for k in CONFIG_KEYS}
+    vals = {
+        k: await recruitment.get_config_value_async(k, None, force=force)
+        for k in CONFIG_KEYS
+    }
     missing = [
         config_key for config_key in REQUIRED_CONFIG_KEYS if not vals.get(config_key)
     ]
