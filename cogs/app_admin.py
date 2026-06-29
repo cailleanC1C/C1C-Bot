@@ -403,6 +403,19 @@ class AppAdmin(commands.Cog):
         guild = getattr(target_channel, "guild", guild)
         guild_name = getattr(guild, "name", "unknown guild")
         render = cluster_role_map.build_role_map_render(guild, entries)
+        for notice in render.notices:
+            if notice.reason == "role_missing":
+                action = "hidden_missing_role"
+            elif notice.reason == "role_empty":
+                action = "empty_current_members"
+            else:
+                action = notice.reason
+            await runtime_helpers.send_log_message(
+                "📘 **Cluster role map** — "
+                f"cmd=whoweare • guild={guild_name} • category_key={notice.category_key} "
+                f"• category={notice.category_name} • role_id={notice.role_id} "
+                f"• sheet_role={notice.sheet_role_name or 'unset'} • action={action}"
+            )
 
         requested_label = channel_label(guild, channel_id)
         target_label = channel_label(guild, getattr(target_channel, "id", None))

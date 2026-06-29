@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Mapping, Sequence
 
 import discord
@@ -207,7 +207,7 @@ def _role_member_mentions(role: object) -> List[str]:
 
 
 def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleMapRow]) -> RoleMapRender:
-    """Compose the Discord message for the supplied WhoWeAre rows."""
+    """Compose the Discord message from current guild roles and live role holders only."""
 
     order, grouped = _category_order(entries)
     category_display: Dict[str, str] = {}
@@ -215,6 +215,7 @@ def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleM
     missing_roles = 0
     empty_roles = 0
     categories: List[RoleMapCategoryRender] = []
+    notices: List[RoleMapRenderNotice] = []
 
     get_role = getattr(guild, "get_role", None)
 
@@ -224,6 +225,7 @@ def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleM
         for row in grouped.get(category, []):
             if category not in category_display:
                 category_display[category] = row.category_display or row.category
+            category_name = category_display[category]
             role_count += 1
             role = get_role(row.role_id) if callable(get_role) else None
             role_ref = f"role_id={row.role_id}"
@@ -342,7 +344,7 @@ def _build_role_block(role: RoleEntryRender) -> List[str]:
         for member in role.members:
             lines.append(f":small_blue_diamond: {member}")
     else:
-        lines.append(":small_blue_diamond: (currently unassigned)")
+        lines.append(":small_blue_diamond: No members currently assigned")
     if usage:
         lines.append(f"↳ Use <@&{role.role_id}> for {usage}")
     return lines
@@ -512,6 +514,7 @@ __all__ = [
     "RoleEntryRender",
     "RoleMapCategoryRender",
     "IndexLink",
+    "RoleMapRenderNotice",
     "RoleMapLoadError",
     "build_role_map_render",
     "build_index_placeholder",
