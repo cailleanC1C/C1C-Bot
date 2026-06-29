@@ -513,10 +513,9 @@ def test_reset_reminder_load_timeout_ops_log_is_rate_limited_and_recovers(monkey
     asyncio.run(scheduler.process_reset_reminders(bot, now=now))
     asyncio.run(scheduler.process_reset_reminders(bot, now=now))
 
-    assert sent_logs == [
-        "⚠️ Reset reminders failed to load; scheduler tick skipped. See app logs. error=TimeoutError",
-        "✅ Reset reminders loaded again after 2 failed tick(s).",
-    ]
+    # A short transient outage is retried and no longer sends noisy Discord
+    # failure/recovery alerts unless the warning threshold is reached.
+    assert sent_logs == []
 
 
 def test_reset_reminder_scheduler_runner_continues_after_timeout(monkeypatch) -> None:

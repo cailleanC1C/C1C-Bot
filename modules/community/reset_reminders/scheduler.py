@@ -29,7 +29,11 @@ _RESET_REMINDER_TAB_KEY = "RESET_REMINDER_TAB"
 _FEATURE_TOGGLE_KEY = "reset_reminders"
 _INVALID_ROW_ALERT_DEDUPER = EventDeduper(window_s=900.0, max_keys=128)
 _LOAD_FAILURE_ALERT_COOLDOWN_SEC = 1800.0
-_load_failure_state: dict[str, Any] = {"key": None, "last_alert": 0.0, "failures": 0}
+_LOAD_FAILURE_ALERT_THRESHOLD = 3
+_LOAD_RETRY_ATTEMPTS = 2
+_LOAD_RETRY_BACKOFF_SEC = 0.5
+_load_failure_state: dict[str, Any] = {"key": None, "last_alert": 0.0, "failures": 0, "alert_sent": False}
+_last_successful_load: dict[str, Any] = {"tab_name": None, "header_map": None, "records": None}
 _PROCESS_LOCK = asyncio.Lock()
 _REQUIRED_COLUMNS: tuple[str, ...] = (
     "reset_id",
@@ -146,6 +150,7 @@ async def _load_reset_reminder_records(*, active_only: bool) -> tuple[str, dict[
         tab_name = _tab_name()
         sheet_id = _sheet_id()
         stage = "sheet_fetch"
+        log.info("reset reminder sheet load started", extra={"tab": tab_name, "active_only": active_only})
         matrix = await afetch_values(sheet_id, tab_name)
         if not matrix:
             return tab_name, {}, []
@@ -224,6 +229,7 @@ async def _load_reset_reminder_records(*, active_only: bool) -> tuple[str, dict[
             "valid_active_rows": valid_active_count,
             "invalid_rows": len(invalid_rows),
             "invalid_row_details": invalid_rows,
+            "load_duration_ms": round((time.monotonic() - started) * 1000, 1),
         },
     )
     if active_only and invalid_rows:
@@ -386,19 +392,33 @@ async def _record_load_failure(exc: Exception) -> None:
     )
 
     last_alert = float(state.get("last_alert") or 0.0)
-    if previous_key != key or now - last_alert >= _LOAD_FAILURE_ALERT_COOLDOWN_SEC:
+    should_send = int(state["failures"]) >= _LOAD_FAILURE_ALERT_THRESHOLD and (
+        not bool(state.get("alert_sent")) or previous_key != key or now - last_alert >= _LOAD_FAILURE_ALERT_COOLDOWN_SEC
+    )
+    if should_send:
         state["last_alert"] = now
+        state["alert_sent"] = True
+        log.warning("reset reminder Discord warning sent", extra={"consecutive_failures": state["failures"]})
         await _send_ops_log(
-            "⚠️ Reset reminders failed to load; scheduler tick skipped. "
-            f"See app logs. error={type(exc).__name__}"
+            "⚠️ Reset reminders failed to load after repeated ticks; scheduler tick skipped. "
+            f"See app logs. error={type(exc).__name__} consecutive_failures={state['failures']}"
+        )
+    else:
+        log.info(
+            "reset reminder Discord warning suppressed",
+            extra={"consecutive_failures": state["failures"], "threshold": _LOAD_FAILURE_ALERT_THRESHOLD},
         )
 
 
 async def _record_load_success() -> None:
     failures = int(_load_failure_state.get("failures") or 0)
-    if failures > 0:
+    alert_sent = bool(_load_failure_state.get("alert_sent"))
+    if failures > 0 and alert_sent:
+        log.info("reset reminder recovery message sent", extra={"consecutive_failures": failures})
         await _send_ops_log(f"✅ Reset reminders loaded again after {failures} failed tick(s).")
-    _load_failure_state.update({"key": None, "last_alert": 0.0, "failures": 0})
+    elif failures > 0:
+        log.info("reset reminder recovery message suppressed", extra={"consecutive_failures": failures})
+    _load_failure_state.update({"key": None, "last_alert": 0.0, "failures": 0, "alert_sent": False})
 
 
 async def _resolve_target_channel(bot: commands.Bot, reminder: ResetReminder) -> discord.abc.Messageable | None:
@@ -514,6 +534,59 @@ async def _update_row_after_send(
     )
 
 
+async def _load_reset_reminder_records_resilient(*, active_only: bool) -> tuple[str, dict[str, int], list[_ResetReminderRecord], bool]:
+    last_exc: Exception | None = None
+    for attempt in range(1, _LOAD_RETRY_ATTEMPTS + 1):
+        started = time.monotonic()
+        try:
+            tab_name, header_map, records = await _load_reset_reminder_records(active_only=active_only)
+        except TimeoutError as exc:
+            last_exc = exc
+            log.warning(
+                "reset reminder sheet load timed out; retrying",
+                extra={
+                    "attempt": attempt,
+                    "max_attempts": _LOAD_RETRY_ATTEMPTS,
+                    "exception_type": type(exc).__name__,
+                    "load_duration_ms": round((time.monotonic() - started) * 1000, 1),
+                },
+            )
+            if attempt < _LOAD_RETRY_ATTEMPTS:
+                await asyncio.sleep(_LOAD_RETRY_BACKOFF_SEC * attempt)
+                continue
+            break
+        except Exception:
+            raise
+        _last_successful_load.update({"tab_name": tab_name, "header_map": header_map, "records": records})
+        log.info(
+            "reset reminder sheet load succeeded",
+            extra={"attempt": attempt, "load_duration_ms": round((time.monotonic() - started) * 1000, 1)},
+        )
+        return tab_name, header_map, records, False
+
+    cached_tab = _last_successful_load.get("tab_name")
+    cached_header = _last_successful_load.get("header_map")
+    cached_records = _last_successful_load.get("records")
+    if (
+        cached_tab
+        and isinstance(cached_header, dict)
+        and all(column in cached_header for column in _REQUIRED_COLUMNS)
+        and isinstance(cached_records, list)
+    ):
+        log.warning(
+            "reset reminder sheet load failed after retries; using cached rows",
+            extra={
+                "exception_type": type(last_exc).__name__ if last_exc else "unknown",
+                "cached_rows": len(cached_records),
+                "used_cached_rows": True,
+            },
+        )
+        return str(cached_tab), cached_header, cached_records, True
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("reset reminder sheet load failed")
+
+
 async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None = None) -> None:
     if not _is_feature_enabled():
         log.debug("reset reminders disabled via feature toggle; skipping scheduler tick")
@@ -533,12 +606,23 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
 
         now_utc = _utc_now(now)
 
+        used_cached_rows = False
         try:
-            tab_name, header_map, records = await _load_reset_reminder_records(active_only=True)
+            tab_name, header_map, records, used_cached_rows = await _load_reset_reminder_records_resilient(active_only=True)
         except Exception as exc:
             await _record_load_failure(exc)
             return
-        await _record_load_success()
+        if used_cached_rows:
+            synthetic = TimeoutError("reset reminder sheet load failed; cached rows used")
+            setattr(synthetic, "reset_reminder_stage", "sheet_fetch")
+            setattr(synthetic, "reset_reminder_tab", tab_name)
+            await _record_load_failure(synthetic)
+            log.info(
+                "reset reminder scheduler continuing with cached rows",
+                extra={"cached_rows": len(records), "consecutive_failed_ticks": _load_failure_state.get("failures")},
+            )
+        else:
+            await _record_load_success()
 
         if not records:
             return
@@ -709,4 +793,5 @@ __all__ = [
     "register_persistent_reset_views",
     "schedule_reset_reminder_jobs",
     "_load_failure_state",
+    "_last_successful_load",
 ]
