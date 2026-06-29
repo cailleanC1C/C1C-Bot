@@ -59,7 +59,6 @@ from c1c_coreops.help import (
     build_help_overview_embeds,
 )
 from c1c_coreops.helpers import help_metadata, tier
-from shared.theme import colors
 from shared.redaction import sanitize_embed, sanitize_log, sanitize_text
 from shared.obs.events import (
     format_refresh_message,
@@ -490,7 +489,28 @@ class _EnvRenderMeta:
     timestamp: dt.datetime
 
 
+_BUCKET_LABELS: Dict[str, str] = {
+    "c1c_ad": "C1C Ad",
+    "c1c_ad_text": "C1C Ad Text",
+    "clan_ad_messages": "Clan Ad Messages",
+    "clan_ad_rules": "Clan Ad Rules",
+    "cleanup_rules": "Cleanup Rules",
+    "keepalive_targets": "Keepalive Targets",
+    "recruitment_reports": "Recruitment Reports",
+    "reset_reminders": "Reset Reminders",
+    "shard_clans": "Shard Clans",
+    "shard_mercy": "Shard Mercy",
+    "shard_reminders": "Shard Reminders",
+    "shard_share_copy": "Shard Share Copy",
+    "shard_voice_targets": "Shard Voice Targets",
+    "whoweare_role_map": "WhoWeAre Role Map",
+}
+
+
 def _format_bucket_label(name: str) -> str:
+    mapped = _BUCKET_LABELS.get(name.strip().lower())
+    if mapped:
+        return mapped
     cleaned = name.replace("_", " ").strip()
     if not cleaned:
         return name
