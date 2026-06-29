@@ -67,6 +67,16 @@ def _column_aliases(*aliases: str) -> tuple[str, ...]:
     return tuple(aliases)
 
 
+CLAN_DIAGNOSTIC_REQUIRED_KEYS: tuple[str, ...] = (
+    "clan_tag",
+    "open_spots",
+    "inactives",
+    "reserved",
+    "reservation_count",
+    "reservation_summary",
+)
+
+
 HEADER_MAP: Dict[str, tuple[str, ...]] = {
     "clan_name": _column_aliases(
         "clan name",
@@ -132,6 +142,8 @@ HEADER_MAP: Dict[str, tuple[str, ...]] = {
     ),
     "reserved": _column_aliases(
         "reserved",
+        "reservation_count",
+        "reserved_spots",
         "reserved slots",
         "reserved spot",
         "reserved count",
@@ -139,12 +151,14 @@ HEADER_MAP: Dict[str, tuple[str, ...]] = {
         "manual reserved",
     ),
     "reservation_count": _column_aliases(
+        "reservation_count",
         "reservation count",
         "reservations count",
         "reserved count",
         "active reservations",
     ),
     "reservation_summary": _column_aliases(
+        "reservation_summary",
         "reservation summary",
         "reservations summary",
         "reserved summary",
@@ -160,7 +174,7 @@ HEADER_MAP: Dict[str, tuple[str, ...]] = {
 
 def _normalize_header(cell: Any) -> str:
     text = "" if cell is None else str(cell).strip().lower()
-    return " ".join(text.split())
+    return " ".join(text.replace("_", " ").split())
 
 
 def _find_header_row_with_index(
@@ -235,7 +249,9 @@ def _log_clan_header_diagnostics(
     raw_values = _diagnostic_header_values(header_row)
     normalized_values = _normalize_header_values(raw_values)
     header_map_columns = _header_map_columns(header_map)
-    missing_required_keys = [key for key in HEADER_MAP if key not in header_map]
+    missing_required_keys = [
+        key for key in CLAN_DIAGNOSTIC_REQUIRED_KEYS if key not in header_map
+    ]
 
     log.info(
         "recruitment clan header diagnostics: sheet_id=%s tab=%r "
