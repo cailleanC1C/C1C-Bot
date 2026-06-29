@@ -4,8 +4,10 @@ from modules.ops import cluster_role_map
 
 
 class DummyMember:
-    def __init__(self, mention: str):
+    def __init__(self, mention: str, roles: list[object] | None = None):
         self.mention = mention
+        if roles is not None:
+            self.roles = roles
 
 
 class DummyRole:
@@ -47,7 +49,7 @@ def test_build_role_map_render_renders_categories_and_members():
             category="ClusterLeadership",
             category_display="Cluster Leadership",
             role_id=1,
-            sheet_role_name="Lead", 
+            sheet_role_name="Lead",
             role_description="Runs it",
             role_usage="",
         ),
@@ -55,7 +57,7 @@ def test_build_role_map_render_renders_categories_and_members():
             category="ClusterSupport",
             category_display="",
             role_id=2,
-            sheet_role_name="Support", 
+            sheet_role_name="Support",
             role_description="",
             role_usage="",
         ),
@@ -63,35 +65,37 @@ def test_build_role_map_render_renders_categories_and_members():
             category="ClusterSupport",
             category_display="",
             role_id=99,
-            sheet_role_name="Backup", 
+            sheet_role_name="Backup",
             role_description="Keeps receipts",
             role_usage="",
         ),
     ]
+    leader_role = DummyRole(1, "Leader", [])
+    leader_role.members = [DummyMember("<@1>", roles=[leader_role])]
     guild = DummyGuild(
         "TestGuild",
         [
-            DummyRole(1, "Leader", [DummyMember("<@1>")]),
+            leader_role,
             DummyRole(2, "Shield", []),
         ],
     )
 
     render = cluster_role_map.build_role_map_render(guild, entries)
 
-    assert render.category_count == 2
+    assert render.category_count == 1
     assert render.role_count == 3
     assert render.unassigned_roles == 2
-    assert len(render.categories) == 2
+    assert render.missing_roles == 1
+    assert render.empty_roles == 1
+    assert len(render.categories) == 1
     leadership = render.categories[0]
-    support = render.categories[1]
-    assert leadership.name == "ClusterLeadership"
-    assert leadership.roles[0].display_name == "Lead"
+    assert leadership.name == "Cluster Leadership"
+    assert leadership.roles[0].display_name == "Leader"
     assert leadership.roles[0].members == ["<@1>"]
-    assert support.roles[0].description == "no description set"
     embeds = cluster_role_map.build_category_embeds(leadership)
     assert len(embeds) == 1
-    assert embeds[0].title == "🔥 ClusterLeadership"
-    assert "**Lead**" in embeds[0].description
+    assert embeds[0].title == "🔥 Cluster Leadership"
+    assert "**Leader**" in embeds[0].description
     assert "Runs it" in embeds[0].description
     assert "<@1>" in embeds[0].description
 
@@ -120,3 +124,73 @@ def test_build_category_embeds_renders_usage_instruction():
     embeds = cluster_role_map.build_category_embeds(category)
     category_body = embeds[0].description
     assert "↳ Use <@&42> for" not in category_body
+
+
+def test_build_role_map_render_hides_missing_role_without_members(caplog):
+    entries = [
+        cluster_role_map.RoleMapRow(
+            category="ClusterLeadership",
+            category_display="Cluster Leadership",
+            role_id=404,
+            sheet_role_name="@unknown-role",
+            role_description="Stale sheet row",
+            role_usage="stale pings",
+        )
+    ]
+    guild = DummyGuild("TestGuild", [])
+
+    render = cluster_role_map.build_role_map_render(guild, entries)
+
+    assert render.categories == []
+    assert render.category_count == 0
+    assert render.role_count == 1
+    assert render.missing_roles == 1
+    assert render.unassigned_roles == 1
+    assert "configured role was not found" in caplog.text
+
+
+def test_build_role_map_render_does_not_list_member_when_roles_unavailable():
+    role = DummyRole(12, "Live Role", [DummyMember("<@unverified>")])
+    entries = [
+        cluster_role_map.RoleMapRow(
+            category="ClusterSupport",
+            category_display="Cluster Support",
+            role_id=12,
+            sheet_role_name="Live Role",
+            role_description="Helps",
+            role_usage="support",
+        )
+    ]
+    guild = DummyGuild("TestGuild", [role])
+
+    render = cluster_role_map.build_role_map_render(guild, entries)
+
+    assert render.categories == []
+    assert render.empty_roles == 1
+    assert render.unassigned_roles == 1
+
+
+def test_build_role_map_render_filters_stale_role_member_cache():
+    role = DummyRole(10, "Live Role", [])
+    other_role = DummyRole(11, "Other Role", [])
+    role.members = [
+        DummyMember("<@current>", roles=[role]),
+        DummyMember("<@stale>", roles=[other_role]),
+    ]
+    entries = [
+        cluster_role_map.RoleMapRow(
+            category="ClusterSupport",
+            category_display="Cluster Support",
+            role_id=10,
+            sheet_role_name="Stale Name",
+            role_description="Helps",
+            role_usage="support",
+        )
+    ]
+    guild = DummyGuild("TestGuild", [role, other_role])
+
+    render = cluster_role_map.build_role_map_render(guild, entries)
+
+    assert render.category_count == 1
+    assert render.categories[0].roles[0].display_name == "Live Role"
+    assert render.categories[0].roles[0].members == ["<@current>"]

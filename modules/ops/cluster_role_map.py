@@ -58,18 +58,8 @@ class RoleMapRender:
     category_count: int
     role_count: int
     unassigned_roles: int
-    notices: List["RoleMapRenderNotice"] = field(default_factory=list)
-
-
-@dataclass(slots=True)
-class RoleMapRenderNotice:
-    """Non-member render decision safe for operational logging."""
-
-    category_key: str
-    category_name: str
-    role_id: int
-    sheet_role_name: str
-    reason: str
+    missing_roles: int = 0
+    empty_roles: int = 0
 
 
 @dataclass(slots=True)
@@ -190,23 +180,30 @@ def _category_emoji(name: str) -> str:
     return CATEGORY_EMOJIS.get(normalized, "•")
 
 
-def _member_currently_has_role(member: object, role: object) -> bool:
-    """Return whether a live Discord member object currently includes the role."""
+def _member_currently_has_role(member: object, role_id: int) -> bool:
+    """Return whether a role member object currently exposes the resolved role."""
 
     roles = getattr(member, "roles", None)
     if roles is None:
-        return True
-    role_id = getattr(role, "id", None)
-    for member_role in roles:
-        if member_role is role:
-            return True
-        if role_id is not None and getattr(member_role, "id", None) == role_id:
-            return True
-    return False
+        return False
+    return any(getattr(role, "id", None) == role_id for role in roles)
 
 
-def _member_mention(member: object) -> str:
-    return str(getattr(member, "mention", getattr(member, "name", "")) or "").strip()
+def _role_member_mentions(role: object) -> List[str]:
+    """Build mentions only from the resolved live Discord role membership."""
+
+    role_id = int(getattr(role, "id", 0) or 0)
+    mentions: List[str] = []
+    seen: set[str] = set()
+    for member in getattr(role, "members", []) or []:
+        if not _member_currently_has_role(member, role_id):
+            continue
+        mention = str(getattr(member, "mention", "") or "").strip()
+        if not mention or mention in seen:
+            continue
+        seen.add(mention)
+        mentions.append(mention)
+    return mentions
 
 
 def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleMapRow]) -> RoleMapRender:
@@ -215,7 +212,8 @@ def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleM
     order, grouped = _category_order(entries)
     category_display: Dict[str, str] = {}
     role_count = 0
-    unassigned_roles = 0
+    missing_roles = 0
+    empty_roles = 0
     categories: List[RoleMapCategoryRender] = []
     notices: List[RoleMapRenderNotice] = []
 
@@ -230,50 +228,41 @@ def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleM
             category_name = category_display[category]
             role_count += 1
             role = get_role(row.role_id) if callable(get_role) else None
+            role_ref = f"role_id={row.role_id}"
+            if row.sheet_role_name:
+                role_ref = f"{role_ref} sheet_role_name={row.sheet_role_name!r}"
             if role is None:
-                notices.append(
-                    RoleMapRenderNotice(
-                        category_key=row.category,
-                        category_name=category_name,
-                        role_id=row.role_id,
-                        sheet_role_name=row.sheet_role_name,
-                        reason="role_missing",
-                    )
-                )
+                missing_roles += 1
                 log.warning(
-                    "cluster_role_map: configured role could not be resolved; hiding role row",
+                    "cluster_role_map: hiding category role because configured role was not found",
                     extra={
                         "category_key": row.category,
-                        "category_name": category_name,
-                        "role_id": row.role_id,
-                        "sheet_role_name": row.sheet_role_name,
+                        "category_name": row.category_display or row.category,
+                        "role_reference": role_ref,
+                        "hidden_reason": "role_not_found",
                     },
                 )
                 continue
 
-            display_name = _normalize_text(getattr(role, "name", "")) or _normalize_text(row.sheet_role_name)
+            mentions = _role_member_mentions(role)
+            if not mentions:
+                empty_roles += 1
+                log.info(
+                    "cluster_role_map: hiding category role because no current members are assigned",
+                    extra={
+                        "category_key": row.category,
+                        "category_name": row.category_display or row.category,
+                        "role_reference": role_ref,
+                        "hidden_reason": "no_current_members",
+                    },
+                )
+                continue
+
+            display_name = _normalize_text(getattr(role, "name", ""))
             if not display_name:
                 display_name = f"role {row.role_id}"
             description = row.role_description or DEFAULT_DESCRIPTION
             usage = row.role_usage
-
-            members = [
-                member
-                for member in list(getattr(role, "members", []) or [])
-                if _member_currently_has_role(member, role)
-            ]
-            mentions = [mention for member in members if (mention := _member_mention(member))]
-            if not mentions:
-                unassigned_roles += 1
-                notices.append(
-                    RoleMapRenderNotice(
-                        category_key=row.category,
-                        category_name=category_name,
-                        role_id=row.role_id,
-                        sheet_role_name=row.sheet_role_name,
-                        reason="role_empty",
-                    )
-                )
             role_rows.append(
                 RoleEntryRender(
                     role_id=row.role_id,
@@ -293,8 +282,9 @@ def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleM
         categories=categories,
         category_count=len(categories),
         role_count=role_count,
-        unassigned_roles=unassigned_roles,
-        notices=notices,
+        unassigned_roles=missing_roles + empty_roles,
+        missing_roles=missing_roles,
+        empty_roles=empty_roles,
     )
 
 

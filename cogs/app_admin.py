@@ -536,6 +536,7 @@ class AppAdmin(commands.Cog):
             "📘 **Cluster role map** — "
             f"cmd=whoweare • guild={guild_name} • categories={render.category_count} "
             f"• roles={render.role_count} • unassigned_roles={render.unassigned_roles} "
+            f"• missing_roles={render.missing_roles} • empty_roles={render.empty_roles} "
             f"• category_messages={len(jump_entries)} • target_channel={target_label}"
         )
 

@@ -409,7 +409,8 @@ def test_whoweare_command_posts_multi_message_map(monkeypatch):
         assert category_message.content.rstrip().endswith(cluster_role_map.INVISIBLE_MARKER)
         assert log_messages[-1] == (
             "📘 **Cluster role map** — cmd=whoweare • guild=Guild • categories=1 "
-            "• roles=1 • unassigned_roles=0 • category_messages=1 • target_channel=<#321>"
+            "• roles=1 • unassigned_roles=0 • missing_roles=0 • empty_roles=0 "
+            "• category_messages=1 • target_channel=<#321>"
         )
 
     asyncio.run(_run())
@@ -519,6 +520,7 @@ def test_whoweare_command_handles_empty_categories(monkeypatch):
         assert "No categories are currently available" in channel.sent_messages[0].content
         ctx.reply.assert_awaited_once_with("Cluster role map updated.", mention_author=False)
         assert log_messages[-1].endswith("category_messages=0 • target_channel=<#222>")
+        assert "missing_roles=0 • empty_roles=0" in log_messages[-1]
 
     asyncio.run(_run())
 
