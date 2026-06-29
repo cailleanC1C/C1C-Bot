@@ -17,7 +17,6 @@ EXPECTED_NEW_BUCKETS = {
     "reset_reminders",
     "shard_mercy",
     "shard_clans",
-    "shard_reminders",
     "shard_share_copy",
     "shard_voice_targets",
 }
