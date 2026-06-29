@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 from discord import Embed
 from unittest.mock import AsyncMock, MagicMock
 
@@ -134,6 +135,85 @@ def test_live_headers_drive_sections_brackets_and_clan_names_without_grouping():
     value = details_embed.fields[0].value
     assert "🔹 **Key Clan Zero:** open 0 | inactives 0 | reserved 0" not in value
     assert "🔹 **Key Clan Active:** open 2 | inactives 1 | reserved 3" in value
+
+
+def test_statistics_header_normalization_accepts_existing_sheet_headers():
+    rows = _sample_rows()
+    rows[0] = [
+        "  H1_Headline  ",
+        "h2   headline",
+        "KEY",
+        "open_spots",
+        " inactives ",
+        "reserved   spots",
+    ]
+    headers = dru._headers_map(rows[0])
+
+    sections = dru._extract_report_sections(
+        rows,
+        headers,
+        dru._report_fetch_context(tab_name="Statistics", rows=rows, data_source="test"),
+    )
+
+    assert sections.general_lines
+    assert "Ops Summary" in sections.general_lines[0]
+
+
+def test_missing_headers_include_diagnostics():
+    rows = [["not", "the", "schema"], ["General Overview"]]
+    headers = dru._headers_map(rows[0])
+    context = dru._report_fetch_context(tab_name="Statistics", rows=rows, data_source="test")
+
+    with pytest.raises(dru.ReportSchemaError) as exc_info:
+        dru._extract_report_sections(rows, headers, context)
+
+    exc = exc_info.value
+    assert exc.required == dru._REPORT_REQUIRED_HEADERS
+    assert exc.actual_first_row == tuple(rows[0])
+    assert exc.context.config_key == "REPORTS_TAB"
+    assert exc.context.tab_name == "Statistics"
+    assert exc.context.row_count == 2
+
+
+def test_fetch_timeout_uses_cached_valid_rows(monkeypatch):
+    rows = _sample_rows()
+    headers = dru._headers_map(rows[0])
+
+    async def timeout_fetch(tab_name):
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(dru, "_REPORT_ROWS_CACHE", rows)
+    monkeypatch.setattr(dru, "_REPORT_HEADERS_CACHE", headers)
+    monkeypatch.setattr(dru, "_REPORT_CONTEXT_CACHE", None)
+    monkeypatch.setattr(dru, "get_recruitment_sheet_id", lambda: "sheet-id")
+    monkeypatch.setattr(dru, "get_reports_tab_name", lambda default="Statistics": "Statistics")
+    monkeypatch.setattr(dru, "afetch_reports_tab", timeout_fetch)
+
+    fetched_rows, fetched_headers = asyncio.run(dru._fetch_report_rows())
+
+    assert fetched_rows == rows
+    assert fetched_headers == headers
+    assert dru._REPORT_CONTEXT_CACHE is not None
+    assert dru._REPORT_CONTEXT_CACHE.data_source == "cache"
+    assert dru._REPORT_CONTEXT_CACHE.underlying_exception_type == "TimeoutError"
+
+
+def test_fetch_timeout_without_cache_returns_actionable_error(monkeypatch):
+    async def timeout_fetch(tab_name):
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(dru, "_REPORT_ROWS_CACHE", None)
+    monkeypatch.setattr(dru, "_REPORT_HEADERS_CACHE", {})
+    monkeypatch.setattr(dru, "_REPORT_CONTEXT_CACHE", None)
+    monkeypatch.setattr(dru, "get_recruitment_sheet_id", lambda: "sheet-id")
+    monkeypatch.setattr(dru, "get_reports_tab_name", lambda default="Statistics": "Statistics")
+    monkeypatch.setattr(dru, "afetch_reports_tab", timeout_fetch)
+
+    with pytest.raises(dru.ReportFetchError) as exc_info:
+        asyncio.run(dru._fetch_report_rows())
+
+    assert "Google Sheets/cache fetch timed out" in str(exc_info.value)
+    assert exc_info.value.context.underlying_exception_type == "TimeoutError"
 
 
 def test_bracket_details_keep_each_mixed_non_zero_case():
