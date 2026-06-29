@@ -20,6 +20,14 @@ _FLIP_EMOJI = "\N{ELECTRIC LIGHT BULB}"  # 💡
 
 
 @dataclass
+class ClanCrestThumbnail:
+    """Resolved crest thumbnail URL plus optional Discord attachment file."""
+
+    thumbnail_url: Optional[str] = None
+    file: Optional[discord.File] = None
+
+
+@dataclass
 class _FlipState:
     """State tracked for each toggleable clan profile message."""
 
@@ -232,44 +240,54 @@ class ClanProfileCog(commands.Cog):
         for message_id in payload.message_ids:
             self._flip_index.pop(message_id, None)
 
-    async def _load_crest(
+    async def build_clan_crest_thumbnail(
         self,
-        guild: discord.Guild | None,
         tag: str,
-    ) -> tuple[Optional[bytes], Optional[str], Optional[str]]:
+        *,
+        guild: discord.Guild | None,
+    ) -> ClanCrestThumbnail:
+        """Return the clan crest thumbnail asset used by clan profile cards."""
         if guild is None:
-            return None, None, None
-
-        crest_bytes: Optional[bytes] = None
-        crest_filename: Optional[str] = None
-        crest_static_url: Optional[str] = None
+            return ClanCrestThumbnail()
 
         size, box = emoji_pipeline.tag_badge_defaults()
-        file, _ = await emoji_pipeline.build_tag_thumbnail(
+        file, attachment_url = await emoji_pipeline.build_tag_thumbnail(
             guild,
             tag,
             size=size,
             box=box,
         )
-        if file and file.fp:
+        if file and attachment_url:
+            return ClanCrestThumbnail(thumbnail_url=attachment_url, file=file)
+
+        proxy_url = emoji_pipeline.padded_emoji_url(guild, tag)
+        if proxy_url:
+            return ClanCrestThumbnail(thumbnail_url=proxy_url)
+
+        if not emoji_pipeline.is_strict_proxy_enabled():
+            emoji = emoji_pipeline.emoji_for_tag(guild, tag)
+            if emoji:
+                return ClanCrestThumbnail(thumbnail_url=str(emoji.url))
+
+        return ClanCrestThumbnail()
+
+    async def _load_crest(
+        self,
+        guild: discord.Guild | None,
+        tag: str,
+    ) -> tuple[Optional[bytes], Optional[str], Optional[str]]:
+        asset = await self.build_clan_crest_thumbnail(tag, guild=guild)
+        if asset.file and asset.file.fp:
             try:
-                file.fp.seek(0)
-                crest_bytes = file.fp.read()
-                crest_filename = file.filename or f"{tag.lower() or 'crest'}-badge.png"
+                asset.file.fp.seek(0)
+                crest_bytes = asset.file.fp.read()
+                crest_filename = (
+                    asset.file.filename or f"{tag.lower() or 'crest'}-badge.png"
+                )
+                return crest_bytes, crest_filename, None
             except Exception:
-                crest_bytes = None
-                crest_filename = None
-
-        if crest_bytes is None:
-            proxy_url = emoji_pipeline.padded_emoji_url(guild, tag)
-            if proxy_url:
-                crest_static_url = proxy_url
-            elif not emoji_pipeline.is_strict_proxy_enabled():
-                emoji = emoji_pipeline.emoji_for_tag(guild, tag)
-                if emoji:
-                    crest_static_url = str(emoji.url)
-
-        return crest_bytes, crest_filename, crest_static_url
+                pass
+        return None, None, asset.thumbnail_url
 
     def _crest_embed_url(self, state: _FlipState) -> Optional[str]:
         if state.crest_bytes and state.crest_filename:
