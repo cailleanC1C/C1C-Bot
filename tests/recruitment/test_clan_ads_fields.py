@@ -106,7 +106,14 @@ def test_clan_ads_run_reports_when_all_clans_fail_required_field_resolution(
 
 
 def _message_row(
-    row_number=2, tag="C1CE", enabled=True, title="", desc="", footer="", last_id=""
+    row_number=2,
+    tag="C1CE",
+    enabled=True,
+    title="",
+    desc="",
+    footer="",
+    last_id="",
+    color="",
 ):
     return clan_ads.MessageRow(
         row_number=row_number,
@@ -116,6 +123,7 @@ def _message_row(
         embed_description=desc,
         embed_footer=footer,
         last_message_id=last_id,
+        embed_color=color,
     )
 
 
@@ -145,6 +153,7 @@ def test_clan_ad_messages_embed_headers_do_not_require_message(monkeypatch):
             "last_open_spots",
             "last_status",
             "last_error",
+            "embed_color",
         ],
         [
             "default",
@@ -157,6 +166,7 @@ def test_clan_ad_messages_embed_headers_do_not_require_message(monkeypatch):
             "",
             "",
             "",
+            "#5865F2",
         ],
     ]
 
@@ -177,8 +187,11 @@ def test_clan_ad_messages_embed_headers_do_not_require_message(monkeypatch):
     assert loaded is not None
     _items, default, header_map = loaded
     assert "message" not in header_map
-    assert {"embed_title", "embed_description", "embed_footer"} <= set(header_map)
+    assert {"embed_title", "embed_description", "embed_footer", "embed_color"} <= set(
+        header_map
+    )
     assert default.embed_title == "Join {clan_name}"
+    assert default.embed_color == "#5865F2"
 
 
 def test_embed_field_fallbacks_are_independent_and_footer_optional():
@@ -293,6 +306,7 @@ def test_post_decision_posts_embed_deletes_old_and_writes_new_id(monkeypatch):
 
     ok = asyncio.run(
         clan_ads.post_decision(
+            SimpleNamespace(),
             Channel(),
             clan_ads.Config("ClanAdMessages", "Rules", 1, "", "", 24, ""),
             {},
@@ -361,3 +375,204 @@ def test_manual_clanads_summary_auto_deletes_only_in_ad_channel(monkeypatch):
     asyncio.run(command(ClanAdsCog(SimpleNamespace()), Ctx(), "all"))
 
     assert sends == [("Posted 1 clan ad(s).", {"delete_after": 20})]
+
+
+def test_embed_color_parsing_and_fallbacks(monkeypatch):
+    import asyncio
+
+    warnings = []
+    reporter = clan_ads.RunReporter(None)
+
+    async def fake_warn(message, *, dedupe_key=None):
+        warnings.append((message, dedupe_key))
+
+    monkeypatch.setattr(reporter, "warn", fake_warn)
+    default = _message_row(tag="DEFAULT", color="5865F2")
+
+    assert clan_ads.parse_embed_color("#5865F2") == 0x5865F2
+    assert clan_ads.parse_embed_color("5865F2") == 0x5865F2
+    assert clan_ads.parse_embed_color("0x5865F2") == 0x5865F2
+    assert (
+        asyncio.run(
+            clan_ads.resolve_embed_color(
+                _message_row(color="0xABCDEF"), default, "C1CE", reporter
+            )
+        )
+        == 0xABCDEF
+    )
+    assert (
+        asyncio.run(
+            clan_ads.resolve_embed_color(
+                _message_row(color=""), default, "C1CE", reporter
+            )
+        )
+        == 0x5865F2
+    )
+    assert (
+        asyncio.run(
+            clan_ads.resolve_embed_color(
+                _message_row(color=""),
+                _message_row(tag="DEFAULT", color=""),
+                "C1CE",
+                reporter,
+            )
+        )
+        is None
+    )
+    assert (
+        asyncio.run(
+            clan_ads.resolve_embed_color(
+                _message_row(color="not-a-color"), default, "C1CE", reporter
+            )
+        )
+        is None
+    )
+    assert "invalid embed_color `not-a-color`" in warnings[-1][0]
+
+
+def test_post_decision_applies_color_and_static_clan_card_thumbnail(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    import discord
+
+    sent = []
+
+    class Channel:
+        guild = None
+
+        async def send(self, **kwargs):
+            sent.append(kwargs)
+            return SimpleNamespace(id=5678)
+
+    async def fake_write_state(*args, **kwargs):
+        return None
+
+    async def fake_build_clan_card(*args, **kwargs):
+        embed = discord.Embed(title="Profile")
+        embed.set_thumbnail(url="https://example.com/crest.png")
+        return [embed, discord.Embed(title="Entry")], [], SimpleNamespace()
+
+    monkeypatch.setattr(clan_ads, "write_state", fake_write_state)
+    monkeypatch.setattr(clan_ads, "build_clan_card", fake_build_clan_card)
+    decision = clan_ads.Decision(
+        "C1CE",
+        _clan(),
+        _message_row(title="Join", desc="Open", color="#123456"),
+        "qualified",
+        "qualified",
+    )
+
+    ok = asyncio.run(
+        clan_ads.post_decision(
+            SimpleNamespace(),
+            Channel(),
+            clan_ads.Config("ClanAdMessages", "Rules", 1, "", "", 24, ""),
+            {},
+            _message_row(tag="DEFAULT", title="D", desc="D"),
+            decision,
+            None,
+            clan_ads.RunReporter(None),
+        )
+    )
+
+    assert ok is True
+    embed = sent[0]["embed"]
+    assert embed.color.value == 0x123456
+    assert embed.thumbnail.url == "https://example.com/crest.png"
+    assert sent[0]["view"].timeout is None
+
+
+def test_post_decision_skips_attachment_thumbnail_without_public_files(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    import discord
+
+    sent = []
+
+    class Channel:
+        guild = None
+
+        async def send(self, **kwargs):
+            sent.append(kwargs)
+            return SimpleNamespace(id=3456)
+
+    async def fake_write_state(*args, **kwargs):
+        return None
+
+    async def fake_build_clan_card(*args, **kwargs):
+        embed = discord.Embed(title="Profile")
+        embed.set_thumbnail(url="attachment://c1ce-badge.png")
+        return [embed, discord.Embed(title="Entry")], [object()], SimpleNamespace()
+
+    monkeypatch.setattr(clan_ads, "write_state", fake_write_state)
+    monkeypatch.setattr(clan_ads, "build_clan_card", fake_build_clan_card)
+    decision = clan_ads.Decision(
+        "C1CE",
+        _clan(),
+        _message_row(title="Join", desc="Open"),
+        "qualified",
+        "qualified",
+    )
+
+    ok = asyncio.run(
+        clan_ads.post_decision(
+            SimpleNamespace(),
+            Channel(),
+            clan_ads.Config("ClanAdMessages", "Rules", 1, "", "", 24, ""),
+            {},
+            _message_row(tag="DEFAULT", title="D", desc="D"),
+            decision,
+            None,
+            clan_ads.RunReporter(None),
+        )
+    )
+
+    assert ok is True
+    assert not sent[0]["embed"].thumbnail.url
+    assert "files" not in sent[0]
+
+
+def test_post_decision_still_posts_without_static_clan_card_thumbnail(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    sent = []
+
+    class Channel:
+        guild = None
+
+        async def send(self, **kwargs):
+            sent.append(kwargs)
+            return SimpleNamespace(id=9012)
+
+    async def fake_write_state(*args, **kwargs):
+        return None
+
+    async def fake_build_clan_card(*args, **kwargs):
+        return [], [], None
+
+    monkeypatch.setattr(clan_ads, "write_state", fake_write_state)
+    monkeypatch.setattr(clan_ads, "build_clan_card", fake_build_clan_card)
+    decision = clan_ads.Decision(
+        "C1CE",
+        _clan(),
+        _message_row(title="Join", desc="Open"),
+        "qualified",
+        "qualified",
+    )
+
+    ok = asyncio.run(
+        clan_ads.post_decision(
+            SimpleNamespace(),
+            Channel(),
+            clan_ads.Config("ClanAdMessages", "Rules", 1, "", "", 24, ""),
+            {},
+            _message_row(tag="DEFAULT", title="D", desc="D"),
+            decision,
+            None,
+            clan_ads.RunReporter(None),
+        )
+    )
+
+    assert ok is True
+    assert not sent[0]["embed"].thumbnail.url

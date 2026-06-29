@@ -169,6 +169,7 @@ class MessageRow:
     embed_description: str
     embed_footer: str
     last_message_id: str
+    embed_color: str = ""
 
 
 @dataclass
@@ -338,6 +339,9 @@ async def load_messages(
             )
             return None
         header_map = build_header_map(rows[0], MESSAGE_HEADERS)
+        optional_lookup = {key(header): index for index, header in enumerate(rows[0])}
+        if "embed_color" in optional_lookup:
+            header_map["embed_color"] = optional_lookup["embed_color"]
     except MissingHeaderError as exc:
         log.exception("clan ad messages tab missing header")
         await reporter.warn(
@@ -365,6 +369,7 @@ async def load_messages(
             embed_description=cell(row, header_map["embed_description"]),
             embed_footer=cell(row, header_map["embed_footer"]),
             last_message_id=cell(row, header_map["last_ad_message_id"]),
+            embed_color=cell(row, header_map.get("embed_color")),
         )
         if raw_tag.lower() == "default":
             default = message_row
@@ -425,6 +430,52 @@ def clan_data(record: Any) -> ClanData:
         open_spots=int(open_spots),
         description=description,
     )
+
+
+def parse_embed_color(value: Any) -> int | None:
+    """Parse optional ClanAdMessages embed_color values into Discord RGB ints."""
+    raw = norm(value)
+    if not raw:
+        return None
+    if raw.startswith("#"):
+        raw = raw[1:]
+    elif raw.lower().startswith("0x"):
+        raw = raw[2:]
+    if not re.fullmatch(r"[0-9a-fA-F]{6}", raw):
+        return None
+    return int(raw, 16)
+
+
+async def resolve_embed_color(
+    row: MessageRow,
+    default: MessageRow | None,
+    clan_tag: str,
+    reporter: RunReporter,
+) -> int | None:
+    raw_color = row.embed_color or (default.embed_color if default else "")
+    if not raw_color:
+        return None
+    parsed = parse_embed_color(raw_color)
+    if parsed is not None:
+        return parsed
+    await reporter.warn(
+        f"⚠️ Clan Ads warning: invalid embed_color `{raw_color}` for `{clan_tag}`; using default embed color.",
+        dedupe_key=f"invalid_embed_color:{raw_color}",
+    )
+    return None
+
+
+def clan_card_static_thumbnail(embeds: Sequence[discord.Embed]) -> str | None:
+    for embed in embeds:
+        url = str(getattr(getattr(embed, "thumbnail", None), "url", None) or "")
+        if url.startswith(("https://", "http://")):
+            return url
+        if url:
+            log.debug(
+                "Clan Ads skipped non-static clan card thumbnail URL",
+                extra={"thumbnail_url": url},
+            )
+    return None
 
 
 def render(template: str, clan: ClanData, guild: discord.Guild | None) -> str:
@@ -574,6 +625,7 @@ async def send_notification(channel: Any, config: Config, count: int) -> None:
 
 
 async def post_decision(
+    bot: discord.Client,
     channel: Any,
     config: Config,
     header_map: dict[str, int],
@@ -600,6 +652,7 @@ async def post_decision(
             )
 
     try:
+        color = await resolve_embed_color(row, default, clan.tag, reporter)
         embed = discord.Embed(
             title=render(
                 row.embed_title or (default.embed_title if default else ""), clan, guild
@@ -609,12 +662,32 @@ async def post_decision(
                 clan,
                 guild,
             ),
+            color=color,
         )
         footer = render(
             row.embed_footer or (default.embed_footer if default else ""), clan, guild
         )
         if footer:
             embed.set_footer(text=footer)
+        try:
+            card_embeds, _card_files, _state = await build_clan_card(
+                bot, clan.tag, guild
+            )
+        except Exception:
+            log.debug(
+                "Clan Ads could not resolve clan card crest thumbnail",
+                exc_info=True,
+                extra={"clan_tag": clan.tag},
+            )
+            card_embeds = []
+        thumbnail_url = clan_card_static_thumbnail(card_embeds or [])
+        if thumbnail_url:
+            embed.set_thumbnail(url=thumbnail_url)
+        else:
+            log.debug(
+                "Clan Ads could not resolve clan card crest thumbnail",
+                extra={"clan_tag": clan.tag},
+            )
         message = await channel.send(embed=embed, view=ClanAdButtonView(clan.tag))
     except Exception as exc:
         log.exception("failed to post clan ad", extra={"clan_tag": clan.tag})
@@ -814,6 +887,7 @@ async def run(
     posted = 0
     for decision in qualified:
         if await post_decision(
+            bot,
             channel,
             config,
             header_map,
