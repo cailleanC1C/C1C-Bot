@@ -39,7 +39,18 @@ class ClanAdsCog(commands.Cog):
                 "Clan ads post failed. Please check the bot logs for details."
             )
             return
-        await ctx.send(result.get("message") or "Clan ads command completed.")
+        delete_after = None
+        config = getattr(result, "get", lambda *_: None)("config")
+        target_channel_id = getattr(config, "channel_id", None)
+        if (
+            target_channel_id is not None
+            and getattr(getattr(ctx, "channel", None), "id", None) == target_channel_id
+        ):
+            delete_after = 20
+        await ctx.send(
+            result.get("message") or "Clan ads command completed.",
+            delete_after=delete_after,
+        )
 
     # This listener intentionally handles clan ad buttons by stable custom_id prefix
     # instead of relying on in-memory View state, so existing ad buttons keep working
@@ -51,16 +62,16 @@ class ClanAdsCog(commands.Cog):
         if not custom_id or not str(custom_id).startswith("clan_ads:view_card:"):
             return
         tag = str(custom_id).rsplit(":", 1)[-1]
-        embed, files, _state = await clan_ads.build_clan_card(
+        embeds, files, _state = await clan_ads.build_clan_card(
             self.bot, tag, interaction.guild
         )
-        if embed is None:
+        if not embeds:
             await interaction.response.send_message(
                 f"Unknown clan tag `{tag}`.", ephemeral=True
             )
             return
         await interaction.response.send_message(
-            embed=embed, files=files, ephemeral=True
+            embeds=embeds, files=files, ephemeral=True
         )
 
 
