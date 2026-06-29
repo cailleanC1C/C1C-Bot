@@ -13,6 +13,7 @@ from c1c_coreops.helpers import help_metadata, tier
 
 from modules.recruitment import cards, emoji_pipeline
 from shared.sheets import async_facade as sheets
+from shared.sheets import recruitment as recruitment_sheets
 
 _VALID_TAG_CHARS: frozenset[str] = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 _FLIP_EMOJI = "\N{ELECTRIC LIGHT BULB}"  # 💡
@@ -61,7 +62,9 @@ class ClanProfileCog(commands.Cog):
         self._flip_index: Dict[int, _FlipState] = {}
 
     @tier("user")
-    @help_metadata(function_group="recruitment", section="recruitment", access_tier="user")
+    @help_metadata(
+        function_group="recruitment", section="recruitment", access_tier="user"
+    )
     @commands.command(
         name="clan",
         help="Shows a clan’s profile card by tag, including entry requirements and crest details.",
@@ -76,36 +79,19 @@ class ClanProfileCog(commands.Cog):
             await ctx.reply(embed=_error_embed(tag or "?"), mention_author=False)
             return
 
-        row = await sheets.get_clan_by_tag(normalized)
-        if row is None:
+        payload = await self.build_profile_payload(normalized, guild=ctx.guild)
+        if payload[0] is None:
             await ctx.reply(embed=_error_embed(normalized), mention_author=False)
             return
-
-        row_tag = _normalize_tag(row[2] if len(row) > 2 else normalized) or normalized
-
-        crest_bytes, crest_filename, crest_static_url = await self._load_crest(
-            ctx.guild, row_tag
-        )
-
-        state = _FlipState(
-            row=row,
-            tag=row_tag,
-            guild_id=ctx.guild.id if ctx.guild else None,
-            channel_id=getattr(ctx.channel, "id", None),
-            crest_bytes=crest_bytes,
-            crest_filename=crest_filename,
-            crest_static_url=crest_static_url,
-        )
-
-        profile_embed = self._build_profile_embed(state, ctx.guild)
-        attachments = self._build_attachments(state)
+        profile_embed, attachments, state = payload
 
         if attachments:
             message = await ctx.send(embed=profile_embed, files=attachments)
         else:
             message = await ctx.send(embed=profile_embed)
 
-        self._flip_index[message.id] = state
+        if state is not None:
+            self._flip_index[message.id] = state
 
         try:
             await message.add_reaction(_FLIP_EMOJI)
@@ -114,8 +100,46 @@ class ClanProfileCog(commands.Cog):
 
         await _safe_delete(ctx.message)
 
+    def _resolve_row_tag(self, row: List[str], fallback: str) -> str:
+        header_map = recruitment_sheets.get_clan_header_map()
+        tag_index = header_map.get("clan_tag")
+        if tag_index is None:
+            return _normalize_tag(fallback)
+        return _normalize_tag(
+            row[tag_index] if tag_index < len(row) else fallback
+        ) or _normalize_tag(fallback)
+
+    async def build_profile_payload(
+        self, tag: str, *, guild: discord.Guild | None
+    ) -> tuple[discord.Embed | None, List[discord.File], _FlipState | None]:
+        normalized = _normalize_tag(tag)
+        row = await sheets.get_clan_by_tag(normalized)
+        if row is None:
+            return None, [], None
+
+        row_tag = self._resolve_row_tag(row, normalized)
+        crest_bytes, crest_filename, crest_static_url = await self._load_crest(
+            guild, row_tag
+        )
+        state = _FlipState(
+            row=row,
+            tag=row_tag,
+            guild_id=guild.id if guild else None,
+            channel_id=None,
+            crest_bytes=crest_bytes,
+            crest_filename=crest_filename,
+            crest_static_url=crest_static_url,
+        )
+        return (
+            self._build_profile_embed(state, guild),
+            self._build_attachments(state),
+            state,
+        )
+
     @commands.Cog.listener("on_raw_reaction_add")
-    async def _on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
+    async def _on_raw_reaction_add(
+        self, payload: discord.RawReactionActionEvent
+    ) -> None:
         if str(payload.emoji) != _FLIP_EMOJI:
             return
         if payload.user_id == getattr(self.bot.user, "id", None):
@@ -181,7 +205,9 @@ class ClanProfileCog(commands.Cog):
                     pass
 
     @commands.Cog.listener("on_raw_message_delete")
-    async def _on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+    async def _on_raw_message_delete(
+        self, payload: discord.RawMessageDeleteEvent
+    ) -> None:
         self._flip_index.pop(payload.message_id, None)
 
     @commands.Cog.listener("on_raw_bulk_message_delete")
