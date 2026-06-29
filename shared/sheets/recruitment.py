@@ -75,6 +75,7 @@ HEADER_MAP: Dict[str, tuple[str, ...]] = {
         "name",
     ),
     "bracket": _column_aliases(
+        "progression",
         "bracket",
         "roster",
         "roster status",

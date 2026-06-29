@@ -388,7 +388,9 @@ def clan_data(record: Any) -> ClanData:
     name = record_field(record, "clan_name")
     if not name:
         raise MissingClanFieldError("clan_name")
-    bracket = record_field(record, "bracket")
+    bracket = optional_record_field(record, "bracket") or norm(
+        getattr(record, "roster", "")
+    )
     if not bracket:
         raise MissingClanFieldError("bracket")
     open_spots = getattr(record, "open_spots", None)
@@ -691,6 +693,7 @@ async def run(
 
     raw_records = await sheets.fetch_clan_records(force=True)
     clans: list[ClanData] = []
+    clan_field_failures = 0
     for record in raw_records:
         try:
             data = clan_data(record)
@@ -706,8 +709,16 @@ async def run(
                 f"⚠️ Clan Ads skipped `{fallback_tag}`: could not resolve required clan field `{exc.field}` from the recruitment sheet headers.",
                 dedupe_key=f"missing_clan_field:{fallback_tag}:{exc.field}",
             )
+            clan_field_failures += 1
             continue
         clans.append(data)
+
+    if not clans and clan_field_failures:
+        return {
+            "posted": 0,
+            "skipped": clan_field_failures,
+            "message": "Clan ads could not evaluate any clans because required clan data fields are missing. Check the bot logging channel for details.",
+        }
 
     if clan_tag_filter:
         wanted = tag_norm(clan_tag_filter)
