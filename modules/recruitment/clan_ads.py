@@ -25,13 +25,15 @@ STATUS_NOT_QUALIFIED = "skipped_not_qualified"
 STATUS_MISSING_CLAN_ROW = "skipped_missing_clan_row"
 STATUS_MISSING_RULE = "skipped_missing_rule"
 STATUS_RULE_DISABLED = "skipped_rule_disabled"
-STATUS_MISSING_DEFAULT = "skipped_missing_default_message"
+STATUS_MISSING_DEFAULT = "skipped_missing_embed_template"
 STATUS_ERROR_POST = "error_post_failed"
 
 MESSAGE_HEADERS = {
     "clan_tag": "clan_tag",
     "enabled": "enabled",
-    "message": "message",
+    "embed_title": "embed_title",
+    "embed_description": "embed_description",
+    "embed_footer": "embed_footer",
     "last_ad_message_id": "last_ad_message_id",
     "last_posted_at_utc": "last_posted_at_utc",
     "last_open_spots": "last_open_spots",
@@ -163,7 +165,9 @@ class MessageRow:
     row_number: int
     tag: str
     enabled: bool
-    message: str
+    embed_title: str
+    embed_description: str
+    embed_footer: str
     last_message_id: str
 
 
@@ -203,10 +207,21 @@ async def build_clan_card(
     bot: discord.Client, clan_tag: str, guild: discord.Guild | None
 ):
     cog = bot.get_cog("ClanProfileCog") if hasattr(bot, "get_cog") else None
-    if cog is None or not hasattr(cog, "build_profile_payload"):
+    if cog is None:
         log.error("Clan Ads could not find loaded ClanProfileCog for card rendering")
         return None, [], None
-    return await cog.build_profile_payload(tag_norm(clan_tag), guild=guild)
+    if hasattr(cog, "build_profile_pages"):
+        embeds, files, state = await cog.build_profile_pages(
+            tag_norm(clan_tag), guild=guild
+        )
+        return embeds, files, state
+    if hasattr(cog, "build_profile_payload"):
+        embed, files, state = await cog.build_profile_payload(
+            tag_norm(clan_tag), guild=guild
+        )
+        return ([embed] if embed is not None else []), files, state
+    log.error("Clan Ads loaded ClanProfileCog has no supported card renderer")
+    return None, [], None
 
 
 async def load_config(
@@ -346,7 +361,9 @@ async def load_messages(
             row_number=row_number,
             tag=tag_norm(raw_tag),
             enabled=is_true(cell(row, header_map["enabled"])),
-            message=cell(row, header_map["message"]),
+            embed_title=cell(row, header_map["embed_title"]),
+            embed_description=cell(row, header_map["embed_description"]),
+            embed_footer=cell(row, header_map["embed_footer"]),
             last_message_id=cell(row, header_map["last_ad_message_id"]),
         )
         if raw_tag.lower() == "default":
@@ -461,25 +478,27 @@ async def decide(
             STATUS_DISABLED,
             f"{clan.tag} was not posted because clan ads are disabled for that clan.",
         )
-    if not row.message and (default is None or not default.message):
+    missing_fields = []
+    if not (row.embed_title or (default and default.embed_title)):
+        missing_fields.append("embed_title")
+    if not (row.embed_description or (default and default.embed_description)):
+        missing_fields.append("embed_description")
+    if missing_fields:
+        detail = "Missing required clan ad embed template field(s): " + ", ".join(
+            missing_fields
+        )
         await write_state(
             config,
             header_map,
             row,
             last_status=STATUS_MISSING_DEFAULT,
-            last_error="Missing default clan ad message",
+            last_error=detail,
         )
         await reporter.warn(
-            f"⚠️ Clan Ads skipped `{clan.tag}`: default row in `{config.messages_tab}` is missing or has an empty message.",
-            dedupe_key="missing_default_message",
+            f"⚠️ Clan Ads skipped `{clan.tag}`: `{config.messages_tab}` is missing required embed template field(s): {', '.join(missing_fields)}.",
+            dedupe_key=f"missing_embed_template:{clan.tag}:{','.join(missing_fields)}",
         )
-        return Decision(
-            clan.tag,
-            clan,
-            row,
-            STATUS_MISSING_DEFAULT,
-            "Missing default clan ad message",
-        )
+        return Decision(clan.tag, clan, row, STATUS_MISSING_DEFAULT, detail)
 
     rule = rules.get(key(clan.bracket))
     if not rule:
@@ -581,10 +600,22 @@ async def post_decision(
             )
 
     try:
-        message = await channel.send(
-            render(row.message or (default.message if default else ""), clan, guild),
-            view=ClanAdButtonView(clan.tag),
+        embed = discord.Embed(
+            title=render(
+                row.embed_title or (default.embed_title if default else ""), clan, guild
+            ),
+            description=render(
+                row.embed_description or (default.embed_description if default else ""),
+                clan,
+                guild,
+            ),
         )
+        footer = render(
+            row.embed_footer or (default.embed_footer if default else ""), clan, guild
+        )
+        if footer:
+            embed.set_footer(text=footer)
+        message = await channel.send(embed=embed, view=ClanAdButtonView(clan.tag))
     except Exception as exc:
         log.exception("failed to post clan ad", extra={"clan_tag": clan.tag})
         await write_state(
@@ -682,6 +713,7 @@ async def run(
             "posted": 0,
             "skipped": 0,
             "message": "Clan Ads channel is invalid or inaccessible.",
+            "config": config,
         }
 
     rules = await load_rules(config, reporter)
@@ -691,6 +723,7 @@ async def run(
             "posted": 0,
             "skipped": 0,
             "message": "Clan Ads sheet setup is incomplete.",
+            "config": config,
         }
     rows, default, header_map = loaded_messages
 
@@ -721,6 +754,7 @@ async def run(
             "posted": 0,
             "skipped": clan_field_failures,
             "message": "Clan ads could not evaluate any clans because required clan data fields are missing. Check the bot logging channel for details.",
+            "config": config,
         }
 
     if clan_tag_filter:
@@ -731,11 +765,25 @@ async def run(
                 "posted": 0,
                 "skipped": 0,
                 "message": f"{wanted} was not posted because the clan was not found.",
+                "config": config,
             }
 
-    templates = [row.message for row in rows.values() if row.message]
-    if default and default.message:
-        templates.append(default.message)
+    templates = [
+        template
+        for row in rows.values()
+        for template in (row.embed_title, row.embed_description, row.embed_footer)
+        if template
+    ]
+    if default:
+        templates.extend(
+            template
+            for template in (
+                default.embed_title,
+                default.embed_description,
+                default.embed_footer,
+            )
+            if template
+        )
     if any("{clan_description}" in template for template in templates):
         if "clan_description" not in recruitment.get_clan_header_map():
             await reporter.warn(
@@ -756,7 +804,12 @@ async def run(
         )
         if scheduled:
             log.info("Clan Ads scheduled run skipped: no qualifying clans")
-        return {"posted": 0, "skipped": len(decisions), "message": fallback}
+        return {
+            "posted": 0,
+            "skipped": len(decisions),
+            "message": fallback,
+            "config": config,
+        }
 
     posted = 0
     for decision in qualified:
@@ -810,6 +863,7 @@ async def run(
             skipped_or_failed,
             "No clan ads were posted. No enabled clans currently meet their bracket posting rules.",
         ),
+        "config": config,
     }
 
 

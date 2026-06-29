@@ -136,6 +136,21 @@ class ClanProfileCog(commands.Cog):
             state,
         )
 
+    async def build_profile_pages(
+        self, tag: str, *, guild: discord.Guild | None
+    ) -> tuple[list[discord.Embed], List[discord.File], _FlipState | None]:
+        """Build both clan card pages for non-reaction consumers such as Clan Ads."""
+        profile_embed, attachments, state = await self.build_profile_payload(
+            tag, guild=guild
+        )
+        if profile_embed is None or state is None:
+            return [], attachments, state
+        return (
+            [profile_embed, self._build_entry_embed(state, guild)],
+            attachments,
+            state,
+        )
+
     @commands.Cog.listener("on_raw_reaction_add")
     async def _on_raw_reaction_add(
         self, payload: discord.RawReactionActionEvent
