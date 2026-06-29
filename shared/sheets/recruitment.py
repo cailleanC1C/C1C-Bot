@@ -407,13 +407,7 @@ def get_config_tab_name() -> str:
     return (_config_tab() or "Config").strip() or "Config"
 
 
-def _load_config(force: bool = False) -> Dict[str, str]:
-    global _CONFIG_CACHE, _CONFIG_CACHE_TS
-    now = time.time()
-    if not force and _CONFIG_CACHE and (now - _CONFIG_CACHE_TS) < _CONFIG_TTL:
-        return _CONFIG_CACHE
-
-    records = core.fetch_records(_sheet_id(), _config_tab())
+def _parse_config_records(records: Sequence[Dict[str, Any]]) -> Dict[str, str]:
     parsed: Dict[str, str] = {}
     for row in records:
         key_value: Optional[str] = None
@@ -437,10 +431,45 @@ def _load_config(force: bool = False) -> Dict[str, str]:
                 if candidate:
                     parsed[key_value] = candidate
                     break
+    return parsed
+
+
+def _load_config(force: bool = False) -> Dict[str, str]:
+    global _CONFIG_CACHE, _CONFIG_CACHE_TS
+    now = time.time()
+    if not force and _CONFIG_CACHE and (now - _CONFIG_CACHE_TS) < _CONFIG_TTL:
+        return _CONFIG_CACHE
+
+    records = core.fetch_records(_sheet_id(), _config_tab())
+    parsed = _parse_config_records(records)
 
     _CONFIG_CACHE = parsed
     _CONFIG_CACHE_TS = now
     return parsed
+
+
+async def _aload_config(force: bool = False) -> Dict[str, str]:
+    global _CONFIG_CACHE, _CONFIG_CACHE_TS
+    now = time.time()
+    if not force and _CONFIG_CACHE and (now - _CONFIG_CACHE_TS) < _CONFIG_TTL:
+        return _CONFIG_CACHE
+
+    records = await afetch_records(_sheet_id(), _config_tab())
+    parsed = _parse_config_records(records)
+
+    _CONFIG_CACHE = parsed
+    _CONFIG_CACHE_TS = now
+    return parsed
+
+
+async def _aconfig_lookup(
+    key: str, default: Optional[str] = None, *, force: bool = False
+) -> Optional[str]:
+    want = (key or "").strip().lower()
+    if not want:
+        return default
+    config = await _aload_config(force=force)
+    return config.get(want, default)
 
 
 def _config_lookup(
@@ -473,6 +502,18 @@ def get_config_value(
     """Return a trimmed Config-tab value keyed by ``key`` (case-insensitive)."""
 
     value = _config_lookup(key, default, force=force)
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text or default
+
+
+async def get_config_value_async(
+    key: str, default: Optional[str] = None, *, force: bool = False
+) -> Optional[str]:
+    """Async Config-tab value lookup keyed by ``key`` (case-insensitive)."""
+
+    value = await _aconfig_lookup(key, default, force=force)
     if value is None:
         return default
     text = str(value).strip()
