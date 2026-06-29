@@ -68,6 +68,26 @@ def _column_aliases(*aliases: str) -> tuple[str, ...]:
 
 
 HEADER_MAP: Dict[str, tuple[str, ...]] = {
+    "clan_name": _column_aliases(
+        "clan name",
+        "clan_name",
+        "clan",
+        "name",
+    ),
+    "bracket": _column_aliases(
+        "bracket",
+        "roster",
+        "roster status",
+        "roster column",
+    ),
+    "clan_description": _column_aliases(
+        "clan_description",
+        "clan description",
+        "description",
+        "clan needs/comments",
+        "comments",
+        "notes",
+    ),
     "clan_tag": _column_aliases(
         "clan tag",
         "clantag",
@@ -422,7 +442,9 @@ def _load_config(force: bool = False) -> Dict[str, str]:
     return parsed
 
 
-def _config_lookup(key: str, default: Optional[str] = None, *, force: bool = False) -> Optional[str]:
+def _config_lookup(
+    key: str, default: Optional[str] = None, *, force: bool = False
+) -> Optional[str]:
     want = (key or "").strip().lower()
     if not want:
         return default
@@ -444,7 +466,9 @@ def _config_lookup_bool(key: str, default: bool = False) -> bool:
     return default
 
 
-def get_config_value(key: str, default: Optional[str] = None, *, force: bool = False) -> Optional[str]:
+def get_config_value(
+    key: str, default: Optional[str] = None, *, force: bool = False
+) -> Optional[str]:
     """Return a trimmed Config-tab value keyed by ``key`` (case-insensitive)."""
 
     value = _config_lookup(key, default, force=force)

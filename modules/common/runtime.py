@@ -1205,6 +1205,7 @@ class Runtime:
         from cogs import app_admin
         from cogs import housekeeping_mirralith
         from cogs import housekeeping_c1c_ad
+        from cogs import recruitment_clan_ads
         from modules.housekeeping import cleanup as housekeeping_cleanup_commands
         from modules.onboarding import ops_check as onboarding_ops_check
         from modules.onboarding import reaction_fallback as onboarding_reaction_fallback
@@ -1244,6 +1245,9 @@ class Runtime:
 
         await housekeeping_c1c_ad.setup(self.bot)
         log.info("modules: c1c_ad command registered")
+
+        await recruitment_clan_ads.setup(self.bot)
+        log.info("modules: clan_ads command registered")
 
         await housekeeping_cleanup_commands.setup(self.bot)
         log.info("modules: housekeeping cleanup command registered")
@@ -1588,14 +1592,18 @@ class Runtime:
         )
 
         async def cleanup_runner() -> None:
-            tick_message = "cleanup watcher tick: startup_validation=false writeback=true"
+            tick_message = (
+                "cleanup watcher tick: startup_validation=false writeback=true"
+            )
             cleanup_logger.info(tick_message)
             try:
                 await send_log_message(f"🧹 {tick_message}")
             except asyncio.CancelledError:
                 raise
             except Exception:
-                cleanup_logger.exception("cleanup watcher tick notice failed; cleanup still running")
+                cleanup_logger.exception(
+                    "cleanup watcher tick notice failed; cleanup still running"
+                )
             try:
                 await housekeeping_cleanup.run_cleanup(
                     self.bot, cleanup_logger, startup_validation=False, writeback=True
@@ -1677,6 +1685,8 @@ class Runtime:
         from modules.housekeeping import keepalive as housekeeping_keepalive
         from modules.housekeeping import mirralith_overview as housekeeping_mirralith
         from modules.housekeeping import c1c_ad as housekeeping_c1c_ad
+        from modules.recruitment import clan_ads as recruitment_clan_ads
+        from modules.common import feature_flags
         from shared.sheets import recruitment as recruitment_sheets
         from modules.ops import server_map as server_map_module
         from modules.community.leagues import schedule_leagues_jobs
@@ -1742,8 +1752,12 @@ class Runtime:
             log.info("Mirralith overview job disabled; MIRRALITH_POST_CRON is not set.")
 
         try:
-            c1c_refresh_days_raw = recruitment_sheets.get_config_value("C1C_AD_REFRESH_DAYS", None)
-            c1c_refresh_days = int(c1c_refresh_days_raw) if c1c_refresh_days_raw else None
+            c1c_refresh_days_raw = recruitment_sheets.get_config_value(
+                "C1C_AD_REFRESH_DAYS", None
+            )
+            c1c_refresh_days = (
+                int(c1c_refresh_days_raw) if c1c_refresh_days_raw else None
+            )
         except Exception:
             c1c_refresh_days = None
             log.exception("C1C ad refresh interval lookup failed; skipping schedule")
@@ -1771,6 +1785,35 @@ class Runtime:
             )
         else:
             log.info("C1C ad job disabled; C1C_AD_REFRESH_DAYS is not configured.")
+
+        if not feature_flags.is_enabled("clan_ads"):
+            log.info("Clan ads job disabled via feature toggle.")
+        else:
+            clan_ads_config = await recruitment_clan_ads.load_config(force=True)
+            if clan_ads_config and clan_ads_config.interval_hours > 0:
+                clan_ads_job = self.scheduler.every(
+                    hours=clan_ads_config.interval_hours,
+                    tag="clan_ads",
+                    name="clan_ads",
+                )
+
+                async def clan_ads_runner() -> None:
+                    await recruitment_clan_ads.scheduled_tick(self.bot)
+
+                clan_ads_job.do(clan_ads_runner)
+                successes.append(
+                    (
+                        SimpleNamespace(
+                            bucket="clan_ads",
+                            cadence_label=f"{clan_ads_config.interval_hours:g}h",
+                        ),
+                        clan_ads_job,
+                    )
+                )
+            else:
+                log.info(
+                    "Clan ads job disabled; clan_ad_post_interval_hours is not configured."
+                )
 
         if toggles.housekeeping_enabled:
             keepalive_logger = logging.getLogger("c1c.housekeeping.keepalive")
