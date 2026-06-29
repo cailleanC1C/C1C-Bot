@@ -14,6 +14,7 @@ def register_default_cache_buckets() -> None:
     import shared.sheets.fusion as fusion
     import shared.sheets.recruitment as recruitment
     import shared.sheets.reaction_roles as reaction_roles
+    import shared.sheets.feature_refresh as feature_refresh
 
     onboarding.register_cache_buckets()
     onboarding_questions.register_cache_buckets()
@@ -21,3 +22,4 @@ def register_default_cache_buckets() -> None:
     fusion.register_cache_buckets()
     recruitment.register_cache_buckets()
     reaction_roles.register_cache_buckets()
+    feature_refresh.register_cache_buckets()
