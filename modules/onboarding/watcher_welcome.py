@@ -68,6 +68,7 @@ _FALLBACK_AUTO_ADD_ATTEMPTS = 4
 _FALLBACK_AUTO_ADD_DELAY_SECONDS = 1.0
 
 _TICKET_CODE_RE = re.compile(r"(W?\d{4})", re.IGNORECASE)
+_WELCOME_TICKET_THREAD_NAME_RE = re.compile(r"^W\d{4}-")
 _PROMO_TICKET_CODE_RE = re.compile(r"([RML]\d{4})", re.IGNORECASE)
 _PROMO_THREAD_NAME_RE = re.compile(
     r"^(?P<prefix>[RML])(?P<digits>\d{4})[-_\s]+(?P<slug>[A-Za-z0-9][A-Za-z0-9._-]*)"
@@ -205,6 +206,13 @@ def _normalize_promo_ticket(ticket: str | None) -> str:
         if normalized[:1] in _PROMO_TYPE_MAP:
             return normalized
     return ""
+
+
+def is_welcome_ticket_thread_name(name: str | None) -> bool:
+    """Return whether ``name`` starts with the canonical welcome ticket prefix."""
+    if not name:
+        return False
+    return bool(_WELCOME_TICKET_THREAD_NAME_RE.match(name.strip()))
 
 
 def parse_welcome_thread_name(name: str | None) -> Optional[ThreadNameParts]:
@@ -3416,6 +3424,17 @@ class WelcomeTicketWatcher(commands.Cog):
         context = self._tickets.get(thread.id)
         if context is not None:
             return context
+
+        if not is_welcome_ticket_thread_name(getattr(thread, "name", None)):
+            log.debug(
+                "ignored_non_welcome_ticket_thread_name",
+                extra={
+                    "flow": "welcome",
+                    "thread_id": getattr(thread, "id", None),
+                    "thread_name": getattr(thread, "name", None),
+                },
+            )
+            return None
 
         row = None
         try:
