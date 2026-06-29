@@ -25,6 +25,7 @@ from discord.ext import commands
 from shared import health as healthmod
 from shared import socket_heartbeat as hb
 from shared import watchdog as watchdog_loop
+from shared.sheets import core as sheets_core
 from modules.common.logs import channel_label, log as human_log
 from shared import config as shared_config
 from shared.config import (
@@ -1703,6 +1704,48 @@ class Runtime:
             )
         )
 
+    def _log_optional_scheduler_quota_skip(
+        self,
+        *,
+        logger: logging.Logger,
+        scheduler_name: str,
+        config_source: str,
+        exc: Exception,
+    ) -> None:
+        logger.warning(
+            "%s scheduler config resolve hit Google Sheets quota/backoff; "
+            "skipping %s registration for this ready cycle without failing startup "
+            "(config_source=%s exception_type=%s): %s",
+            scheduler_name,
+            scheduler_name,
+            config_source,
+            type(exc).__name__,
+            exc,
+        )
+
+    def _register_optional_scheduler(
+        self,
+        scheduler_name: str,
+        config_source: str,
+        callback: Callable[[], Any],
+        *,
+        logger: logging.Logger | None = None,
+    ) -> bool:
+        target_logger = logger or log
+        try:
+            callback()
+            return True
+        except Exception as exc:
+            if sheets_core._is_rate_limited_error(exc):
+                self._log_optional_scheduler_quota_skip(
+                    logger=target_logger,
+                    scheduler_name=scheduler_name,
+                    config_source=config_source,
+                    exc=exc,
+                )
+                return False
+            raise
+
     async def _register_ready_schedulers_inner(self) -> None:
         from shared.sheets.cache_scheduler import (
             ensure_cache_registration,
@@ -1715,7 +1758,6 @@ class Runtime:
         from modules.recruitment import clan_ads as recruitment_clan_ads
         from modules.common import feature_flags
         from shared.sheets import recruitment as recruitment_sheets
-        from shared.sheets import core as sheets_core
         from modules.ops import server_map as server_map_module
         from modules.community.leagues import schedule_leagues_jobs
         from modules.community.fusion.scheduler import schedule_fusion_jobs
@@ -1786,9 +1828,17 @@ class Runtime:
             c1c_refresh_days = (
                 int(c1c_refresh_days_raw) if c1c_refresh_days_raw else None
             )
-        except Exception:
+        except Exception as exc:
             c1c_refresh_days = None
-            log.exception("C1C ad refresh interval lookup failed; skipping schedule")
+            if sheets_core._is_rate_limited_error(exc):
+                self._log_optional_scheduler_quota_skip(
+                    logger=log,
+                    scheduler_name="c1c_ad",
+                    config_source="Config:C1C_AD_REFRESH_DAYS",
+                    exc=exc,
+                )
+            else:
+                log.exception("C1C ad refresh interval lookup failed; skipping schedule")
 
         if c1c_refresh_days and c1c_refresh_days > 0:
             c1c_ad_job = self.scheduler.every(
@@ -1814,10 +1864,36 @@ class Runtime:
         else:
             log.info("C1C ad job disabled; C1C_AD_REFRESH_DAYS is not configured.")
 
-        if not feature_flags.is_enabled("clan_ads"):
+        try:
+            clan_ads_enabled = feature_flags.is_enabled("clan_ads")
+        except Exception as exc:
+            if sheets_core._is_rate_limited_error(exc):
+                self._log_optional_scheduler_quota_skip(
+                    logger=log,
+                    scheduler_name="clan_ads",
+                    config_source="Feature Toggle:clan_ads",
+                    exc=exc,
+                )
+                clan_ads_enabled = False
+            else:
+                raise
+
+        if not clan_ads_enabled:
             log.info("Clan ads job disabled via feature toggle.")
         else:
-            clan_ads_config = await recruitment_clan_ads.load_config(force=True)
+            try:
+                clan_ads_config = await recruitment_clan_ads.load_config(force=True)
+            except Exception as exc:
+                if sheets_core._is_rate_limited_error(exc):
+                    self._log_optional_scheduler_quota_skip(
+                        logger=log,
+                        scheduler_name="clan_ads",
+                        config_source="Config:clan ads scheduler",
+                        exc=exc,
+                    )
+                    clan_ads_config = None
+                else:
+                    raise
             if clan_ads_config and clan_ads_config.interval_hours > 0:
                 clan_ads_job = self.scheduler.every(
                     hours=clan_ads_config.interval_hours,
@@ -1890,11 +1966,36 @@ class Runtime:
         else:
             log.info("housekeeping keepalive disabled via feature toggle")
 
-        server_map_module.schedule_server_map_job(self)
-        schedule_leagues_jobs(self)
-        schedule_fusion_jobs(self)
-        schedule_shard_jobs(self)
-        schedule_reset_reminder_jobs(self)
+        self._register_optional_scheduler(
+            "server_map",
+            "Feature Toggle:SERVER_MAP / shared config",
+            lambda: server_map_module.schedule_server_map_job(self),
+            logger=logging.getLogger("c1c.server_map"),
+        )
+        self._register_optional_scheduler(
+            "leagues",
+            "environment scheduler config",
+            lambda: schedule_leagues_jobs(self),
+            logger=logging.getLogger("c1c.community.leagues.scheduler"),
+        )
+        self._register_optional_scheduler(
+            "fusion",
+            "runtime scheduler config",
+            lambda: schedule_fusion_jobs(self),
+            logger=logging.getLogger("c1c.community.fusion.scheduler"),
+        )
+        self._register_optional_scheduler(
+            "shard_weekly_reminders",
+            "runtime scheduler config",
+            lambda: schedule_shard_jobs(self),
+            logger=logging.getLogger("c1c.shards.scheduler"),
+        )
+        self._register_optional_scheduler(
+            "reset_reminders",
+            "Feature Toggle:reset_reminders",
+            lambda: schedule_reset_reminder_jobs(self),
+            logger=logging.getLogger("c1c.community.reset_reminders.scheduler"),
+        )
 
     async def close(self) -> None:
         await self.shutdown_webserver()
