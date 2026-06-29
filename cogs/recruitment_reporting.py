@@ -86,7 +86,10 @@ class RecruitmentReporting(commands.Cog):
             return
 
         if not ok:
-            await ctx.reply("Failed to post report. Check log channel.", mention_author=False)
+            if "Google Sheets/cache fetch" in error or "Statistics sheet returned no rows" in error:
+                await ctx.reply(error, mention_author=False)
+            else:
+                await ctx.reply("Failed to post report. Check log channel.", mention_author=False)
 
     @tier("admin")
     @help_metadata(function_group="operational", section="utilities", access_tier="admin")

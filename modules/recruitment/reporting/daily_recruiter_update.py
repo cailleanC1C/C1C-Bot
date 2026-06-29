@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from datetime import datetime, time, timezone
@@ -8,6 +9,7 @@ from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 import discord
 from discord.ext import tasks
 
+from shared.cache import telemetry as cache_telemetry
 from modules.common import feature_flags
 from modules.common import runtime as runtime_helpers
 from shared.config import (
@@ -86,6 +88,49 @@ _REPORT_REQUIRED_HEADERS = (
     "inactives",
     "reserved spots",
 )
+
+
+class ReportFetchContext(NamedTuple):
+    config_key: str
+    tab_name: str
+    sheet_id_source: str
+    row_count: int
+    first_row: List[str]
+    data_source: str
+    clans_cache_state: str
+    underlying_exception_type: Optional[str] = None
+
+
+class ReportFetchError(RuntimeError):
+    """Raised when the Statistics sheet cannot be fetched reliably."""
+
+    def __init__(self, message: str, *, context: ReportFetchContext) -> None:
+        super().__init__(message)
+        self.context = context
+
+
+class ReportSchemaError(ValueError):
+    """Raised when fetched Statistics rows do not contain the report schema."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        required: Sequence[str],
+        actual_first_row: Sequence[str],
+        context: ReportFetchContext,
+        missing: Sequence[str],
+    ) -> None:
+        super().__init__(message)
+        self.required = tuple(required)
+        self.actual_first_row = tuple(actual_first_row)
+        self.context = context
+        self.missing = tuple(missing)
+
+
+_REPORT_ROWS_CACHE: Optional[List[List[str]]] = None
+_REPORT_HEADERS_CACHE: HeadersMap = {}
+_REPORT_CONTEXT_CACHE: Optional[ReportFetchContext] = None
 
 
 def _normalize_header(label: str) -> str:
@@ -198,15 +243,87 @@ def _resolve_index(headers: HeadersMap, name: str) -> Optional[int]:
     return headers.get(normalized)
 
 
-def _require_report_headers(headers: HeadersMap) -> None:
+def _clans_cache_state() -> str:
+    try:
+        snapshot = cache_telemetry.get_snapshot("clans")
+    except Exception:
+        log.debug("failed to inspect clans cache snapshot", exc_info=True)
+        return "unavailable"
+    if not snapshot.available:
+        return "unavailable"
+    result = (snapshot.last_result or "").lower()
+    if result and not result.startswith("ok") and result != "retry_ok":
+        return f"failed:{snapshot.last_error or snapshot.last_result}"
+    if snapshot.ttl_expired:
+        return f"stale:{snapshot.age_human or snapshot.age_seconds or '-'}"
+    if snapshot.last_refresh_at is not None:
+        return f"fresh:{snapshot.age_human or snapshot.age_seconds or '0s'}"
+    return "empty"
+
+
+def _report_fetch_context(
+    *,
+    tab_name: str,
+    rows: Sequence[Sequence[str]] = (),
+    data_source: str = "direct",
+    underlying_exception_type: Optional[str] = None,
+) -> ReportFetchContext:
+    return ReportFetchContext(
+        config_key="REPORTS_TAB",
+        tab_name=tab_name,
+        sheet_id_source="RECRUITMENT_SHEET_ID",
+        row_count=len(rows),
+        first_row=list(rows[0]) if rows else [],
+        data_source=data_source,
+        clans_cache_state=_clans_cache_state(),
+        underlying_exception_type=underlying_exception_type,
+    )
+
+
+def _log_report_diagnostics(
+    message: str,
+    *,
+    context: ReportFetchContext,
+    required: Sequence[str] = _REPORT_REQUIRED_HEADERS,
+    exc_info: bool = False,
+) -> None:
+    log.warning(
+        "%s; required=%s actual_first_row=%r config_key=%s tab=%r sheet_id_source=%s "
+        "row_count=%s data_source=%s clans_cache=%s underlying_exception_type=%s",
+        message,
+        list(required),
+        context.first_row,
+        context.config_key,
+        context.tab_name,
+        context.sheet_id_source,
+        context.row_count,
+        context.data_source,
+        context.clans_cache_state,
+        context.underlying_exception_type or "-",
+        exc_info=exc_info,
+    )
+
+
+def _has_required_report_headers(headers: HeadersMap) -> bool:
+    return all(_resolve_index(headers, name) is not None for name in _REPORT_REQUIRED_HEADERS)
+
+
+def _require_report_headers(
+    headers: HeadersMap, *, context: Optional[ReportFetchContext] = None
+) -> None:
     missing = [
         name
         for name in _REPORT_REQUIRED_HEADERS
         if _resolve_index(headers, name) is None
     ]
     if missing:
-        raise ValueError(
-            f"Statistics report missing required header(s): {', '.join(missing)}"
+        ctx = context or _report_fetch_context(tab_name=get_reports_tab_name("Statistics"))
+        raise ReportSchemaError(
+            f"Statistics report missing required header(s): {', '.join(missing)}",
+            required=_REPORT_REQUIRED_HEADERS,
+            actual_first_row=ctx.first_row,
+            context=ctx,
+            missing=missing,
         )
 
 
@@ -253,20 +370,106 @@ class ReportSections(NamedTuple):
     detail_blocks: List[Tuple[str, List[str]]]
 
 async def _fetch_report_rows() -> Tuple[List[List[str]], HeadersMap]:
+    global _REPORT_ROWS_CACHE, _REPORT_HEADERS_CACHE, _REPORT_CONTEXT_CACHE
     sheet_id = get_recruitment_sheet_id().strip()
     if not sheet_id:
-        raise RuntimeError("RECRUITMENT_SHEET_ID is not configured")
+        context = _report_fetch_context(
+            tab_name=get_reports_tab_name("Statistics"),
+            underlying_exception_type="RuntimeError",
+        )
+        raise ReportFetchError("RECRUITMENT_SHEET_ID is not configured", context=context)
     tab_name = get_reports_tab_name("Statistics")
-    rows = await afetch_reports_tab(tab_name)
+    try:
+        rows = await afetch_reports_tab(tab_name)
+    except asyncio.TimeoutError as exc:
+        context = _report_fetch_context(
+            tab_name=tab_name,
+            data_source="direct",
+            underlying_exception_type=type(exc).__name__,
+        )
+        if _REPORT_ROWS_CACHE and _has_required_report_headers(_REPORT_HEADERS_CACHE):
+            stale_context = context._replace(
+                row_count=len(_REPORT_ROWS_CACHE),
+                first_row=list(_REPORT_ROWS_CACHE[0]) if _REPORT_ROWS_CACHE else [],
+                data_source="cache",
+            )
+            log.warning(
+                "recruiter Statistics fetch timed out; using last valid cached rows; "
+                "tab=%r row_count=%s clans_cache=%s",
+                tab_name,
+                stale_context.row_count,
+                stale_context.clans_cache_state,
+            )
+            _REPORT_CONTEXT_CACHE = stale_context
+            return [list(row) for row in _REPORT_ROWS_CACHE], dict(_REPORT_HEADERS_CACHE)
+        raise ReportFetchError(
+            "Recruiter report skipped because Google Sheets/cache fetch timed out. "
+            "Existing sheet schema was not changed.",
+            context=context,
+        ) from exc
+    except Exception as exc:
+        context = _report_fetch_context(
+            tab_name=tab_name,
+            data_source="direct",
+            underlying_exception_type=type(exc).__name__,
+        )
+        if _REPORT_ROWS_CACHE and _has_required_report_headers(_REPORT_HEADERS_CACHE):
+            stale_context = context._replace(
+                row_count=len(_REPORT_ROWS_CACHE),
+                first_row=list(_REPORT_ROWS_CACHE[0]) if _REPORT_ROWS_CACHE else [],
+                data_source="cache",
+            )
+            log.warning(
+                "recruiter Statistics fetch failed; using last valid cached rows; "
+                "tab=%r row_count=%s error_type=%s clans_cache=%s",
+                tab_name,
+                stale_context.row_count,
+                type(exc).__name__,
+                stale_context.clans_cache_state,
+                exc_info=True,
+            )
+            _REPORT_CONTEXT_CACHE = stale_context
+            return [list(row) for row in _REPORT_ROWS_CACHE], dict(_REPORT_HEADERS_CACHE)
+        raise ReportFetchError(
+            f"Recruiter report skipped because Google Sheets/cache fetch failed ({type(exc).__name__}).",
+            context=context,
+        ) from exc
     matrix: List[List[str]] = [list(map(str, row)) for row in rows or []]
+    context = _report_fetch_context(tab_name=tab_name, rows=matrix, data_source="direct")
+    log.info(
+        "recruiter Statistics rows fetched; config_key=%s tab=%r sheet_id_source=%s "
+        "row_count=%s first_row=%r data_source=%s clans_cache=%s",
+        context.config_key,
+        context.tab_name,
+        context.sheet_id_source,
+        context.row_count,
+        context.first_row,
+        context.data_source,
+        context.clans_cache_state,
+    )
+    if not matrix:
+        raise ReportFetchError(
+            "Recruiter report skipped because the Statistics sheet returned no rows.",
+            context=context,
+        )
     headers = _headers_map(matrix[0]) if matrix else {}
+    _require_report_headers(headers, context=context)
+    _REPORT_ROWS_CACHE = [list(row) for row in matrix]
+    _REPORT_HEADERS_CACHE = dict(headers)
+    _REPORT_CONTEXT_CACHE = context
     return matrix, headers
 
 
 def _extract_report_sections(
-    rows: Sequence[Sequence[str]], headers: HeadersMap
+    rows: Sequence[Sequence[str]], headers: HeadersMap, context: Optional[ReportFetchContext] = None
 ) -> ReportSections:
-    _require_report_headers(headers)
+    if not rows:
+        ctx = context or _report_fetch_context(tab_name=get_reports_tab_name("Statistics"), rows=rows)
+        raise ReportFetchError(
+            "Recruiter report skipped because the Statistics sheet returned no rows.",
+            context=ctx,
+        )
+    _require_report_headers(headers, context=context)
     h1_index = _resolve_index(headers, "h1 headline")
     key_index = _resolve_index(headers, "key")
     general_index = _find_row_equals(rows, h1_index, "general overview")
@@ -407,7 +610,7 @@ def _build_details_embed(sections: ReportSections) -> discord.Embed:
 
 async def _load_report_sections() -> ReportSections:
     rows, headers = await _fetch_report_rows()
-    return _extract_report_sections(rows, headers)
+    return _extract_report_sections(rows, headers, _REPORT_CONTEXT_CACHE)
 
 
 class OpenSpotsPager(discord.ui.View):
@@ -471,7 +674,12 @@ class OpenSpotsPager(discord.ui.View):
 def _build_embeds_from_rows(
     rows: Sequence[Sequence[str]], headers: HeadersMap
 ) -> Tuple[discord.Embed, discord.Embed]:
-    sections = _extract_report_sections(rows, headers)
+    context = _report_fetch_context(
+        tab_name="Statistics",
+        rows=rows,
+        data_source="test" if rows else "direct",
+    )
+    sections = _extract_report_sections(rows, headers, context)
     summary_embed = _build_summary_embed(sections)
     details_embed = _build_details_embed(sections)
     return summary_embed, details_embed
@@ -486,6 +694,8 @@ def _report_content(date_text: str) -> str:
 
 
 def _format_error(exc: BaseException) -> str:
+    if isinstance(exc, ReportFetchError):
+        return str(exc)
     text = f"{type(exc).__name__}: {exc}".strip()
     return text or type(exc).__name__
 
@@ -562,19 +772,39 @@ async def post_daily_recruiter_update(bot: discord.Client) -> Tuple[bool, str]:
 
     rows: List[List[str]] = []
     headers: HeadersMap = {}
-    fetch_error: Optional[str] = None
     try:
         rows, headers = await _fetch_report_rows()
     except Exception as exc:
-        fetch_error = _format_error(exc)
-        log.warning("failed to fetch recruiter report rows", exc_info=True)
+        if isinstance(exc, ReportFetchError):
+            _log_report_diagnostics(
+                "failed to fetch recruiter report rows",
+                context=exc.context,
+                exc_info=True,
+            )
+        else:
+            log.warning("failed to fetch recruiter report rows", exc_info=True)
+        return False, _format_error(exc)
 
     try:
-        sections = _extract_report_sections(rows, headers)
+        sections = _extract_report_sections(rows, headers, _REPORT_CONTEXT_CACHE)
         summary_embed = _build_summary_embed(sections)
         pager_view = OpenSpotsPager(sections)
     except Exception as exc:
-        log.warning("failed to build recruiter report", exc_info=True)
+        if isinstance(exc, ReportSchemaError):
+            _log_report_diagnostics(
+                "failed to build recruiter report: missing Statistics headers",
+                context=exc.context,
+                required=exc.required,
+                exc_info=True,
+            )
+        elif isinstance(exc, ReportFetchError):
+            _log_report_diagnostics(
+                "failed to build recruiter report: Statistics fetch/read failure",
+                context=exc.context,
+                exc_info=True,
+            )
+        else:
+            log.warning("failed to build recruiter report", exc_info=True)
         return False, _format_error(exc)
 
     today = datetime.now(UTC).strftime("%Y-%m-%d")
@@ -586,8 +816,6 @@ async def post_daily_recruiter_update(bot: discord.Client) -> Tuple[bool, str]:
         log.warning("failed to send recruiter report", exc_info=True)
         return False, _format_error(exc)
 
-    if fetch_error:
-        return False, fetch_error
     return True, "-"
 
 
