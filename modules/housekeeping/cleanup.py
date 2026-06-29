@@ -26,7 +26,9 @@ CONFIG_RUN_EVERY_HOURS = "HOUSEKEEPING_CLEANUP_RUN_EVERY_HOURS"
 CONFIG_DRY_RUN = "HOUSEKEEPING_CLEANUP_DRY_RUN"
 CONFIG_DELETE_BATCH_SIZE = "HOUSEKEEPING_CLEANUP_DELETE_BATCH_SIZE"
 CONFIG_DELETE_BATCH_PAUSE_SECONDS = "HOUSEKEEPING_CLEANUP_DELETE_BATCH_PAUSE_SECONDS"
-CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS = "HOUSEKEEPING_CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS"
+CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS = (
+    "HOUSEKEEPING_CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS"
+)
 CONFIG_BOT_ROLE_IDS = "HOUSEKEEPING_CLEANUP_BOT_ROLE_IDS"
 REQUIRED_CONFIG_KEYS = (CONFIG_TAB, CONFIG_RUN_EVERY_HOURS, CONFIG_DRY_RUN)
 REQUIRED_HEADERS = (
@@ -250,7 +252,10 @@ def _resolve_optional_pacing_config(
     batch_pause = CLEANUP_DELETE_BATCH_PAUSE_SECONDS
     per_message_pause = CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS
 
-    if raw[CONFIG_DELETE_BATCH_SIZE] is not None and str(raw[CONFIG_DELETE_BATCH_SIZE]).strip():
+    if (
+        raw[CONFIG_DELETE_BATCH_SIZE] is not None
+        and str(raw[CONFIG_DELETE_BATCH_SIZE]).strip()
+    ):
         parsed_batch_size = _parse_positive_int(raw[CONFIG_DELETE_BATCH_SIZE])
         if parsed_batch_size is None:
             logger.warning(
@@ -261,8 +266,13 @@ def _resolve_optional_pacing_config(
             )
         else:
             batch_size = parsed_batch_size
-    if raw[CONFIG_DELETE_BATCH_PAUSE_SECONDS] is not None and str(raw[CONFIG_DELETE_BATCH_PAUSE_SECONDS]).strip():
-        parsed_batch_pause = _parse_nonnegative_hours(raw[CONFIG_DELETE_BATCH_PAUSE_SECONDS])
+    if (
+        raw[CONFIG_DELETE_BATCH_PAUSE_SECONDS] is not None
+        and str(raw[CONFIG_DELETE_BATCH_PAUSE_SECONDS]).strip()
+    ):
+        parsed_batch_pause = _parse_nonnegative_hours(
+            raw[CONFIG_DELETE_BATCH_PAUSE_SECONDS]
+        )
         if parsed_batch_pause is None:
             logger.warning(
                 "cleanup pacing config invalid; using default: key=%s value=%r default=%s",
@@ -272,8 +282,82 @@ def _resolve_optional_pacing_config(
             )
         else:
             batch_pause = parsed_batch_pause
-    if raw[CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS] is not None and str(raw[CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS]).strip():
-        parsed_per_message_pause = _parse_nonnegative_hours(raw[CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS])
+    if (
+        raw[CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS] is not None
+        and str(raw[CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS]).strip()
+    ):
+        parsed_per_message_pause = _parse_nonnegative_hours(
+            raw[CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS]
+        )
+        if parsed_per_message_pause is None:
+            logger.warning(
+                "cleanup pacing config invalid; using default: key=%s value=%r default=%s",
+                CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS,
+                raw[CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS],
+                CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS,
+            )
+        else:
+            per_message_pause = parsed_per_message_pause
+    return batch_size, batch_pause, per_message_pause
+
+
+async def _resolve_optional_pacing_config_async(
+    logger: logging.Logger,
+    *,
+    force_refresh: bool,
+) -> tuple[int, float, float]:
+    raw = {
+        CONFIG_DELETE_BATCH_SIZE: await recruitment.get_config_value_async(
+            CONFIG_DELETE_BATCH_SIZE, None, force=force_refresh
+        ),
+        CONFIG_DELETE_BATCH_PAUSE_SECONDS: await recruitment.get_config_value_async(
+            CONFIG_DELETE_BATCH_PAUSE_SECONDS, None, force=force_refresh
+        ),
+        CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS: await recruitment.get_config_value_async(
+            CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS, None, force=force_refresh
+        ),
+    }
+    batch_size = CLEANUP_DELETE_BATCH_SIZE
+    batch_pause = CLEANUP_DELETE_BATCH_PAUSE_SECONDS
+    per_message_pause = CLEANUP_DELETE_PER_MESSAGE_PAUSE_SECONDS
+
+    if (
+        raw[CONFIG_DELETE_BATCH_SIZE] is not None
+        and str(raw[CONFIG_DELETE_BATCH_SIZE]).strip()
+    ):
+        parsed_batch_size = _parse_positive_int(raw[CONFIG_DELETE_BATCH_SIZE])
+        if parsed_batch_size is None:
+            logger.warning(
+                "cleanup pacing config invalid; using default: key=%s value=%r default=%s",
+                CONFIG_DELETE_BATCH_SIZE,
+                raw[CONFIG_DELETE_BATCH_SIZE],
+                CLEANUP_DELETE_BATCH_SIZE,
+            )
+        else:
+            batch_size = parsed_batch_size
+    if (
+        raw[CONFIG_DELETE_BATCH_PAUSE_SECONDS] is not None
+        and str(raw[CONFIG_DELETE_BATCH_PAUSE_SECONDS]).strip()
+    ):
+        parsed_batch_pause = _parse_nonnegative_hours(
+            raw[CONFIG_DELETE_BATCH_PAUSE_SECONDS]
+        )
+        if parsed_batch_pause is None:
+            logger.warning(
+                "cleanup pacing config invalid; using default: key=%s value=%r default=%s",
+                CONFIG_DELETE_BATCH_PAUSE_SECONDS,
+                raw[CONFIG_DELETE_BATCH_PAUSE_SECONDS],
+                CLEANUP_DELETE_BATCH_PAUSE_SECONDS,
+            )
+        else:
+            batch_pause = parsed_batch_pause
+    if (
+        raw[CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS] is not None
+        and str(raw[CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS]).strip()
+    ):
+        parsed_per_message_pause = _parse_nonnegative_hours(
+            raw[CONFIG_DELETE_PER_MESSAGE_PAUSE_SECONDS]
+        )
         if parsed_per_message_pause is None:
             logger.warning(
                 "cleanup pacing config invalid; using default: key=%s value=%r default=%s",
@@ -360,6 +444,105 @@ def resolve_cleanup_config(
         config.source,
     )
     return config
+
+
+_ORIGINAL_RESOLVE_CLEANUP_CONFIG = resolve_cleanup_config
+
+
+async def resolve_cleanup_config_async(
+    logger: logging.Logger | None = None,
+    *,
+    force_refresh: bool = True,
+) -> CleanupConfig | None:
+    logger = logger or log
+    if resolve_cleanup_config is not _ORIGINAL_RESOLVE_CLEANUP_CONFIG:
+        return resolve_cleanup_config(logger, force_refresh=force_refresh)
+    logger.info("cleanup config resolve started")
+    try:
+        toggle = feature_flags.status(CONFIG_ENABLED)
+        if toggle.get("invalid"):
+            reason = (
+                f"required Feature Toggle {CONFIG_ENABLED} has invalid value "
+                f"{toggle.get('invalid_value')!r} in {toggle.get('source_tab') or 'Feature Toggles'}"
+            )
+            logger.warning("cleanup config resolve failed: reason=%s", reason)
+            return None
+        if not toggle.get("present"):
+            reason = f"missing Feature Toggle {CONFIG_ENABLED}"
+            logger.warning("cleanup config resolve failed: reason=%s", reason)
+            return None
+        if not toggle.get("enabled"):
+            reason = f"Feature Toggle {CONFIG_ENABLED}=FALSE"
+            logger.info("cleanup config resolve failed: reason=%s", reason)
+            return None
+
+        raw = {
+            key: await recruitment.get_config_value_async(
+                key, None, force=force_refresh
+            )
+            for key in REQUIRED_CONFIG_KEYS
+        }
+        missing = [
+            key for key, value in raw.items() if value is None or not str(value).strip()
+        ]
+        if missing:
+            logger.warning(
+                "cleanup config resolve failed: reason=missing Config key(s): %s",
+                ", ".join(missing),
+            )
+            return None
+
+        run_every = _parse_positive_hours(raw[CONFIG_RUN_EVERY_HOURS])
+        dry_run = _parse_bool(raw[CONFIG_DRY_RUN])
+        if run_every is None:
+            logger.warning(
+                "cleanup config resolve failed: reason=invalid Config key %s",
+                CONFIG_RUN_EVERY_HOURS,
+            )
+            return None
+        if dry_run is None:
+            logger.warning(
+                "cleanup config resolve failed: reason=invalid Config key %s",
+                CONFIG_DRY_RUN,
+            )
+            return None
+        batch_size, batch_pause, per_message_pause = (
+            await _resolve_optional_pacing_config_async(
+                logger, force_refresh=force_refresh
+            )
+        )
+        config = CleanupConfig(
+            True,
+            str(raw[CONFIG_TAB]).strip(),
+            run_every,
+            dry_run,
+            delete_batch_size=batch_size,
+            delete_batch_pause_seconds=batch_pause,
+            delete_per_message_pause_seconds=per_message_pause,
+            source=f"{recruitment.get_config_tab_name()}:Config",
+        )
+        logger.info(
+            "cleanup config resolve succeeded: tab=%s run_every_hours=%s dry_run=%s "
+            "delete_batch_size=%s delete_batch_pause_seconds=%s "
+            "delete_per_message_pause_seconds=%s source=%s",
+            config.tab_name,
+            f"{config.run_every_hours:g}",
+            str(config.dry_run).lower(),
+            config.delete_batch_size,
+            config.delete_batch_pause_seconds,
+            config.delete_per_message_pause_seconds,
+            config.source,
+        )
+        return config
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "cleanup config resolve failed: reason=%s: %s",
+            exc.__class__.__name__,
+            _short_error(exc),
+        )
+        raise
 
 
 def build_header_map(headers: Sequence[Any]) -> dict[str, int]:
@@ -530,7 +713,9 @@ def _has_automod_indicator(message: discord.Message) -> bool:
 def _has_automod_alert_phrase(message: discord.Message) -> bool:
     # Do not log or return message content; this is only a conservative local
     # fallback for discord.py versions without a dedicated AutoMod enum.
-    text = " ".join(str(getattr(message, attr, "") or "") for attr in ("system_content", "content")).lower()
+    text = " ".join(
+        str(getattr(message, attr, "") or "") for attr in ("system_content", "content")
+    ).lower()
     return bool(text) and any(
         phrase in text
         for phrase in (
@@ -549,21 +734,35 @@ def _is_automod_system_message(message: discord.Message) -> bool:
         return False
     message_type = getattr(message, "type", None)
     message_type_name = _message_type_name(message).lower()
-    if message_type_name in {"auto_moderation_action", "automod_action", "auto_moderation_alert"}:
+    if message_type_name in {
+        "auto_moderation_action",
+        "automod_action",
+        "auto_moderation_alert",
+    }:
         return True
     message_type_enum = getattr(discord, "MessageType", None)
-    for enum_name in ("auto_moderation_action", "automod_action", "auto_moderation_alert"):
+    for enum_name in (
+        "auto_moderation_action",
+        "automod_action",
+        "auto_moderation_alert",
+    ):
         enum_value = getattr(message_type_enum, enum_name, None)
         if enum_value is not None and message_type == enum_value:
             return True
     default_type = getattr(message_type_enum, "default", None)
     author = getattr(message, "author", None)
-    if message_type == default_type or getattr(author, "bot", False) is True or _is_webhook_message(message):
+    if (
+        message_type == default_type
+        or getattr(author, "bot", False) is True
+        or _is_webhook_message(message)
+    ):
         return False
     return _has_automod_indicator(message) or _has_automod_alert_phrase(message)
 
 
-def _is_cleanup_bot_message(message: discord.Message, bot: commands.Bot, target: Any | None = None) -> bool:
+def _is_cleanup_bot_message(
+    message: discord.Message, bot: commands.Bot, target: Any | None = None
+) -> bool:
     author = getattr(message, "author", None)
     if author is None:
         return False
@@ -611,7 +810,9 @@ def _matches_mode(
     if mode == "bot_and_webhook_messages_only":
         return _is_cleanup_bot_or_webhook_message(message, bot, target)
     if mode == "bot_webhook_messages_and_commands":
-        return _is_cleanup_bot_or_webhook_message(message, bot, target) or _is_cleanup_command_message(message, bot)
+        return _is_cleanup_bot_or_webhook_message(
+            message, bot, target
+        ) or _is_cleanup_command_message(message, bot)
     if mode == "automod_system_messages_only":
         return _is_automod_system_message(message)
     if mode == "automod_system_and_webhook_messages_only":
@@ -634,7 +835,9 @@ def _masked_prefix_values(prefixes: Sequence[str]) -> str:
 def _format_message_type_counts(message_type_counts: Mapping[str, int]) -> str:
     if not message_type_counts:
         return "-"
-    ranked = sorted(message_type_counts.items(), key=lambda item: (-item[1], item[0]))[:8]
+    ranked = sorted(message_type_counts.items(), key=lambda item: (-item[1], item[0]))[
+        :8
+    ]
     return ",".join(f"{name}:{count}" for name, count in ranked)
 
 
@@ -791,7 +994,9 @@ async def _scan_message_history(
             if bot_user_id is not None and getattr(author, "id", None) == bot_user_id:
                 own_bot_author_count += 1
             message_type = _message_type_name(message)
-            message_type_counts[message_type] = message_type_counts.get(message_type, 0) + 1
+            message_type_counts[message_type] = (
+                message_type_counts.get(message_type, 0) + 1
+            )
             webhook_message = _is_webhook_message(message)
             if webhook_message:
                 webhook_message_count += 1
@@ -1023,7 +1228,7 @@ async def _run_cleanup_locked(
     }
     summary = CleanupRunSummary(writeback=writeback)
     try:
-        config = resolve_cleanup_config(logger)
+        config = await resolve_cleanup_config_async(logger)
         if config is None or not config.enabled:
             summary.status = "disabled"
             return summary
@@ -1404,6 +1609,7 @@ __all__ = [
     "CleanupCog",
     "build_header_map",
     "resolve_cleanup_config",
+    "resolve_cleanup_config_async",
     "rows_from_values",
     "run_cleanup",
     "setup",

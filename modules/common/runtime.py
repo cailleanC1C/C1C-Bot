@@ -1567,7 +1567,7 @@ class Runtime:
             self._startup_scheduler_registered = True
             _startup_phase_log("scheduler registration", "ok")
 
-    def _register_cleanup_scheduler(
+    async def _register_cleanup_scheduler(
         self,
         *,
         toggles: Any,
@@ -1581,7 +1581,9 @@ class Runtime:
             )
             return
 
-        cleanup_config = housekeeping_cleanup.resolve_cleanup_config(cleanup_logger)
+        cleanup_config = await housekeeping_cleanup.resolve_cleanup_config_async(
+            cleanup_logger
+        )
         if cleanup_config is None or not cleanup_config.enabled:
             return
 
@@ -1716,7 +1718,7 @@ class Runtime:
             )
             successes.append((spec, job))
 
-        self._register_cleanup_scheduler(
+        await self._register_cleanup_scheduler(
             toggles=toggles,
             successes=successes,
             housekeeping_cleanup=housekeeping_cleanup,

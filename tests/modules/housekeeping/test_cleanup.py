@@ -92,8 +92,6 @@ def test_enabled_feature_toggle_reads_config_not_toggle_from_config(monkeypatch)
     )
 
 
-
-
 def test_cleanup_config_missing_optional_pacing_uses_defaults(monkeypatch):
     values = {
         cleanup.CONFIG_TAB: "CleanupRows",
@@ -181,6 +179,7 @@ def test_cleanup_config_valid_optional_pacing_overrides_defaults(monkeypatch, ca
     assert "delete_batch_size=10" in caplog.text
     assert "delete_batch_pause_seconds=1.5" in caplog.text
     assert "delete_per_message_pause_seconds=0.0" in caplog.text
+
 
 def test_enabled_feature_toggle_missing_config_prevents_scheduling(monkeypatch):
     monkeypatch.setattr(
@@ -372,7 +371,9 @@ def run_with_sheet(
     async def fake_log(*_):
         return None
 
-    monkeypatch.setattr(cleanup, "resolve_cleanup_config", lambda logger=None: cfg)
+    monkeypatch.setattr(
+        cleanup, "resolve_cleanup_config", lambda logger=None, **_kwargs: cfg
+    )
     monkeypatch.setattr(
         cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
     )
@@ -431,7 +432,9 @@ def test_run_cleanup_uses_async_safe_sheets_helper_for_read_and_write(monkeypatc
     async def fail_acall_with_backoff(*_args, **_kwargs):
         raise AssertionError("cleanup must use a_to_thread_with_backoff")
 
-    monkeypatch.setattr(cleanup, "resolve_cleanup_config", lambda logger=None: cfg)
+    monkeypatch.setattr(
+        cleanup, "resolve_cleanup_config", lambda logger=None, **_kwargs: cfg
+    )
     monkeypatch.setattr(
         cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
     )
@@ -474,7 +477,9 @@ def test_run_cleanup_does_not_raise_active_loop_retry_runtime_error(monkeypatch)
             "_retry_with_backoff must not run inside an active event loop; use the async variant"
         )
 
-    monkeypatch.setattr(cleanup, "resolve_cleanup_config", lambda logger=None: cfg)
+    monkeypatch.setattr(
+        cleanup, "resolve_cleanup_config", lambda logger=None, **_kwargs: cfg
+    )
     monkeypatch.setattr(
         cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
     )
@@ -1365,20 +1370,24 @@ def test_global_housekeeping_disabled_prevents_cleanup_resolution_and_startup_va
     rt = object.__new__(runtime.Runtime)
     rt.scheduler = _FakeScheduler()
     rt.bot = type("Bot", (), {"loop": _FakeLoop()})()
+
+    async def fail_resolve(*_args, **_kwargs):
+        raise AssertionError("cleanup config must not resolve")
+
     cleanup_module = SimpleNamespace(
-        resolve_cleanup_config=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("cleanup config must not resolve")
-        ),
+        resolve_cleanup_config_async=fail_resolve,
         run_cleanup=lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("startup validation must not run")
         ),
     )
 
     successes = []
-    rt._register_cleanup_scheduler(
-        toggles=type("Toggles", (), {"housekeeping_enabled": False})(),
-        successes=successes,
-        housekeeping_cleanup=cleanup_module,
+    asyncio.run(
+        rt._register_cleanup_scheduler(
+            toggles=type("Toggles", (), {"housekeeping_enabled": False})(),
+            successes=successes,
+            housekeeping_cleanup=cleanup_module,
+        )
     )
 
     assert successes == []
@@ -1411,20 +1420,22 @@ def test_cleanup_schedules_only_when_global_and_cleanup_toggles_enabled(
         run_cleanup_calls.append((args, kwargs))
         return None
 
-    def fake_resolve(_logger=None):
+    async def fake_resolve(_logger=None):
         calls["resolved"] += 1
         return cleanup.CleanupConfig(True, "CleanupRows", 6, True)
 
     cleanup_module = SimpleNamespace(
-        resolve_cleanup_config=fake_resolve,
+        resolve_cleanup_config_async=fake_resolve,
         run_cleanup=fake_run_cleanup,
     )
     successes = []
 
-    rt._register_cleanup_scheduler(
-        toggles=type("Toggles", (), {"housekeeping_enabled": True})(),
-        successes=successes,
-        housekeeping_cleanup=cleanup_module,
+    asyncio.run(
+        rt._register_cleanup_scheduler(
+            toggles=type("Toggles", (), {"housekeeping_enabled": True})(),
+            successes=successes,
+            housekeeping_cleanup=cleanup_module,
+        )
     )
 
     assert calls["resolved"] == 1
@@ -1631,7 +1642,9 @@ def test_run_cleanup_summary_notice_failure_does_not_fail_cleanup(monkeypatch, c
     async def fake_log(_message):
         raise RuntimeError("discord log down")
 
-    monkeypatch.setattr(cleanup, "resolve_cleanup_config", lambda logger=None: cfg)
+    monkeypatch.setattr(
+        cleanup, "resolve_cleanup_config", lambda logger=None, **_kwargs: cfg
+    )
     monkeypatch.setattr(
         cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
     )
@@ -1665,7 +1678,9 @@ def test_run_cleanup_read_values_api_error_sets_actionable_first_error(monkeypat
     async def fake_to_thread_with_backoff(func, *args, **kwargs):
         return func(*args, **kwargs)
 
-    monkeypatch.setattr(cleanup, "resolve_cleanup_config", lambda logger=None: cfg)
+    monkeypatch.setattr(
+        cleanup, "resolve_cleanup_config", lambda logger=None, **_kwargs: cfg
+    )
     monkeypatch.setattr(
         cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
     )
@@ -1699,7 +1714,9 @@ def test_run_cleanup_unexpected_failure_logs_stage_and_context(monkeypatch, capl
     async def fake_log(_message):
         return None
 
-    monkeypatch.setattr(cleanup, "resolve_cleanup_config", lambda logger=None: cfg)
+    monkeypatch.setattr(
+        cleanup, "resolve_cleanup_config", lambda logger=None, **_kwargs: cfg
+    )
     monkeypatch.setattr(
         cleanup.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
     )
