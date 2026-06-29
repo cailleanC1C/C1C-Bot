@@ -500,7 +500,6 @@ _BUCKET_LABELS: Dict[str, str] = {
     "reset_reminders": "Reset Reminders",
     "shard_clans": "Shard Clans",
     "shard_mercy": "Shard Mercy",
-    "shard_reminders": "Shard Reminders",
     "shard_share_copy": "Shard Share Copy",
     "shard_voice_targets": "Shard Voice Targets",
     "whoweare_role_map": "WhoWeAre Role Map",

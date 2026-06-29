@@ -33,7 +33,6 @@ Date: 2026-06-29
 | `reset_reminders` | `RESET_REMINDER_TAB` | Runtime/shared config merged from Milestones Config | `modules.community.reset_reminders.scheduler._RESET_REMINDER_TAB_KEY` |
 | `shard_mercy` | `SHARD_MERCY_TAB` | Runtime/shared config merged from Milestones Config | `modules.community.shard_tracker.data.ShardSheetStore.get_config()` |
 | `shard_clans` | `SHARD_CLANS_TAB` | Runtime/shared config merged from Milestones Config | `modules.community.shard_tracker.data._config_tab_name("SHARD_CLANS_TAB")` |
-| `shard_reminders` | `SHARD_REMINDER_TAB` | Runtime/shared config merged from Milestones Config | `modules.community.shard_tracker.data._config_tab_name("SHARD_REMINDER_TAB")` |
 | `shard_share_copy` | `shard_share_copy_tab` | Runtime/shared config merged from Milestones Config | `modules.community.shard_tracker.data._config_tab_name("shard_share_copy_tab")` |
 | `shard_voice_targets` | `shard_share_voice_targets_tab` | Runtime/shared config merged from Milestones Config | `modules.community.shard_tracker.data._config_tab_name("shard_share_voice_targets_tab")` |
 
@@ -61,7 +60,7 @@ Date: 2026-06-29
 | Reset reminders | Missing and added in this PR | Uses existing `RESET_REMINDER_TAB` from Milestones Config merged into runtime/shared config. |
 | Shard mercy | Missing and added in this PR | Uses existing `SHARD_MERCY_TAB` from Milestones Config merged into runtime/shared config. |
 | Shard clans | Missing and added in this PR | Uses existing `SHARD_CLANS_TAB` from Milestones Config merged into runtime/shared config. |
-| Shard reminders | Missing and added in this PR | Uses existing `SHARD_REMINDER_TAB` from Milestones Config merged into runtime/shared config. |
+| Shard reminders | Intentionally not refreshable because not cache-backed | `SHARD_REMINDER_TAB` is the shard tracker weekly reminder dedupe/writeback ledger read by `get_sent_weekly_reminder_keys()` and written by `mark_weekly_reminder_sent()`, not a shared cache bucket. |
 | Shard share copy | Missing and added in this PR | Uses existing `shard_share_copy_tab`/normalized `SHARD_SHARE_COPY_TAB` from runtime/shared config. |
 | Shard voice targets | Missing and added in this PR | Uses existing `shard_share_voice_targets_tab`/normalized `SHARD_SHARE_VOICE_TARGETS_TAB` from runtime/shared config. |
 | Fusion user progress | Intentionally not refreshable because not cache-backed | `FUSION_USER_EVENT_PROGRESS_TAB` is a mutable progress/writeback ledger, not a shared cache bucket. |
@@ -86,7 +85,6 @@ The exact table status depends on live Config and Sheets access. The bucket list
 - Reset Reminders
 - Shard Clans
 - Shard Mercy
-- Shard Reminders
 - Shard Share Copy
 - Shard Voice Targets
 - WhoWeAre Role Map

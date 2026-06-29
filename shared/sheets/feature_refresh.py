@@ -83,7 +83,6 @@ def register_cache_buckets() -> None:
         ("reset_reminders", "RESET_REMINDER_TAB"),
         ("shard_mercy", "SHARD_MERCY_TAB"),
         ("shard_clans", "SHARD_CLANS_TAB"),
-        ("shard_reminders", "SHARD_REMINDER_TAB"),
         ("shard_share_copy", "shard_share_copy_tab"),
         ("shard_voice_targets", "shard_share_voice_targets_tab"),
     )
