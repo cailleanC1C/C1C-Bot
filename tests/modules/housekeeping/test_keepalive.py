@@ -103,6 +103,42 @@ def test_invalid_feature_toggle_logs_invalid_and_does_not_resolve(monkeypatch, c
     assert "sometimes" in caplog.text
 
 
+def test_resolve_keepalive_config_async_never_calls_sync_resolver(monkeypatch):
+    import asyncio
+
+    values = {
+        keepalive.CONFIG_TAB: "ConfiguredBySheet",
+        keepalive.CONFIG_DEFAULT_MESSAGE: "bump",
+        keepalive.CONFIG_STALE_AFTER_HOURS: "144",
+        keepalive.CONFIG_RUN_EVERY_HOURS: "6",
+    }
+
+    monkeypatch.setattr(
+        keepalive.feature_flags, "status", lambda key: _toggle_status(enabled=True)
+    )
+    monkeypatch.setattr(
+        keepalive,
+        "resolve_keepalive_config",
+        lambda _logger=None: (_ for _ in ()).throw(
+            AssertionError("async resolver must not call sync resolver")
+        ),
+    )
+
+    async def fake_get_config_value_async(key, default=None):
+        return values.get(key, default)
+
+    monkeypatch.setattr(
+        keepalive.recruitment, "get_config_value_async", fake_get_config_value_async
+    )
+
+    config = asyncio.run(keepalive.resolve_keepalive_config_async())
+
+    assert config is not None
+    assert config.tab_name == "ConfiguredBySheet"
+    assert config.default_message == "bump"
+    assert config.stale_after_hours == 144
+    assert config.run_every_hours == 6
+
 def test_resolve_keepalive_config_reads_enabled_from_feature_toggle_only(monkeypatch):
     requested_toggles = []
     config_keys = []
@@ -245,8 +281,11 @@ def _run_keepalive_with_sheet(
     async def fake_send_log_message(_summary):
         return None
 
+    async def fake_resolve_config(_logger=None):
+        return config
+
     monkeypatch.setattr(
-        keepalive, "resolve_keepalive_config", lambda _logger=None: config
+        keepalive, "resolve_keepalive_config_async", fake_resolve_config
     )
     monkeypatch.setattr(
         keepalive.recruitment, "get_recruitment_sheet_id", lambda: "sheet"

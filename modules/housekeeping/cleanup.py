@@ -1192,6 +1192,7 @@ async def run_cleanup(
     *,
     startup_validation: bool = False,
     writeback: bool = True,
+    resolved_config: CleanupConfig | None = None,
 ) -> CleanupRunSummary:
     logger = logger or log
     if startup_validation and _CLEANUP_RUN_LOCK.locked():
@@ -1207,7 +1208,11 @@ async def run_cleanup(
         return summary
     async with _CLEANUP_RUN_LOCK:
         return await _run_cleanup_locked(
-            bot, logger, startup_validation=startup_validation, writeback=writeback
+            bot,
+            logger,
+            startup_validation=startup_validation,
+            writeback=writeback,
+            resolved_config=resolved_config,
         )
 
 
@@ -1217,6 +1222,7 @@ async def _run_cleanup_locked(
     *,
     startup_validation: bool = False,
     writeback: bool = True,
+    resolved_config: CleanupConfig | None = None,
 ) -> CleanupRunSummary:
     logger = logger or log
     stage = "resolve_config"
@@ -1228,7 +1234,7 @@ async def _run_cleanup_locked(
     }
     summary = CleanupRunSummary(writeback=writeback)
     try:
-        config = await resolve_cleanup_config_async(logger)
+        config = resolved_config or await resolve_cleanup_config_async(logger)
         if config is None or not config.enabled:
             summary.status = "disabled"
             return summary

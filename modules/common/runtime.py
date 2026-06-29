@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import logging
 import math
 import os
@@ -1581,9 +1582,22 @@ class Runtime:
             )
             return
 
-        cleanup_config = await housekeeping_cleanup.resolve_cleanup_config_async(
-            cleanup_logger
-        )
+        try:
+            cleanup_config = await housekeeping_cleanup.resolve_cleanup_config_async(
+                cleanup_logger
+            )
+        except Exception as exc:
+            if sheets_core._is_rate_limited_error(exc):
+                cleanup_logger.warning(
+                    "cleanup scheduler config resolve hit Google Sheets quota/backoff; "
+                    "skipping cleanup registration for this ready cycle without failing startup: %s",
+                    exc,
+                )
+                return
+            cleanup_logger.exception(
+                "cleanup scheduler config resolve failed; skipping cleanup registration without failing startup"
+            )
+            return
         if cleanup_config is None or not cleanup_config.enabled:
             return
 
@@ -1625,8 +1639,19 @@ class Runtime:
 
         async def startup_validation_runner() -> None:
             try:
+                run_cleanup_kwargs: dict[str, Any] = {
+                    "startup_validation": True,
+                    "writeback": False,
+                }
+                try:
+                    if "resolved_config" in inspect.signature(
+                        housekeeping_cleanup.run_cleanup
+                    ).parameters:
+                        run_cleanup_kwargs["resolved_config"] = cleanup_config
+                except (TypeError, ValueError):
+                    run_cleanup_kwargs["resolved_config"] = cleanup_config
                 await housekeeping_cleanup.run_cleanup(
-                    self.bot, cleanup_logger, startup_validation=True, writeback=False
+                    self.bot, cleanup_logger, **run_cleanup_kwargs
                 )
             except asyncio.CancelledError:
                 raise
@@ -1690,6 +1715,7 @@ class Runtime:
         from modules.recruitment import clan_ads as recruitment_clan_ads
         from modules.common import feature_flags
         from shared.sheets import recruitment as recruitment_sheets
+        from shared.sheets import core as sheets_core
         from modules.ops import server_map as server_map_module
         from modules.community.leagues import schedule_leagues_jobs
         from modules.community.fusion.scheduler import schedule_fusion_jobs
@@ -1754,7 +1780,7 @@ class Runtime:
             log.info("Mirralith overview job disabled; MIRRALITH_POST_CRON is not set.")
 
         try:
-            c1c_refresh_days_raw = recruitment_sheets.get_config_value(
+            c1c_refresh_days_raw = await recruitment_sheets.get_config_value_async(
                 "C1C_AD_REFRESH_DAYS", None
             )
             c1c_refresh_days = (
@@ -1819,9 +1845,22 @@ class Runtime:
 
         if toggles.housekeeping_enabled:
             keepalive_logger = logging.getLogger("c1c.housekeeping.keepalive")
-            keepalive_config = housekeeping_keepalive.resolve_keepalive_config(
-                keepalive_logger
-            )
+            try:
+                keepalive_config = await housekeeping_keepalive.resolve_keepalive_config_async(
+                    keepalive_logger
+                )
+            except Exception as exc:
+                keepalive_config = None
+                if sheets_core._is_rate_limited_error(exc):
+                    keepalive_logger.warning(
+                        "thread keepalive config resolve hit Google Sheets quota/backoff; "
+                        "skipping keepalive registration for this ready cycle without failing startup: %s",
+                        exc,
+                    )
+                else:
+                    keepalive_logger.exception(
+                        "thread keepalive config resolve failed; skipping keepalive registration without failing startup"
+                    )
             if keepalive_config and keepalive_config.enabled:
                 keepalive_job = self.scheduler.every(
                     hours=float(keepalive_config.run_every_hours),

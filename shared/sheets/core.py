@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import random
+import time
 from functools import lru_cache
 from typing import Any, Awaitable, Callable, Dict, Tuple, TypeVar
 
@@ -149,17 +150,19 @@ def _next_backoff_delay(delay: float, *, multiplier: float, jitter_ratio: float 
 
 
 def _sleep_with_new_loop(delay: float) -> None:
-    """Sleep for ``delay`` seconds without relying on ``time.sleep``."""
+    """Sleep for ``delay`` seconds only when no event loop is active."""
 
     if delay <= 0:
         return
 
     try:
-        asyncio.run(asyncio.sleep(delay))
-    except RuntimeError as exc:  # pragma: no cover - unexpected event loop reuse
-        raise RuntimeError(
-            "_retry_with_backoff must not run inside an active event loop; use the async variant"
-        ) from exc
+        asyncio.get_running_loop()
+    except RuntimeError:
+        time.sleep(delay)
+        return
+    raise RuntimeError(
+        "_retry_with_backoff must not run inside an active event loop; use the async variant"
+    )
 
 
 def _resolve_sheet_id(sheet_id: str | None) -> str:
