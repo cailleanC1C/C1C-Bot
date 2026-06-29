@@ -183,6 +183,12 @@ class ClanData:
 
 
 @dataclass
+class ClanCrestThumbnail:
+    thumbnail_url: str | None = None
+    file: discord.File | None = None
+
+
+@dataclass
 class Decision:
     tag: str
     clan: ClanData | None
@@ -223,6 +229,23 @@ async def build_clan_card(
         return ([embed] if embed is not None else []), files, state
     log.error("Clan Ads loaded ClanProfileCog has no supported card renderer")
     return None, [], None
+
+
+async def resolve_clan_crest_thumbnail(
+    bot: discord.Client, clan_tag: str, guild: discord.Guild | None
+) -> ClanCrestThumbnail:
+    cog = bot.get_cog("ClanProfileCog") if hasattr(bot, "get_cog") else None
+    if cog is None:
+        log.error("Clan Ads could not find loaded ClanProfileCog for crest rendering")
+        return ClanCrestThumbnail()
+    if not hasattr(cog, "build_clan_crest_thumbnail"):
+        log.error("Clan Ads loaded ClanProfileCog has no crest thumbnail resolver")
+        return ClanCrestThumbnail()
+    asset = await cog.build_clan_crest_thumbnail(tag_norm(clan_tag), guild=guild)
+    return ClanCrestThumbnail(
+        thumbnail_url=getattr(asset, "thumbnail_url", None),
+        file=getattr(asset, "file", None),
+    )
 
 
 async def load_config(
@@ -465,19 +488,6 @@ async def resolve_embed_color(
     return None
 
 
-def clan_card_static_thumbnail(embeds: Sequence[discord.Embed]) -> str | None:
-    for embed in embeds:
-        url = str(getattr(getattr(embed, "thumbnail", None), "url", None) or "")
-        if url.startswith(("https://", "http://")):
-            return url
-        if url:
-            log.debug(
-                "Clan Ads skipped non-static clan card thumbnail URL",
-                extra={"thumbnail_url": url},
-            )
-    return None
-
-
 def render(template: str, clan: ClanData, guild: discord.Guild | None) -> str:
     banner = ""
     emoji = emoji_pipeline.emoji_for_tag(guild, clan.tag) if guild else None
@@ -669,26 +679,28 @@ async def post_decision(
         )
         if footer:
             embed.set_footer(text=footer)
+        crest_file = None
         try:
-            card_embeds, _card_files, _state = await build_clan_card(
-                bot, clan.tag, guild
-            )
+            crest = await resolve_clan_crest_thumbnail(bot, clan.tag, guild)
         except Exception:
             log.debug(
-                "Clan Ads could not resolve clan card crest thumbnail",
+                "Clan Ads could not resolve clan crest thumbnail",
                 exc_info=True,
                 extra={"clan_tag": clan.tag},
             )
-            card_embeds = []
-        thumbnail_url = clan_card_static_thumbnail(card_embeds or [])
-        if thumbnail_url:
-            embed.set_thumbnail(url=thumbnail_url)
+            crest = ClanCrestThumbnail()
+        if crest.thumbnail_url:
+            embed.set_thumbnail(url=crest.thumbnail_url)
+            crest_file = crest.file
         else:
             log.debug(
-                "Clan Ads could not resolve clan card crest thumbnail",
+                "Clan Ads could not resolve clan crest thumbnail",
                 extra={"clan_tag": clan.tag},
             )
-        message = await channel.send(embed=embed, view=ClanAdButtonView(clan.tag))
+        send_kwargs = {"embed": embed, "view": ClanAdButtonView(clan.tag)}
+        if crest_file is not None:
+            send_kwargs["files"] = [crest_file]
+        message = await channel.send(**send_kwargs)
     except Exception as exc:
         log.exception("failed to post clan ad", extra={"clan_tag": clan.tag})
         await write_state(

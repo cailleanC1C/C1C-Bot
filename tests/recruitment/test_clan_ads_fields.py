@@ -430,7 +430,7 @@ def test_embed_color_parsing_and_fallbacks(monkeypatch):
     assert "invalid embed_color `not-a-color`" in warnings[-1][0]
 
 
-def test_post_decision_applies_color_and_static_clan_card_thumbnail(monkeypatch):
+def test_post_decision_applies_color_and_crest_thumbnail(monkeypatch):
     import asyncio
     from types import SimpleNamespace
     import discord
@@ -447,13 +447,15 @@ def test_post_decision_applies_color_and_static_clan_card_thumbnail(monkeypatch)
     async def fake_write_state(*args, **kwargs):
         return None
 
-    async def fake_build_clan_card(*args, **kwargs):
-        embed = discord.Embed(title="Profile")
-        embed.set_thumbnail(url="https://example.com/crest.png")
-        return [embed, discord.Embed(title="Entry")], [], SimpleNamespace()
+    async def fake_resolve_clan_crest_thumbnail(*args, **kwargs):
+        return clan_ads.ClanCrestThumbnail(
+            thumbnail_url="https://example.com/crest.png"
+        )
 
     monkeypatch.setattr(clan_ads, "write_state", fake_write_state)
-    monkeypatch.setattr(clan_ads, "build_clan_card", fake_build_clan_card)
+    monkeypatch.setattr(
+        clan_ads, "resolve_clan_crest_thumbnail", fake_resolve_clan_crest_thumbnail
+    )
     decision = clan_ads.Decision(
         "C1CE",
         _clan(),
@@ -482,7 +484,7 @@ def test_post_decision_applies_color_and_static_clan_card_thumbnail(monkeypatch)
     assert sent[0]["view"].timeout is None
 
 
-def test_post_decision_skips_attachment_thumbnail_without_public_files(monkeypatch):
+def test_post_decision_sends_attachment_crest_file(monkeypatch):
     import asyncio
     from types import SimpleNamespace
     import discord
@@ -499,13 +501,17 @@ def test_post_decision_skips_attachment_thumbnail_without_public_files(monkeypat
     async def fake_write_state(*args, **kwargs):
         return None
 
-    async def fake_build_clan_card(*args, **kwargs):
-        embed = discord.Embed(title="Profile")
-        embed.set_thumbnail(url="attachment://c1ce-badge.png")
-        return [embed, discord.Embed(title="Entry")], [object()], SimpleNamespace()
+    crest_file = object()
+
+    async def fake_resolve_clan_crest_thumbnail(*args, **kwargs):
+        return clan_ads.ClanCrestThumbnail(
+            thumbnail_url="attachment://c1ce-badge.png", file=crest_file
+        )
 
     monkeypatch.setattr(clan_ads, "write_state", fake_write_state)
-    monkeypatch.setattr(clan_ads, "build_clan_card", fake_build_clan_card)
+    monkeypatch.setattr(
+        clan_ads, "resolve_clan_crest_thumbnail", fake_resolve_clan_crest_thumbnail
+    )
     decision = clan_ads.Decision(
         "C1CE",
         _clan(),
@@ -528,8 +534,8 @@ def test_post_decision_skips_attachment_thumbnail_without_public_files(monkeypat
     )
 
     assert ok is True
-    assert not sent[0]["embed"].thumbnail.url
-    assert "files" not in sent[0]
+    assert sent[0]["embed"].thumbnail.url == "attachment://c1ce-badge.png"
+    assert sent[0]["files"] == [crest_file]
 
 
 def test_post_decision_still_posts_without_static_clan_card_thumbnail(monkeypatch):
@@ -548,11 +554,13 @@ def test_post_decision_still_posts_without_static_clan_card_thumbnail(monkeypatc
     async def fake_write_state(*args, **kwargs):
         return None
 
-    async def fake_build_clan_card(*args, **kwargs):
-        return [], [], None
+    async def fake_resolve_clan_crest_thumbnail(*args, **kwargs):
+        return clan_ads.ClanCrestThumbnail()
 
     monkeypatch.setattr(clan_ads, "write_state", fake_write_state)
-    monkeypatch.setattr(clan_ads, "build_clan_card", fake_build_clan_card)
+    monkeypatch.setattr(
+        clan_ads, "resolve_clan_crest_thumbnail", fake_resolve_clan_crest_thumbnail
+    )
     decision = clan_ads.Decision(
         "C1CE",
         _clan(),
