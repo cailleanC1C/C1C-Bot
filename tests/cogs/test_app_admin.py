@@ -729,7 +729,7 @@ def test_whoweare_command_falls_back_for_foreign_channel(monkeypatch):
     asyncio.run(_run())
 
 
-def test_build_role_map_render_hides_missing_role_members_and_logs_notice():
+def test_build_role_map_render_hides_missing_role_members_and_counts_missing():
     guild = FakeRoleGuild([])
     rows = [
         cluster_role_map.RoleMapRow(
@@ -746,9 +746,9 @@ def test_build_role_map_render_hides_missing_role_members_and_logs_notice():
 
     assert render.categories == []
     assert render.role_count == 1
-    assert render.unassigned_roles == 0
-    assert len(render.notices) == 1
-    assert render.notices[0].reason == "role_missing"
+    assert render.unassigned_roles == 1
+    assert render.missing_roles == 1
+    assert render.empty_roles == 0
 
 
 def test_build_role_map_render_uses_only_current_role_members():
@@ -777,7 +777,7 @@ def test_build_role_map_render_uses_only_current_role_members():
     assert "<@1002>" not in entry.members
 
 
-def test_build_role_map_render_keeps_real_empty_role_without_fallback_members():
+def test_build_role_map_render_hides_real_empty_role_without_fallback_members():
     role = FakeRole(84, "Empty Role", members=[])
     guild = FakeRoleGuild([role])
     rows = [
@@ -793,7 +793,8 @@ def test_build_role_map_render_keeps_real_empty_role_without_fallback_members():
 
     render = cluster_role_map.build_role_map_render(guild, rows)
 
-    assert render.category_count == 1
-    assert render.categories[0].roles[0].members == []
+    assert render.categories == []
+    assert render.category_count == 0
     assert render.unassigned_roles == 1
-    assert render.notices[0].reason == "role_empty"
+    assert render.missing_roles == 0
+    assert render.empty_roles == 1

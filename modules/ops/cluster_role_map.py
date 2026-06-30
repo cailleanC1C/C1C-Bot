@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, Iterable, List, Mapping, Sequence
 
 import discord
@@ -215,7 +215,6 @@ def build_role_map_render(guild: discord.Guild | object, entries: Sequence[RoleM
     missing_roles = 0
     empty_roles = 0
     categories: List[RoleMapCategoryRender] = []
-    notices: List[RoleMapRenderNotice] = []
 
     get_role = getattr(guild, "get_role", None)
 
@@ -514,7 +513,6 @@ __all__ = [
     "RoleEntryRender",
     "RoleMapCategoryRender",
     "IndexLink",
-    "RoleMapRenderNotice",
     "RoleMapLoadError",
     "build_role_map_render",
     "build_index_placeholder",
