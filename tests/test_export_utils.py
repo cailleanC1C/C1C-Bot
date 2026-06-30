@@ -21,7 +21,8 @@ def test_convert_pdf_to_png_rejects_multiple_pages(monkeypatch):
     with pytest.raises(export_utils.ImageExportError) as exc:
         export_utils._convert_pdf_to_png(b"%PDF")
 
-    assert str(exc.value) == "image export produced multiple pages"
+    assert str(exc.value) == "image export produced multiple pages; range could not be forced to one page"
+    assert exc.value.page_count == 2
 
 
 def test_convert_pdf_to_png_can_allow_first_page_when_requested(monkeypatch):
@@ -104,6 +105,8 @@ def test_default_pdf_request_preserves_prior_non_scale_options():
         "456", "A1:AE26", fit_range_to_one_page=False
     )
 
+    assert params["exportFormat"] == "pdf"
+    assert params["format"] == "pdf"
     assert params["range"] == "A1:AE26"
     assert params["portrait"] == "false"
     assert params["fitw"] == "true"
@@ -144,6 +147,8 @@ def test_fit_to_one_page_pdf_request_adds_strict_fit_options(monkeypatch):
     )
 
     params = captured["params"]
+    assert params["exportFormat"] == "pdf"
+    assert params["format"] == "pdf"
     assert params["scale"] == "4"
     assert params["size"] == "7"
     assert params["portrait"] == "false"
@@ -151,3 +156,39 @@ def test_fit_to_one_page_pdf_request_adds_strict_fit_options(monkeypatch):
     assert params["fzr"] == "false"
     assert params["top_margin"] == "0.25"
     assert params["range"] == "A1:V42"
+
+
+def test_fit_to_one_page_multi_page_pdf_logs_export_parameter_failure(monkeypatch, caplog):
+    class Response:
+        status_code = 200
+        content = b"%PDF"
+
+    monkeypatch.setattr(
+        export_utils,
+        "_get_service_account_headers",
+        lambda: {"Authorization": "Bearer token"},
+    )
+    monkeypatch.setattr(export_utils.requests, "get", lambda *args, **kwargs: Response())
+    monkeypatch.setattr(export_utils, "_HAS_PDF2IMAGE", True)
+    monkeypatch.setattr(
+        export_utils,
+        "convert_from_bytes",
+        lambda *args, **kwargs: [_png_image(), _png_image()],
+    )
+
+    with pytest.raises(export_utils.ImageExportError):
+        export_utils._export_pdf_as_png_sync(
+            "sheet123",
+            "456",
+            "A1:V42",
+            log_context={"label": "[TEST]", "tab": "Configured tab", "range": "A1:V42"},
+            fit_range_to_one_page=True,
+        )
+
+    assert "pdf_export_parameter_failure:range_could_not_be_forced_to_one_page" in caplog.text
+    assert "label=[TEST]" in caplog.text
+    assert "tab=Configured tab" in caplog.text
+    assert "range=A1:V42" in caplog.text
+    assert "page_count=2" in caplog.text
+    assert "'scale': '4'" in caplog.text
+    assert "'fitw': 'true'" in caplog.text

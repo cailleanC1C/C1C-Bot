@@ -65,6 +65,10 @@ def _trim_outer_whitespace(image: Image.Image) -> Image.Image:
 class ImageExportError(RuntimeError):
     """Raised when a sheet image export would be unsafe to post."""
 
+    def __init__(self, message: str, *, page_count: int | None = None) -> None:
+        super().__init__(message)
+        self.page_count = page_count
+
 
 def _export_delay_seconds() -> float:
     """
@@ -126,12 +130,20 @@ def _log_error(reason: str, *, log_context: dict[str, Any]) -> None:
     label = log_context.get("label", "")
     tab = log_context.get("tab", "")
     cell_range = log_context.get("range", "")
+    page_count = log_context.get("page_count")
+    export_params = log_context.get("export_params")
+    suffix = ""
+    if page_count is not None:
+        suffix += f" • page_count={page_count}"
+    if export_params is not None:
+        suffix += f" • export_params={export_params}"
     log.error(
-        "❌ error — mirralith_export • label=%s • tab=%s • range=%s • reason=%s",
+        "❌ error — mirralith_export • label=%s • tab=%s • range=%s • reason=%s%s",
         label,
         tab,
         cell_range,
         reason,
+        suffix,
         extra={k: v for k, v in log_context.items() if k not in {"label", "tab", "range"}},
     )
 
@@ -164,8 +176,12 @@ def _convert_pdf_to_png(
             log.error("export_pdf_as_png: pdf2image returned no pages")
             return None
         if len(images) > 1 and fail_on_multi_page:
-            log.error("export_pdf_as_png: PDF export produced multiple pages")
-            raise ImageExportError("image export produced multiple pages")
+            page_count = len(images)
+            log.error("export_pdf_as_png: PDF export produced multiple pages", extra={"page_count": page_count})
+            raise ImageExportError(
+                "image export produced multiple pages; range could not be forced to one page",
+                page_count=page_count,
+            )
         image = images[0]
 
         if crop_to_content:
@@ -190,6 +206,7 @@ def _build_pdf_export_params(
     fit_range_to_one_page: bool,
 ) -> dict[str, str | int]:
     params: dict[str, str | int] = {
+        "exportFormat": "pdf",
         "format": "pdf",
         "gid": gid,
         "range": cell_range,
@@ -241,14 +258,15 @@ def _export_pdf_as_png_sync(
         return None
 
     try:
+        export_params = _build_pdf_export_params(
+            gid,
+            cell_range,
+            fit_range_to_one_page=fit_range_to_one_page,
+        )
         response = requests.get(
             GOOGLE_EXPORT_URL.format(sheet_id=sheet_id),
             headers=headers,
-            params=_build_pdf_export_params(
-                gid,
-                cell_range,
-                fit_range_to_one_page=fit_range_to_one_page,
-            ),
+            params=export_params,
             timeout=20,
         )
     except Exception as exc:  # pragma: no cover - network failure
@@ -267,11 +285,23 @@ def _export_pdf_as_png_sync(
         _log_error("empty_pdf_response", log_context=context)
         return None
 
-    return _convert_pdf_to_png(
-        pdf_content,
-        fail_on_multi_page=fail_on_multi_page,
-        crop_to_content=crop_to_content,
-    )
+    try:
+        return _convert_pdf_to_png(
+            pdf_content,
+            fail_on_multi_page=fail_on_multi_page,
+            crop_to_content=crop_to_content,
+        )
+    except ImageExportError as exc:
+        page_count = exc.page_count
+        _log_error(
+            "pdf_export_parameter_failure:range_could_not_be_forced_to_one_page",
+            log_context={
+                **context,
+                "page_count": page_count,
+                "export_params": export_params,
+            },
+        )
+        raise
 
 
 async def export_pdf_as_png(

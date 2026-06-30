@@ -336,6 +336,7 @@ async def run_mirralith_overview_job(bot: discord.Client, trigger: str = "schedu
                     "tab": tab_name,
                     "range": range_value,
                 },
+                fit_range_to_one_page=True,
                 fail_on_multi_page=True,
                 crop_to_content=True,
             )
