@@ -3929,6 +3929,8 @@ class CoreOpsCog(commands.Cog):
         *,
         guild: discord.Guild | None,
     ) -> tuple[str, bool]:
+        """Refresh clans cache state without depending on a Discord command ctx."""
+
         snapshot = cache_telemetry.get_snapshot("clans")
         if not snapshot.available:
             return ("⚠️ No clansinfo cache registered.", False)
@@ -3973,6 +3975,8 @@ class CoreOpsCog(commands.Cog):
     @guild_only_denied_msg()
     @ops_only()
     async def ops_refresh_clansinfo(self, ctx: commands.Context) -> None:
+        """Staff: refresh 'clans' cache if age ≥ 60 min."""
+
         message, _ = await self._refresh_clansinfo_impl(guild=ctx.guild)
         await ctx.send(str(sanitize_text(message)))
 
