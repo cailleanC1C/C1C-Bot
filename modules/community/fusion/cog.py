@@ -11,8 +11,11 @@ from c1c_coreops.helpers import help_metadata, tier
 from c1c_coreops.rbac import admin_only
 from modules.community.fusion import logs as fusion_logs
 from modules.community.fusion.announcements import (
+    FusionAnnouncementMissingError,
+    FusionAnnouncementPermissionError,
     ensure_fusion_announcement,
     publish_fusion_announcement,
+    refresh_fusion_announcement,
     resolve_announcement_channel,
     resolve_stored_announcement,
 )
@@ -41,20 +44,32 @@ class FusionCog(commands.Cog):
         tracker_label: str,
     ) -> None:
         try:
-            target = await fusion_sheets.get_publishable_fusion(tracker_kind=tracker_kind)
+            target = await fusion_sheets.get_publishable_fusion(
+                tracker_kind=tracker_kind
+            )
         except Exception:
             log.exception("%s command failed to load rows", tracker_label)
-            await ctx.reply(f"Couldn’t check the {tracker_label} right now. Try again in a moment.", mention_author=False)
+            await ctx.reply(
+                f"Couldn’t check the {tracker_label} right now. Try again in a moment.",
+                mention_author=False,
+            )
             return
 
         if target is None:
-            await ctx.reply(f"No {tracker_label} running. Enjoy the peace while it lasts.", mention_author=False)
+            await ctx.reply(
+                f"No {tracker_label} running. Enjoy the peace while it lasts.",
+                mention_author=False,
+            )
             return
 
         try:
             announcement_message = await self._ensure_fusion_announcement(target)
         except Exception:
-            log.exception("%s command failed to resolve announcement", tracker_label, extra={"fusion_id": target.fusion_id})
+            log.exception(
+                "%s command failed to resolve announcement",
+                tracker_label,
+                extra={"fusion_id": target.fusion_id},
+            )
             announcement_message = None
 
         if announcement_message is not None:
@@ -70,8 +85,15 @@ class FusionCog(commands.Cog):
             await ctx.reply(embed=emergency_embed, mention_author=False)
             return
         except Exception:
-            log.exception("%s command emergency embed fallback failed", tracker_label, extra={"fusion_id": target.fusion_id})
-            await ctx.reply(f"Couldn’t check the {tracker_label} right now. Try again in a moment.", mention_author=False)
+            log.exception(
+                "%s command emergency embed fallback failed",
+                tracker_label,
+                extra={"fusion_id": target.fusion_id},
+            )
+            await ctx.reply(
+                f"Couldn’t check the {tracker_label} right now. Try again in a moment.",
+                mention_author=False,
+            )
             return
 
     async def _publish_tracker(
@@ -96,7 +118,9 @@ class FusionCog(commands.Cog):
                 dedupe_key=f"fusion:command:publish:load_{tracker_label}",
                 error=exc,
             )
-            await ctx.reply(f"Could not load {tracker_label} data right now.", mention_author=False)
+            await ctx.reply(
+                f"Could not load {tracker_label} data right now.", mention_author=False
+            )
             return
 
         if target is None:
@@ -104,7 +128,8 @@ class FusionCog(commands.Cog):
             kind_parse_errors = {
                 fusion_id: field
                 for fusion_id, field in parse_errors.items()
-                if tracker_kind in {"fusion", "titan"} and tracker_kind in fusion_id.casefold()
+                if tracker_kind in {"fusion", "titan"}
+                and tracker_kind in fusion_id.casefold()
             }
             if parse_errors and not kind_parse_errors:
                 kind_parse_errors = parse_errors
@@ -139,26 +164,61 @@ class FusionCog(commands.Cog):
 
         if missing_fields:
             await ctx.reply(
-                f"{tracker_label.title()} row is missing required fields: " + ", ".join(missing_fields),
+                f"{tracker_label.title()} row is missing required fields: "
+                + ", ".join(missing_fields),
                 mention_author=False,
             )
             return
 
-        channel = await resolve_announcement_channel(self.bot, target.announcement_channel_id)
+        channel = await resolve_announcement_channel(
+            self.bot, target.announcement_channel_id
+        )
         if channel is None:
-            await ctx.reply("Configured announcement channel is not messageable.", mention_author=False)
+            await ctx.reply(
+                "Configured announcement channel is not messageable.",
+                mention_author=False,
+            )
             return
 
         resolution = await resolve_stored_announcement(self.bot, target)
         if resolution.message is not None:
-            await ctx.reply(
-                f"This {tracker_label} already has an announcement post. Clear the message id or use a future republish flow.",
-                mention_author=False,
-            )
+            try:
+                announcement_message = await refresh_fusion_announcement(
+                    self.bot, target
+                )
+            except FusionAnnouncementPermissionError:
+                await self._reply_announcement_permission_error(
+                    ctx, target, tracker_label
+                )
+                return
+            except FusionAnnouncementMissingError:
+                log.warning(
+                    "%s publish found stored announcement missing after initial resolution",
+                    tracker_label,
+                    extra={
+                        "fusion_id": target.fusion_id,
+                        "announcement_channel_id": target.announcement_channel_id,
+                        "announcement_message_id": target.announcement_message_id,
+                    },
+                    exc_info=True,
+                )
+            else:
+                await ctx.reply(
+                    f"{tracker_label.title()} announcement refreshed for **{target.fusion_name}**.",
+                    mention_author=False,
+                )
+                return
+
+        if (
+            resolution.had_reference
+            and isinstance(resolution.error, (discord.Forbidden, discord.HTTPException))
+            and not isinstance(resolution.error, discord.NotFound)
+        ):
+            await self._reply_announcement_permission_error(ctx, target, tracker_label)
             return
         if resolution.had_reference and resolution.is_stale:
-            log.info(
-                "%s publish allowed despite stale announcement metadata",
+            log.warning(
+                "%s publish replacing missing stored announcement",
                 tracker_label,
                 extra={
                     "fusion_id": target.fusion_id,
@@ -169,10 +229,12 @@ class FusionCog(commands.Cog):
             )
 
         try:
-            event_count = len(await fusion_sheets.get_fusion_events(target.fusion_id))
             announcement_message = await publish_fusion_announcement(self.bot, target)
             if announcement_message is None:
-                await ctx.reply("Configured announcement channel is not messageable.", mention_author=False)
+                await ctx.reply(
+                    "Configured announcement channel is not messageable.",
+                    mention_author=False,
+                )
                 return
         except Exception as exc:
             log.exception(
@@ -181,10 +243,15 @@ class FusionCog(commands.Cog):
                 extra={
                     "fusion_id": target.fusion_id,
                     "tracker_kind": tracker_kind,
-                    "event_count": event_count if "event_count" in locals() else None,
-                    "target_channel_id": getattr(target, "announcement_channel_id", None),
-                    "announcement_channel_id": getattr(target, "announcement_channel_id", None),
-                    "announcement_message_id": getattr(target, "announcement_message_id", None),
+                    "target_channel_id": getattr(
+                        target, "announcement_channel_id", None
+                    ),
+                    "announcement_channel_id": getattr(
+                        target, "announcement_channel_id", None
+                    ),
+                    "announcement_message_id": getattr(
+                        target, "announcement_message_id", None
+                    ),
                 },
                 exc_info=True,
             )
@@ -195,7 +262,9 @@ class FusionCog(commands.Cog):
                 error=exc,
                 fields={"fusion_id": target.fusion_id, "tracker_kind": tracker_kind},
             )
-            await ctx.reply("Failed to publish announcement right now.", mention_author=False)
+            await ctx.reply(
+                "Failed to publish announcement right now.", mention_author=False
+            )
             return
 
         actor = getattr(ctx, "author", None)
@@ -221,6 +290,118 @@ class FusionCog(commands.Cog):
                 exc_info=True,
             )
 
+        await ctx.reply(
+            f"{tracker_label.title()} announcement published to configured channel for **{target.fusion_name}**.",
+            mention_author=False,
+        )
+
+    async def _reply_announcement_permission_error(
+        self,
+        ctx: commands.Context,
+        target: fusion_sheets.FusionRow,
+        tracker_label: str,
+    ) -> None:
+        log.error(
+            "%s announcement refresh blocked by Discord permissions",
+            tracker_label,
+            extra={
+                "fusion_id": target.fusion_id,
+                "announcement_channel_id": target.announcement_channel_id,
+                "announcement_message_id": target.announcement_message_id,
+            },
+        )
+        await ctx.reply(
+            f"Cannot fetch or edit the stored {tracker_label} announcement "
+            f"(channel/thread {target.announcement_channel_id}, message {target.announcement_message_id}). "
+            "Check bot permissions before publishing again.",
+            mention_author=False,
+        )
+
+    async def _refresh_tracker_announcement(
+        self,
+        ctx: commands.Context,
+        *,
+        tracker_kind: str,
+        tracker_label: str,
+    ) -> None:
+        try:
+            target = await fusion_sheets.get_publishable_fusion(
+                tracker_kind=tracker_kind
+            )
+        except Exception as exc:
+            log.exception("%s refresh announcement failed to load rows", tracker_label)
+            await fusion_logs.send_ops_alert(
+                component="command_refresh_announcement",
+                summary=f"load_{tracker_label}_failed",
+                dedupe_key=f"fusion:command:refresh_announcement:load:{tracker_label}",
+                error=exc,
+            )
+            await ctx.reply(
+                f"Could not load {tracker_label} data right now.", mention_author=False
+            )
+            return
+
+        if target is None:
+            await ctx.reply(
+                f"No published {tracker_label} row found.", mention_author=False
+            )
+            return
+        if target.announcement_message_id is None:
+            await ctx.reply(
+                f"Published {tracker_label} row has no announcement_message_id to refresh.",
+                mention_author=False,
+            )
+            return
+
+        try:
+            await refresh_fusion_announcement(self.bot, target)
+        except FusionAnnouncementPermissionError:
+            await self._reply_announcement_permission_error(ctx, target, tracker_label)
+            return
+        except FusionAnnouncementMissingError:
+            log.warning(
+                "%s refresh announcement found stored message missing",
+                tracker_label,
+                extra={
+                    "fusion_id": target.fusion_id,
+                    "announcement_channel_id": target.announcement_channel_id,
+                    "announcement_message_id": target.announcement_message_id,
+                },
+            )
+            await ctx.reply(
+                f"Stored {tracker_label} announcement message was not found "
+                f"(channel/thread {target.announcement_channel_id}, message {target.announcement_message_id}). "
+                "No replacement was posted.",
+                mention_author=False,
+            )
+            return
+        except Exception as exc:
+            log.exception(
+                "%s refresh announcement failed",
+                tracker_label,
+                extra={
+                    "fusion_id": target.fusion_id,
+                    "announcement_channel_id": target.announcement_channel_id,
+                    "announcement_message_id": target.announcement_message_id,
+                },
+            )
+            await fusion_logs.send_ops_alert(
+                component="command_refresh_announcement",
+                summary="refresh_failed",
+                dedupe_key=f"fusion:command:refresh_announcement:{tracker_label}:{target.fusion_id}",
+                error=exc,
+                fields={"fusion_id": target.fusion_id, "tracker_kind": tracker_kind},
+            )
+            await ctx.reply(
+                "Failed to refresh announcement right now.", mention_author=False
+            )
+            return
+
+        await ctx.reply(
+            f"{tracker_label.title()} announcement refreshed for **{target.fusion_name}**.",
+            mention_author=False,
+        )
+
     @tier("user")
     @help_metadata(
         function_group="milestones",
@@ -234,7 +415,9 @@ class FusionCog(commands.Cog):
         help="Fusion reminder data commands.",
     )
     async def fusion(self, ctx: commands.Context) -> None:
-        await self._tracker_entrypoint(ctx, tracker_kind="fusion", tracker_label="fusion")
+        await self._tracker_entrypoint(
+            ctx, tracker_kind="fusion", tracker_label="fusion"
+        )
 
     @tier("user")
     @help_metadata(
@@ -258,7 +441,9 @@ class FusionCog(commands.Cog):
         access_tier="admin",
         usage="!fusion debug",
     )
-    @fusion.command(name="debug", help="Debug active fusion + first events from sheets cache.")
+    @fusion.command(
+        name="debug", help="Debug active fusion + first events from sheets cache."
+    )
     @commands.guild_only()
     @admin_only()
     async def fusion_debug(self, ctx: commands.Context) -> None:
@@ -272,7 +457,9 @@ class FusionCog(commands.Cog):
                 dedupe_key="fusion:command:debug:load_fusion",
                 error=exc,
             )
-            await ctx.reply("Fusion debug is temporarily unavailable.", mention_author=False)
+            await ctx.reply(
+                "Fusion debug is temporarily unavailable.", mention_author=False
+            )
             return
 
         if active is None:
@@ -282,7 +469,10 @@ class FusionCog(commands.Cog):
         try:
             events = await fusion_sheets.get_fusion_events(active.fusion_id)
         except Exception as exc:
-            log.exception("fusion debug failed to load events", extra={"fusion_id": active.fusion_id})
+            log.exception(
+                "fusion debug failed to load events",
+                extra={"fusion_id": active.fusion_id},
+            )
             await fusion_logs.send_ops_alert(
                 component="command_debug",
                 summary="load_events_failed",
@@ -290,7 +480,9 @@ class FusionCog(commands.Cog):
                 error=exc,
                 fields={"fusion_id": active.fusion_id},
             )
-            await ctx.reply("Fusion events are temporarily unavailable.", mention_author=False)
+            await ctx.reply(
+                "Fusion events are temporarily unavailable.", mention_author=False
+            )
             return
 
         lines = [
@@ -319,9 +511,31 @@ class FusionCog(commands.Cog):
         function_group="milestones",
         section="community",
         access_tier="admin",
+        usage="!fusion refresh-announcement",
+    )
+    @fusion.command(
+        name="refresh-announcement",
+        help="Refresh the stored fusion announcement in place.",
+    )
+    @commands.guild_only()
+    @admin_only()
+    async def fusion_refresh_announcement(self, ctx: commands.Context) -> None:
+        await self._refresh_tracker_announcement(
+            ctx,
+            tracker_kind="fusion",
+            tracker_label="fusion",
+        )
+
+    @tier("admin")
+    @help_metadata(
+        function_group="milestones",
+        section="community",
+        access_tier="admin",
         usage="!fusion publish",
     )
-    @fusion.command(name="publish", help="Publish fusion announcement to the configured channel.")
+    @fusion.command(
+        name="publish", help="Publish fusion announcement to the configured channel."
+    )
     @commands.guild_only()
     @admin_only()
     async def fusion_publish(self, ctx: commands.Context) -> None:
@@ -339,7 +553,9 @@ class FusionCog(commands.Cog):
         access_tier="admin",
         usage="!titan publish",
     )
-    @titan.command(name="publish", help="Publish titan announcement to the configured channel.")
+    @titan.command(
+        name="publish", help="Publish titan announcement to the configured channel."
+    )
     @commands.guild_only()
     @admin_only()
     async def titan_publish(self, ctx: commands.Context) -> None:
