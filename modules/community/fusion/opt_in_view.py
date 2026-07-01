@@ -235,6 +235,19 @@ def _event_reward_label(event: fusion_sheets.FusionEventRow) -> str:
     return f"{event.reward_amount:g} {reward_unit}"
 
 
+async def _send_or_followup_ephemeral(
+    interaction: discord.Interaction,
+    *,
+    content: str | None = None,
+    embed: discord.Embed | None = None,
+    view: discord.ui.View | None = None,
+) -> None:
+    if interaction.response.is_done():
+        await interaction.followup.send(content=content, embed=embed, view=view, ephemeral=True)
+        return
+    await interaction.response.send_message(content=content, embed=embed, view=view, ephemeral=True)
+
+
 async def _send_ephemeral(interaction: discord.Interaction, message: str) -> None:
     if interaction.response.is_done():
         await interaction.followup.send(message, ephemeral=True)
@@ -1227,10 +1240,7 @@ async def _send_my_progress_panel(
         elapsed_ms=int((time.monotonic() - started_at) * 1000),
     )
     log.info("fusion my-progress response path selected", extra=diagnostics)
-    if interaction.response.is_done():
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-        return
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    await _send_or_followup_ephemeral(interaction, embed=embed, view=view)
 
 
 async def _handle_my_progress(interaction: discord.Interaction) -> None:
@@ -1315,10 +1325,7 @@ async def _handle_my_progress(interaction: discord.Interaction) -> None:
             partial_by_event=partial_by_event,
         )
         embed = _build_traditional_progress_choice_embed(target)
-        if interaction.response.is_done():
-            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-        else:
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await _send_or_followup_ephemeral(interaction, embed=embed, view=view)
         return
 
     view = FusionProgressPanelView(
