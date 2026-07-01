@@ -365,8 +365,10 @@ def test_section_headings_use_configured_icon_sources():
         "sacred_icon Sacred",
         "remnant_icon Remnants",
     ]
-    assert "`<:mystery:123456789012345678> Mystery: 0`" in shared.description
-    assert "`<:ancient:223456789012345678> Ancient: 0`" in shared.description
+    assert "<:mystery:123456789012345678> `Mystery: 0`" in shared.description
+    assert "`<:mystery:123456789012345678> Mystery: 0`" not in shared.description
+    assert "<:ancient:223456789012345678> `Ancient: 0`" in shared.description
+    assert "`<:ancient:223456789012345678> Ancient: 0`" not in shared.description
 
 
 def test_detail_button_layout_still_includes_share_to_clan():
@@ -738,7 +740,7 @@ def test_share_missing_required_config_logs_and_skips_flavor(caplog):
         assert "Intro" not in embed.description
         assert "Final" not in embed.description
         assert "`Mystery: 0`" in embed.description
-        assert embed.footer.text == " "
+        assert embed.footer.text == "Status: counted like treasure, judged like gossip, guarded like rum."
 
     asyncio.run(runner())
 
@@ -760,7 +762,7 @@ def test_share_invalid_threshold_logs_and_skips_conditional_flavor(caplog):
         assert "Some Void" not in embed.description
         assert "No Void" not in embed.description
         assert "`Void: 0`" in embed.description
-        assert embed.footer.text == " "
+        assert embed.footer.text == "Status: counted like treasure, judged like gossip, guarded like rum."
 
     asyncio.run(runner())
 
@@ -802,6 +804,6 @@ def test_share_invalid_percent_range_skips_flavor_but_keeps_clean_stats(caplog):
         assert "Mercy:" not in embed.description
         assert "Last Legendary:" not in embed.description
         assert "Chance" not in embed.description
-        assert embed.footer.text == " "
+        assert embed.footer.text == "Status: counted like treasure, judged like gossip, guarded like rum."
 
     asyncio.run(runner())
