@@ -8,13 +8,13 @@ from modules.community.fusion import opt_in_view
 from shared.sheets import fusion as fusion_sheets
 
 
-def _fusion_row(*, opt_in_role_id: int | None) -> fusion_sheets.FusionRow:
+def _fusion_row(*, opt_in_role_id: int | None, fusion_type: str = "fragment") -> fusion_sheets.FusionRow:
     return fusion_sheets.FusionRow(
         fusion_id="f-1",
         fusion_name="Mavara",
         champion="Mavara",
         champion_image_url="",
-        fusion_type="traditional",
+        fusion_type=fusion_type,
         fusion_structure="",
         reward_type="fragments",
         needed=400,
@@ -35,10 +35,14 @@ class _Response:
     def __init__(self) -> None:
         self.send_message = AsyncMock()
         self.edit_message = AsyncMock()
+        self.defer = AsyncMock(side_effect=self._defer)
         self._is_done = False
 
     def is_done(self) -> bool:
         return self._is_done
+
+    async def _defer(self, **_kwargs) -> None:
+        self._is_done = True
 
 
 class _Member:
@@ -78,6 +82,7 @@ def _interaction(guild, member):
         client=SimpleNamespace(),
         response=_Response(),
         followup=SimpleNamespace(send=AsyncMock()),
+        edit_original_response=AsyncMock(),
     )
 
 
@@ -88,6 +93,8 @@ def _event_row(
     start_at_utc: dt.datetime | None = None,
     end_at_utc: dt.datetime | None = None,
     sort_order: int = 1,
+    reward_type: str = "fragments",
+    reward_amount: float = 5.0,
 ) -> fusion_sheets.FusionEventRow:
     return fusion_sheets.FusionEventRow(
         fusion_id="f-1",
@@ -97,9 +104,9 @@ def _event_row(
         category="Tournaments",
         start_at_utc=start_at_utc or dt.datetime(2026, 4, 8, tzinfo=dt.timezone.utc),
         end_at_utc=end_at_utc or dt.datetime(2026, 4, 9, tzinfo=dt.timezone.utc),
-        reward_amount=5.0,
+        reward_amount=reward_amount,
         bonus=None,
-        reward_type="fragments",
+        reward_type=reward_type,
         points_needed=None,
         is_estimated=False,
         sort_order=sort_order,
@@ -627,5 +634,129 @@ def test_my_progress_next_page_rebuilds_smaller_event_options():
         event_select = next(item for item in view.children if item.custom_id == "fusion:progress:event")
         assert [option.value for option in event_select.options] == ["e10", "e11"]
         assert event_select.placeholder == "Choose event (page 2/2)"
+
+    asyncio.run(_run())
+
+
+def test_traditional_my_progress_opens_choice_view(monkeypatch):
+    async def _run() -> None:
+        member = _Member(role=None)
+        guild = _Guild(role=None, member=member)
+        interaction = _interaction(guild, member)
+        events = [_event_row("e1")]
+        monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row(opt_in_role_id=777, fusion_type="traditional")))
+        monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=events))
+        monkeypatch.setattr(fusion_sheets, "get_user_event_progress", AsyncMock(return_value={"progress": {"e1": "done"}}))
+
+        await opt_in_view._handle_my_progress(interaction)
+
+        sent_kwargs = interaction.response.send_message.await_args.kwargs
+        assert isinstance(sent_kwargs["view"], opt_in_view.TraditionalProgressChoiceView)
+        assert "Event/Tournament Progress" in sent_kwargs["embed"].fields[0].value
+        assert "Champion Preparation" in sent_kwargs["embed"].fields[0].value
+
+    asyncio.run(_run())
+
+
+def test_traditional_prep_validation_blocks_impossible_counts():
+    message = opt_in_view._validate_traditional_prep_counts(
+        needed_total=16,
+        rares_acquired=8,
+        rares_level_40=8,
+        rares_ascended=4,
+        epics_fused=2,
+        epics_level_50=0,
+        epics_ascended=0,
+    )
+
+    assert message == "Epics fused cannot be higher than the number allowed by fully ascended Rares."
+
+
+
+def test_fusion_my_progress_views_do_not_expire():
+    target = _fusion_row(opt_in_role_id=777, fusion_type="traditional")
+    events = [_event_row("e1")]
+    progress_by_event = {"e1": "done"}
+    prep = fusion_sheets.FusionTraditionalUserProgressRow(fusion_id="f-1", user_id="42")
+
+    choice_view = opt_in_view.TraditionalProgressChoiceView(
+        user_id=42,
+        target=target,
+        events=events,
+        progress_by_event=progress_by_event,
+        partial_by_event={},
+    )
+    prep_view = opt_in_view.TraditionalPrepPanelView(
+        user_id=42,
+        target=target,
+        events=events,
+        progress_by_event=progress_by_event,
+        prep=prep,
+    )
+    event_view = opt_in_view.FusionProgressPanelView(
+        user_id=42,
+        target=target,
+        events=events,
+        progress_by_event=progress_by_event,
+    )
+    share_view = opt_in_view.FusionProgressShareModeView(
+        user_id=42,
+        target=target,
+        events=events,
+        progress_by_event=progress_by_event,
+        partial_by_event={},
+    )
+
+    assert choice_view.timeout is None
+    assert prep_view.timeout is None
+    assert event_view.timeout is None
+    assert share_view.timeout is None
+
+
+
+def test_traditional_prep_modal_save_edits_original_panel(monkeypatch):
+    async def _run() -> None:
+        member = _Member(role=None)
+        guild = _Guild(role=None, member=member)
+        interaction = _interaction(guild, member)
+        target = _fusion_row(opt_in_role_id=777, fusion_type="traditional")
+        events = [_event_row("e1", reward_type="rare", reward_amount=16)]
+        progress_by_event = {"e1": "done"}
+        prep = fusion_sheets.FusionTraditionalUserProgressRow(fusion_id="f-1", user_id=str(member.id))
+        panel = opt_in_view.TraditionalPrepPanelView(
+            user_id=member.id,
+            target=target,
+            events=events,
+            progress_by_event=progress_by_event,
+            prep=prep,
+        )
+        modal = opt_in_view._TraditionalPrepModal(view=panel)
+        for item, value in (
+            (modal.rares_level_40, "16"),
+            (modal.rares_ascended, "16"),
+            (modal.epics_fused, "4"),
+            (modal.epics_level_50, "4"),
+            (modal.epics_ascended, "4"),
+        ):
+            item._value = value
+
+        saved = fusion_sheets.FusionTraditionalUserProgressRow(
+            fusion_id="f-1",
+            user_id=str(member.id),
+            rares_level_40=16,
+            rares_ascended=16,
+            epics_fused=4,
+            epics_level_50=4,
+            epics_ascended=4,
+        )
+        monkeypatch.setattr(fusion_sheets, "upsert_user_traditional_progress", AsyncMock(return_value=saved))
+
+        await modal.on_submit(interaction)
+
+        interaction.response.defer.assert_awaited_once_with(thinking=False)
+        interaction.edit_original_response.assert_awaited_once()
+        interaction.response.edit_message.assert_not_awaited()
+        interaction.followup.send.assert_not_awaited()
+        assert panel.prep.epics_ascended == 4
 
     asyncio.run(_run())

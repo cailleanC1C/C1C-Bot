@@ -74,10 +74,8 @@ def test_build_embed_includes_event_status_section() -> None:
         ),
     ]
     embed = build_fusion_announcement_embed(_fusion_row(last_refresh=None, last_hash=""), events, now=now)
-    status_field = next(field for field in embed.fields if field.name == "Event Status")
-    assert "⏳ Event upcoming" in status_field.value
-    assert "🔥 Event live" in status_field.value
-    assert "✅ Event ended" in status_field.value
+    status_field = next(field for field in embed.fields if field.name == "Schedule Status")
+    assert status_field.value == "1 ended • 1 live • 1 upcoming"
 
 
 def test_refresh_skips_when_day_and_status_hash_unchanged(monkeypatch) -> None:

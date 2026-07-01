@@ -28,6 +28,7 @@ _FUSION_EVENTS_BUCKET = "fusion_events"
 _LAST_FUSION_PARSE_ERRORS: dict[str, str] = {}
 _FUSION_REMINDER_TAB_KEY = "FUSION_REMINDER_TAB"
 _FUSION_PROGRESS_TAB_KEY = "FUSION_USER_EVENT_PROGRESS_TAB"
+_FUSION_TRADITIONAL_PROGRESS_TAB_KEY = "FUSION_TRADITIONAL_USER_PROGRESS_TAB"
 _FUSION_REMINDER_SETTINGS_TAB_KEY = "FUSION_REMINDER_SETTINGS_TAB"
 _FUSION_ROLE_CLEANUP_SUMMARY_UNREPORTED = "__fusion_role_cleanup_summary_unreported__"
 _FUSION_ROLE_CLEANUP_SUMMARY_REPORTED = "__fusion_role_cleanup_summary_reported__"
@@ -41,6 +42,16 @@ _FUSION_REMINDER_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "event_id": ("event_id",),
     "reminder_type": ("reminder_type",),
     "sent_at_utc": ("sent_at_utc",),
+}
+_FUSION_TRADITIONAL_PROGRESS_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    "fusion_id": ("fusion_id",),
+    "user_id": ("user_id",),
+    "rares_level_40": ("rares_level_40",),
+    "rares_ascended": ("rares_ascended",),
+    "epics_fused": ("epics_fused",),
+    "epics_level_50": ("epics_level_50",),
+    "epics_ascended": ("epics_ascended",),
+    "updated_at_utc": ("updated_at_utc", "updated at utc", "updatedat", "updated_at"),
 }
 _FUSION_PROGRESS_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "fusion_id": ("fusion_id", "fusion key", "fusionkey"),
@@ -100,6 +111,18 @@ class FusionEventRow:
     embed_title: str = ""
     embed_description: str = ""
     embed_footer: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class FusionTraditionalUserProgressRow:
+    fusion_id: str
+    user_id: str
+    rares_level_40: int = 0
+    rares_ascended: int = 0
+    epics_fused: int = 0
+    epics_level_50: int = 0
+    epics_ascended: int = 0
+    updated_at: dt.datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,6 +418,33 @@ def reminder_dedupe_backend_metadata() -> dict[str, str]:
         "tab_name": tab_name,
     }
 
+
+
+def _resolve_traditional_progress_sheet_schema() -> tuple[str, dict[str, str]]:
+    tab_name = _resolve_tab_name(_FUSION_TRADITIONAL_PROGRESS_TAB_KEY)
+    return tab_name, dict(_FUSION_TRADITIONAL_PROGRESS_COLUMN_ALIASES)
+
+
+def _resolve_traditional_progress_header_indices(*, tab_name: str, header: list[str]) -> dict[str, int]:
+    required_fields = [
+        "fusion_id",
+        "user_id",
+        "rares_level_40",
+        "rares_ascended",
+        "epics_fused",
+        "epics_level_50",
+        "epics_ascended",
+        "updated_at_utc",
+    ]
+    return {
+        field: _resolve_header_index(
+            tab_name=tab_name,
+            header=header,
+            field=field,
+            aliases_by_field=_FUSION_TRADITIONAL_PROGRESS_COLUMN_ALIASES,
+        )
+        for field in required_fields
+    }
 
 def _resolve_progress_sheet_schema() -> tuple[str, dict[str, str]]:
     tab_name = _resolve_tab_name(_FUSION_PROGRESS_TAB_KEY)
@@ -1561,6 +1611,106 @@ def _progress_save_log_fields(result: FusionProgressSaveResult) -> dict[str, obj
 
 
 
+
+async def get_user_traditional_progress(fusion_id: str, user_id: str) -> FusionTraditionalUserProgressRow:
+    """Return champion-prep progress for one traditional fusion/user tuple."""
+
+    tab_name, _aliases = _resolve_traditional_progress_sheet_schema()
+    matrix = await afetch_values(_sheet_id(), tab_name)
+    if not matrix:
+        raise RuntimeError(
+            "Fusion traditional user progress sheet is empty "
+            f"(tab={tab_name}, key={_FUSION_TRADITIONAL_PROGRESS_TAB_KEY})"
+        )
+    header = [str(cell or "").strip().lower() for cell in matrix[0]]
+    index_by_field = _resolve_traditional_progress_header_indices(tab_name=tab_name, header=header)
+    fusion_idx = index_by_field["fusion_id"]
+    user_idx = index_by_field["user_id"]
+    target_fusion = str(fusion_id or "").strip()
+    target_user = str(user_id or "").strip()
+    for row in matrix[1:]:
+        row_fusion = str(row[fusion_idx] if fusion_idx < len(row) else "").strip()
+        row_user = str(row[user_idx] if user_idx < len(row) else "").strip()
+        if row_fusion != target_fusion or row_user != target_user:
+            continue
+        return FusionTraditionalUserProgressRow(
+            fusion_id=target_fusion,
+            user_id=target_user,
+            rares_level_40=max(0, _parse_int(row[index_by_field["rares_level_40"]] if index_by_field["rares_level_40"] < len(row) else "")),
+            rares_ascended=max(0, _parse_int(row[index_by_field["rares_ascended"]] if index_by_field["rares_ascended"] < len(row) else "")),
+            epics_fused=max(0, _parse_int(row[index_by_field["epics_fused"]] if index_by_field["epics_fused"] < len(row) else "")),
+            epics_level_50=max(0, _parse_int(row[index_by_field["epics_level_50"]] if index_by_field["epics_level_50"] < len(row) else "")),
+            epics_ascended=max(0, _parse_int(row[index_by_field["epics_ascended"]] if index_by_field["epics_ascended"] < len(row) else "")),
+            updated_at=_parse_iso_utc_optional(row[index_by_field["updated_at_utc"]] if index_by_field["updated_at_utc"] < len(row) else ""),
+        )
+    return FusionTraditionalUserProgressRow(fusion_id=target_fusion, user_id=target_user)
+
+
+async def upsert_user_traditional_progress(
+    fusion_id: str,
+    user_id: str,
+    *,
+    rares_level_40: int,
+    rares_ascended: int,
+    epics_fused: int,
+    epics_level_50: int,
+    epics_ascended: int,
+    updated_at: dt.datetime,
+) -> FusionTraditionalUserProgressRow:
+    """Create or update champion-prep progress for one traditional fusion/user tuple."""
+
+    tab_name, _aliases = _resolve_traditional_progress_sheet_schema()
+    matrix = await afetch_values(_sheet_id(), tab_name)
+    if not matrix:
+        raise RuntimeError(
+            "Fusion traditional user progress sheet is empty "
+            f"(tab={tab_name}, key={_FUSION_TRADITIONAL_PROGRESS_TAB_KEY})"
+        )
+    header = [str(cell or "").strip().lower() for cell in matrix[0]]
+    index_by_field = _resolve_traditional_progress_header_indices(tab_name=tab_name, header=header)
+    target_fusion = str(fusion_id or "").strip()
+    target_user = str(user_id or "").strip()
+    timestamp = updated_at.astimezone(dt.timezone.utc).isoformat()
+    updates = {
+        "fusion_id": target_fusion,
+        "user_id": target_user,
+        "rares_level_40": str(max(0, int(rares_level_40))),
+        "rares_ascended": str(max(0, int(rares_ascended))),
+        "epics_fused": str(max(0, int(epics_fused))),
+        "epics_level_50": str(max(0, int(epics_level_50))),
+        "epics_ascended": str(max(0, int(epics_ascended))),
+        "updated_at_utc": timestamp,
+    }
+    fusion_idx = index_by_field["fusion_id"]
+    user_idx = index_by_field["user_id"]
+    worksheet = await aget_worksheet(_sheet_id(), tab_name)
+    row_number = None
+    for row_idx, row in enumerate(matrix[1:], start=2):
+        row_fusion = str(row[fusion_idx] if fusion_idx < len(row) else "").strip()
+        row_user = str(row[user_idx] if user_idx < len(row) else "").strip()
+        if row_fusion == target_fusion and row_user == target_user:
+            row_number = row_idx
+            break
+    if row_number is None:
+        row_values = [""] * len(header)
+        for field, value in updates.items():
+            row_values[index_by_field[field]] = value
+        await acall_with_backoff(worksheet.append_row, row_values, value_input_option="RAW")
+    else:
+        for field, value in updates.items():
+            await acall_with_backoff(
+                worksheet.update,
+                f"{_column_label(index_by_field[field])}{row_number}",
+                [[value]],
+                value_input_option="RAW",
+            )
+    return FusionTraditionalUserProgressRow(
+        fusion_id=target_fusion, user_id=target_user,
+        rares_level_40=int(updates["rares_level_40"]), rares_ascended=int(updates["rares_ascended"]),
+        epics_fused=int(updates["epics_fused"]), epics_level_50=int(updates["epics_level_50"]),
+        epics_ascended=int(updates["epics_ascended"]), updated_at=updated_at.astimezone(dt.timezone.utc),
+    )
+
 async def get_ended_fusions(now: dt.datetime | None = None) -> list[FusionRow]:
     """Return ended fusions that may still need post-end cleanup tasks."""
 
@@ -1745,6 +1895,7 @@ async def transition_fusion_to_ended(fusion_id: str) -> bool:
 __all__ = [
     "FusionEventRow",
     "FusionRow",
+    "FusionTraditionalUserProgressRow",
     "FusionUserEventProgressRow",
     "FusionProgressSaveResult",
     "FusionReminderSettings",
@@ -1762,6 +1913,7 @@ __all__ = [
     "has_role_cleanup_summary",
     "reminder_dedupe_backend_metadata",
     "get_user_event_progress",
+    "get_user_traditional_progress",
     "get_progress_sheet_diagnostics",
     "get_upcoming_events",
     "get_fusion_reminder_settings",
@@ -1770,6 +1922,7 @@ __all__ = [
     "mark_reminder_sent",
     "upsert_role_cleanup_summary",
     "upsert_user_event_progress",
+    "upsert_user_traditional_progress",
     "update_fusion_publication",
     "update_fusion_announcement_refresh_state",
     "transition_fusion_to_ended",
