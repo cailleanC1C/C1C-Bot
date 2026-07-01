@@ -205,6 +205,36 @@ async def publish_fusion_announcement(
     if channel is None:
         return None
 
+    resolution = await resolve_stored_announcement(bot, target)
+    if resolution.message is not None:
+        edited = await edit_fusion_announcement(resolution.message, target)
+        log.info(
+            "fusion existing announcement edited during publish",
+            extra={
+                "fusion_id": target.fusion_id,
+                "announcement_channel_id": target.announcement_channel_id,
+                "announcement_message_id": target.announcement_message_id,
+            },
+        )
+        return edited
+    if (
+        resolution.had_reference
+        and isinstance(resolution.error, (discord.Forbidden, discord.HTTPException))
+        and not isinstance(resolution.error, discord.NotFound)
+    ):
+        raise FusionAnnouncementPermissionError(
+            "Bot cannot fetch stored fusion announcement message"
+        ) from resolution.error
+    if resolution.had_reference and resolution.is_stale:
+        log.warning(
+            "fusion stored announcement missing during publish; creating clearly logged replacement",
+            extra={
+                "fusion_id": target.fusion_id,
+                "announcement_channel_id": target.announcement_channel_id,
+                "announcement_message_id": target.announcement_message_id,
+            },
+        )
+
     events = await fusion_sheets.get_fusion_events(target.fusion_id)
     announcement_embed = build_fusion_announcement_embed(target, events)
     announcement_view = build_fusion_opt_in_view(target)
