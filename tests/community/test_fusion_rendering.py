@@ -77,6 +77,33 @@ def test_build_fusion_embed_target_and_schedule_field_chunks() -> None:
     ]
 
 
+def test_build_fusion_embed_adds_non_empty_fusion_requirements_between_type_and_goal() -> None:
+    fusion = replace(_fusion(), fusion_structure="• 4 Epics\n• 16 Rares")
+
+    embed = build_fusion_announcement_embed(fusion, [])
+
+    assert embed.description == (
+        "Type: Traditional\n"
+        "\n"
+        "Fusion Requirements\n"
+        "• 4 Epics\n"
+        "• 16 Rares\n"
+        "\n"
+        "Goal: Earn 400 fragments for Mavara\n"
+        "Target: 400 fragments needed / 450 available\n"
+        "Schedule: 0 events"
+    )
+
+
+def test_build_fusion_embed_omits_empty_fusion_requirements() -> None:
+    embed = build_fusion_announcement_embed(_fusion(), [])
+
+    assert "Fusion Requirements" not in (embed.description or "")
+    assert (embed.description or "").splitlines()[:2] == [
+        "Type: Traditional",
+        "Goal: Earn 400 fragments for Mavara",
+    ]
+
 def test_build_fusion_embed_sets_champion_image_when_url_present() -> None:
     fusion = replace(_fusion(), champion_image_url="https://cdn.discordapp.com/champion.png")
 
