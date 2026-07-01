@@ -126,12 +126,17 @@ def _build_fusion_embed(
     else:
         goal_line = f"Goal: Earn {fusion.needed:g} {reward_unit} for {fusion.champion}"
 
-    summary_lines = [
-        f"Type: {_humanize_type(fusion.fusion_type)}",
-        goal_line,
-        f"Target: {fusion.needed:g} {reward_unit} needed / {fusion.available:g} available",
-        f"Schedule: {len(events)} events" + (" • includes bonus rewards" if has_bonus else ""),
-    ]
+    summary_lines = [f"Type: {_humanize_type(fusion.fusion_type)}"]
+    fusion_structure = str(fusion.fusion_structure or "").strip()
+    if fusion_structure:
+        summary_lines.extend(["", "Fusion Requirements", fusion_structure, ""])
+    summary_lines.extend(
+        [
+            goal_line,
+            f"Target: {fusion.needed:g} {reward_unit} needed / {fusion.available:g} available",
+            f"Schedule: {len(events)} events" + (" • includes bonus rewards" if has_bonus else ""),
+        ]
+    )
 
     milestones_lines = [
         f"First start: {_format_day_label(min(event_days))}" if event_days else "First start: TBA",
