@@ -1491,10 +1491,10 @@ class ShardTracker(commands.Cog, ShardTrackerController):
         for key in ("mystery", "ancient", "void", "primal", "sacred"):
             display = by_key[key]
             section_placeholders = {**placeholders, **self._share_shard_placeholders(display, mythic)}
-            heading = self._share_section_heading(display, section_emojis)
+            icon = self._share_section_icon(display, section_emojis)
             condition = self._share_comment_condition(display, mythic, share_config)
             comment = self._select_share_comment(copy_rows, voice, condition, section_placeholders, random_enabled)
-            lines.append(f"`{heading}: {display.owned:,}`")
+            lines.append(f"{icon} `{display.label}: {display.owned:,}`".strip())
             if comment:
                 lines.append(f"-# {comment}")
         final = self._select_share_copy(copy_rows, voice, "final_line", "always", placeholders, random_enabled)
@@ -1502,7 +1502,7 @@ class ShardTracker(commands.Cog, ShardTrackerController):
         if final:
             embed.set_footer(text=final)
         else:
-            embed.set_footer(text=" ")
+            embed.set_footer(text="Status: counted like treasure, judged like gossip, guarded like rum.")
         return embed
 
 
@@ -1625,11 +1625,17 @@ class ShardTracker(commands.Cog, ShardTrackerController):
             return "mercy_started"
         return "always"
 
-    def _share_section_heading(self, display: ShardDisplay, shard_emojis: dict[str, object]) -> str:
+    def _share_section_icon(self, display: ShardDisplay, shard_emojis: dict[str, object]) -> str:
         emoji = str((shard_emojis or {}).get(display.key) or "").strip()
         if emoji:
-            return f"{emoji} {display.label}"
+            return emoji
         log.warning("shard share icon missing", extra={"shard_type": display.key})
+        return ""
+
+    def _share_section_heading(self, display: ShardDisplay, shard_emojis: dict[str, object]) -> str:
+        emoji = self._share_section_icon(display, shard_emojis)
+        if emoji:
+            return f"{emoji} {display.label}"
         return display.label
 
     def _build_clan_reminder_embed(
