@@ -760,3 +760,115 @@ def test_traditional_prep_modal_save_edits_original_panel(monkeypatch):
         assert panel.prep.epics_ascended == 4
 
     asyncio.run(_run())
+
+
+def _button_by_label(view, label: str):
+    for child in view.children:
+        if getattr(child, "label", None) == label:
+            return child
+    raise AssertionError(f"button {label!r} not found")
+
+
+def test_traditional_prep_back_edits_to_choice_panel():
+    async def _run() -> None:
+        member = _Member(role=None)
+        guild = _Guild(role=None, member=member)
+        interaction = _interaction(guild, member)
+        target = _fusion_row(opt_in_role_id=777, fusion_type="traditional")
+        events = [_event_row("e1")]
+        progress_by_event = {"e1": "in_progress"}
+        partial_by_event = {"e1": 2.0}
+        prep = fusion_sheets.FusionTraditionalUserProgressRow(fusion_id="f-1", user_id=str(member.id))
+        view = opt_in_view.TraditionalPrepPanelView(
+            user_id=member.id,
+            target=target,
+            events=events,
+            progress_by_event=progress_by_event,
+            partial_by_event=partial_by_event,
+            prep=prep,
+        )
+
+        assert [getattr(child, "label", None) for child in view.children] == ["Update Champion Prep", "Back"]
+
+        await _button_by_label(view, "Back").callback(interaction)
+
+        interaction.response.edit_message.assert_awaited_once()
+        interaction.response.send_message.assert_not_awaited()
+        interaction.followup.send.assert_not_awaited()
+        kwargs = interaction.response.edit_message.await_args.kwargs
+        assert isinstance(kwargs["view"], opt_in_view.TraditionalProgressChoiceView)
+        assert kwargs["view"].partial_by_event == partial_by_event
+        assert kwargs["embed"].title == "My Progress: Mavara"
+
+    asyncio.run(_run())
+
+
+def test_traditional_event_progress_has_back_and_back_edits_to_choice_panel():
+    async def _run() -> None:
+        member = _Member(role=None)
+        guild = _Guild(role=None, member=member)
+        interaction = _interaction(guild, member)
+        target = _fusion_row(opt_in_role_id=777, fusion_type="traditional")
+        events = [_event_row("e1")]
+        progress_by_event = {"e1": "in_progress"}
+        partial_by_event = {"e1": 2.0}
+        view = opt_in_view.FusionProgressPanelView(
+            user_id=member.id,
+            target=target,
+            events=events,
+            progress_by_event=progress_by_event,
+            partial_by_event=partial_by_event,
+            return_to_traditional_choice=True,
+        )
+
+        assert _button_by_label(view, "Back") is not None
+        await _button_by_label(view, "Back").callback(interaction)
+
+        interaction.response.edit_message.assert_awaited_once()
+        interaction.response.send_message.assert_not_awaited()
+        interaction.followup.send.assert_not_awaited()
+        kwargs = interaction.response.edit_message.await_args.kwargs
+        assert isinstance(kwargs["view"], opt_in_view.TraditionalProgressChoiceView)
+        assert kwargs["view"].partial_by_event == partial_by_event
+
+    asyncio.run(_run())
+
+
+
+def test_traditional_choice_event_progress_opens_back_enabled_panel():
+    async def _run() -> None:
+        member = _Member(role=None)
+        guild = _Guild(role=None, member=member)
+        interaction = _interaction(guild, member)
+        target = _fusion_row(opt_in_role_id=777, fusion_type="traditional")
+        partial_by_event = {"e1": 2.0}
+        view = opt_in_view.TraditionalProgressChoiceView(
+            user_id=member.id,
+            target=target,
+            events=[_event_row("e1")],
+            progress_by_event={"e1": "in_progress"},
+            partial_by_event=partial_by_event,
+        )
+
+        await _button_by_label(view, "Event/Tournament Progress").callback(interaction)
+
+        interaction.response.edit_message.assert_awaited_once()
+        kwargs = interaction.response.edit_message.await_args.kwargs
+        assert isinstance(kwargs["view"], opt_in_view.FusionProgressPanelView)
+        assert kwargs["view"].return_to_traditional_choice is True
+        assert kwargs["view"].partial_by_event == partial_by_event
+        assert _button_by_label(kwargs["view"], "Back") is not None
+
+    asyncio.run(_run())
+
+
+def test_non_traditional_event_progress_does_not_show_back():
+    target = _fusion_row(opt_in_role_id=777)
+    view = opt_in_view.FusionProgressPanelView(
+        user_id=42,
+        target=target,
+        events=[_event_row("e1")],
+        progress_by_event={},
+    )
+
+    assert all(getattr(child, "label", None) != "Back" for child in view.children)

@@ -30,6 +30,7 @@ _FUSION_PROGRESS_UPDATE_CUSTOM_ID = "fusion:progress:update"
 _FUSION_TRAD_CHOICE_EVENT_CUSTOM_ID = "fusion:traditional:choice:event"
 _FUSION_TRAD_CHOICE_PREP_CUSTOM_ID = "fusion:traditional:choice:prep"
 _FUSION_TRAD_PREP_UPDATE_CUSTOM_ID = "fusion:traditional:prep:update"
+_FUSION_TRAD_BACK_CUSTOM_ID = "fusion:traditional:back"
 
 _DISPLAY_STATUS_ORDER = ("done", "in_progress", "skipped", "missed", "not_started")
 _EVENT_DROPDOWN_STATUS_ORDER = ("not_started", "in_progress", "missed", "skipped", "done", "done_bonus")
@@ -753,6 +754,24 @@ class _FusionProgressPageButton(discord.ui.Button):
         await _edit_progress_message(interaction, view=view)
 
 
+class _FusionProgressBackButton(discord.ui.Button):
+    def __init__(self) -> None:
+        super().__init__(label="Back", style=discord.ButtonStyle.secondary, custom_id=_FUSION_TRAD_BACK_CUSTOM_ID, row=3)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, FusionProgressPanelView):
+            return
+        await _edit_traditional_progress_choice_message(
+            interaction,
+            user_id=view.user_id,
+            target=view.target,
+            events=view.events,
+            progress_by_event=view.progress_by_event,
+            partial_by_event=view.partial_by_event,
+        )
+
+
 class _FusionProgressShareButton(discord.ui.Button):
     def __init__(self) -> None:
         super().__init__(
@@ -865,6 +884,41 @@ class _FusionProgressModal(discord.ui.Modal, title="Log Partial Fragments"):
 
 
 
+def _build_traditional_progress_choice_embed(target: fusion_sheets.FusionRow) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"My Progress: {target.fusion_name}",
+        description="What do you want to track for this traditional fusion?",
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(name="Choices", value="Event/Tournament Progress\nChampion Preparation", inline=False)
+    return embed
+
+
+async def _edit_traditional_progress_choice_message(
+    interaction: discord.Interaction,
+    *,
+    user_id: int,
+    target: fusion_sheets.FusionRow,
+    events: Sequence[fusion_sheets.FusionEventRow],
+    progress_by_event: Mapping[str, str],
+    partial_by_event: Mapping[str, float],
+) -> None:
+    view = TraditionalProgressChoiceView(
+        user_id=user_id,
+        target=target,
+        events=events,
+        progress_by_event=dict(progress_by_event),
+        partial_by_event=dict(partial_by_event),
+    )
+    embed = _build_traditional_progress_choice_embed(target)
+    if interaction.response.is_done():
+        edit_original = getattr(interaction, "edit_original_response", None)
+        if callable(edit_original):
+            await edit_original(embed=embed, view=view)
+            return
+    await interaction.response.edit_message(embed=embed, view=view)
+
+
 class TraditionalProgressChoiceView(discord.ui.View):
     def __init__(self, *, user_id: int, target: fusion_sheets.FusionRow, events: Sequence[fusion_sheets.FusionEventRow], progress_by_event: dict[str, str], partial_by_event: dict[str, float]) -> None:
         super().__init__(timeout=None)
@@ -882,7 +936,14 @@ class TraditionalProgressChoiceView(discord.ui.View):
 
     @discord.ui.button(label="Event/Tournament Progress", style=discord.ButtonStyle.primary, custom_id=_FUSION_TRAD_CHOICE_EVENT_CUSTOM_ID)
     async def event_progress(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
-        view = FusionProgressPanelView(user_id=self.user_id, target=self.target, events=self.events, progress_by_event=self.progress_by_event, partial_by_event=self.partial_by_event)
+        view = FusionProgressPanelView(
+            user_id=self.user_id,
+            target=self.target,
+            events=self.events,
+            progress_by_event=self.progress_by_event,
+            partial_by_event=self.partial_by_event,
+            return_to_traditional_choice=True,
+        )
         await interaction.response.edit_message(embed=view.build_embed(), view=view)
 
     @discord.ui.button(label="Champion Preparation", style=discord.ButtonStyle.secondary, custom_id=_FUSION_TRAD_CHOICE_PREP_CUSTOM_ID)
@@ -894,19 +955,28 @@ class TraditionalProgressChoiceView(discord.ui.View):
             await fusion_logs.send_ops_alert(component="traditional_prep", summary="load_failed", dedupe_key=f"fusion:traditional_prep:load:{self.target.fusion_id}", error=exc, fields={"fusion_id": self.target.fusion_id})
             await _send_ephemeral(interaction, "Couldn’t load champion preparation right now. Ask an admin to check the traditional progress tab config.")
             return
-        view = TraditionalPrepPanelView(user_id=self.user_id, target=self.target, events=self.events, progress_by_event=self.progress_by_event, prep=prep)
+        view = TraditionalPrepPanelView(
+            user_id=self.user_id,
+            target=self.target,
+            events=self.events,
+            progress_by_event=self.progress_by_event,
+            partial_by_event=self.partial_by_event,
+            prep=prep,
+        )
         await interaction.response.edit_message(embed=view.build_embed(), view=view)
 
 
 class TraditionalPrepPanelView(discord.ui.View):
-    def __init__(self, *, user_id: int, target: fusion_sheets.FusionRow, events: Sequence[fusion_sheets.FusionEventRow], progress_by_event: Mapping[str, str], prep: fusion_sheets.FusionTraditionalUserProgressRow) -> None:
+    def __init__(self, *, user_id: int, target: fusion_sheets.FusionRow, events: Sequence[fusion_sheets.FusionEventRow], progress_by_event: Mapping[str, str], partial_by_event: Mapping[str, float] | None = None, prep: fusion_sheets.FusionTraditionalUserProgressRow) -> None:
         super().__init__(timeout=None)
         self.user_id = int(user_id)
         self.target = target
         self.events = list(events)
         self.progress_by_event = dict(progress_by_event)
+        self.partial_by_event = dict(partial_by_event or {})
         self.prep = prep
         self.add_item(_TraditionalPrepUpdateButton())
+        self.add_item(_TraditionalPrepBackButton())
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -916,6 +986,24 @@ class TraditionalPrepPanelView(discord.ui.View):
 
     def build_embed(self) -> discord.Embed:
         return _build_traditional_prep_embed(target=self.target, events=self.events, progress_by_event=self.progress_by_event, prep=self.prep)
+
+
+class _TraditionalPrepBackButton(discord.ui.Button):
+    def __init__(self) -> None:
+        super().__init__(label="Back", style=discord.ButtonStyle.secondary, custom_id=_FUSION_TRAD_BACK_CUSTOM_ID, row=2)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, TraditionalPrepPanelView):
+            return
+        await _edit_traditional_progress_choice_message(
+            interaction,
+            user_id=view.user_id,
+            target=view.target,
+            events=view.events,
+            progress_by_event=view.progress_by_event,
+            partial_by_event=view.partial_by_event,
+        )
 
 
 class _TraditionalPrepUpdateButton(discord.ui.Button):
@@ -996,6 +1084,7 @@ class FusionProgressPanelView(discord.ui.View):
         events: Sequence[fusion_sheets.FusionEventRow],
         progress_by_event: dict[str, str],
         partial_by_event: dict[str, float] | None = None,
+        return_to_traditional_choice: bool = False,
     ) -> None:
         super().__init__(timeout=None)
         self.user_id = int(user_id)
@@ -1005,6 +1094,7 @@ class FusionProgressPanelView(discord.ui.View):
         self.events_by_id = {event.event_id: event for event in self.events}
         self.progress_by_event = dict(progress_by_event)
         self.partial_by_event = dict(partial_by_event or {})
+        self.return_to_traditional_choice = bool(return_to_traditional_choice)
         self.event_page_index = 0
         self.selected_event_id = self.events[0].event_id if self.events else None
         self.last_update: tuple[str, str] | None = None
@@ -1071,6 +1161,8 @@ class FusionProgressPanelView(discord.ui.View):
             self.add_item(_FusionProgressPageButton(direction="previous", disabled=self.event_page_index <= 0))
             self.add_item(_FusionProgressPageButton(direction="next", disabled=self.event_page_index >= self.event_page_count - 1))
         self.add_item(_FusionProgressShareButton())
+        if self.return_to_traditional_choice:
+            self.add_item(_FusionProgressBackButton())
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -1222,12 +1314,7 @@ async def _handle_my_progress(interaction: discord.Interaction) -> None:
             progress_by_event=progress_by_event,
             partial_by_event=partial_by_event,
         )
-        embed = discord.Embed(
-            title=f"My Progress: {target.fusion_name}",
-            description="What do you want to track for this traditional fusion?",
-            color=discord.Color.blurple(),
-        )
-        embed.add_field(name="Choices", value="Event/Tournament Progress\nChampion Preparation", inline=False)
+        embed = _build_traditional_progress_choice_embed(target)
         if interaction.response.is_done():
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         else:
