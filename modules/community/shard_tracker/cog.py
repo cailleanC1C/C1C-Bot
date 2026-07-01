@@ -1485,29 +1485,24 @@ class ShardTracker(commands.Cog, ShardTrackerController):
         lines: list[str] = []
         intro = self._select_share_copy(copy_rows, voice, "intro", "always", placeholders, random_enabled)
         if intro:
-            lines.extend([intro, ""])
+            lines.append(intro)
         by_key = {display.key: display for display in displays}
         section_emojis = self._section_emojis()
-        for key in ("mystery", "ancient", "void", "sacred", "primal"):
+        for key in ("mystery", "ancient", "void", "primal", "sacred"):
             display = by_key[key]
             section_placeholders = {**placeholders, **self._share_shard_placeholders(display, mythic)}
             heading = self._share_section_heading(display, section_emojis)
-            stat_lines = [f"Owned: {display.owned:,}"]
             condition = self._share_comment_condition(display, mythic, share_config)
             comment = self._select_share_comment(copy_rows, voice, condition, section_placeholders, random_enabled)
-            lines.append(f"### **{heading}**")
-            lines.append("```text")
-            lines.extend(stat_lines)
-            lines.append("```")
+            lines.append(f"`{heading}: {display.owned:,}`")
             if comment:
                 lines.append(f"-# {comment}")
-            lines.append("")
         final = self._select_share_copy(copy_rows, voice, "final_line", "always", placeholders, random_enabled)
-        if final:
-            lines.append(final)
         embed = discord.Embed(title=f"Shard Stash Report — {member.display_name}", description="\n".join(lines).strip())
-        from .views import FOOTER_TEXT
-        embed.set_footer(text=FOOTER_TEXT)
+        if final:
+            embed.set_footer(text=final)
+        else:
+            embed.set_footer(text=" ")
         return embed
 
 
