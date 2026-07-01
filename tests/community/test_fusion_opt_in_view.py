@@ -658,6 +658,57 @@ def test_traditional_my_progress_opens_choice_view(monkeypatch):
     asyncio.run(_run())
 
 
+def test_traditional_my_progress_uses_followup_when_interaction_already_acknowledged(monkeypatch):
+    async def _run() -> None:
+        member = _Member(role=None)
+        guild = _Guild(role=None, member=member)
+        interaction = _interaction(guild, member)
+        interaction.response._is_done = True
+        events = [_event_row("e1")]
+        monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row(opt_in_role_id=777, fusion_type="traditional")))
+        monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=events))
+        monkeypatch.setattr(fusion_sheets, "get_user_event_progress", AsyncMock(return_value={"progress": {"e1": "done"}}))
+
+        await opt_in_view._handle_my_progress(interaction)
+
+        interaction.response.send_message.assert_not_awaited()
+        interaction.response.edit_message.assert_not_awaited()
+        interaction.response.defer.assert_not_awaited()
+        interaction.followup.send.assert_awaited_once()
+        sent_kwargs = interaction.followup.send.await_args.kwargs
+        assert sent_kwargs["ephemeral"] is True
+        assert isinstance(sent_kwargs["view"], opt_in_view.TraditionalProgressChoiceView)
+        assert "Event/Tournament Progress" in sent_kwargs["embed"].fields[0].value
+        assert "Champion Preparation" in sent_kwargs["embed"].fields[0].value
+
+    asyncio.run(_run())
+
+
+def test_non_traditional_my_progress_uses_followup_when_interaction_already_acknowledged(monkeypatch):
+    async def _run() -> None:
+        member = _Member(role=None)
+        guild = _Guild(role=None, member=member)
+        interaction = _interaction(guild, member)
+        interaction.response._is_done = True
+        events = [_event_row("e1")]
+        monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row(opt_in_role_id=777)))
+        monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=events))
+        monkeypatch.setattr(fusion_sheets, "get_user_event_progress", AsyncMock(return_value={"progress": {"e1": "in_progress"}}))
+
+        await opt_in_view._handle_my_progress(interaction)
+
+        interaction.response.send_message.assert_not_awaited()
+        interaction.response.edit_message.assert_not_awaited()
+        interaction.response.defer.assert_not_awaited()
+        interaction.followup.send.assert_awaited_once()
+        sent_kwargs = interaction.followup.send.await_args.kwargs
+        assert sent_kwargs["ephemeral"] is True
+        assert isinstance(sent_kwargs["view"], opt_in_view.FusionProgressPanelView)
+        assert sent_kwargs["view"].progress_by_event == {"e1": "in_progress"}
+
+    asyncio.run(_run())
+
+
 def test_traditional_prep_validation_blocks_impossible_counts():
     message = opt_in_view._validate_traditional_prep_counts(
         needed_total=16,
