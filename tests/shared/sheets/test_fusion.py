@@ -482,8 +482,8 @@ def test_get_user_traditional_progress_resolves_headers(monkeypatch: pytest.Monk
     async def _afetch_values(_sheet_id: str, tab_name: str):
         assert tab_name == "fusion_traditional_user_prog"
         return [
-            ["user_id", "fusion_id", "epics_ascended", "rares_level_40", "rares_ascended", "epics_fused", "epics_level_50", "updated_at_utc"],
-            ["42", "f-1", "3", "12", "8", "2", "2", "2026-07-01T00:00:00+00:00"],
+            ["user_id", "fusion_id", "epics_ascended", "rares_owned", "rares_level_40", "rares_ascended", "epics_fused", "epics_level_50", "target_ready", "updated_at_utc"],
+            ["42", "f-1", "3", "14", "12", "8", "2", "2", "yes", "2026-07-01T00:00:00+00:00"],
         ]
 
     monkeypatch.setattr(fusion, "_resolve_tab_name", lambda key: "fusion_traditional_user_prog")
@@ -492,11 +492,13 @@ def test_get_user_traditional_progress_resolves_headers(monkeypatch: pytest.Monk
 
     row = asyncio.run(fusion.get_user_traditional_progress("f-1", "42"))
 
+    assert row.rares_owned == 14
     assert row.rares_level_40 == 12
     assert row.rares_ascended == 8
     assert row.epics_fused == 2
     assert row.epics_level_50 == 2
     assert row.epics_ascended == 3
+    assert row.target_ready is True
 
 
 def test_upsert_user_traditional_progress_updates_existing_row_by_headers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -504,8 +506,8 @@ def test_upsert_user_traditional_progress_updates_existing_row_by_headers(monkey
 
     async def _afetch_values(_sheet_id: str, _tab_name: str):
         return [
-            ["user_id", "fusion_id", "epics_ascended", "rares_level_40", "rares_ascended", "epics_fused", "epics_level_50", "updated_at_utc"],
-            ["42", "f-1", "1", "4", "4", "1", "1", "old"],
+            ["user_id", "fusion_id", "epics_ascended", "rares_owned", "rares_level_40", "rares_ascended", "epics_fused", "epics_level_50", "target_ready", "updated_at_utc"],
+            ["42", "f-1", "1", "4", "4", "4", "1", "1", "FALSE", "old"],
         ]
 
     async def _acall_with_backoff(fn, *args, **kwargs):
@@ -518,12 +520,15 @@ def test_upsert_user_traditional_progress_updates_existing_row_by_headers(monkey
     monkeypatch.setattr(fusion, "acall_with_backoff", _acall_with_backoff)
 
     row = asyncio.run(fusion.upsert_user_traditional_progress(
-        "f-1", "42", rares_level_40=8, rares_ascended=8, epics_fused=2,
-        epics_level_50=2, epics_ascended=2, updated_at=dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc)
+        "f-1", "42", rares_owned=9, rares_level_40=8, rares_ascended=8, epics_fused=2,
+        epics_level_50=2, epics_ascended=4, target_ready=True, updated_at=dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc)
     ))
 
-    assert row.epics_ascended == 2
+    assert row.rares_owned == 9
+    assert row.epics_ascended == 4
+    assert row.target_ready is True
     updated_cells = [call.args[0] for call in worksheet.update.await_args_list]
-    assert "D2" in updated_cells
+    assert "E2" in updated_cells
     assert "C2" in updated_cells
+    assert "I2" in updated_cells
     worksheet.append_row.assert_not_awaited()

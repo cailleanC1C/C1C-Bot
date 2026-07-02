@@ -540,7 +540,7 @@ def test_share_mode_summary_posts_to_fusion_announcement_channel(monkeypatch):
         channel.send.assert_awaited_once()
         embed = channel.send.await_args.kwargs["embed"]
         assert embed.title == "Progress Share: Mavara"
-        summary_field = next(field for field in embed.fields if field.name == "Summary")
+        summary_field = next(field for field in embed.fields if field.name == "Event/Tournament Progress")
         assert "✅ Done: 1" in summary_field.value
 
     asyncio.run(_run())
@@ -773,7 +773,7 @@ def test_traditional_prep_modal_save_edits_original_panel(monkeypatch):
         target = _fusion_row(opt_in_role_id=777, fusion_type="traditional")
         events = [_event_row("e1", reward_type="rare", reward_amount=16)]
         progress_by_event = {"e1": "done"}
-        prep = fusion_sheets.FusionTraditionalUserProgressRow(fusion_id="f-1", user_id=str(member.id))
+        prep = fusion_sheets.FusionTraditionalUserProgressRow(fusion_id="f-1", user_id=str(member.id), rares_owned=16)
         panel = opt_in_view.TraditionalPrepPanelView(
             user_id=member.id,
             target=target,
@@ -794,11 +794,13 @@ def test_traditional_prep_modal_save_edits_original_panel(monkeypatch):
         saved = fusion_sheets.FusionTraditionalUserProgressRow(
             fusion_id="f-1",
             user_id=str(member.id),
+            rares_owned=16,
             rares_level_40=16,
             rares_ascended=16,
             epics_fused=4,
             epics_level_50=4,
             epics_ascended=4,
+            target_ready=True,
         )
         monkeypatch.setattr(fusion_sheets, "upsert_user_traditional_progress", AsyncMock(return_value=saved))
 
@@ -923,3 +925,44 @@ def test_non_traditional_event_progress_does_not_show_back():
     )
 
     assert all(getattr(child, "label", None) != "Back" for child in view.children)
+
+
+def test_traditional_overview_has_share_and_event_detail_does_not():
+    target = _fusion_row(opt_in_role_id=777, fusion_type="traditional")
+    events = [_event_row("e1")]
+    overview = opt_in_view.TraditionalProgressChoiceView(
+        user_id=42,
+        target=target,
+        events=events,
+        progress_by_event={"e1": "done"},
+        partial_by_event={},
+    )
+    assert _button_by_label(overview, "Share") is not None
+
+    detail = opt_in_view.FusionProgressPanelView(
+        user_id=42,
+        target=target,
+        events=events,
+        progress_by_event={"e1": "done"},
+        partial_by_event={},
+        return_to_traditional_choice=True,
+    )
+    assert all(getattr(child, "label", None) != "Share" for child in detail.children)
+    assert _button_by_label(detail, "Back") is not None
+
+
+def test_traditional_reopened_progress_merges_saved_rows_with_event_defaults():
+    events = [_event_row(f"e{i}", start_at_utc=dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc), end_at_utc=dt.datetime(2026, 8, 2, tzinfo=dt.timezone.utc)) for i in range(1, 17)]
+    raw_progress = {"progress": {"e1": "done", "e2": "done", "e3": "done", "e4": "in_progress", "stale": "done"}}
+
+    progress_by_event = opt_in_view._normalize_saved_progress(raw_progress=raw_progress, events=events)
+    embed = opt_in_view._build_progress_summary_embed(
+        target=_fusion_row(opt_in_role_id=777, fusion_type="traditional"),
+        events=events,
+        progress_by_event=progress_by_event,
+    )
+
+    summary = next(field.value for field in embed.fields if field.name == "Summary")
+    assert "✅ Done: 3" in summary
+    assert "🟡 In Progress: 1" in summary
+    assert "⬜ Not Started: 12" in summary

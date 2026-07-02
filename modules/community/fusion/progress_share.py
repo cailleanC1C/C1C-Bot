@@ -150,7 +150,8 @@ def _build_summary_block(*, snapshot: ProgressShareSnapshot, overall_progress_li
         f"🟡 In Progress: {snapshot.counts['in_progress']}\n"
         f"⏭️ Skipped: {snapshot.counts['skipped']}\n"
         f"⚠️ Missed: {snapshot.counts['missed']}\n"
-        f"⬜ Not Started: {snapshot.counts['not_started']}"
+        f"⬜ Not Started: {snapshot.counts['not_started']}\n"
+        f"{overall_progress_line}"
     )
 
 
@@ -175,6 +176,7 @@ def build_progress_share_embed(
     events: Sequence[fusion_sheets.FusionEventRow],
     progress_by_event: Mapping[str, str],
     partial_by_event: Mapping[str, float] | None = None,
+    traditional_prep: fusion_sheets.FusionTraditionalUserProgressRow | None = None,
     user_display_name: str,
     mode: ShareMode,
 ) -> discord.Embed:
@@ -191,15 +193,46 @@ def build_progress_share_embed(
     )
     embed.add_field(name="User", value=user_display_name, inline=False)
     embed.add_field(
-        name="Summary",
+        name="Event/Tournament Progress",
         value=_build_summary_block(snapshot=snapshot, overall_progress_line=overall_progress_line),
         inline=False,
     )
-    embed.add_field(
-        name="\u200b",
-        value=_build_strategic_progress_block(target=target, snapshot=snapshot),
-        inline=False,
-    )
+    if traditional_prep is None:
+        embed.add_field(
+            name="\u200b",
+            value=_build_strategic_progress_block(target=target, snapshot=snapshot),
+            inline=False,
+        )
+
+    if traditional_prep is not None:
+        needed_total = max(0, int(target.needed))
+        rares_acquired = max(0, int(traditional_prep.rares_owned))
+        rares_skipped = min(max(0, int(snapshot.skipped_reward_total)), needed_total)
+        rares_to_go = max(0, needed_total - rares_acquired)
+        embed.add_field(
+            name="Rare Progress",
+            value=(
+                f"{needed_total} / {max(0, int(target.available))} needed\n"
+                f"{rares_acquired} acquired\n"
+                f"{rares_skipped} skipped\n"
+                f"{rares_to_go} to go"
+            ),
+            inline=False,
+        )
+        target_ready = traditional_prep.target_ready
+        embed.add_field(
+            name="Champion Preparation",
+            value=(
+                f"Rares owned: {rares_acquired}\n"
+                f"Rares level 40: {traditional_prep.rares_level_40}\n"
+                f"Rares ascended: {traditional_prep.rares_ascended}\n"
+                f"Epics fused: {traditional_prep.epics_fused}\n"
+                f"Epics level 50: {traditional_prep.epics_level_50}\n"
+                f"Epics ascended: {traditional_prep.epics_ascended}\n"
+                f"Target ready: {'Yes' if target_ready else 'No'}"
+            ),
+            inline=False,
+        )
 
     if mode == "detailed":
         sorted_events = sorted(events, key=lambda row: (row.sort_order, row.start_at_utc, row.event_id))

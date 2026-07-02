@@ -127,16 +127,15 @@ def _build_traditional_prep_embed(
     prep: fusion_sheets.FusionTraditionalUserProgressRow,
 ) -> discord.Embed:
     needed_total = max(0, int(target.needed))
-    rares_acquired = _traditional_rares_acquired(target=target, events=events, progress_by_event=progress_by_event)
-    rares_still_needed = max(0, needed_total - rares_acquired)
-    ready = prep.epics_ascended >= 4
-    missing = "Nothing, the target champion is ready to fuse." if ready else f"{4 - prep.epics_ascended} fully ascended Epics"
+    rares_still_needed = max(0, needed_total - prep.rares_owned)
+    ready = prep.target_ready
+    missing = "Nothing, the target champion is ready to fuse." if ready else f"{max(0, 4 - prep.epics_ascended)} fully ascended Epics"
     embed = discord.Embed(
         title=f"Champion Preparation: {target.champion or target.fusion_name}",
         description="Traditional fusion prep tracker.",
         color=discord.Color.blurple(),
     )
-    embed.add_field(name="Event Rewards", value=f"Rares acquired: {rares_acquired} / {needed_total}\nRares still needed: {rares_still_needed}", inline=False)
+    embed.add_field(name="Rare Progress", value=f"Rares owned: {prep.rares_owned} / {needed_total}\nRares still needed: {rares_still_needed}", inline=False)
     embed.add_field(name="Rare Prep", value=f"Rares level 40: {prep.rares_level_40} / {needed_total}\nRares fully ascended: {prep.rares_ascended} / {needed_total}", inline=False)
     embed.add_field(name="Epic Prep", value=f"Epics fused: {prep.epics_fused} / 4\nEpics level 50: {prep.epics_level_50} / 4\nEpics fully ascended: {prep.epics_ascended} / 4", inline=False)
     embed.add_field(name="Final Fusion", value=f"Ready to fuse {target.champion or target.fusion_name}: {'Yes' if ready else 'No'}\nMissing: {missing}", inline=False)
@@ -621,6 +620,7 @@ class FusionProgressShareModeView(discord.ui.View):
         events: Sequence[fusion_sheets.FusionEventRow],
         progress_by_event: Mapping[str, str],
         partial_by_event: Mapping[str, float] | None = None,
+        traditional_prep: fusion_sheets.FusionTraditionalUserProgressRow | None = None,
     ) -> None:
         super().__init__(timeout=None)
         self.user_id = int(user_id)
@@ -628,6 +628,7 @@ class FusionProgressShareModeView(discord.ui.View):
         self.events = list(events)
         self.progress_by_event = dict(progress_by_event)
         self.partial_by_event = dict(partial_by_event or {})
+        self.traditional_prep = traditional_prep
 
     async def _handle_share(self, interaction: discord.Interaction, *, mode: Literal["summary", "detailed"]) -> None:
         if interaction.user.id != self.user_id:
@@ -642,11 +643,22 @@ class FusionProgressShareModeView(discord.ui.View):
             await _send_ephemeral(interaction, "Couldn’t find the fusion share channel right now.")
             return
 
+        traditional_prep = self.traditional_prep
+        if _is_traditional_fusion(self.target) and traditional_prep is None:
+            try:
+                traditional_prep = await fusion_sheets.get_user_traditional_progress(self.target.fusion_id, str(self.user_id))
+            except Exception as exc:
+                log.exception("fusion traditional prep failed to load for share", extra={"fusion_id": self.target.fusion_id, "user_id": self.user_id})
+                await fusion_logs.send_ops_alert(component="traditional_prep", summary="share_load_failed", dedupe_key=f"fusion:traditional_prep:share:{self.target.fusion_id}", error=exc, fields={"fusion_id": self.target.fusion_id})
+                await _send_ephemeral(interaction, "Couldn’t load champion preparation for sharing right now.")
+                return
+
         share_embed = build_progress_share_embed(
             target=self.target,
             events=self.events,
             progress_by_event=self.progress_by_event,
             partial_by_event=self.partial_by_event,
+            traditional_prep=traditional_prep,
             user_display_name=interaction.user.display_name,
             mode=mode,
         )
@@ -796,7 +808,7 @@ class _FusionProgressShareButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view = self.view
-        if not isinstance(view, FusionProgressPanelView):
+        if not isinstance(view, (FusionProgressPanelView, TraditionalProgressChoiceView)):
             return
         share_view = FusionProgressShareModeView(
             user_id=view.user_id,
@@ -940,6 +952,7 @@ class TraditionalProgressChoiceView(discord.ui.View):
         self.events = list(events)
         self.progress_by_event = dict(progress_by_event)
         self.partial_by_event = dict(partial_by_event)
+        self.add_item(_FusionProgressShareButton())
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -1052,13 +1065,13 @@ class _TraditionalPrepModal(discord.ui.Modal, title="Champion Preparation"):
             await _send_ephemeral(interaction, "Champion preparation counts must be whole numbers.")
             return
         needed_total = max(0, int(self.panel_view.target.needed))
-        rares_acquired = _traditional_rares_acquired(target=self.panel_view.target, events=self.panel_view.events, progress_by_event=self.panel_view.progress_by_event)
+        rares_acquired = self.panel_view.prep.rares_owned
         error = _validate_traditional_prep_counts(needed_total=needed_total, rares_acquired=rares_acquired, rares_level_40=values[0], rares_ascended=values[1], epics_fused=values[2], epics_level_50=values[3], epics_ascended=values[4])
         if error:
             await _send_ephemeral(interaction, error)
             return
         try:
-            prep = await fusion_sheets.upsert_user_traditional_progress(self.panel_view.target.fusion_id, str(self.panel_view.user_id), rares_level_40=values[0], rares_ascended=values[1], epics_fused=values[2], epics_level_50=values[3], epics_ascended=values[4], updated_at=dt.datetime.now(dt.timezone.utc))
+            prep = await fusion_sheets.upsert_user_traditional_progress(self.panel_view.target.fusion_id, str(self.panel_view.user_id), rares_owned=self.panel_view.prep.rares_owned, rares_level_40=values[0], rares_ascended=values[1], epics_fused=values[2], epics_level_50=values[3], epics_ascended=values[4], target_ready=self.panel_view.prep.target_ready, updated_at=dt.datetime.now(dt.timezone.utc))
         except Exception as exc:
             log.exception("fusion traditional prep save failed", extra={"fusion_id": self.panel_view.target.fusion_id, "user_id": self.panel_view.user_id})
             await fusion_logs.send_ops_alert(component="traditional_prep", summary="save_failed", dedupe_key=f"fusion:traditional_prep:save:{self.panel_view.target.fusion_id}", error=exc, fields={"fusion_id": self.panel_view.target.fusion_id})
@@ -1173,7 +1186,8 @@ class FusionProgressPanelView(discord.ui.View):
         if self.event_page_count > 1:
             self.add_item(_FusionProgressPageButton(direction="previous", disabled=self.event_page_index <= 0))
             self.add_item(_FusionProgressPageButton(direction="next", disabled=self.event_page_index >= self.event_page_count - 1))
-        self.add_item(_FusionProgressShareButton())
+        if not self.return_to_traditional_choice:
+            self.add_item(_FusionProgressShareButton())
         if self.return_to_traditional_choice:
             self.add_item(_FusionProgressBackButton())
 

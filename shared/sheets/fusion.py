@@ -46,11 +46,13 @@ _FUSION_REMINDER_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
 _FUSION_TRADITIONAL_PROGRESS_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "fusion_id": ("fusion_id",),
     "user_id": ("user_id",),
+    "rares_owned": ("rares_owned",),
     "rares_level_40": ("rares_level_40",),
     "rares_ascended": ("rares_ascended",),
     "epics_fused": ("epics_fused",),
     "epics_level_50": ("epics_level_50",),
     "epics_ascended": ("epics_ascended",),
+    "target_ready": ("target_ready",),
     "updated_at_utc": ("updated_at_utc", "updated at utc", "updatedat", "updated_at"),
 }
 _FUSION_PROGRESS_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
@@ -117,11 +119,13 @@ class FusionEventRow:
 class FusionTraditionalUserProgressRow:
     fusion_id: str
     user_id: str
+    rares_owned: int = 0
     rares_level_40: int = 0
     rares_ascended: int = 0
     epics_fused: int = 0
     epics_level_50: int = 0
     epics_ascended: int = 0
+    target_ready: bool = False
     updated_at: dt.datetime | None = None
 
 
@@ -429,11 +433,13 @@ def _resolve_traditional_progress_header_indices(*, tab_name: str, header: list[
     required_fields = [
         "fusion_id",
         "user_id",
+        "rares_owned",
         "rares_level_40",
         "rares_ascended",
         "epics_fused",
         "epics_level_50",
         "epics_ascended",
+        "target_ready",
         "updated_at_utc",
     ]
     return {
@@ -1636,11 +1642,13 @@ async def get_user_traditional_progress(fusion_id: str, user_id: str) -> FusionT
         return FusionTraditionalUserProgressRow(
             fusion_id=target_fusion,
             user_id=target_user,
+            rares_owned=max(0, _parse_int(row[index_by_field["rares_owned"]] if index_by_field["rares_owned"] < len(row) else "")),
             rares_level_40=max(0, _parse_int(row[index_by_field["rares_level_40"]] if index_by_field["rares_level_40"] < len(row) else "")),
             rares_ascended=max(0, _parse_int(row[index_by_field["rares_ascended"]] if index_by_field["rares_ascended"] < len(row) else "")),
             epics_fused=max(0, _parse_int(row[index_by_field["epics_fused"]] if index_by_field["epics_fused"] < len(row) else "")),
             epics_level_50=max(0, _parse_int(row[index_by_field["epics_level_50"]] if index_by_field["epics_level_50"] < len(row) else "")),
             epics_ascended=max(0, _parse_int(row[index_by_field["epics_ascended"]] if index_by_field["epics_ascended"] < len(row) else "")),
+            target_ready=_parse_bool(row[index_by_field["target_ready"]] if index_by_field["target_ready"] < len(row) else ""),
             updated_at=_parse_iso_utc_optional(row[index_by_field["updated_at_utc"]] if index_by_field["updated_at_utc"] < len(row) else ""),
         )
     return FusionTraditionalUserProgressRow(fusion_id=target_fusion, user_id=target_user)
@@ -1650,11 +1658,13 @@ async def upsert_user_traditional_progress(
     fusion_id: str,
     user_id: str,
     *,
+    rares_owned: int,
     rares_level_40: int,
     rares_ascended: int,
     epics_fused: int,
     epics_level_50: int,
     epics_ascended: int,
+    target_ready: bool,
     updated_at: dt.datetime,
 ) -> FusionTraditionalUserProgressRow:
     """Create or update champion-prep progress for one traditional fusion/user tuple."""
@@ -1674,11 +1684,13 @@ async def upsert_user_traditional_progress(
     updates = {
         "fusion_id": target_fusion,
         "user_id": target_user,
+        "rares_owned": str(max(0, int(rares_owned))),
         "rares_level_40": str(max(0, int(rares_level_40))),
         "rares_ascended": str(max(0, int(rares_ascended))),
         "epics_fused": str(max(0, int(epics_fused))),
         "epics_level_50": str(max(0, int(epics_level_50))),
         "epics_ascended": str(max(0, int(epics_ascended))),
+        "target_ready": "TRUE" if bool(target_ready) else "FALSE",
         "updated_at_utc": timestamp,
     }
     fusion_idx = index_by_field["fusion_id"]
@@ -1706,9 +1718,10 @@ async def upsert_user_traditional_progress(
             )
     return FusionTraditionalUserProgressRow(
         fusion_id=target_fusion, user_id=target_user,
+        rares_owned=int(updates["rares_owned"]),
         rares_level_40=int(updates["rares_level_40"]), rares_ascended=int(updates["rares_ascended"]),
         epics_fused=int(updates["epics_fused"]), epics_level_50=int(updates["epics_level_50"]),
-        epics_ascended=int(updates["epics_ascended"]), updated_at=updated_at.astimezone(dt.timezone.utc),
+        epics_ascended=int(updates["epics_ascended"]), target_ready=updates["target_ready"] == "TRUE", updated_at=updated_at.astimezone(dt.timezone.utc),
     )
 
 async def get_ended_fusions(now: dt.datetime | None = None) -> list[FusionRow]:
