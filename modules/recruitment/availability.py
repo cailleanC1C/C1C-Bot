@@ -73,6 +73,7 @@ class ManualOpenSpotAdjustmentPlan:
     open_range: str
     seen_range: str
     combined_range: str | None
+    resolved_clan_tag: str
 
 
 def _mask_sheet_id(sheet_id: str | None) -> str:
@@ -449,6 +450,12 @@ async def preflight_manual_open_spots_adjustment(
     new_value = max(base_available + delta, 0)
     open_range = plan.write_ranges["open_spots"]
     seen_range = plan.write_ranges["manual_open_spots_seen"]
+    tag_index = header_map.get("clan_tag")
+    resolved_clan_tag = clan_tag
+    if tag_index is not None and tag_index < len(row):
+        candidate = str(row[tag_index]).strip()
+        if candidate:
+            resolved_clan_tag = candidate
     combined_range = None
     if abs(open_index - seen_index) == 1:
         combined_range = (
@@ -475,6 +482,7 @@ async def preflight_manual_open_spots_adjustment(
         open_range=open_range,
         seen_range=seen_range,
         combined_range=combined_range,
+        resolved_clan_tag=resolved_clan_tag,
     )
 
 
@@ -497,14 +505,7 @@ async def set_manual_open_spots(clan_tag: str, open_spots: int) -> tuple[int, in
     delta = open_spots - plan.new_value
     new_value = await adjust_manual_open_spots(clan_tag, delta)
 
-    tag_index = plan.headers.header_map.get("clan_tag")
-    resolved_tag = clan_tag
-    if tag_index is not None and tag_index < len(plan.row):
-        candidate = str(plan.row[tag_index]).strip()
-        if candidate:
-            resolved_tag = candidate
-
-    return old_value, new_value, resolved_tag
+    return old_value, new_value, plan.resolved_clan_tag
 
 
 async def adjust_manual_open_spots(clan_tag: str, delta: int) -> int:
