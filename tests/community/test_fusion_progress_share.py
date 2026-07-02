@@ -35,8 +35,8 @@ def _event_row(event_id: str, event_name: str) -> fusion_sheets.FusionEventRow:
         event_name=event_name,
         event_type="dungeon",
         category="Tournaments",
-        start_at_utc=dt.datetime(2026, 4, 28, tzinfo=dt.timezone.utc),
-        end_at_utc=dt.datetime(2026, 4, 29, tzinfo=dt.timezone.utc),
+        start_at_utc=dt.datetime(2026, 8, 28, tzinfo=dt.timezone.utc),
+        end_at_utc=dt.datetime(2026, 8, 29, tzinfo=dt.timezone.utc),
         reward_amount=5.0,
         bonus=None,
         reward_type="fragments",
@@ -55,7 +55,7 @@ def test_build_progress_share_embed_summary_mode_has_generic_summary_block():
         mode="summary",
     )
 
-    summary_field = next(field for field in embed.fields if field.name == "Summary")
+    summary_field = next(field for field in embed.fields if field.name == "Event/Tournament Progress")
     assert "✅ Done: 1" in summary_field.value
     assert "Progress: 5 / 450 fragments" in summary_field.value
     strategic_field = next(field for field in embed.fields if field.name == "\u200b")
@@ -88,7 +88,46 @@ def test_build_progress_share_embed_uses_dynamic_reward_unit():
         mode="summary",
     )
 
-    summary_field = next(field for field in embed.fields if field.name == "Summary")
+    summary_field = next(field for field in embed.fields if field.name == "Event/Tournament Progress")
     strategic_field = next(field for field in embed.fields if field.name == "\u200b")
     assert "Progress: 25 / 1750 points" in summary_field.value
     assert "**Points Progress**" in strategic_field.value
+
+
+def test_traditional_progress_share_includes_event_and_champion_prep():
+    prep = fusion_sheets.FusionTraditionalUserProgressRow(
+        fusion_id="f-1",
+        user_id="42",
+        rares_owned=7,
+        rares_level_40=3,
+        rares_ascended=2,
+        epics_fused=1,
+        epics_level_50=1,
+        epics_ascended=0,
+        target_ready=True,
+    )
+    events = [_event_row(f"e{i}", f"Event {i}") for i in range(1, 17)]
+    progress = {"e1": "done", "e2": "done", "e3": "done", "e4": "in_progress"}
+
+    embed = progress_share.build_progress_share_embed(
+        target=_fusion_row(),
+        events=events,
+        progress_by_event=progress,
+        traditional_prep=prep,
+        user_display_name="Tester",
+        mode="detailed",
+    )
+
+    event_field = next(field for field in embed.fields if field.name == "Event/Tournament Progress")
+    assert "✅ Done: 3" in event_field.value
+    assert "🟡 In Progress: 1" in event_field.value
+    assert "⬜ Not Started: 12" in event_field.value
+    rare_field = next(field for field in embed.fields if field.name == "Rare Progress")
+    assert "7 acquired" in rare_field.value
+    assert not any(field.name == "\u200b" for field in embed.fields)
+    prep_field = next(field for field in embed.fields if field.name == "Champion Preparation")
+    assert "Rares level 40: 3" in prep_field.value
+    assert "Epics ascended: 0" in prep_field.value
+    assert "Rares owned: 7" in prep_field.value
+    assert "Target ready: Yes" in prep_field.value
+    assert any(field.name == "Event Breakdown" for field in embed.fields)
