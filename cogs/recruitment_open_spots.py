@@ -16,6 +16,9 @@ from modules.recruitment import availability
 log = logging.getLogger(__name__)
 
 USAGE = "!setopenspots <clan_tag_or_name> <open_spots> <reason>"
+CONFIG_FAILURE_MESSAGE = "The correction could not be applied because recruitment sheet configuration is incomplete or invalid."
+CLAN_NOT_FOUND_MESSAGE = "The clan could not be found."
+WRITE_FAILURE_MESSAGE = "The correction could not be applied because the sheet update failed. Please try again or contact an admin."
 
 
 def _display_name(author: object) -> str:
@@ -31,6 +34,27 @@ def _parse_whole_number(value: str | None) -> Optional[int]:
         return None
     parsed = int(str(value).strip())
     return parsed if parsed >= 0 else None
+
+
+def _is_clan_not_found_error(exc: ValueError) -> bool:
+    message = str(exc).lower()
+    return "unknown clan" in message or "row_not_found" in message
+
+
+def _is_ambiguous_clan_error(exc: ValueError) -> bool:
+    message = str(exc).lower()
+    return "ambiguous" in message or "multiple clans" in message
+
+
+def _is_config_or_preflight_error(exc: ValueError) -> bool:
+    message = str(exc).lower()
+    config_markers = (
+        "missing required config key",
+        "configured bot_info header not found",
+        "worksheet not accessible",
+        "non_numeric_",
+    )
+    return any(marker in message for marker in config_markers)
 
 
 class RecruitmentOpenSpotsCog(commands.Cog):
@@ -87,51 +111,65 @@ class RecruitmentOpenSpotsCog(commands.Cog):
                 await availability.set_manual_open_spots(clan_tag_or_name, new_value)
             )
         except ValueError as exc:
-            message = str(exc).lower()
-            if "ambiguous" in message or "multiple clans" in message:
+            if _is_ambiguous_clan_error(exc):
                 await ctx.reply(
                     "That clan input matches multiple clans; please use the clan tag.",
                     mention_author=False,
                 )
                 return
-            if "unknown clan" in message or "row_not_found" in message:
-                await ctx.reply("The clan could not be found.", mention_author=False)
+            if _is_clan_not_found_error(exc):
+                await ctx.reply(CLAN_NOT_FOUND_MESSAGE, mention_author=False)
                 return
-            log.exception("setopenspots configuration/header resolution failed")
+            if _is_config_or_preflight_error(exc):
+                log.error(
+                    "setopenspots configuration/header resolution failed",
+                    exc_info=True,
+                )
+                await runtime_helpers.send_log_message(
+                    f"⚠️ Open spots correction failed: recruitment sheet configuration invalid for {clan_tag_or_name}."
+                )
+                await ctx.reply(CONFIG_FAILURE_MESSAGE, mention_author=False)
+                return
+            log.error("setopenspots sheet update failed", exc_info=True)
             await runtime_helpers.send_log_message(
-                f"⚠️ Open spots correction failed: recruitment sheet configuration invalid for {clan_tag_or_name}."
+                f"⚠️ Open spots correction sheet write failed for {clan_tag_or_name}."
             )
-            await ctx.reply(
-                "The correction could not be applied because recruitment sheet configuration is incomplete or invalid.",
-                mention_author=False,
-            )
+            await ctx.reply(WRITE_FAILURE_MESSAGE, mention_author=False)
             return
         except Exception:
-            log.exception("setopenspots sheet update failed")
+            log.error("setopenspots sheet update failed", exc_info=True)
             await runtime_helpers.send_log_message(
-                f"⚠️ Open spots correction failed: recruitment sheet configuration invalid for {clan_tag_or_name}."
+                f"⚠️ Open spots correction sheet write failed for {clan_tag_or_name}."
             )
-            await ctx.reply(
-                "The correction could not be applied because recruitment sheet configuration is incomplete or invalid.",
-                mention_author=False,
-            )
+            await ctx.reply(WRITE_FAILURE_MESSAGE, mention_author=False)
             return
 
         actor = _display_name(ctx.author)
         actor_id = getattr(ctx.author, "id", None)
-        await ctx.reply(
+        reason_text = reason.strip()
+        success_message = (
             "**Open spots corrected**\n\n"
             f"Clan: {resolved_clan}\n"
             f"Open spots: {old_value} → {corrected_value}\n"
-            f"Reason: {reason.strip()}\n"
-            f"Updated by: {actor}",
-            mention_author=False,
+            f"Reason: {reason_text}\n"
+            f"Updated by: {actor}"
         )
         id_suffix = f" ({actor_id})" if actor_id is not None else ""
-        await runtime_helpers.send_log_message(
+        audit_message = (
             f"🛠️ Open spots corrected: {resolved_clan} {old_value} → {corrected_value} by {actor}{id_suffix}\n"
-            f"Reason: {reason.strip()}"
+            f"Reason: {reason_text}"
         )
+        try:
+            await ctx.reply(success_message, mention_author=False)
+        except Exception:
+            log.error(
+                "setopenspots success reply failed after sheet update", exc_info=True
+            )
+            await runtime_helpers.send_log_message(
+                f"⚠️ Open spots correction succeeded for {resolved_clan}, but the Discord success reply failed."
+            )
+            return
+        await runtime_helpers.send_log_message(audit_message)
 
 
 async def setup(bot: commands.Bot) -> None:

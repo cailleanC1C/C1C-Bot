@@ -215,6 +215,7 @@ def test_set_manual_open_spots_uses_existing_adjustment_writes_only(monkeypatch)
         seen_range = "CustomSeen12"
         combined_range = None
         headers = Headers()
+        resolved_clan_tag = "C1CC"
 
         def __init__(self, delta=0):
             self.delta = delta
@@ -296,6 +297,7 @@ def test_existing_adjustment_flow_still_decrements_after_manual_correction(monke
         seen_range = "Seen12"
         combined_range = None
         headers = Headers()
+        resolved_clan_tag = "C1CC"
 
         def __init__(self, delta=0):
             self.delta = delta
@@ -351,3 +353,72 @@ def test_existing_adjustment_flow_still_decrements_after_manual_correction(monke
     assert state["row"][2] == "5"
     assert state["row"][5] == "3"
     assert state["row"][7] == "5"
+
+
+def test_sheet_write_failure_uses_write_message_and_logs_exc_info(monkeypatch, caplog):
+    ctx = FakeContext()
+    logs = []
+    monkeypatch.setattr(command_module, "is_staff_member", lambda _ctx: True)
+    monkeypatch.setattr(command_module, "is_admin_member", lambda _ctx: False)
+
+    async def fake_set(_clan, _value):
+        raise RuntimeError("worksheet update exploded")
+
+    async def fake_log(message):
+        logs.append(message)
+
+    monkeypatch.setattr(command_module.availability, "set_manual_open_spots", fake_set)
+    monkeypatch.setattr(command_module.runtime_helpers, "send_log_message", fake_log)
+
+    cog = RecruitmentOpenSpotsCog(bot=None)
+    with caplog.at_level("ERROR", logger=command_module.log.name):
+        _run(cog.setopenspots.callback(cog, ctx, "C1CC", "4", reason="reason"))
+
+    assert "sheet update failed" in ctx.replies[0][0]
+    assert logs and "sheet write failed" in logs[0]
+    record = next(
+        rec
+        for rec in caplog.records
+        if rec.getMessage() == "setopenspots sheet update failed"
+    )
+    assert record.exc_info is not None
+
+
+def test_success_reply_failure_does_not_report_config_failure(monkeypatch, caplog):
+    class ReplyFailingContext(FakeContext):
+        async def reply(self, content=None, **kwargs):
+            raise RuntimeError("discord reply failed")
+
+    ctx = ReplyFailingContext()
+    logs = []
+    writes = []
+    monkeypatch.setattr(command_module, "is_staff_member", lambda _ctx: True)
+    monkeypatch.setattr(command_module, "is_admin_member", lambda _ctx: False)
+
+    async def fake_set(clan, value):
+        writes.append((clan, value))
+        return 3, value, "C1CC"
+
+    async def fake_log(message):
+        logs.append(message)
+
+    monkeypatch.setattr(command_module.availability, "set_manual_open_spots", fake_set)
+    monkeypatch.setattr(command_module.runtime_helpers, "send_log_message", fake_log)
+
+    cog = RecruitmentOpenSpotsCog(bot=None)
+    with caplog.at_level("ERROR", logger=command_module.log.name):
+        _run(cog.setopenspots.callback(cog, ctx, "C1CC", "4", reason="reason"))
+
+    assert writes == [("C1CC", 4)]
+    assert logs and "succeeded" in logs[0]
+    assert "configuration invalid" not in logs[0]
+    assert not any(
+        "configuration/header resolution failed" in rec.getMessage()
+        for rec in caplog.records
+    )
+    record = next(
+        rec
+        for rec in caplog.records
+        if rec.getMessage() == "setopenspots success reply failed after sheet update"
+    )
+    assert record.exc_info is not None
