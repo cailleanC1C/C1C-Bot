@@ -43,6 +43,7 @@ _APPROVAL_HEADERS = (
     "last_error",
 )
 _APPROVAL_ACTIVE_STATUSES = {"pending"}
+_APPROVAL_DUPLICATE_PROMPT_STATUSES = {"pending", "posting", "approved", "posted"}
 _APPROVAL_EMOJIS = {"👍", "👍🏻", "👍🏽", "👍🏿", "👍🏾"}
 
 
@@ -253,14 +254,16 @@ class LeaguesCog(commands.Cog):
             },
         )
         try:
+            log.info("league board publish started", extra={"trigger": "reaction_approval", "message_id": payload.message_id})
             ok = await self.run_leagues_job(trigger="reaction_approval", status_channel=channel)
         except Exception as exc:
             ok = False
             error = f"{type(exc).__name__}: {exc}"
-            log.exception("league approval posting failed")
+            log.exception("league board publish failed", extra={"reason": error})
         else:
             error = "" if ok else "posting job returned failure"
 
+        posted_at = ""
         async with self._approval_lock:
             fresh = await self._find_approval_row(payload.channel_id, payload.message_id, include_terminal=True)
             if fresh is not None:
@@ -275,7 +278,7 @@ class LeaguesCog(commands.Cog):
                     },
                 )
         log.info(
-            "league approval posting finished",
+            "league board publish succeeded" if ok else "league board publish failed",
             extra={"success": ok, "posted_at_utc": posted_at if ok else "", "last_error": error},
         )
 
@@ -333,9 +336,10 @@ class LeaguesCog(commands.Cog):
                     key = str(cell or "").strip()
                 if normalized in {"sheet_name", "sheet", "tab", "value", "val"}:
                     value = str(cell or "").strip()
-            if key == _APPROVAL_CONFIG_KEY and value:
+            if key.strip().lower() == _APPROVAL_CONFIG_KEY and value:
+                log.info("league approval state tab config found", extra={"config_key": _APPROVAL_CONFIG_KEY, "sheet": "LEAGUES_SHEET_ID"})
                 return value
-        log.error("league approval state tab config missing", extra={"config_key": _APPROVAL_CONFIG_KEY})
+        log.error("league approval state tab config missing", extra={"config_key": _APPROVAL_CONFIG_KEY, "sheet": "LEAGUES_SHEET_ID", "config_tab": self._config_tab_name()})
         return None
 
     async def _approval_sheet(self) -> tuple[str, Any, dict[str, int], list[list[Any]]] | None:
@@ -378,6 +382,51 @@ class LeaguesCog(commands.Cog):
                 continue
             status = values.get("status", "").lower()
             if include_terminal or status in _APPROVAL_ACTIVE_STATUSES:
+                log.info("league approval state row matched", extra={"channel_id": channel_id, "message_id": message_id, "status": status, "row_number": row_number})
+                return {"tab": tab_name, "worksheet": worksheet, "header_map": header_map, "row_number": row_number, "values": values}
+        log.info("league approval state row not matched", extra={"channel_id": channel_id, "message_id": message_id})
+        return None
+
+
+    @staticmethod
+    def _approval_row_log_extra(row: dict[str, Any], *, reason: str) -> dict[str, object]:
+        values = row.get("values", {})
+        return {
+            "reason": reason,
+            "season_key": values.get("season_key", ""),
+            "week_key": values.get("week_key", ""),
+            "status": values.get("status", ""),
+            "prompt_message_id": values.get("prompt_message_id", ""),
+            "prompt_channel_id": values.get("prompt_channel_id", ""),
+            "last_error": values.get("last_error", ""),
+        }
+
+    async def _approval_prompt_message_exists(self, row: dict[str, Any]) -> bool | None:
+        values = row.get("values", {})
+        try:
+            channel_id = int(str(values.get("prompt_channel_id", "")).strip())
+            message_id = int(str(values.get("prompt_message_id", "")).strip())
+        except (TypeError, ValueError):
+            return None
+        channel = await self._resolve_channel(channel_id)
+        if channel is None or not hasattr(channel, "fetch_message"):
+            return None
+        try:
+            await channel.fetch_message(message_id)  # type: ignore[attr-defined]
+        except discord.NotFound:
+            return False
+        except Exception:
+            return None
+        return True
+
+    async def _find_approval_row_for_week(self, season_key: str, week_key: str) -> dict[str, Any] | None:
+        loaded = await self._approval_sheet()
+        if loaded is None:
+            return None
+        tab_name, worksheet, header_map, matrix = loaded
+        for row_number, row in enumerate(matrix[1:], start=2):
+            values = {name: (str(row[idx]).strip() if idx < len(row) else "") for name, idx in header_map.items()}
+            if values.get("season_key") == season_key and values.get("week_key") == week_key:
                 return {"tab": tab_name, "worksheet": worksheet, "header_map": header_map, "row_number": row_number, "values": values}
         return None
 
@@ -391,22 +440,18 @@ class LeaguesCog(commands.Cog):
             column = self._column_label(header_map[key])
             await acall_with_backoff(worksheet.update, f"{column}{row_number}", [[str(value)]], value_input_option="RAW")
 
-    async def _upsert_approval_prompt_state(self, message: discord.Message) -> None:
-        loaded = await self._approval_sheet()
+    async def _create_approval_prompt_state(
+        self,
+        message: discord.Message,
+        loaded: tuple[str, Any, dict[str, int], list[list[Any]]] | None = None,
+    ) -> None:
+        loaded = loaded or await self._approval_sheet()
         if loaded is None:
-            return
-        _tab_name, worksheet, header_map, matrix = loaded
+            raise RuntimeError("league approval state sheet unavailable")
+        _tab_name, worksheet, header_map, _matrix = loaded
         season_key, week_key = self._approval_keys()
         now = self._utc_iso()
-        target_row = None
-        for row_number, row in enumerate(matrix[1:], start=2):
-            values = {name: (str(row[idx]).strip() if idx < len(row) else "") for name, idx in header_map.items()}
-            if values.get("season_key") == season_key and values.get("week_key") == week_key:
-                target_row = row_number
-                created_at = values.get("created_at_utc") or now
-                break
-        else:
-            created_at = now
+        created_at = now
         values = {
             "season_key": season_key,
             "week_key": week_key,
@@ -421,12 +466,8 @@ class LeaguesCog(commands.Cog):
             "last_error": "",
         }
         ordered = [values[name] for name in _APPROVAL_HEADERS]
-        if target_row is None:
-            await acall_with_backoff(worksheet.append_row, ordered, value_input_option="RAW")
-        else:
-            end_col = self._column_label(len(_APPROVAL_HEADERS) - 1)
-            await acall_with_backoff(worksheet.update, f"A{target_row}:{end_col}{target_row}", [ordered], value_input_option="RAW")
-        log.info("league approval prompt state stored", extra={"message_id": message.id, "season_key": season_key, "week_key": week_key})
+        await acall_with_backoff(worksheet.append_row, ordered, value_input_option="RAW")
+        log.info("league approval state row created", extra={"message_id": message.id, "channel_id": getattr(message.channel, "id", None), "season_key": season_key, "week_key": week_key})
 
     # === Commands ===
     @tier("admin")
@@ -451,9 +492,10 @@ class LeaguesCog(commands.Cog):
 
     # === Reminder helpers ===
     async def send_monday_reminder(self) -> None:
+        log.info("league reminder fired", extra={"weekday": "monday"})
         channel = await self._resolve_channel(self._parse_int_env("LEAGUES_REMINDER_THREAD_ID"))
         if channel is None:
-            log.warning("Leagues reminder thread missing; Monday reminder skipped")
+            log.warning("league reminder skipped", extra={"weekday": "monday", "reason": "reminder_thread_missing"})
             return
         mentions = self._admin_mentions_text()
         lines = [
@@ -463,12 +505,50 @@ class LeaguesCog(commands.Cog):
         if mentions:
             lines.append(mentions)
         await channel.send("\n".join(lines))
+        log.info("league reminder sent", extra={"weekday": "monday", "channel_id": getattr(channel, "id", None)})
 
     async def send_wednesday_reminder(self) -> None:
+        log.info("league approval prompt fired", extra={"weekday": "wednesday"})
+        season_key, week_key = self._approval_keys()
+        loaded = await self._approval_sheet()
+        if loaded is None:
+            log.warning("league approval prompt skipped", extra={"reason": "approval_state_unavailable", "season_key": season_key, "week_key": week_key})
+            return
+        tab_name, worksheet, header_map, matrix = loaded
+        existing = None
+        for row_number, row in enumerate(matrix[1:], start=2):
+            values = {name: (str(row[idx]).strip() if idx < len(row) else "") for name, idx in header_map.items()}
+            if values.get("season_key") == season_key and values.get("week_key") == week_key:
+                existing = {"tab": tab_name, "worksheet": worksheet, "header_map": header_map, "row_number": row_number, "values": values}
+                break
         channel = await self._resolve_channel(self._parse_int_env("LEAGUES_REMINDER_THREAD_ID"))
         if channel is None:
-            log.warning("Leagues reminder thread missing; Wednesday reminder skipped")
+            log.warning("league approval prompt skipped", extra={"reason": "reminder_thread_missing"})
             return
+        if existing is not None:
+            status = existing["values"].get("status", "").strip().lower()
+            if status == "failed" and not existing["values"].get("posted_at_utc", "").strip():
+                log.warning(
+                    "league approval prompt recovery allowed after failed row",
+                    extra=self._approval_row_log_extra(existing, reason="failed_without_posted_at"),
+                )
+            elif status == "pending" and await self._approval_prompt_message_exists(existing) is False:
+                log.warning(
+                    "league approval prompt recovery allowed for stale approval row",
+                    extra=self._approval_row_log_extra(existing, reason="prompt_message_deleted"),
+                )
+            elif status in _APPROVAL_DUPLICATE_PROMPT_STATUSES:
+                log.info(
+                    "league approval prompt skipped",
+                    extra=self._approval_row_log_extra(existing, reason="approval_row_exists"),
+                )
+                return
+            else:
+                log.warning(
+                    "league approval prompt skipped",
+                    extra=self._approval_row_log_extra(existing, reason="manual_cleanup_required"),
+                )
+                return
         mentions = self._admin_mentions_text()
         lines = [
             "🌩 C1C Leagues – Post This Week’s Boards?",
@@ -482,7 +562,8 @@ class LeaguesCog(commands.Cog):
         except Exception:
             pass
         self._handled_messages.discard(message.id)
-        await self._upsert_approval_prompt_state(message)
+        await self._create_approval_prompt_state(message, loaded)
+        log.info("league approval prompt sent", extra={"message_id": message.id, "channel_id": getattr(channel, "id", None), "season_key": season_key, "week_key": week_key})
 
     # === Core job ===
     async def run_leagues_job(
@@ -540,7 +621,7 @@ class LeaguesCog(commands.Cog):
             return False
 
         try:
-            bundles = load_league_bundles(sheet_id, config_tab="Config")
+            bundles = load_league_bundles(sheet_id, config_tab=self._config_tab_name())
         except LeaguesConfigError as exc:
             await self._post_status(
                 status_channel,

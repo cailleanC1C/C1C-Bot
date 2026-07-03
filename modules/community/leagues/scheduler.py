@@ -39,6 +39,8 @@ def schedule_leagues_jobs(runtime: "Runtime") -> None:
     def _resolve_cog():
         return runtime.bot.get_cog("LeaguesCog")
 
+    log.info("league reminder scheduled", extra={"weekday": "monday", "cron": monday_cron})
+    log.info("league approval prompt scheduled", extra={"weekday": "wednesday", "cron": wednesday_cron})
     monday_job = runtime.scheduler.cron(
         monday_cron, tag="leagues_reminder", name="leagues_reminder_monday"
     )
