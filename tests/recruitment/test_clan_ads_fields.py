@@ -584,3 +584,105 @@ def test_post_decision_still_posts_without_static_clan_card_thumbnail(monkeypatc
 
     assert ok is True
     assert not sent[0]["embed"].thumbnail.url
+
+
+def test_full_refresh_deletes_only_bot_clan_ad_markers_and_clears_deleted_ids(
+    monkeypatch,
+):
+    import asyncio
+    from types import SimpleNamespace
+
+    writes = []
+    deleted = []
+
+    class Button:
+        custom_id = "clan_ads:view_card:C1CE"
+
+    class Row:
+        children = [Button()]
+
+    class Message:
+        def __init__(self, message_id, *, bot_author=True, marker=True):
+            self.id = message_id
+            self.author = SimpleNamespace(id=42, bot=bot_author)
+            self.components = [Row()] if marker else []
+
+        async def delete(self):
+            deleted.append(self.id)
+
+    class Channel:
+        async def fetch_message(self, message_id):
+            if message_id == 99:
+                return Message(99)
+            return Message(message_id, marker=False)
+
+        def history(self, limit=200):
+            async def gen():
+                yield Message(99)
+                yield Message(100)
+                yield Message(101, bot_author=False)
+                yield Message(102, marker=False)
+
+            return gen()
+
+    async def fake_write_state(*args, **kwargs):
+        writes.append((args[2].tag, kwargs))
+
+    monkeypatch.setattr(clan_ads, "write_state", fake_write_state)
+    rows = {
+        "C1CE": _message_row(tag="C1CE", last_id="99"),
+        "C1CF": _message_row(tag="C1CF", last_id="102"),
+    }
+
+    deleted_count, failures = asyncio.run(
+        clan_ads.full_refresh_existing_ads(
+            SimpleNamespace(user=SimpleNamespace(id=42)),
+            Channel(),
+            clan_ads.Config("ClanAdMessages", "Rules", 123, "", "", 24, ""),
+            rows,
+            {"last_ad_message_id": 5},
+            clan_ads.RunReporter(None),
+            source="manual !clanads post all",
+        )
+    )
+
+    assert deleted_count == 2
+    assert failures == 0
+    assert deleted == [99, 100]
+    assert writes == [("C1CE", {"last_ad_message_id": ""})]
+    assert rows["C1CE"].last_message_id == ""
+    assert rows["C1CF"].last_message_id == "102"
+
+
+def test_full_refresh_clears_unfetchable_stored_message_id(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    writes = []
+
+    class Channel:
+        async def fetch_message(self, message_id):
+            raise RuntimeError("not found")
+
+    async def fake_write_state(*args, **kwargs):
+        writes.append((args[2].tag, kwargs))
+
+    monkeypatch.setattr(clan_ads, "write_state", fake_write_state)
+    rows = {"C1CE": _message_row(tag="C1CE", last_id="99")}
+
+    deleted_count, failures = asyncio.run(
+        clan_ads.full_refresh_existing_ads(
+            SimpleNamespace(user=SimpleNamespace(id=42)),
+            Channel(),
+            clan_ads.Config("ClanAdMessages", "Rules", 123, "", "", 24, ""),
+            rows,
+            {"last_ad_message_id": 5},
+            clan_ads.RunReporter(None),
+            source="scheduled job",
+        )
+    )
+
+    assert deleted_count == 0
+    assert failures == 0
+    assert writes == [("C1CE", {"last_ad_message_id": ""})]
+    assert rows["C1CE"].last_message_id == ""

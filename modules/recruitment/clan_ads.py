@@ -623,6 +623,133 @@ async def decide(
     return Decision(clan.tag, clan, row, "qualified", "qualified", rule)
 
 
+def _message_has_clan_ad_marker(message: Any) -> bool:
+    """Return True when a bot message carries the stable clan-ad button marker."""
+    for row in getattr(message, "components", None) or []:
+        children = getattr(row, "children", None) or []
+        for child in children:
+            custom_id = getattr(child, "custom_id", None)
+            if custom_id and str(custom_id).startswith("clan_ads:view_card:"):
+                return True
+    return False
+
+
+def _message_authored_by_bot(message: Any, bot: discord.Client) -> bool:
+    author = getattr(message, "author", None)
+    bot_user = getattr(bot, "user", None)
+    return bool(
+        getattr(author, "bot", False)
+        and bot_user is not None
+        and getattr(author, "id", None) == getattr(bot_user, "id", None)
+    )
+
+
+async def _delete_message_for_refresh(message: Any, *, context: str) -> bool:
+    try:
+        await message.delete()
+        return True
+    except Exception:
+        log.warning(
+            "failed to delete clan ad during full refresh",
+            exc_info=True,
+            extra={"message_id": getattr(message, "id", None), "context": context},
+        )
+        return False
+
+
+async def full_refresh_existing_ads(
+    bot: discord.Client,
+    channel: Any,
+    config: Config,
+    rows: dict[str, MessageRow],
+    header_map: dict[str, int],
+    reporter: RunReporter,
+    *,
+    source: str,
+) -> tuple[int, int]:
+    """Delete existing safe clan-ad messages and clear deleted message ids."""
+    deleted = 0
+    failures = 0
+    cleared_tags: set[str] = set()
+    seen_message_ids: set[int] = set()
+
+    for row in rows.values():
+        if not row.last_message_id:
+            continue
+        try:
+            message_id = int(row.last_message_id)
+        except ValueError:
+            await write_state(config, header_map, row, last_ad_message_id="")
+            row.last_message_id = ""
+            cleared_tags.add(row.tag)
+            continue
+        try:
+            message = await channel.fetch_message(message_id)
+        except Exception:
+            log.info(
+                "stored clan ad message was not fetchable during full refresh",
+                extra={"clan_tag": row.tag, "message_id": message_id, "source": source},
+            )
+            await write_state(config, header_map, row, last_ad_message_id="")
+            row.last_message_id = ""
+            cleared_tags.add(row.tag)
+            continue
+        seen_message_ids.add(message_id)
+        if _message_authored_by_bot(message, bot) and _message_has_clan_ad_marker(
+            message
+        ):
+            if await _delete_message_for_refresh(
+                message, context=f"stored:{row.tag}:{source}"
+            ):
+                deleted += 1
+                await write_state(config, header_map, row, last_ad_message_id="")
+                row.last_message_id = ""
+                cleared_tags.add(row.tag)
+            else:
+                failures += 1
+                await reporter.warn(
+                    f"⚠️ Clan Ads full refresh could not delete old ad message `{message_id}` for `{row.tag}` in <#{config.channel_id}>.",
+                    dedupe_key=f"refresh_delete_failed:{message_id}",
+                )
+        else:
+            log.warning(
+                "stored clan ad message lacked safe marker; leaving it in place",
+                extra={"clan_tag": row.tag, "message_id": message_id, "source": source},
+            )
+
+    history = getattr(channel, "history", None)
+    if callable(history):
+        async for message in channel.history(limit=200):
+            message_id = getattr(message, "id", None)
+            if message_id in seen_message_ids:
+                continue
+            if not (
+                _message_authored_by_bot(message, bot)
+                and _message_has_clan_ad_marker(message)
+            ):
+                continue
+            if await _delete_message_for_refresh(message, context=f"history:{source}"):
+                deleted += 1
+            else:
+                failures += 1
+                await reporter.warn(
+                    f"⚠️ Clan Ads full refresh could not delete old ad message `{message_id}` in <#{config.channel_id}>.",
+                    dedupe_key=f"refresh_delete_failed:{message_id}",
+                )
+
+    log.info(
+        "Clan Ads full refresh deleted old ads",
+        extra={
+            "source": source,
+            "channel_id": config.channel_id,
+            "deleted": deleted,
+            "delete_failures": failures,
+            "cleared_sheet_rows": len(cleared_tags),
+        },
+    )
+    return deleted, failures
+
+
 async def send_notification(channel: Any, config: Config, count: int) -> None:
     if not config.notification:
         return
@@ -842,6 +969,11 @@ async def run(
             "config": config,
         }
 
+    full_refresh = clan_tag_filter is None
+    refresh_source = "scheduled job" if scheduled else "manual !clanads post all"
+    deleted_old_ads = 0
+    delete_failures = 0
+
     if clan_tag_filter:
         wanted = tag_norm(clan_tag_filter)
         clans = [clan for clan in clans if clan.tag == wanted]
@@ -881,6 +1013,21 @@ async def run(
         for clan in clans
     ]
     qualified = [decision for decision in decisions if decision.status == "qualified"]
+
+    if full_refresh:
+        log.info(
+            "Clan Ads full refresh starting",
+            extra={
+                "source": refresh_source,
+                "channel_id": config.channel_id,
+                "qualified": len(qualified),
+                "skipped_not_qualified": len(decisions) - len(qualified),
+            },
+        )
+        deleted_old_ads, delete_failures = await full_refresh_existing_ads(
+            bot, channel, config, rows, header_map, reporter, source=refresh_source
+        )
+
     if not qualified:
         fallback = (
             decisions[0].reason
@@ -889,11 +1036,25 @@ async def run(
         )
         if scheduled:
             log.info("Clan Ads scheduled run skipped: no qualifying clans")
+        if full_refresh:
+            log.info(
+                "Clan Ads full refresh completed",
+                extra={
+                    "source": refresh_source,
+                    "channel_id": config.channel_id,
+                    "deleted": deleted_old_ads,
+                    "posted": 0,
+                    "skipped_not_qualified": len(decisions),
+                    "delete_failures": delete_failures,
+                },
+            )
         return {
             "posted": 0,
             "skipped": len(decisions),
             "message": fallback,
             "config": config,
+            "deleted": deleted_old_ads,
+            "delete_failures": delete_failures,
         }
 
     posted = 0
@@ -941,6 +1102,19 @@ async def run(
                 break
 
     skipped_or_failed = len(decisions) - posted
+    if full_refresh:
+        log.info(
+            "Clan Ads full refresh completed",
+            extra={
+                "source": refresh_source,
+                "channel_id": config.channel_id,
+                "deleted": deleted_old_ads,
+                "posted": posted,
+                "skipped_not_qualified": len(decisions) - len(qualified),
+                "post_failures": len(qualified) - posted,
+                "delete_failures": delete_failures,
+            },
+        )
     return {
         "posted": posted,
         "skipped": skipped_or_failed,
@@ -950,6 +1124,8 @@ async def run(
             "No clan ads were posted. No enabled clans currently meet their bracket posting rules.",
         ),
         "config": config,
+        "deleted": deleted_old_ads,
+        "delete_failures": delete_failures,
     }
 
 
