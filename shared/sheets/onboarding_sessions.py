@@ -24,6 +24,9 @@ CANONICAL_COLUMNS: list[str] = [
     "first_reminder_at",
     "warning_sent_at",
     "auto_closed_at",
+    "recruiter_summary_message_id",
+    "recruiter_summary_posted_at",
+    "recruiter_summary_player_id",
 ]
 
 _HEADER_MISMATCH_LOGGED = False
@@ -81,6 +84,9 @@ def load(user_id: int | None, thread_id: int) -> Optional[Dict[str, Any]]:
         "first_reminder_at": record.get("first_reminder_at") or "",
         "warning_sent_at": record.get("warning_sent_at") or "",
         "auto_closed_at": record.get("auto_closed_at") or "",
+        "recruiter_summary_message_id": record.get("recruiter_summary_message_id") or "",
+        "recruiter_summary_posted_at": record.get("recruiter_summary_posted_at") or "",
+        "recruiter_summary_player_id": record.get("recruiter_summary_player_id") or "",
         "answers": answers,
     }
 
@@ -290,6 +296,18 @@ def _validated_header(header: Iterable[str]) -> Optional[list[str]]:
     return _validate_header(header)
 
 
+def missing_columns(columns: Iterable[str]) -> set[str]:
+    """Return requested columns missing from the live onboarding sessions header."""
+
+    worksheet = _sheet()
+    rows = worksheet.get_all_values()
+    header = _validated_header(rows[0] if rows else [])
+    if header is None:
+        return set(columns)
+    header_map = _header_index_map(header)
+    return {str(column).strip() for column in columns if str(column).strip().lower() not in header_map}
+
+
 def _log_missing_columns(missing: Sequence[str]) -> None:
     global _MISSING_COLUMN_LOGGED
     if _MISSING_COLUMN_LOGGED:
@@ -348,6 +366,9 @@ def _record_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         "first_reminder_at": reminder_at,
         "warning_sent_at": warning_at,
         "auto_closed_at": auto_closed_at,
+        "recruiter_summary_message_id": _safe_int(payload.get("recruiter_summary_message_id"), default="") or "",
+        "recruiter_summary_posted_at": payload.get("recruiter_summary_posted_at") or "",
+        "recruiter_summary_player_id": str(payload.get("recruiter_summary_player_id") or ""),
     }
 
 
@@ -378,6 +399,9 @@ def _merge_record(existing: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str
         "first_reminder_at": payload.get("first_reminder_at") or existing.get("first_reminder_at") or "",
         "warning_sent_at": payload.get("warning_sent_at") or existing.get("warning_sent_at") or "",
         "auto_closed_at": payload.get("auto_closed_at") or existing.get("auto_closed_at") or "",
+        "recruiter_summary_message_id": payload.get("recruiter_summary_message_id") or existing.get("recruiter_summary_message_id") or "",
+        "recruiter_summary_posted_at": payload.get("recruiter_summary_posted_at") or existing.get("recruiter_summary_posted_at") or "",
+        "recruiter_summary_player_id": payload.get("recruiter_summary_player_id") or existing.get("recruiter_summary_player_id") or "",
     }
     return _record_from_payload(merged_payload)
 
@@ -491,5 +515,8 @@ def _session_from_record(record: Dict[str, Any]) -> Dict[str, Any]:
         "first_reminder_at": record.get("first_reminder_at") or "",
         "warning_sent_at": record.get("warning_sent_at") or "",
         "auto_closed_at": record.get("auto_closed_at") or "",
+        "recruiter_summary_message_id": record.get("recruiter_summary_message_id") or "",
+        "recruiter_summary_posted_at": record.get("recruiter_summary_posted_at") or "",
+        "recruiter_summary_player_id": record.get("recruiter_summary_player_id") or "",
         "answers": answers,
     }

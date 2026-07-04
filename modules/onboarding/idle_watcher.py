@@ -11,9 +11,10 @@ import discord
 from discord.ext import commands
 
 from modules.common import runtime as rt
+from modules.onboarding.summary_detection import has_recruitment_summary
+from modules.placement import reservation_jobs
 from shared.config import get_recruitment_coordinator_role_ids
 from shared.sheets import onboarding_sessions
-from modules.placement import reservation_jobs
 
 log = logging.getLogger("c1c.onboarding.idle_watcher")
 
@@ -67,25 +68,6 @@ def _is_thread_archived_or_locked(thread: discord.Thread | None) -> bool:
     return bool(getattr(thread, "archived", False)) or bool(getattr(thread, "locked", False))
 
 
-async def has_recruitment_summary(thread: discord.Thread, *, history_limit: int = 50) -> bool:
-    markers = ("c1c • recruitment summary", "recruitment summary")
-    try:
-        async for message in thread.history(limit=history_limit):
-            content = str(getattr(message, "content", "") or "").casefold()
-            if any(marker in content for marker in markers):
-                return True
-
-            embeds = getattr(message, "embeds", []) or []
-            for embed in embeds:
-                title = str(getattr(embed, "title", "") or "").casefold()
-                description = str(getattr(embed, "description", "") or "").casefold()
-                if any(marker in title or marker in description for marker in markers):
-                    return True
-    except Exception:
-        log.warning("failed checking thread for recruitment summary", exc_info=True)
-    return False
-
-
 def _has_truthy_state(row: dict, keys: Iterable[str]) -> bool:
     for key in keys:
         if key not in row:
@@ -118,12 +100,15 @@ async def _ticket_needs_onboarding_reminder(row: dict, thread: discord.Thread) -
     durable_summary_keys = (
         "summary_message_id",
         "recruitment_summary_message_id",
+        "recruiter_summary_message_id",
         "summary_posted_at",
         "recruitment_summary_posted_at",
+        "recruiter_summary_posted_at",
         "summary_exists",
         "recruitment_summary_exists",
         "summary_posted",
         "recruitment_summary_posted",
+        "recruiter_summary_posted",
     )
     if _has_truthy_state(row, durable_summary_keys):
         return False

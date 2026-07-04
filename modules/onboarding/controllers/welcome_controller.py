@@ -21,6 +21,7 @@ from modules.onboarding.schema import (
 )
 from modules.onboarding.sessions import Session, ensure_session_for_thread, utc_now
 from modules.onboarding.session_store import SessionData, store
+from modules.onboarding.summary_detection import find_recruitment_summary_message
 from modules.onboarding.ui.card import RollingCard
 from modules.onboarding.ui.panel_message_manager import PanelMessageManager
 from modules.onboarding.ui.modal_renderer import WelcomeQuestionnaireModal, build_modals
@@ -1235,6 +1236,7 @@ class BaseWelcomeController:
         self._inline_messages: Dict[int, discord.Message] = {}
         self._inline_message_ids: Dict[int, int] = {}
         self._next_prompt_message_ids: Dict[int, int] = {}
+        self._summary_locks: Dict[int, asyncio.Lock] = {}
         self.answers_by_thread: Dict[int | None, dict[str, Any]] = {}
         # Shared session-like state for UI helpers that need to persist
         # per-thread metadata (e.g., the active panel message id).
@@ -1260,7 +1262,15 @@ class BaseWelcomeController:
         content: str | None = None,
         allowed_mentions: discord.AllowedMentions | None = None,
     ) -> bool:
-        """Build and send welcome summary; fall back to a minimal embed on error."""
+        """Build and send welcome summary with a durable per-ticket idempotency guard."""
+
+        thread_id = getattr(thread, "id", None)
+        try:
+            thread_id_int = int(thread_id) if thread_id is not None else None
+        except (TypeError, ValueError):
+            thread_id_int = None
+        player_id = self._summary_player_id(thread_id_int, answers)
+        step = self._summary_step(thread_id_int)
 
         try:
             embed = build_summary_embed(
@@ -1274,17 +1284,279 @@ class BaseWelcomeController:
             log.error(
                 "onboarding.summary.build_failed_unexpected",
                 exc_info=True,
-                extra={"flow": self.flow, "thread_id": getattr(thread, "id", None)},
+                extra={"flow": self.flow, "thread_id": thread_id_int},
             )
             fallback_author = author if isinstance(author, discord.Member) else None
             embed = _fallback_welcome_embed(fallback_author)
 
+        if thread_id_int is None:
+            return await self._send_summary_without_guard(
+                thread=thread,
+                embed=embed,
+                content=content,
+                allowed_mentions=allowed_mentions,
+            )
+
+        lock = self._summary_locks.setdefault(thread_id_int, asyncio.Lock())
+        if lock.locked():
+            self._log_summary_action(
+                action="summary_send_blocked_by_lock",
+                thread_id=thread_id_int,
+                player_id=player_id,
+                step=step,
+            )
+        async with lock:
+            existing = onboarding_sessions.get_by_thread_id(thread_id_int) or {}
+            existing_message_id = self._coerce_int(existing.get("recruiter_summary_message_id"))
+            if existing_message_id:
+                existing_result = await self._edit_recorded_summary_message(
+                    thread=thread,
+                    message_id=existing_message_id,
+                    embed=embed,
+                    content=content,
+                    allowed_mentions=allowed_mentions,
+                    thread_id=thread_id_int,
+                    player_id=player_id,
+                    step=step,
+                )
+                if existing_result == "edited":
+                    persisted = self._persist_summary_metadata(
+                        thread_id_int,
+                        message_id=existing_message_id,
+                        player_id=player_id,
+                    )
+                    self._log_summary_action(
+                        action="summary_edited_existing",
+                        thread_id=thread_id_int,
+                        player_id=player_id,
+                        step=step,
+                        existing_message_id=existing_message_id,
+                        metadata_persisted=persisted,
+                    )
+                    return True
+                if existing_result == "blocked":
+                    return False
+
+            try:
+                discovered_message = await find_recruitment_summary_message(
+                    thread,  # type: ignore[arg-type]
+                    bot_user=getattr(self.bot, "user", None),
+                    suppress_errors=False,
+                )
+            except Exception as exc:
+                self._log_summary_action(
+                    action="summary_send_blocked",
+                    thread_id=thread_id_int,
+                    player_id=player_id,
+                    step=step,
+                    existing_message_id=existing_message_id,
+                    reason=f"thread_scan_failed:{type(exc).__name__}",
+                )
+                log.warning(
+                    "onboarding.summary.thread_scan_failed",
+                    exc_info=True,
+                    extra={
+                        "thread_id": thread_id_int,
+                        "player_id": player_id,
+                        "step": step,
+                        "existing_message_id": existing_message_id,
+                    },
+                )
+                return False
+            discovered_message_id = self._coerce_int(getattr(discovered_message, "id", None))
+            if discovered_message is not None and discovered_message_id is not None:
+                try:
+                    await discovered_message.edit(
+                        content=content,
+                        embed=embed,
+                        allowed_mentions=allowed_mentions,
+                    )
+                except discord.NotFound:
+                    self._log_summary_action(
+                        action="summary_discovered_missing",
+                        thread_id=thread_id_int,
+                        player_id=player_id,
+                        step=step,
+                        existing_message_id=existing_message_id,
+                        discovered_message_id=discovered_message_id,
+                        reason="discovered_message_not_found",
+                    )
+                except (discord.Forbidden, discord.HTTPException, asyncio.TimeoutError) as exc:
+                    self._log_summary_action(
+                        action="summary_send_blocked",
+                        thread_id=thread_id_int,
+                        player_id=player_id,
+                        step=step,
+                        existing_message_id=existing_message_id,
+                        discovered_message_id=discovered_message_id,
+                        reason=type(exc).__name__,
+                    )
+                    log.warning(
+                        "onboarding.summary.discovered_edit_failed",
+                        exc_info=True,
+                        extra={
+                            "thread_id": thread_id_int,
+                            "player_id": player_id,
+                            "step": step,
+                            "existing_message_id": existing_message_id,
+                            "discovered_message_id": discovered_message_id,
+                        },
+                    )
+                    return False
+                except Exception as exc:
+                    self._log_summary_action(
+                        action="summary_send_blocked",
+                        thread_id=thread_id_int,
+                        player_id=player_id,
+                        step=step,
+                        existing_message_id=existing_message_id,
+                        discovered_message_id=discovered_message_id,
+                        reason=type(exc).__name__,
+                    )
+                    log.warning(
+                        "onboarding.summary.discovered_edit_failed_unexpected",
+                        exc_info=True,
+                        extra={
+                            "thread_id": thread_id_int,
+                            "player_id": player_id,
+                            "step": step,
+                            "existing_message_id": existing_message_id,
+                            "discovered_message_id": discovered_message_id,
+                        },
+                    )
+                    return False
+                else:
+                    persisted = self._persist_summary_metadata(
+                        thread_id_int,
+                        message_id=discovered_message_id,
+                        player_id=player_id,
+                    )
+                    self._log_summary_action(
+                        action="summary_edited_existing_discovered",
+                        thread_id=thread_id_int,
+                        player_id=player_id,
+                        step=step,
+                        existing_message_id=existing_message_id,
+                        discovered_message_id=discovered_message_id,
+                        metadata_persisted=persisted,
+                    )
+                    return True
+
+            try:
+                message = await thread.send(
+                    content=content,
+                    embed=embed,
+                    allowed_mentions=allowed_mentions,
+                )
+            except Exception:
+                log.error(
+                    "onboarding.summary.send_failed",
+                    exc_info=True,
+                    extra={"flow": self.flow, "thread_id": thread_id_int},
+                )
+                return False
+
+            new_message_id = self._coerce_int(getattr(message, "id", None))
+            persisted = False
+            if new_message_id is not None:
+                persisted = self._persist_summary_metadata(
+                    thread_id_int,
+                    message_id=new_message_id,
+                    player_id=player_id,
+                )
+            self._log_summary_action(
+                action="summary_recreated_missing" if existing_message_id else "summary_posted",
+                thread_id=thread_id_int,
+                player_id=player_id,
+                step=step,
+                existing_message_id=existing_message_id,
+                discovered_message_id=discovered_message_id,
+                new_message_id=new_message_id,
+                metadata_persisted=persisted,
+            )
+            return True
+
+    async def _edit_recorded_summary_message(
+        self,
+        *,
+        thread: discord.abc.Messageable,
+        message_id: int,
+        embed: discord.Embed,
+        content: str | None,
+        allowed_mentions: discord.AllowedMentions | None,
+        thread_id: int,
+        player_id: int | str | None,
+        step: int | None,
+    ) -> str:
         try:
-            await thread.send(
+            existing_message = await thread.fetch_message(message_id)  # type: ignore[attr-defined]
+            await existing_message.edit(
                 content=content,
                 embed=embed,
                 allowed_mentions=allowed_mentions,
             )
+        except discord.NotFound:
+            self._log_summary_action(
+                action="summary_recorded_missing",
+                thread_id=thread_id,
+                player_id=player_id,
+                step=step,
+                existing_message_id=message_id,
+                reason="recorded_message_not_found",
+            )
+            return "missing"
+        except (discord.Forbidden, discord.HTTPException, asyncio.TimeoutError) as exc:
+            self._log_summary_action(
+                action="summary_send_blocked",
+                thread_id=thread_id,
+                player_id=player_id,
+                step=step,
+                existing_message_id=message_id,
+                reason=type(exc).__name__,
+            )
+            log.warning(
+                "onboarding.summary.recorded_edit_failed",
+                exc_info=True,
+                extra={
+                    "thread_id": thread_id,
+                    "player_id": player_id,
+                    "step": step,
+                    "existing_message_id": message_id,
+                },
+            )
+            return "blocked"
+        except Exception as exc:
+            self._log_summary_action(
+                action="summary_send_blocked",
+                thread_id=thread_id,
+                player_id=player_id,
+                step=step,
+                existing_message_id=message_id,
+                reason=type(exc).__name__,
+            )
+            log.warning(
+                "onboarding.summary.recorded_edit_failed_unexpected",
+                exc_info=True,
+                extra={
+                    "thread_id": thread_id,
+                    "player_id": player_id,
+                    "step": step,
+                    "existing_message_id": message_id,
+                },
+            )
+            return "blocked"
+        return "edited"
+
+    async def _send_summary_without_guard(
+        self,
+        *,
+        thread: discord.abc.Messageable,
+        embed: discord.Embed,
+        content: str | None,
+        allowed_mentions: discord.AllowedMentions | None,
+    ) -> bool:
+        try:
+            await thread.send(content=content, embed=embed, allowed_mentions=allowed_mentions)
         except Exception:
             log.error(
                 "onboarding.summary.send_failed",
@@ -1292,8 +1564,107 @@ class BaseWelcomeController:
                 extra={"flow": self.flow, "thread_id": getattr(thread, "id", None)},
             )
             return False
-
         return True
+
+    def _persist_summary_metadata(self, thread_id: int, *, message_id: int, player_id: int | str | None) -> bool:
+        required = {
+            "recruiter_summary_message_id",
+            "recruiter_summary_posted_at",
+            "recruiter_summary_player_id",
+        }
+        try:
+            missing = onboarding_sessions.missing_columns(required)
+        except Exception:
+            log.warning("onboarding.summary.metadata_header_check_failed", exc_info=True, extra={"thread_id": thread_id})
+            return False
+        if missing:
+            log.warning(
+                "onboarding.summary.metadata_columns_missing",
+                extra={
+                    "thread_id": thread_id,
+                    "missing_columns": ",".join(sorted(missing)),
+                },
+            )
+            return False
+
+        timestamp = utc_now().isoformat()
+        try:
+            updated = onboarding_sessions.update_existing(
+                thread_id,
+                {
+                    "recruiter_summary_message_id": str(message_id),
+                    "recruiter_summary_posted_at": timestamp,
+                    "recruiter_summary_player_id": str(player_id or ""),
+                    "updated_at": timestamp,
+                },
+            )
+        except Exception:
+            log.warning("onboarding.summary.metadata_persist_failed", exc_info=True, extra={"thread_id": thread_id})
+            return False
+        if not updated:
+            log.warning(
+                "onboarding.summary.metadata_persist_failed",
+                extra={"thread_id": thread_id, "reason": "update_existing_false"},
+            )
+            return False
+        return True
+
+    def _log_summary_action(
+        self,
+        *,
+        action: str,
+        thread_id: int,
+        player_id: int | str | None,
+        step: int | None,
+        existing_message_id: int | None = None,
+        discovered_message_id: int | None = None,
+        new_message_id: int | None = None,
+        reason: str | None = None,
+        metadata_persisted: bool | None = None,
+    ) -> None:
+        log.info(
+            "onboarding.summary.%s",
+            action,
+            extra={
+                "ticket_id": thread_id,
+                "thread_id": thread_id,
+                "player_id": player_id,
+                "step": step,
+                "bot_name": getattr(self.bot, "user", None) or "The Woadkeeper",
+                "bot_id": getattr(getattr(self.bot, "user", None), "id", None),
+                "action": action,
+                "existing_message_id": existing_message_id,
+                "discovered_message_id": discovered_message_id,
+                "new_message_id": new_message_id,
+                "reason": reason,
+                "metadata_persisted": metadata_persisted,
+            },
+        )
+
+    @staticmethod
+    def _coerce_int(value: Any) -> int | None:
+        try:
+            return int(value) if value not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    def _summary_step(self, thread_id: int | None) -> int | None:
+        if thread_id is None:
+            return None
+        session = store.get(thread_id)
+        if session is not None and session.current_question_index is not None:
+            return self._coerce_int(session.current_question_index)
+        row = onboarding_sessions.get_by_thread_id(thread_id)
+        return self._coerce_int(row.get("step_index")) if isinstance(row, dict) else None
+
+    def _summary_player_id(self, thread_id: int | None, answers: Mapping[str, Any]) -> int | str | None:
+        for key in ("player_id", "player_tag", "player", "account_id"):
+            value = answers.get(key)
+            if value not in (None, ""):
+                return value
+        if thread_id is None:
+            return None
+        return self._resolve_applicant_id(thread_id, store.get(thread_id))
 
     def _resolve_applicant_id(
         self, thread_id: int, session: SessionData | None = None
@@ -2116,7 +2487,7 @@ class BaseWelcomeController:
         self.answers_by_thread.pop(thread_id, None)
         self._cleanup_session(
             thread_id,
-            preserve_session=bool(summary_embed and _is_fallback_summary(summary_embed)),
+            preserve_session=False,
         )
 
     def _log_fields(
@@ -3656,7 +4027,7 @@ class BaseWelcomeController:
         store.set_preview_message(thread_id, message_id=None, channel_id=None)
         self._cleanup_session(
             thread_id,
-            preserve_session=bool(summary_embed and _is_fallback_summary(summary_embed)),
+            preserve_session=False,
         )
 
     async def _handle_edit(
