@@ -14,6 +14,7 @@ from discord.ext import commands
 from modules.community.fusion import announcements as fusion_announcements
 from modules.community.fusion import logs as fusion_logs
 from modules.community.fusion.progress_share import build_progress_share_embed, build_share_snapshot
+from modules.community.fusion.traditional_progress import calculate_traditional_rare_progress
 from shared.sheets import fusion as fusion_sheets
 
 log = logging.getLogger("c1c.community.fusion.opt_in")
@@ -33,7 +34,7 @@ _FUSION_TRAD_PREP_UPDATE_CUSTOM_ID = "fusion:traditional:prep:update"
 _FUSION_TRAD_BACK_CUSTOM_ID = "fusion:traditional:back"
 
 _DISPLAY_STATUS_ORDER = ("done", "in_progress", "skipped", "missed", "not_started")
-_EVENT_DROPDOWN_STATUS_ORDER = ("not_started", "in_progress", "missed", "skipped", "done", "done_bonus")
+_EVENT_DROPDOWN_STATUS_ORDER = ("not_started", "in_progress", "skipped", "done", "done_bonus")
 _STATUS_LABELS = {
     "not_started": "Not Started",
     "in_progress": "In Progress",
@@ -55,9 +56,9 @@ _ALLOWED_PROGRESS_STATES = frozenset({"not_started", "in_progress", "done", "don
 _STATUS_INDEX_TO_CANONICAL = {
     "0": "not_started",
     "1": "in_progress",
-    "2": "done",
-    "3": "done_bonus",
-    "4": "skipped",
+    "2": "skipped",
+    "3": "done",
+    "4": "done_bonus",
 }
 _EVENT_DROPDOWN_STATUS_RANK = {status: idx for idx, status in enumerate(_EVENT_DROPDOWN_STATUS_ORDER)}
 _PROGRESS_EVENT_PAGE_SIZE = 10
@@ -66,21 +67,6 @@ _PROGRESS_EVENT_PAGE_SIZE = 10
 
 def _is_traditional_fusion(target: fusion_sheets.FusionRow) -> bool:
     return str(target.fusion_type or "").strip().casefold() == "traditional"
-
-
-def _traditional_rares_acquired(
-    *,
-    target: fusion_sheets.FusionRow,
-    events: Sequence[fusion_sheets.FusionEventRow],
-    progress_by_event: Mapping[str, str],
-) -> int:
-    total = 0.0
-    for event in events:
-        if str(event.reward_type or "").strip().casefold() not in {"rare", "rares"}:
-            continue
-        if progress_by_event.get(event.event_id) in {"done", "done_bonus"}:
-            total += max(0.0, float(event.reward_amount or 0))
-    return min(max(0, int(total)), max(0, int(target.needed)))
 
 
 def _validate_traditional_prep_counts(
@@ -124,10 +110,19 @@ def _build_traditional_prep_embed(
     target: fusion_sheets.FusionRow,
     events: Sequence[fusion_sheets.FusionEventRow],
     progress_by_event: Mapping[str, str],
+    partial_by_event: Mapping[str, float] | None = None,
     prep: fusion_sheets.FusionTraditionalUserProgressRow,
 ) -> discord.Embed:
-    needed_total = max(0, int(target.needed))
-    rares_still_needed = max(0, needed_total - prep.rares_owned)
+    snapshot = build_share_snapshot(events=events, progress_by_event=progress_by_event, partial_by_event=partial_by_event)
+    rare_progress = calculate_traditional_rare_progress(
+        target=target,
+        events=events,
+        progress_by_event=progress_by_event,
+        effective_status_by_event=snapshot.display_status_by_event,
+        partial_by_event=partial_by_event,
+    )
+    needed_total = rare_progress.required
+    rares_still_needed = rare_progress.to_go
     ready = prep.target_ready
     missing = "Nothing, the target champion is ready to fuse." if ready else f"{max(0, 4 - prep.epics_ascended)} fully ascended Epics"
     embed = discord.Embed(
@@ -135,7 +130,15 @@ def _build_traditional_prep_embed(
         description="Traditional fusion prep tracker.",
         color=discord.Color.blurple(),
     )
-    embed.add_field(name="Rare Progress", value=f"Rares owned: {prep.rares_owned} / {needed_total}\nRares still needed: {rares_still_needed}", inline=False)
+    embed.add_field(
+        name="Rare Progress",
+        value=(
+            f"Rares acquired: {rare_progress.acquired} / {needed_total}\n"
+            f"Rares still needed: {rares_still_needed}\n"
+            f"Rare sources available: {rare_progress.available_sources}"
+        ),
+        inline=False,
+    )
     embed.add_field(name="Rare Prep", value=f"Rares level 40: {prep.rares_level_40} / {needed_total}\nRares fully ascended: {prep.rares_ascended} / {needed_total}", inline=False)
     embed.add_field(name="Epic Prep", value=f"Epics fused: {prep.epics_fused} / 4\nEpics level 50: {prep.epics_level_50} / 4\nEpics fully ascended: {prep.epics_ascended} / 4", inline=False)
     embed.add_field(name="Final Fusion", value=f"Ready to fuse {target.champion or target.fusion_name}: {'Yes' if ready else 'No'}\nMissing: {missing}", inline=False)
@@ -387,6 +390,17 @@ def _build_progress_summary_embed(
     skipped = snapshot.skipped_reward_total
     still_needed = max(float(target.needed) - acquired, 0.0)
     still_needed_line = "Fusion ready" if still_needed <= 0 else f"{still_needed:g} to go"
+    traditional_rare_progress = (
+        calculate_traditional_rare_progress(
+            target=target,
+            events=events,
+            progress_by_event=progress_by_event,
+            effective_status_by_event=snapshot.display_status_by_event,
+            partial_by_event=partial_by_event,
+        )
+        if _is_traditional_fusion(target)
+        else None
+    )
 
     embed = discord.Embed(
         title=f"My Progress: {target.fusion_name}",
@@ -407,11 +421,22 @@ def _build_progress_summary_embed(
     embed.add_field(
         name="\u200b",
         value=(
-            f"**{reward_label} Progress**\n"
-            f"{acquired:g} acquired\n"
-            f"{skipped:g} skipped\n"
-            f"{still_needed_line}\n\n"
-            f"{target.needed:g} / {target.available:g} needed"
+            (
+                f"**Rare Progress**\n"
+                f"{traditional_rare_progress.acquired} acquired\n"
+                f"{traditional_rare_progress.skipped} skipped\n"
+                f"{traditional_rare_progress.to_go} to go\n\n"
+                f"{traditional_rare_progress.acquired} / {traditional_rare_progress.required} required rares"
+                + (f"\n{traditional_rare_progress.available_sources} rare sources available" if traditional_rare_progress.available_sources else "")
+            )
+            if traditional_rare_progress is not None
+            else (
+                f"**{reward_label} Progress**\n"
+                f"{acquired:g} acquired\n"
+                f"{skipped:g} skipped\n"
+                f"{still_needed_line}\n\n"
+                f"{target.needed:g} / {target.available:g} needed"
+            )
         ),
         inline=False,
     )
@@ -516,11 +541,11 @@ class _FusionProgressStatusSelect(discord.ui.Select):
         options = [
             discord.SelectOption(label="Not Started", value="not_started", default=selected_status == "not_started"),
             discord.SelectOption(label="In Progress", value="in_progress", default=selected_status == "in_progress"),
+            discord.SelectOption(label="Skipped", value="skipped", default=selected_status == "skipped"),
             discord.SelectOption(label="Done", value="done", default=selected_status == "done"),
         ]
         if selected_event is not None and _event_has_bonus(selected_event):
             options.append(discord.SelectOption(label="Done + Bonus", value="done_bonus", default=selected_status == "done_bonus"))
-        options.append(discord.SelectOption(label="Skipped", value="skipped", default=selected_status == "skipped"))
         super().__init__(
             placeholder="Set status",
             min_values=1,
@@ -1011,7 +1036,13 @@ class TraditionalPrepPanelView(discord.ui.View):
         return True
 
     def build_embed(self) -> discord.Embed:
-        return _build_traditional_prep_embed(target=self.target, events=self.events, progress_by_event=self.progress_by_event, prep=self.prep)
+        return _build_traditional_prep_embed(
+            target=self.target,
+            events=self.events,
+            progress_by_event=self.progress_by_event,
+            partial_by_event=self.partial_by_event,
+            prep=self.prep,
+        )
 
 
 class _TraditionalPrepBackButton(discord.ui.Button):
@@ -1065,7 +1096,18 @@ class _TraditionalPrepModal(discord.ui.Modal, title="Champion Preparation"):
             await _send_ephemeral(interaction, "Champion preparation counts must be whole numbers.")
             return
         needed_total = max(0, int(self.panel_view.target.needed))
-        rares_acquired = self.panel_view.prep.rares_owned
+        rare_progress = calculate_traditional_rare_progress(
+            target=self.panel_view.target,
+            events=self.panel_view.events,
+            progress_by_event=self.panel_view.progress_by_event,
+            effective_status_by_event=build_share_snapshot(
+                events=self.panel_view.events,
+                progress_by_event=self.panel_view.progress_by_event,
+                partial_by_event=self.panel_view.partial_by_event,
+            ).display_status_by_event,
+            partial_by_event=self.panel_view.partial_by_event,
+        )
+        rares_acquired = rare_progress.acquired
         error = _validate_traditional_prep_counts(needed_total=needed_total, rares_acquired=rares_acquired, rares_level_40=values[0], rares_ascended=values[1], epics_fused=values[2], epics_level_50=values[3], epics_ascended=values[4])
         if error:
             await _send_ephemeral(interaction, error)

@@ -9,6 +9,7 @@ from typing import Literal
 
 import discord
 
+from modules.community.fusion.traditional_progress import calculate_traditional_rare_progress
 from shared.sheets import fusion as fusion_sheets
 
 ShareMode = Literal["summary", "detailed"]
@@ -205,17 +206,24 @@ def build_progress_share_embed(
         )
 
     if traditional_prep is not None:
-        needed_total = max(0, int(target.needed))
-        rares_acquired = max(0, int(traditional_prep.rares_owned))
-        rares_skipped = min(max(0, int(snapshot.skipped_reward_total)), needed_total)
-        rares_to_go = max(0, needed_total - rares_acquired)
+        rare_progress = calculate_traditional_rare_progress(
+            target=target,
+            events=events,
+            progress_by_event=progress_by_event,
+            effective_status_by_event=snapshot.display_status_by_event,
+            partial_by_event=partial_by_event,
+        )
+        needed_total = rare_progress.required
+        display_acquired = rare_progress.acquired
+        display_to_go = rare_progress.to_go
         embed.add_field(
             name="Rare Progress",
             value=(
-                f"{needed_total} / {max(0, int(target.available))} needed\n"
-                f"{rares_acquired} acquired\n"
-                f"{rares_skipped} skipped\n"
-                f"{rares_to_go} to go"
+                f"{display_acquired} acquired\n"
+                f"{rare_progress.skipped} skipped\n"
+                f"{display_to_go} to go\n\n"
+                f"{display_acquired} / {needed_total} required rares"
+                + (f"\n{rare_progress.available_sources} rare sources available" if rare_progress.available_sources else "")
             ),
             inline=False,
         )
@@ -223,7 +231,9 @@ def build_progress_share_embed(
         embed.add_field(
             name="Champion Preparation",
             value=(
-                f"Rares owned: {rares_acquired}\n"
+                f"Rares acquired: {rare_progress.acquired} / {needed_total}\n"
+                f"Rares still needed: {rare_progress.to_go}\n"
+                f"Rare sources available: {rare_progress.available_sources}\n"
                 f"Rares level 40: {traditional_prep.rares_level_40}\n"
                 f"Rares ascended: {traditional_prep.rares_ascended}\n"
                 f"Epics fused: {traditional_prep.epics_fused}\n"
