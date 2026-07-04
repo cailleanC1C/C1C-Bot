@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from modules.community.fusion import opt_in_view
+from modules.community.fusion.progress_share import build_share_snapshot
+from modules.community.fusion.traditional_progress import calculate_traditional_rare_progress
 from shared.sheets import fusion as fusion_sheets
 
 
@@ -292,9 +294,9 @@ def test_my_progress_load_failure_still_opens_panel(monkeypatch):
 def test_coerce_status_for_save_accepts_canonical_and_index_values():
     assert opt_in_view._coerce_status_for_save("not_started") == "not_started"
     assert opt_in_view._coerce_status_for_save("in_progress") == "in_progress"
-    assert opt_in_view._coerce_status_for_save("2") == "done"
-    assert opt_in_view._coerce_status_for_save("3") == "done_bonus"
-    assert opt_in_view._coerce_status_for_save(4) == "skipped"
+    assert opt_in_view._coerce_status_for_save("2") == "skipped"
+    assert opt_in_view._coerce_status_for_save("3") == "done"
+    assert opt_in_view._coerce_status_for_save(4) == "done_bonus"
     assert opt_in_view._coerce_status_for_save("999") is None
 
 
@@ -485,15 +487,15 @@ def test_status_options_include_done_bonus_only_when_event_has_bonus():
     assert [option.value for option in bonus_select.options] == [
         "not_started",
         "in_progress",
+        "skipped",
         "done",
         "done_bonus",
-        "skipped",
     ]
     assert [option.value for option in plain_select.options] == [
         "not_started",
         "in_progress",
-        "done",
         "skipped",
+        "done",
     ]
 
 
@@ -966,3 +968,208 @@ def test_traditional_reopened_progress_merges_saved_rows_with_event_defaults():
     assert "✅ Done: 3" in summary
     assert "🟡 In Progress: 1" in summary
     assert "⬜ Not Started: 12" in summary
+
+
+def test_traditional_my_progress_uses_required_rare_denominator_not_source_count():
+    target = replace(_fusion_row(opt_in_role_id=777, fusion_type="traditional"), needed=16, available=17, reward_type="rares")
+    events = [
+        _event_row(
+            f"rare_{idx}",
+            reward_type="rare",
+            reward_amount=1.0,
+            start_at_utc=dt.datetime(2026, 8, 8, tzinfo=dt.timezone.utc),
+            end_at_utc=dt.datetime(2026, 8, 9, tzinfo=dt.timezone.utc),
+        )
+        for idx in range(1, 18)
+    ]
+    progress = {f"rare_{idx}": "done" for idx in range(1, 5)}
+    progress.update({"rare_5": "in_progress"})
+
+    embed = opt_in_view._build_progress_summary_embed(
+        target=target,
+        events=events,
+        progress_by_event=progress,
+    )
+
+    summary_field = next(field for field in embed.fields if field.name == "Summary")
+    progress_field = next(field for field in embed.fields if field.name == "\u200b")
+    assert "✅ Done: 4" in summary_field.value
+    assert "🟡 In Progress: 1" in summary_field.value
+    assert "⬜ Not Started: 12" in summary_field.value
+    assert "**Rare Progress**" in progress_field.value
+    assert "4 acquired" in progress_field.value
+    assert "0 skipped" in progress_field.value
+    assert "12 to go" in progress_field.value
+    assert "4 / 16 required rares" in progress_field.value
+    assert "17 rare sources available" in progress_field.value
+    assert "16 / 17 needed" not in progress_field.value
+
+
+def test_traditional_prep_embed_separates_manual_inventory_from_event_acquired():
+    target = replace(_fusion_row(opt_in_role_id=777, fusion_type="traditional"), needed=16, available=17, reward_type="rares")
+    events = [_event_row(f"rare_{idx}", reward_type="rare", reward_amount=1.0) for idx in range(1, 18)]
+    progress = {f"rare_{idx}": "done" for idx in range(1, 5)}
+    prep = fusion_sheets.FusionTraditionalUserProgressRow(
+        fusion_id="f-1",
+        user_id="42",
+        rares_owned=0,
+        rares_level_40=2,
+        rares_ascended=2,
+        epics_fused=0,
+        epics_level_50=0,
+        epics_ascended=0,
+        target_ready=False,
+    )
+
+    embed = opt_in_view._build_traditional_prep_embed(
+        target=target,
+        events=events,
+        progress_by_event=progress,
+        prep=prep,
+    )
+
+    rare_field = next(field for field in embed.fields if field.name == "Rare Progress")
+    prep_field = next(field for field in embed.fields if field.name == "Rare Prep")
+    assert "Rares acquired: 4 / 16" in rare_field.value
+    assert "Rares still needed: 12" in rare_field.value
+    assert "Rare sources available: 17" in rare_field.value
+    assert "Manual inventory" not in rare_field.value
+    assert "Rares owned" not in rare_field.value
+    assert "Total known rares" not in rare_field.value
+    assert "Known rare count" not in rare_field.value
+    assert "Rares level 40: 2 / 16" in prep_field.value
+    assert "Rares fully ascended: 2 / 16" in prep_field.value
+
+
+
+def test_traditional_rare_progress_counts_effectively_missed_events():
+    target = replace(_fusion_row(opt_in_role_id=777, fusion_type="traditional"), needed=16, available=17, reward_type="rares")
+    now = dt.datetime(2026, 7, 4, tzinfo=dt.timezone.utc)
+    events = [
+        _event_row(
+            "rare_missed",
+            reward_type="rare",
+            reward_amount=1.0,
+            start_at_utc=dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc),
+            end_at_utc=dt.datetime(2026, 6, 2, tzinfo=dt.timezone.utc),
+        )
+    ]
+    snapshot = build_share_snapshot(events=events, progress_by_event={}, now=now)
+
+    rare_progress = calculate_traditional_rare_progress(
+        target=target,
+        events=events,
+        progress_by_event={},
+        effective_status_by_event=snapshot.display_status_by_event,
+    )
+
+    assert snapshot.display_status_by_event["rare_missed"] == "missed"
+    assert rare_progress.missed == 1
+    assert rare_progress.acquired == 0
+    assert rare_progress.to_go == 16
+
+
+
+def test_traditional_rare_progress_counts_bonus_done_skipped_and_partials():
+    target = replace(_fusion_row(opt_in_role_id=777, fusion_type="traditional"), needed=16, available=17, reward_type="rares")
+    done_bonus = replace(_event_row("done_bonus", reward_type="rare", reward_amount=1.0), bonus=1.0)
+    done = replace(_event_row("done", reward_type="rare", reward_amount=1.0), bonus=1.0)
+    skipped = replace(_event_row("skipped", reward_type="rare", reward_amount=1.0), bonus=1.0)
+    in_progress = _event_row("in_progress", reward_type="rare", reward_amount=1.0)
+
+    rare_progress = calculate_traditional_rare_progress(
+        target=target,
+        events=[done_bonus, done, skipped, in_progress],
+        effective_status_by_event={
+            "done_bonus": "done_bonus",
+            "done": "done",
+            "skipped": "skipped",
+            "in_progress": "in_progress",
+        },
+        partial_by_event={"in_progress": 1.0},
+    )
+
+    assert rare_progress.acquired == 4
+    assert rare_progress.skipped == 2
+    assert rare_progress.to_go == 12
+    assert rare_progress.available_sources == 17
+
+
+def test_traditional_rare_progress_in_progress_without_partial_counts_zero():
+    target = replace(_fusion_row(opt_in_role_id=777, fusion_type="traditional"), needed=16, available=17, reward_type="rares")
+    event = _event_row("in_progress", reward_type="rare", reward_amount=1.0)
+
+    rare_progress = calculate_traditional_rare_progress(
+        target=target,
+        events=[event],
+        effective_status_by_event={"in_progress": "in_progress"},
+    )
+
+    assert rare_progress.acquired == 0
+    assert rare_progress.to_go == 16
+
+def test_traditional_prep_validation_uses_event_acquired_rares():
+    assert opt_in_view._validate_traditional_prep_counts(
+        needed_total=16,
+        rares_acquired=max(0, 4),
+        rares_level_40=2,
+        rares_ascended=0,
+        epics_fused=0,
+        epics_level_50=0,
+        epics_ascended=0,
+    ) is None
+    assert opt_in_view._validate_traditional_prep_counts(
+        needed_total=16,
+        rares_acquired=max(0, 0),
+        rares_level_40=2,
+        rares_ascended=0,
+        epics_fused=0,
+        epics_level_50=0,
+        epics_ascended=0,
+    ) == "Rares level 40 cannot be higher than Rares acquired from event rewards."
+
+
+def test_traditional_prep_embed_uses_partial_rare_progress():
+    target = replace(_fusion_row(opt_in_role_id=777, fusion_type="traditional"), needed=16, available=17, reward_type="rares")
+    event = _event_row("rare_partial", reward_type="rare", reward_amount=1.0)
+    prep = fusion_sheets.FusionTraditionalUserProgressRow(
+        fusion_id="f-1",
+        user_id="42",
+        rares_owned=0,
+        rares_level_40=1,
+        rares_ascended=0,
+        epics_fused=0,
+        epics_level_50=0,
+        epics_ascended=0,
+        target_ready=False,
+    )
+
+    embed = opt_in_view._build_traditional_prep_embed(
+        target=target,
+        events=[event],
+        progress_by_event={"rare_partial": "in_progress"},
+        partial_by_event={"rare_partial": 1.0},
+        prep=prep,
+    )
+
+    rare_field = next(field for field in embed.fields if field.name == "Rare Progress")
+    assert "Rares acquired: 1 / 16" in rare_field.value
+    assert "Rares still needed: 15" in rare_field.value
+
+
+def test_progress_status_index_mapping_matches_dropdown_order_and_excludes_missed():
+    bonus_event = replace(_event_row("rare_bonus"), bonus=1.0)
+    select = opt_in_view._FusionProgressStatusSelect("not_started", selected_event=bonus_event)
+
+    assert [option.value for option in select.options] == [
+        "not_started",
+        "in_progress",
+        "skipped",
+        "done",
+        "done_bonus",
+    ]
+    assert "missed" not in [option.value for option in select.options]
+    assert opt_in_view._coerce_status_for_save("2") == "skipped"
+    assert opt_in_view._coerce_status_for_save("3") == "done"
+    assert opt_in_view._coerce_status_for_save("4") == "done_bonus"
+    assert opt_in_view._coerce_status_for_save("missed") is None
