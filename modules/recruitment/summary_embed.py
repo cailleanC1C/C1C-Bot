@@ -112,7 +112,7 @@ def _build_leadership_summary(
     author: discord.abc.User | discord.Member | None = None,
     now: datetime | None = None,
 ) -> discord.Embed:
-    title = "C1C – Leadership move request"
+    title = "C1C - Leadership move request"
     description = (
         "Got your request! A coordinator will review the move and follow up here. "
         "Please leave the thread unlocked until we reply."
@@ -145,20 +145,36 @@ def _build_leadership_summary(
         if lines:
             embed.add_field(name=f"**{header}**", value="\n".join(lines), inline=False)
 
-    player_lines: list[str] = []
-    player = _clean("pl_player_name")
+    move_lines: list[str] = []
+    private_request = _clean("pl_private")
+    if private_request:
+        move_lines.append(f"**Private request:** {private_request}")
+
+    player = _clean("pl_discord") or _clean("pl_player_name")
     if player:
-        player_lines.append(f"**Player:** {player}")
+        move_lines.append(f"**Player:** {player}")
+
     reporter = _clean("pl_reporter")
     if reporter:
-        player_lines.append(f"**Reported by:** {reporter}")
-    current_clan = _clean("pl_current_clan")
+        move_lines.append(f"**Reported by:** {reporter}")
+
+    reason = _clean("pl_reason") or _clean("pl_move_reason")
+    if reason:
+        move_lines.append(f"**Reason:** {reason}")
+
+    timing = _clean("pl_time") or _clean("pl_move_urgency") or _clean("pl_move_window")
+    if timing:
+        move_lines.append(f"**Urgency / timing:** {timing}")
+
+    current_clan = _clean("pl_curr_clan") or _clean("pl_current_clan")
     if current_clan:
-        player_lines.append(f"**Current clan:** {current_clan}")
-    target_clan = _clean("pl_target_clan")
+        move_lines.append(f"**Current clan:** {current_clan}")
+
+    target_clan = _clean("pl_new_clan") or _clean("pl_target_clan")
     if target_clan:
-        player_lines.append(f"**Target clan:** {target_clan}")
-    _append_section("Player & reporter", player_lines)
+        move_lines.append(f"**Requested new clan / fit:** {target_clan}")
+
+    _append_section("Move request", move_lines)
 
     performance_lines: list[str] = []
     power = _abbr(answers.get("pl_power")) if "pl_power" in answers else ""
@@ -219,21 +235,9 @@ def _build_leadership_summary(
 
     _append_section("War modes", war_lines)
 
-    rationale_lines: list[str] = []
-    move_reason = _clean("pl_move_reason")
-    if move_reason:
-        rationale_lines.append(f"**Move reason:** {move_reason}")
-    move_urgency = _clean("pl_move_urgency")
-    if move_urgency:
-        rationale_lines.append(f"**Urgency:** {move_urgency}")
-    move_window = _clean("pl_move_window")
-    if move_window:
-        rationale_lines.append(f"**Timing window:** {move_window}")
-    notes = _clean("pl_notes")
-    if notes:
-        rationale_lines.append(f"**Notes:** {notes}")
-
-    _append_section("Move rationale & constraints", rationale_lines)
+    extra_notes = _clean("pl_various") or _clean("pl_notes")
+    if extra_notes:
+        _append_section("Extra notes", [extra_notes])
 
     return embed
 
