@@ -219,3 +219,56 @@ def test_build_promo_leadership_summary_renders_collected_move_payload():
 
     notes_section = next(field for field in embed.fields if "Extra notes" in field.name)
     assert notes_section.value == "I dunno what else to tell you"
+
+
+def test_promo_m_summary_renders_exact_move_payload_context():
+    answers = {
+        "pm_cur_clan": "C1CD",
+        "pm_lead_inform": "no",
+        "pm_ign": "smurf",
+        "pm_ppower": "12m",
+        "pm_playstyle": "active",
+        "pm_level": "mid game",
+        "pm_level_detail": {"value": "Mid Game", "label": "Mid Game"},
+        "pm_new_clan": "chat",
+        "pm_CB": {"value": "Nightmare", "label": "Nightmare"},
+        "pm_hydra_diff": [{"value": "Brutal", "label": "Brutal"}],
+        "pm_hydra_clash": "1b",
+        "pm_chimera_diff": [{"value": "Brutal", "label": "Brutal"}],
+        "pm_chimera_clash": "1b",
+        "pm_siege": "yes",
+        "pm_siege_detail": "offense",
+        "pm_cvc": {"value": "5", "label": "5"},
+        "pm_cvc_points": "500k",
+        "pm_move_date": "asap",
+    }
+
+    embed = build_promo_summary_embed("promo.m", answers, _visibility_map(answers), author=None)
+
+    move_section = next(field for field in embed.fields if field.name == "🧭 Move request")
+    assert "Player:** smurf" in move_section.value
+    assert "Current clan:** C1CD" in move_section.value
+    assert "Requested new clan / fit:** chat" in move_section.value
+    assert "Move date:** asap" in move_section.value
+    assert "Lead informed:** no" in move_section.value
+
+    player_section = next(field for field in embed.fields if field.name == "👤 Player snapshot")
+    assert "Player power:** 12 M" in player_section.value
+    assert "Bracket:** Mid Game" in player_section.value
+    assert "Playstyle:** active" in player_section.value
+    assert "mid game" not in player_section.value
+
+    performance_section = next(
+        field for field in embed.fields if field.name == "🧩 Performance snapshot"
+    )
+    assert "Clan Boss (one-key top chest):** Nightmare" in performance_section.value
+    assert "Hydra:** Brutal" in performance_section.value
+    assert "Avg Hydra Clash:** 1b" in performance_section.value
+    assert "Chimera:** Brutal" in performance_section.value
+    assert "Avg Chimera Clash:** 1b" in performance_section.value
+
+    war_section = next(field for field in embed.fields if field.name == "⚔️ War Modes")
+    assert "Siege participation:** yes" in war_section.value
+    assert "Siege setup:** offense" in war_section.value
+    assert "CvC priority:** High" in war_section.value
+    assert "Minimum CvC points:** 500 K" in war_section.value

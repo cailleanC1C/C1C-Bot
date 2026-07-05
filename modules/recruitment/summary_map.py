@@ -189,20 +189,41 @@ SUMMARY_LAYOUTS = {
         },
         "sections": [
             {
-                "name": "identity",
-                "title": "🧭 Player & current placement",
+                "name": "move",
+                "title": "🧭 Move request",
                 "fields": [
                     {"gid": "pm_ign", "label": "Player"},
                     {
-                        "gid": "pm_power",
-                        "label": "Power",
-                        "inline_with": "pm_level_detail",
-                        "fmt": "abbr_number",
+                        "gid": "pm_cur_clan",
+                        "label": "Current clan",
+                        "fallback_gids": ["pm_current_clan"],
                     },
-                    {"gid": "pm_level_detail", "label": "Bracket", "inline": True},
+                    {
+                        "gid": "pm_new_clan",
+                        "label": "Requested new clan / fit",
+                        "fallback_gids": ["pm_clan_type"],
+                    },
+                    {"gid": "pm_move_date", "label": "Move date"},
+                    {"gid": "pm_lead_inform", "label": "Lead informed", "show_hide_tokens": True},
+                ],
+            },
+            {
+                "name": "player",
+                "title": "👤 Player snapshot",
+                "fields": [
+                    {
+                        "gid": "pm_ppower",
+                        "label": "Player power",
+                        "fmt": "abbr_number",
+                        "fallback_gids": ["pm_power"],
+                    },
+                    {"gid": "pm_level_detail", "label": "Bracket"},
+                    {
+                        "gid": "pm_level",
+                        "label": "Bracket",
+                        "hide_if_present": "pm_level_detail",
+                    },
                     {"gid": "pm_playstyle", "label": "Playstyle"},
-                    {"gid": "pm_current_clan", "label": "Current clan"},
-                    {"gid": "pm_clan_type", "label": "Looking for"},
                 ],
             },
             {
@@ -256,7 +277,6 @@ SUMMARY_LAYOUTS = {
                 "title": "🧭 Move intent & notes",
                 "fields": [
                     {"gid": "pm_move_urgency", "label": "Move urgency"},
-                    {"gid": "pm_move_date", "label": "Move date"},
                     {"gid": "pm_move_reason", "label": "Move reason", "truncate": 200},
                     {"gid": "pm_notes", "label": "Anything else we should know", "truncate": 280},
                 ],

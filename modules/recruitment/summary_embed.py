@@ -338,10 +338,30 @@ def _resolved_value(
     gid = field.get("gid")
     if not gid:
         return ""
-    if visible_gids and gid not in visible_gids:
-        return ""
-    raw = answers.get(gid)
+    candidate_gids = [gid, *field.get("fallback_gids", [])]
+    raw = None
+    for candidate_gid in candidate_gids:
+        if not candidate_gid:
+            continue
+        if visible_gids and candidate_gid not in visible_gids:
+            continue
+        candidate_raw = answers.get(candidate_gid)
+        candidate_formatted = _format_value(field, candidate_raw)
+        if not should_hide_value(candidate_formatted) or (
+            field.get("show_hide_tokens") and candidate_formatted
+        ):
+            raw = candidate_raw
+            break
+    else:
+        if visible_gids and gid not in visible_gids:
+            return ""
+        raw = answers.get(gid)
     formatted = _format_value(field, raw)
+    hide_if_present = field.get("hide_if_present")
+    if hide_if_present:
+        hide_value = _format_value({}, answers.get(hide_if_present))
+        if not should_hide_value(hide_value):
+            return ""
     required_gid = field.get("requires")
     if required_gid:
         required_value = _format_value({}, answers.get(required_gid))
@@ -355,6 +375,8 @@ def _resolved_value(
     if formatted and hide_tokens and formatted.strip().lower() in hide_tokens:
         return ""
     force_show = bool(field.get("force_show"))
+    if field.get("show_hide_tokens") and formatted:
+        return formatted
     if should_hide_value(formatted, force_show=force_show):
         if force_show:
             return "—"
