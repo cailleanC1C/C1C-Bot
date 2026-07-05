@@ -1161,6 +1161,51 @@ PROMO_METADATA_PRESERVE_FIELDS = {
     "clanname",
     "progression",
 }
+_LEGACY_USER_ID_REVIEW_REASONS = {
+    "user_id_unresolved",
+    "user_id unresolved from ticket tool intro message",
+}
+_USER_ID_REVIEW_REASONS = {
+    "missing_user_id",
+    "invalid_user_id",
+    "discord_user_lookup_failed",
+    *_LEGACY_USER_ID_REVIEW_REASONS,
+}
+
+
+def _promo_user_id_review_reason(
+    *,
+    stored_user_id: str,
+    incoming_review_reason: str,
+    existing_review_reason: str,
+) -> str:
+    """Return the precise user-id review reason for Promo ticket metadata.
+
+    Legacy callers used ``user_id_unresolved`` for several different states.
+    Keep the classification local to metadata patching so dynamic sheet/header
+    behavior stays unchanged while stale rows are repaired on the next write.
+    """
+
+    user_id_text = str(stored_user_id or "").strip()
+    requested_reason = str(incoming_review_reason or "").strip()
+    existing_reason = str(existing_review_reason or "").strip()
+    active_reason = requested_reason or existing_reason
+    normalized_requested = requested_reason.lower()
+    normalized_active = active_reason.lower()
+
+    if not user_id_text:
+        if normalized_active in _LEGACY_USER_ID_REVIEW_REASONS:
+            return "missing_user_id"
+        return active_reason
+    if not _is_discord_id(user_id_text):
+        if not active_reason or normalized_active in _USER_ID_REVIEW_REASONS:
+            return "invalid_user_id"
+        return active_reason
+    if normalized_requested == "discord_user_lookup_failed":
+        return requested_reason
+    if normalized_active in _USER_ID_REVIEW_REASONS:
+        return ""
+    return active_reason
 
 
 def patch_promo_ticket_metadata(
@@ -1254,14 +1299,30 @@ def patch_promo_ticket_metadata(
         "createdat": created.isoformat() if created is not None else "",
         "updatedat": now.isoformat(),
     }
+    effective_user_id = incoming["userid"]
+    user_id_idx = idx.get("userid")
+    if not effective_user_id and user_id_idx is not None and user_id_idx < len(row_values):
+        effective_user_id = str(row_values[user_id_idx] or "").strip()
+    review_idx = idx.get("reviewreason")
+    if review_idx is not None:
+        existing_review = str(row_values[review_idx] or "").strip() if review_idx < len(row_values) else ""
+        incoming["reviewreason"] = _promo_user_id_review_reason(
+            stored_user_id=effective_user_id,
+            incoming_review_reason=incoming["reviewreason"],
+            existing_review_reason=existing_review,
+        )
 
     changed = False
     for field, value in incoming.items():
         if field not in idx or field not in PROMO_METADATA_FIELDS:
             continue
-        if not value:
-            continue
         current = str(row_values[idx[field]] or "").strip()
+        if not value and not (
+            field == "reviewreason"
+            and current
+            and current.lower() in _USER_ID_REVIEW_REASONS
+        ):
+            continue
         if field in PROMO_METADATA_PRESERVE_FIELDS and current:
             continue
         if field in {"threadid", "userid", "threadname", "createdat"} and current:
