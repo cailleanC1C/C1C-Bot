@@ -572,9 +572,9 @@ class PromoTicketWatcher(commands.Cog):
         resolved_user_id = user_id if user_id is not None else context.user_id
         reason = review_reason
         if resolved_user_id is None and not reason:
-            reason = "user_id unresolved from Ticket Tool intro message"
+            reason = "missing_user_id"
             log.warning(
-                "promo metadata user_id unresolved",
+                "promo metadata user_id missing",
                 extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)},
             )
         try:

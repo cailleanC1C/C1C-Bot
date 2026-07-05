@@ -153,14 +153,14 @@ def test_patch_promo_metadata_finalization_preserves_business_and_no_blank_overw
     assert row["progression"] == "TH15"
 
 
-def test_patch_promo_metadata_missing_user_id_sets_review_reason(promo_sheet):
+def test_patch_promo_metadata_missing_user_id_sets_precise_review_reason(promo_sheet):
     result = onboarding_sheets.patch_promo_ticket_metadata(
         ticket="M0371",
         username="No Mention",
         thread_name="M0371-No-Mention",
         thread_id=778,
         status="open",
-        review_reason="user_id unresolved from Ticket Tool intro message",
+        review_reason="user_id_unresolved",
     )
 
     assert result == "inserted"
@@ -168,7 +168,202 @@ def test_patch_promo_metadata_missing_user_id_sets_review_reason(promo_sheet):
     assert row["thread_name"] == "M0371-No-Mention"
     assert row["thread_id"] == "778"
     assert row["user_id"] == ""
-    assert row["review_reason"] == "user_id unresolved from Ticket Tool intro message"
+    assert row["review_reason"] == "missing_user_id"
+
+
+def test_patch_promo_metadata_valid_user_id_gets_no_unresolved_review_reason(promo_sheet):
+    result = onboarding_sheets.patch_promo_ticket_metadata(
+        ticket="M0373",
+        username="Has User",
+        thread_name="M0373-Has-User",
+        user_id=384926516792131584,
+        thread_id=780,
+        status="open",
+    )
+
+    assert result == "inserted"
+    row = _row_map(promo_sheet)
+    assert row["user_id"] == "384926516792131584"
+    assert row["review_reason"] == ""
+
+
+def test_patch_promo_metadata_discord_lookup_failure_uses_lookup_reason(promo_sheet):
+    result = onboarding_sheets.patch_promo_ticket_metadata(
+        ticket="M0374",
+        username="Lookup Failed",
+        user_id=384926516792131584,
+        thread_id=781,
+        status="open",
+        review_reason="discord_user_lookup_failed",
+    )
+
+    assert result == "inserted"
+    row = _row_map(promo_sheet)
+    assert row["user_id"] == "384926516792131584"
+    assert row["review_reason"] == "discord_user_lookup_failed"
+
+
+def test_patch_promo_metadata_malformed_user_id_sets_invalid_reason(promo_sheet):
+    result = onboarding_sheets.patch_promo_ticket_metadata(
+        ticket="M0375",
+        username="Bad User",
+        user_id="not-a-snowflake",
+        thread_id=782,
+        status="open",
+    )
+
+    assert result == "inserted"
+    row = _row_map(promo_sheet)
+    assert row["user_id"] == "not-a-snowflake"
+    assert row["review_reason"] == "invalid_user_id"
+
+
+def test_patch_promo_metadata_clears_stale_user_id_unresolved_for_valid_user_id(promo_sheet):
+    promo_sheet.rows.append([
+        "L0059", "Caillean", "", "", "", "clan lead move request", "", "L0059-Caillean",
+        "384926516792131584", "783", "", "open", "user_id_unresolved", "", "", "pending",
+        "pending", "pending", "", "2026", "July", "", "", "",
+    ])
+
+    result = onboarding_sheets.patch_promo_ticket_metadata(
+        ticket="L0059",
+        thread_id=783,
+        status="open",
+    )
+
+    assert result == "updated"
+    row = _row_map(promo_sheet)
+    assert row["user_id"] == "384926516792131584"
+    assert row["review_reason"] == ""
+
+
+@pytest.mark.parametrize(
+    "incoming_reason,existing_reason",
+    [
+        ("missing_user_id", ""),
+        ("", "missing_user_id"),
+        ("", "invalid_user_id"),
+        ("", "discord_user_lookup_failed"),
+    ],
+)
+def test_patch_promo_metadata_clears_user_id_reasons_when_existing_user_id_is_valid(
+    promo_sheet,
+    incoming_reason,
+    existing_reason,
+):
+    promo_sheet.rows.append([
+        "M0376", "Existing User", "", "", "", "player move request", "", "M0376-Existing-User",
+        "384926516792131584", "785", "", "open", existing_reason, "", "", "pending",
+        "pending", "pending", "", "2026", "July", "", "", "",
+    ])
+
+    result = onboarding_sheets.patch_promo_ticket_metadata(
+        ticket="M0376",
+        thread_id=785,
+        status="open",
+        review_reason=incoming_reason,
+    )
+
+    assert result == "updated"
+    row = _row_map(promo_sheet)
+    assert row["user_id"] == "384926516792131584"
+    assert row["review_reason"] == ""
+
+
+def test_patch_promo_metadata_preserves_explicit_new_lookup_failure_for_valid_user_id(promo_sheet):
+    promo_sheet.rows.append([
+        "M0377", "Lookup Failed", "", "", "", "player move request", "", "M0377-Lookup-Failed",
+        "384926516792131584", "786", "", "open", "", "", "", "pending",
+        "pending", "pending", "", "2026", "July", "", "", "",
+    ])
+
+    result = onboarding_sheets.patch_promo_ticket_metadata(
+        ticket="M0377",
+        thread_id=786,
+        status="open",
+        review_reason="discord_user_lookup_failed",
+    )
+
+    assert result == "updated"
+    row = _row_map(promo_sheet)
+    assert row["user_id"] == "384926516792131584"
+    assert row["review_reason"] == "discord_user_lookup_failed"
+
+
+def test_patch_promo_metadata_blank_existing_user_id_legacy_reason_becomes_missing(promo_sheet):
+    promo_sheet.rows.append([
+        "M0378", "Missing User", "", "", "", "player move request", "", "M0378-Missing-User",
+        "", "787", "", "open", "", "", "", "pending",
+        "pending", "pending", "", "2026", "July", "", "", "",
+    ])
+
+    result = onboarding_sheets.patch_promo_ticket_metadata(
+        ticket="M0378",
+        thread_id=787,
+        status="open",
+        review_reason="user_id_unresolved",
+    )
+
+    assert result == "updated"
+    row = _row_map(promo_sheet)
+    assert row["user_id"] == ""
+    assert row["review_reason"] == "missing_user_id"
+
+
+def test_patch_promo_metadata_existing_malformed_user_id_sets_invalid_reason(promo_sheet):
+    promo_sheet.rows.append([
+        "M0379", "Bad User", "", "", "", "player move request", "", "M0379-Bad-User",
+        "not-a-snowflake", "788", "", "open", "", "", "", "pending",
+        "pending", "pending", "", "2026", "July", "", "", "",
+    ])
+
+    result = onboarding_sheets.patch_promo_ticket_metadata(
+        ticket="M0379",
+        thread_id=788,
+        status="open",
+    )
+
+    assert result == "updated"
+    row = _row_map(promo_sheet)
+    assert row["user_id"] == "not-a-snowflake"
+    assert row["review_reason"] == "invalid_user_id"
+
+
+def test_patch_promo_metadata_preserves_unrelated_review_reason(promo_sheet):
+    promo_sheet.rows.append([
+        "M0380", "Other Review", "", "", "", "player move request", "", "M0380-Other-Review",
+        "384926516792131584", "789", "", "open", "manual_review_needed", "", "", "pending",
+        "pending", "pending", "", "2026", "July", "", "", "",
+    ])
+
+    result = onboarding_sheets.patch_promo_ticket_metadata(
+        ticket="M0380",
+        thread_id=789,
+        status="open",
+    )
+
+    assert result == "updated"
+    row = _row_map(promo_sheet)
+    assert row["user_id"] == "384926516792131584"
+    assert row["review_reason"] == "manual_review_needed"
+
+
+def test_patch_promo_metadata_clan_lead_move_uses_ticket_creator_user_id(promo_sheet):
+    result = onboarding_sheets.patch_promo_ticket_metadata(
+        ticket="L0060",
+        username="Lead",
+        thread_name="L0060-Lead",
+        user_id=384926516792131584,
+        thread_id=784,
+        status="open",
+    )
+
+    assert result == "inserted"
+    row = _row_map(promo_sheet)
+    assert row["type"] == ""
+    assert row["user_id"] == "384926516792131584"
+    assert row["review_reason"] != "user_id_unresolved"
+    assert row["review_reason"] == ""
 
 
 def test_patch_promo_metadata_missing_required_header_skips_without_header_rewrite(monkeypatch):
