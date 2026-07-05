@@ -7,7 +7,17 @@ import logging
 import math
 import re
 import sys
-from typing import Any, Awaitable, Callable, Dict, Iterable, Mapping, Optional, Sequence, cast
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    Iterable,
+    Mapping,
+    Optional,
+    Sequence,
+    cast,
+)
 
 import discord
 from discord.ext import commands
@@ -25,7 +35,10 @@ from modules.onboarding.summary_detection import find_recruitment_summary_messag
 from modules.onboarding.ui.card import RollingCard
 from modules.onboarding.ui.panel_message_manager import PanelMessageManager
 from modules.onboarding.ui.modal_renderer import WelcomeQuestionnaireModal, build_modals
-from modules.onboarding.ui.summary_embed import build_summary_embed, _fallback_welcome_embed
+from modules.onboarding.ui.summary_embed import (
+    build_summary_embed,
+    _fallback_welcome_embed,
+)
 from modules.onboarding.ui.select_renderer import build_select_view
 from modules.onboarding.ui.summary_retry import RetryWelcomeSummaryView
 from modules.onboarding.ui.views import NextStepView
@@ -38,6 +51,13 @@ from shared.config import get_recruiter_role_ids
 log = logging.getLogger(__name__)
 gate_log = logging.getLogger("c1c.onboarding.gate")
 launch_log = logging.getLogger("c1c.onboarding.controller")
+
+SUMMARY_SCREENSHOT_PROMPT = (
+    "Thanks, summary is in. \n"
+    "Please upload a screenshot of the ingame **Player Profile** next.\n"
+    "*Optional but helpful: you can also add a roster screenshot if it gives the recruiters better context.*"
+)
+
 
 async def _delete_captured_answer_message(message: discord.Message | None) -> None:
     """Best-effort cleanup for user answer messages in onboarding threads.
@@ -74,7 +94,9 @@ def _sheet_regex(meta: dict[str, Any]) -> str | None:
     return None
 
 
-def validate_answer(meta: dict[str, Any], raw: str) -> tuple[bool, str | None, str | None]:
+def validate_answer(
+    meta: dict[str, Any], raw: str
+) -> tuple[bool, str | None, str | None]:
     """
     (ok, cleaned, error)
     - If sheet provides a regex -> enforce it on the raw string.
@@ -115,7 +137,9 @@ def _display_name(user: discord.abc.User | discord.Member | None) -> str:
 def _channel_path(channel: discord.abc.GuildChannel | discord.Thread | None) -> str:
     if isinstance(channel, discord.Thread):
         parent = getattr(channel, "parent", None)
-        parent_label = f"#{getattr(parent, 'name', 'unknown')}" if parent else "#unknown"
+        parent_label = (
+            f"#{getattr(parent, 'name', 'unknown')}" if parent else "#unknown"
+        )
         return f"{parent_label} › {getattr(channel, 'name', 'thread')}"
     if isinstance(channel, discord.abc.GuildChannel):
         return f"#{getattr(channel, 'name', 'channel')}"
@@ -131,7 +155,11 @@ def _log_gate(
     flow: str | None = None,
 ) -> None:
     channel_obj: discord.abc.GuildChannel | discord.Thread | None
-    channel_obj = interaction.channel if isinstance(interaction.channel, (discord.Thread, discord.abc.GuildChannel)) else fallback_thread
+    channel_obj = (
+        interaction.channel
+        if isinstance(interaction.channel, (discord.Thread, discord.abc.GuildChannel))
+        else fallback_thread
+    )
     emoji = "✅" if allowed else "🔐"
     status = "ok" if allowed else "deny"
     context: dict[str, str] = {}
@@ -167,7 +195,9 @@ def _log_followup_fallback(
     )
 
 
-async def _edit_deferred_response(interaction: discord.Interaction, message: str) -> None:
+async def _edit_deferred_response(
+    interaction: discord.Interaction, message: str
+) -> None:
     try:
         await interaction.edit_original_response(content=message)
     except Exception as exc:  # pragma: no cover - defensive fallback
@@ -180,6 +210,7 @@ async def _edit_deferred_response(interaction: discord.Interaction, message: str
             await followup.send(message, ephemeral=True)
         except Exception:  # pragma: no cover - final guard
             log.warning("failed to deliver followup message", exc_info=True)
+
 
 _PANEL_RETRY_DELAYS = (0.5, 1.0, 2.0)
 
@@ -213,20 +244,24 @@ class RollingCardSession:
         self.thread = thread
         self.guild = guild or getattr(thread, "guild", None)
         self.card = RollingCard(thread)
-        self.owner: discord.abc.User | discord.Member | None = (
-            owner or getattr(thread, "owner", None)
+        self.owner: discord.abc.User | discord.Member | None = owner or getattr(
+            thread, "owner", None
         )
         identifier = getattr(self.owner, "id", None)
         if identifier is None:
             identifier = getattr(thread, "owner_id", None)
         try:
-            self.owner_id: int | None = int(identifier) if identifier is not None else None
+            self.owner_id: int | None = (
+                int(identifier) if identifier is not None else None
+            )
         except (TypeError, ValueError):
             self.owner_id = None
         self.thread_id: int | None = None
         thread_identifier = getattr(thread, "id", None)
         try:
-            self.thread_id = int(thread_identifier) if thread_identifier is not None else None
+            self.thread_id = (
+                int(thread_identifier) if thread_identifier is not None else None
+            )
         except (TypeError, ValueError):
             self.thread_id = None
         self._all_questions: list[SheetQuestionRecord] = list(questions)
@@ -255,7 +290,9 @@ class RollingCardSession:
             self._visibility = {}
         else:
             if self.thread_id is not None:
-                self.controller._update_thread_visibility(self.thread_id, self._visibility)
+                self.controller._update_thread_visibility(
+                    self.thread_id, self._visibility
+                )
 
     def _visible_state(self, qid: str | None) -> str:
         if not qid:
@@ -365,7 +402,9 @@ class RollingCardSession:
             self._status_state = "saved" if has_answer else "waiting"
         self._waiting = (qtype_value in TEXT_TYPES) and not has_answer
 
-        view = self._view_for_question(question, required=required, has_answer=has_answer)
+        view = self._view_for_question(
+            question, required=required, has_answer=has_answer
+        )
         help_text = question.help or ""
         helper_line: str | None = None
         if qtype_value in TEXT_TYPES:
@@ -413,7 +452,9 @@ class RollingCardSession:
 
                 if qtype == "bool":
 
-                    async def submit_bool(interaction: discord.Interaction, choice: bool) -> None:
+                    async def submit_bool(
+                        interaction: discord.Interaction, choice: bool
+                    ) -> None:
                         await session._handle_bool_answer(interaction, question, choice)
 
                     yes_button = discord.ui.Button(
@@ -442,7 +483,9 @@ class RollingCardSession:
                     no_button.callback = no_callback  # type: ignore[assignment]
                     self.add_item(no_button)
 
-                elif qtype.startswith("single-select") or qtype.startswith("multi-select"):
+                elif qtype.startswith("single-select") or qtype.startswith(
+                    "multi-select"
+                ):
                     select_view = session._select_view(question)
                     if select_view is not None:
                         for child in select_view.children:
@@ -468,9 +511,7 @@ class RollingCardSession:
         session = self
         # Only block "Next" when we're actively waiting on this required question.
         waiting_active = (
-            self._waiting
-            and required
-            and self._status_question == question.qid
+            self._waiting and required and self._status_question == question.qid
         )
         can_back = self._seek_visible_index(self._current_index - 1, -1) is not None
         can_next = (not waiting_active) and (has_answer or not required)
@@ -705,11 +746,15 @@ class RollingCardSession:
             if isinstance(label, str) and label.strip():
                 tokens.append(label.strip())
             nested = value.get("values")
-            if isinstance(nested, Iterable) and not isinstance(nested, (str, bytes, bytearray)):
+            if isinstance(nested, Iterable) and not isinstance(
+                nested, (str, bytes, bytearray)
+            ):
                 for item in nested:
                     tokens.extend(self._value_tokens(item))
             return tokens
-        if isinstance(value, Iterable) and not isinstance(value, (str, bytes, bytearray)):
+        if isinstance(value, Iterable) and not isinstance(
+            value, (str, bytes, bytearray)
+        ):
             tokens: list[str] = []
             for item in value:
                 tokens.extend(self._value_tokens(item))
@@ -756,8 +801,7 @@ class RollingCardSession:
     def _status_error_text(self, question: SheetQuestionRecord) -> str:
         qtype = (question.qtype or "").lower()
         if qtype.startswith("number"):
-            hint = (self._status_hint or "Use a number like 12.6M (no commas)."
-                    ).strip()
+            hint = (self._status_hint or "Use a number like 12.6M (no commas).").strip()
             if hint:
                 return STATUS_TEXT_GENERIC.format(hint=hint)
             return STATUS_TEXT_NUMBER
@@ -799,7 +843,9 @@ class RollingCardSession:
             and source_message_id is not None
         ):
             try:
-                captured.setdefault(int(self.thread_id), []).append(int(source_message_id))
+                captured.setdefault(int(self.thread_id), []).append(
+                    int(source_message_id)
+                )
             except Exception:
                 pass
         self._log_event("✅", "answer")
@@ -1024,7 +1070,9 @@ class RollingCardSession:
         cleaned = value.strip()
         if not cleaned:
             return False, cleaned, "Numbers only (e.g., 71)."
-        enforce_int, min_value, max_value, step = self._parse_numeric_bounds(question.validate)
+        enforce_int, min_value, max_value, step = self._parse_numeric_bounds(
+            question.validate
+        )
         try:
             number = int(cleaned) if enforce_int else float(cleaned)
         except ValueError:
@@ -1055,15 +1103,25 @@ class RollingCardSession:
             base = 0
         if step:
             remainder = (number - base) / step
-            if not math.isclose(remainder, round(remainder), rel_tol=1e-9, abs_tol=1e-9):
-                return False, cleaned, f"Number must increase by steps of {self._fmt_number(step, enforce_int)}."
+            if not math.isclose(
+                remainder, round(remainder), rel_tol=1e-9, abs_tol=1e-9
+            ):
+                return (
+                    False,
+                    cleaned,
+                    f"Number must increase by steps of {self._fmt_number(step, enforce_int)}.",
+                )
         return True, cleaned, None
 
     @staticmethod
     def _fmt_number(value: float, enforce_int: bool) -> str:
         if enforce_int:
             return str(int(value))
-        return ("%g" % value).rstrip("0").rstrip(".") if isinstance(value, float) else str(value)
+        return (
+            ("%g" % value).rstrip("0").rstrip(".")
+            if isinstance(value, float)
+            else str(value)
+        )
 
     @staticmethod
     def _parse_numeric_bounds(
@@ -1101,6 +1159,8 @@ class RollingCardSession:
             elif key == "step":
                 step = value
         return enforce_int, min_value, max_value, step
+
+
 async def locate_welcome_message(thread: discord.Thread) -> discord.Message | None:
     """Return the welcome greeting message for ``thread`` when available."""
 
@@ -1139,8 +1199,12 @@ def _is_welcome_trigger_message(
     if author is None:
         return False
     content = (getattr(message, "content", "") or "").lower()
-    has_stable_intro = "welcome to c1c" in content and "slap a 👍 on this message" in content
-    has_legacy_intro = "awake by reacting with" in content or "[#welcome:ticket]" in content
+    has_stable_intro = (
+        "welcome to c1c" in content and "slap a 👍 on this message" in content
+    )
+    has_legacy_intro = (
+        "awake by reacting with" in content or "[#welcome:ticket]" in content
+    )
     if has_stable_intro:
         return True
     if bot_user_id is not None and getattr(author, "id", None) != bot_user_id:
@@ -1242,7 +1306,9 @@ class BaseWelcomeController:
         # per-thread metadata (e.g., the active panel message id).
         self.session: dict[str, object] = {"_PANEL_MESSAGES": self._panel_messages}
         self._panel_manager = PanelMessageManager(self.session)
-        recruiter_attr = getattr(self, "recruiter_role_ids", None) or getattr(self, "RECRUITER_ROLE_IDS", None)
+        recruiter_attr = getattr(self, "recruiter_role_ids", None) or getattr(
+            self, "RECRUITER_ROLE_IDS", None
+        )
         if recruiter_attr:
             self.recruiter_role_ids = list(recruiter_attr)
         else:
@@ -1307,7 +1373,9 @@ class BaseWelcomeController:
             )
         async with lock:
             existing = onboarding_sessions.get_by_thread_id(thread_id_int) or {}
-            existing_message_id = self._coerce_int(existing.get("recruiter_summary_message_id"))
+            existing_message_id = self._coerce_int(
+                existing.get("recruiter_summary_message_id")
+            )
             if existing_message_id:
                 existing_result = await self._edit_recorded_summary_message(
                     thread=thread,
@@ -1332,6 +1400,11 @@ class BaseWelcomeController:
                         step=step,
                         existing_message_id=existing_message_id,
                         metadata_persisted=persisted,
+                    )
+                    await self._send_summary_screenshot_prompt(
+                        thread=thread,
+                        thread_id=thread_id_int,
+                        summary_message_id=existing_message_id,
                     )
                     return True
                 if existing_result == "blocked":
@@ -1363,7 +1436,9 @@ class BaseWelcomeController:
                     },
                 )
                 return False
-            discovered_message_id = self._coerce_int(getattr(discovered_message, "id", None))
+            discovered_message_id = self._coerce_int(
+                getattr(discovered_message, "id", None)
+            )
             if discovered_message is not None and discovered_message_id is not None:
                 try:
                     await discovered_message.edit(
@@ -1381,7 +1456,11 @@ class BaseWelcomeController:
                         discovered_message_id=discovered_message_id,
                         reason="discovered_message_not_found",
                     )
-                except (discord.Forbidden, discord.HTTPException, asyncio.TimeoutError) as exc:
+                except (
+                    discord.Forbidden,
+                    discord.HTTPException,
+                    asyncio.TimeoutError,
+                ) as exc:
                     self._log_summary_action(
                         action="summary_send_blocked",
                         thread_id=thread_id_int,
@@ -1440,6 +1519,11 @@ class BaseWelcomeController:
                         discovered_message_id=discovered_message_id,
                         metadata_persisted=persisted,
                     )
+                    await self._send_summary_screenshot_prompt(
+                        thread=thread,
+                        thread_id=thread_id_int,
+                        summary_message_id=discovered_message_id,
+                    )
                     return True
 
             try:
@@ -1465,7 +1549,11 @@ class BaseWelcomeController:
                     player_id=player_id,
                 )
             self._log_summary_action(
-                action="summary_recreated_missing" if existing_message_id else "summary_posted",
+                action=(
+                    "summary_recreated_missing"
+                    if existing_message_id
+                    else "summary_posted"
+                ),
                 thread_id=thread_id_int,
                 player_id=player_id,
                 step=step,
@@ -1473,6 +1561,11 @@ class BaseWelcomeController:
                 discovered_message_id=discovered_message_id,
                 new_message_id=new_message_id,
                 metadata_persisted=persisted,
+            )
+            await self._send_summary_screenshot_prompt(
+                thread=thread,
+                thread_id=thread_id_int,
+                summary_message_id=new_message_id,
             )
             return True
 
@@ -1556,7 +1649,9 @@ class BaseWelcomeController:
         allowed_mentions: discord.AllowedMentions | None,
     ) -> bool:
         try:
-            await thread.send(content=content, embed=embed, allowed_mentions=allowed_mentions)
+            message = await thread.send(
+                content=content, embed=embed, allowed_mentions=allowed_mentions
+            )
         except Exception:
             log.error(
                 "onboarding.summary.send_failed",
@@ -1564,9 +1659,165 @@ class BaseWelcomeController:
                 extra={"flow": self.flow, "thread_id": getattr(thread, "id", None)},
             )
             return False
+        await self._send_summary_screenshot_prompt(
+            thread=thread,
+            thread_id=None,
+            summary_message_id=self._coerce_int(getattr(message, "id", None)),
+        )
         return True
 
-    def _persist_summary_metadata(self, thread_id: int, *, message_id: int, player_id: int | str | None) -> bool:
+    async def _send_summary_screenshot_prompt(
+        self,
+        *,
+        thread: discord.abc.Messageable,
+        thread_id: int | None,
+        summary_message_id: int | None,
+    ) -> None:
+        """Best-effort post-summary screenshot prompt, deduped by summary message id."""
+
+        if summary_message_id is None:
+            log.warning(
+                "onboarding.summary.screenshot_prompt_skipped",
+                extra={"thread_id": thread_id, "reason": "missing_summary_message_id"},
+            )
+            return
+
+        if thread_id is None:
+            log.warning(
+                "onboarding.summary.screenshot_prompt_skipped",
+                extra={"thread_id": thread_id, "reason": "missing_thread_id"},
+            )
+            return
+
+        required = {
+            "summary_screenshot_prompt_message_id",
+            "summary_screenshot_prompt_summary_message_id",
+        }
+        try:
+            missing = onboarding_sessions.missing_columns(required)
+        except Exception:
+            log.warning(
+                "onboarding.summary.screenshot_prompt_skipped_metadata_check_failed",
+                exc_info=True,
+                extra={"thread_id": thread_id},
+            )
+            return
+        if missing:
+            log.warning(
+                "onboarding.summary.screenshot_prompt_skipped_missing_metadata_columns",
+                extra={
+                    "thread_id": thread_id,
+                    "missing_columns": ",".join(sorted(missing)),
+                },
+            )
+            return
+
+        try:
+            row = onboarding_sessions.get_by_thread_id(thread_id) or {}
+        except Exception:
+            log.warning(
+                "onboarding.summary.screenshot_prompt_skipped_metadata_read_failed",
+                exc_info=True,
+                extra={"thread_id": thread_id},
+            )
+            return
+        prompted_for = self._coerce_int(
+            row.get("summary_screenshot_prompt_summary_message_id")
+        )
+        if prompted_for == summary_message_id:
+            return
+
+        if await self._has_existing_summary_screenshot_prompt(
+            thread=thread,
+            thread_id=thread_id,
+            summary_message_id=summary_message_id,
+        ):
+            return
+
+        try:
+            prompt_message = await thread.send(content=SUMMARY_SCREENSHOT_PROMPT)
+        except Exception:
+            log.warning(
+                "onboarding.summary.screenshot_prompt_send_failed",
+                exc_info=True,
+                extra={
+                    "thread_id": thread_id,
+                    "summary_message_id": summary_message_id,
+                },
+            )
+            return
+
+        try:
+            updated = onboarding_sessions.update_existing(
+                thread_id,
+                {
+                    "summary_screenshot_prompt_message_id": str(
+                        getattr(prompt_message, "id", "") or ""
+                    ),
+                    "summary_screenshot_prompt_summary_message_id": str(
+                        summary_message_id
+                    ),
+                    "updated_at": utc_now().isoformat(),
+                },
+            )
+        except Exception:
+            log.warning(
+                "onboarding.summary.screenshot_prompt_metadata_persist_failed",
+                exc_info=True,
+                extra={"thread_id": thread_id},
+            )
+            return
+        if not updated:
+            log.warning(
+                "onboarding.summary.screenshot_prompt_metadata_persist_failed",
+                extra={"thread_id": thread_id, "reason": "update_existing_false"},
+            )
+
+    async def _has_existing_summary_screenshot_prompt(
+        self,
+        *,
+        thread: discord.abc.Messageable,
+        thread_id: int,
+        summary_message_id: int,
+    ) -> bool:
+        history = getattr(thread, "history", None)
+        if not callable(history):
+            return False
+
+        bot_user = getattr(self.bot, "user", None)
+        bot_user_id = self._coerce_int(getattr(bot_user, "id", None))
+        try:
+            async for message in history(limit=50):
+                if getattr(message, "content", None) != SUMMARY_SCREENSHOT_PROMPT:
+                    continue
+                author_id = self._coerce_int(
+                    getattr(getattr(message, "author", None), "id", None)
+                )
+                if bot_user_id is not None and author_id != bot_user_id:
+                    continue
+                log.warning(
+                    "onboarding.summary.screenshot_prompt_skipped_existing_prompt_found",
+                    extra={
+                        "thread_id": thread_id,
+                        "summary_message_id": summary_message_id,
+                        "prompt_message_id": getattr(message, "id", None),
+                    },
+                )
+                return True
+        except Exception:
+            log.warning(
+                "onboarding.summary.screenshot_prompt_history_scan_failed",
+                exc_info=True,
+                extra={
+                    "thread_id": thread_id,
+                    "summary_message_id": summary_message_id,
+                },
+            )
+        return False
+
+    def _persist_summary_metadata(
+        self, thread_id: int, *, message_id: int, player_id: int | str | None
+    ) -> bool:
         required = {
             "recruiter_summary_message_id",
             "recruiter_summary_posted_at",
@@ -1575,7 +1826,11 @@ class BaseWelcomeController:
         try:
             missing = onboarding_sessions.missing_columns(required)
         except Exception:
-            log.warning("onboarding.summary.metadata_header_check_failed", exc_info=True, extra={"thread_id": thread_id})
+            log.warning(
+                "onboarding.summary.metadata_header_check_failed",
+                exc_info=True,
+                extra={"thread_id": thread_id},
+            )
             return False
         if missing:
             log.warning(
@@ -1599,7 +1854,11 @@ class BaseWelcomeController:
                 },
             )
         except Exception:
-            log.warning("onboarding.summary.metadata_persist_failed", exc_info=True, extra={"thread_id": thread_id})
+            log.warning(
+                "onboarding.summary.metadata_persist_failed",
+                exc_info=True,
+                extra={"thread_id": thread_id},
+            )
             return False
         if not updated:
             log.warning(
@@ -1655,9 +1914,13 @@ class BaseWelcomeController:
         if session is not None and session.current_question_index is not None:
             return self._coerce_int(session.current_question_index)
         row = onboarding_sessions.get_by_thread_id(thread_id)
-        return self._coerce_int(row.get("step_index")) if isinstance(row, dict) else None
+        return (
+            self._coerce_int(row.get("step_index")) if isinstance(row, dict) else None
+        )
 
-    def _summary_player_id(self, thread_id: int | None, answers: Mapping[str, Any]) -> int | str | None:
+    def _summary_player_id(
+        self, thread_id: int | None, answers: Mapping[str, Any]
+    ) -> int | str | None:
         for key in ("player_id", "player_tag", "player", "account_id"):
             value = answers.get(key)
             if value not in (None, ""):
@@ -1820,17 +2083,23 @@ class BaseWelcomeController:
         hint = f"\n\n_Current:_ **{current}**" if current else ""
         return f"**Step {step + 1} of {len(questions)}**\n{question['label']}{hint}"
 
-    async def capture_step(self, interaction: discord.Interaction, thread_id: int | None, step: int) -> None:
+    async def capture_step(
+        self, interaction: discord.Interaction, thread_id: int | None, step: int
+    ) -> None:
         return None
 
     def is_finished(self, thread_id: int | None, step: int) -> bool:
         return step >= len(self.get_questions(thread_id))
 
     async def set_answer(self, thread_id: int | None, key: str, value: str) -> None:
-        dictionary = self.answers_by_thread.setdefault(int(thread_id) if thread_id is not None else None, {})
+        dictionary = self.answers_by_thread.setdefault(
+            int(thread_id) if thread_id is not None else None, {}
+        )
         dictionary[key] = value
 
-    async def finish_and_summarize(self, interaction: discord.Interaction, thread_id: int | None) -> None:
+    async def finish_and_summarize(
+        self, interaction: discord.Interaction, thread_id: int | None
+    ) -> None:
         from discord import AllowedMentions
 
         key = int(thread_id) if thread_id is not None else None
@@ -1838,7 +2107,9 @@ class BaseWelcomeController:
         user = getattr(interaction, "user", None)
         embed = self._make_summary_embed(user, answers, interaction.channel)
 
-        await interaction.response.edit_message(content="✅ Collected. Posting summary…", view=None)
+        await interaction.response.edit_message(
+            content="✅ Collected. Posting summary…", view=None
+        )
 
         role_ids = [rid for rid in (self.recruiter_role_ids or []) if rid]
         mentions = " ".join(f"<@&{rid}>" for rid in role_ids)
@@ -1852,7 +2123,9 @@ class BaseWelcomeController:
         if key in self.answers_by_thread:
             del self.answers_by_thread[key]
 
-        await self.log_event("info", "onboard_finished", thread_id=thread_id, pinged_roles=len(role_ids))
+        await self.log_event(
+            "info", "onboard_finished", thread_id=thread_id, pinged_roles=len(role_ids)
+        )
 
     def _make_summary_embed(
         self,
@@ -1860,12 +2133,17 @@ class BaseWelcomeController:
         answers: dict[str, Any],
         thread: discord.abc.MessageableChannel | None,
     ) -> discord.Embed:
-        embed = discord.Embed(title="New Onboarding", description=f"Applicant: {getattr(user, 'mention', 'unknown')}")
+        embed = discord.Embed(
+            title="New Onboarding",
+            description=f"Applicant: {getattr(user, 'mention', 'unknown')}",
+        )
         embed.add_field(name="IGN", value=answers.get("ign", "—"), inline=True)
         embed.add_field(name="Clan vibe", value=answers.get("vibe", "—"), inline=True)
         embed.add_field(name="Timezone", value=answers.get("tz", "—"), inline=True)
         try:
-            embed.add_field(name="Thread", value=f"[Open thread]({thread.jump_url})", inline=False)
+            embed.add_field(
+                name="Thread", value=f"[Open thread]({thread.jump_url})", inline=False
+            )
         except Exception:
             pass
         embed.set_footer(text="C1C Onboarding")
@@ -1902,7 +2180,9 @@ class BaseWelcomeController:
             allowed_mentions=allowed_mentions if mention_text else None,
         )
 
-        await self.cleanup_onboarding_panel(thread, exclude_message_id=getattr(summary_message, "id", None))
+        await self.cleanup_onboarding_panel(
+            thread, exclude_message_id=getattr(summary_message, "id", None)
+        )
 
         return summary_message, summary_embed
 
@@ -1918,7 +2198,9 @@ class BaseWelcomeController:
             panel_message_id = self._panel_messages.get(int(thread_id))
         if panel_message_id is None:
             row = onboarding_sessions.get_by_thread_id(thread_id)
-            raw_panel_id = row.get("panel_message_id") if isinstance(row, dict) else None
+            raw_panel_id = (
+                row.get("panel_message_id") if isinstance(row, dict) else None
+            )
             try:
                 panel_message_id = int(raw_panel_id) if raw_panel_id else None
             except (TypeError, ValueError):
@@ -1935,19 +2217,28 @@ class BaseWelcomeController:
             markers = ("ready when you are", "open questions", "restart", "resume")
             try:
                 async for candidate in thread.history(limit=30):
-                    if exclude_message_id and getattr(candidate, "id", None) == exclude_message_id:
+                    if (
+                        exclude_message_id
+                        and getattr(candidate, "id", None) == exclude_message_id
+                    ):
                         continue
                     author_id = getattr(getattr(candidate, "author", None), "id", None)
                     bot_id = getattr(getattr(self, "bot", None), "user", None)
                     bot_id = getattr(bot_id, "id", None)
                     if bot_id is None or author_id != bot_id:
                         continue
-                    content_text = str(getattr(candidate, "content", "") or "").casefold()
+                    content_text = str(
+                        getattr(candidate, "content", "") or ""
+                    ).casefold()
                     matches_text = any(marker in content_text for marker in markers)
                     view_obj = getattr(candidate, "components", None) or []
                     matches_buttons = any(
                         any(
-                            any(marker in str(getattr(comp, "label", "") or "").casefold() for marker in markers)
+                            any(
+                                marker
+                                in str(getattr(comp, "label", "") or "").casefold()
+                                for marker in markers
+                            )
                             for comp in getattr(row, "children", [])
                         )
                         for row in view_obj
@@ -1965,7 +2256,10 @@ class BaseWelcomeController:
             )
             return
 
-        if exclude_message_id and getattr(panel_message, "id", None) == exclude_message_id:
+        if (
+            exclude_message_id
+            and getattr(panel_message, "id", None) == exclude_message_id
+        ):
             log.info(
                 "onboarding panel cleanup skipped • reason=summary_posted • thread_id=%s • result=not_found",
                 thread_id,
@@ -2056,7 +2350,9 @@ class BaseWelcomeController:
     @staticmethod
     def _question_type_value(question: Question | dict[str, Any]) -> str:
         if isinstance(question, dict):
-            value = question.get("type") or question.get("qtype") or question.get("kind")
+            value = (
+                question.get("type") or question.get("qtype") or question.get("kind")
+            )
         else:
             value = getattr(question, "type", None)
             if not value:
@@ -2073,7 +2369,9 @@ class BaseWelcomeController:
         if isinstance(raw, Sequence):
             return list(raw)
         qtype = BaseWelcomeController._question_type_value(question).strip().lower()
-        if not qtype.startswith("single-select") and not qtype.startswith("multi-select"):
+        if not qtype.startswith("single-select") and not qtype.startswith(
+            "multi-select"
+        ):
             return []
         if isinstance(question, dict):
             note = question.get("note")
@@ -2081,20 +2379,34 @@ class BaseWelcomeController:
             note = getattr(question, "note", None)
         tokens: list[str] = []
         if isinstance(note, str) and note.strip():
-            tokens = [token.strip() for token in note.replace("\n", ",").split(",") if token.strip()]
+            tokens = [
+                token.strip()
+                for token in note.replace("\n", ",").split(",")
+                if token.strip()
+            ]
         elif isinstance(question, dict):
             validate = question.get("validate")
             if isinstance(validate, str) and validate.strip():
-                tokens = [token.strip() for token in validate.replace("\n", ",").split(",") if token.strip()]
+                tokens = [
+                    token.strip()
+                    for token in validate.replace("\n", ",").split(",")
+                    if token.strip()
+                ]
         else:
             validate = getattr(question, "validate", None)
             if isinstance(validate, str) and validate.strip():
-                tokens = [token.strip() for token in validate.replace("\n", ",").split(",") if token.strip()]
+                tokens = [
+                    token.strip()
+                    for token in validate.replace("\n", ",").split(",")
+                    if token.strip()
+                ]
         if tokens:
             return [{"label": token, "value": token} for token in tokens]
         return []
 
-    def validate_answer(self, meta: dict[str, Any], raw: str) -> tuple[bool, str | None, str | None]:
+    def validate_answer(
+        self, meta: dict[str, Any], raw: str
+    ) -> tuple[bool, str | None, str | None]:
         return validate_answer(meta, raw)
 
     async def _send_validation_error(
@@ -2151,7 +2463,9 @@ class BaseWelcomeController:
             return "yes" if value else "no"
         return None
 
-    def _question_for(self, thread_id: int, key: str) -> Question | dict[str, Any] | None:
+    def _question_for(
+        self, thread_id: int, key: str
+    ) -> Question | dict[str, Any] | None:
         questions = self._questions.get(thread_id) or []
         for question in questions:
             if self._question_key(question) == key:
@@ -2161,15 +2475,25 @@ class BaseWelcomeController:
     async def set_answer(self, thread_id: int, key: str, value: Any) -> None:
         answers = self.answers_by_thread.setdefault(thread_id, {})
         question = self._question_for(thread_id, key)
-        qtype = self._question_type_value(question).strip().lower() if question is not None else ""
+        qtype = (
+            self._question_type_value(question).strip().lower()
+            if question is not None
+            else ""
+        )
         normalized = value
         if isinstance(value, str):
             text = value.strip()
             normalized = text if text else None
         if qtype == "bool":
             token = self._canonical_bool(value)
-            normalized = token if token is not None else (normalized if isinstance(normalized, str) else normalized)
-        if normalized is None or (isinstance(normalized, str) and not normalized.strip()):
+            normalized = (
+                token
+                if token is not None
+                else (normalized if isinstance(normalized, str) else normalized)
+            )
+        if normalized is None or (
+            isinstance(normalized, str) and not normalized.strip()
+        ):
             answers.pop(key, None)
         elif isinstance(normalized, (list, tuple)) and not normalized:
             answers.pop(key, None)
@@ -2181,7 +2505,9 @@ class BaseWelcomeController:
         session = store.get(thread_id)
         if session is not None:
             session.answers = session.answers or {}
-            if normalized is None or (isinstance(normalized, str) and not normalized.strip()):
+            if normalized is None or (
+                isinstance(normalized, str) and not normalized.strip()
+            ):
                 session.answers.pop(key, None)
             elif isinstance(normalized, (list, tuple)) and not normalized:
                 session.answers.pop(key, None)
@@ -2194,7 +2520,10 @@ class BaseWelcomeController:
                     self._questions.get(thread_id, []), session.answers
                 )
             except Exception:
-                log.warning("failed to recompute visibility during inline capture", exc_info=True)
+                log.warning(
+                    "failed to recompute visibility during inline capture",
+                    exc_info=True,
+                )
 
     def has_answer(self, thread_id: int, question: Question | dict[str, Any]) -> bool:
         key = self._question_key(question)
@@ -2370,7 +2699,11 @@ class BaseWelcomeController:
         if isinstance(question, dict):
             help_text = question.get("help") or help_text
         qtype_value = self._question_type_value(question).strip().lower()
-        reply_hint = "Just reply in this thread with your answer." if qtype_value in TEXT_TYPES else None
+        reply_hint = (
+            "Just reply in this thread with your answer."
+            if qtype_value in TEXT_TYPES
+            else None
+        )
         if help_text:
             lines.append(f"_{help_text}_")
         if reply_hint:
@@ -2441,22 +2774,31 @@ class BaseWelcomeController:
             session.answers = dict(answers)
             visibility = session.visibility
         else:
-            session = store.ensure(thread_id, flow=self.flow, schema_hash=schema_hash(self.flow))
+            session = store.ensure(
+                thread_id, flow=self.flow, schema_hash=schema_hash(self.flow)
+            )
             session.answers = dict(answers)
             visibility = session.visibility
 
         try:
             summary_author = self._resolve_summary_author(thread, interaction)
         except Exception:
-            log.warning("failed to resolve summary author; falling back to thread owner", exc_info=True)
+            log.warning(
+                "failed to resolve summary author; falling back to thread owner",
+                exc_info=True,
+            )
             summary_author = getattr(thread, "owner", None) or interaction.user
 
         schema = session.schema_hash if session else schema_hash(self.flow)
         recruiter_ids = list(getattr(self, "recruiter_role_ids", []) or [])
         if not recruiter_ids:
             recruiter_ids = list(getattr(self, "RECRUITER_ROLE_IDS", []) or [])
-        mention_text = " ".join(f"<@&{int(role_id)}>" for role_id in recruiter_ids if role_id)
-        allowed_mentions = discord.AllowedMentions(roles=True, users=False, everyone=False)
+        mention_text = " ".join(
+            f"<@&{int(role_id)}>" for role_id in recruiter_ids if role_id
+        )
+        allowed_mentions = discord.AllowedMentions(
+            roles=True, users=False, everyone=False
+        )
         schema = session.schema_hash if session else schema_hash(self.flow)
         summary_success = await self._send_welcome_summary_safe(
             thread=thread,
@@ -2519,13 +2861,21 @@ class BaseWelcomeController:
         session: SessionData | None,
         answers: Mapping[str, Any],
     ) -> None:
-        question_count = len(self._questions.get(thread_id, [])) if hasattr(self, "_questions") else None
+        question_count = (
+            len(self._questions.get(thread_id, []))
+            if hasattr(self, "_questions")
+            else None
+        )
         schema_version = getattr(session, "schema_hash", None)
         extras: dict[str, Any] | None = None
         level_detail = _extract_level_detail(answers)
         if level_detail:
             extras = {"level_detail": level_detail}
-        scope = "promo" if str(self.flow or "").startswith("promo") else (self.flow or "welcome")
+        scope = (
+            "promo"
+            if str(self.flow or "").startswith("promo")
+            else (self.flow or "welcome")
+        )
         await logs.log_onboarding_panel_lifecycle(
             event="complete",
             ticket=thread,
@@ -2637,7 +2987,9 @@ class BaseWelcomeController:
 
         parent_channel = getattr(thread, "parent", None)
         try:
-            parent_id_int = int(parent_channel.id) if parent_channel is not None else None
+            parent_id_int = (
+                int(parent_channel.id) if parent_channel is not None else None
+            )
         except (TypeError, ValueError, AttributeError):
             parent_id_int = None
 
@@ -2684,7 +3036,9 @@ class BaseWelcomeController:
                 )
                 raise
 
-        posted_new_message = prev_id is None or int(getattr(message, "id", 0)) != prev_id
+        posted_new_message = (
+            prev_id is None or int(getattr(message, "id", 0)) != prev_id
+        )
         message_id = int(getattr(message, "id", 0))
         self._panel_messages[thread_id] = message_id
 
@@ -2740,8 +3094,11 @@ class BaseWelcomeController:
             panel_created_at=getattr(message, "created_at", None),
         )
 
-    async def _start_select_step(self, thread: discord.Thread, session: SessionData) -> None:
+    async def _start_select_step(
+        self, thread: discord.Thread, session: SessionData
+    ) -> None:
         thread_id = int(thread.id)
+
         async def gate(interaction: discord.Interaction) -> bool:
             allowed, _ = await self.check_interaction(thread_id, interaction)
             return allowed
@@ -2762,7 +3119,9 @@ class BaseWelcomeController:
         view.on_change = self._select_changed(thread_id)
         view.on_complete = self._select_completed(thread_id)
         view.on_page_change = self._select_page_updated(thread_id)
-        store.set_pending_step(thread_id, {"kind": "select", "index": 0, "page": view.page})
+        store.set_pending_step(
+            thread_id, {"kind": "select", "index": 0, "page": view.page}
+        )
         content = self._select_intro_text()
         message = self._select_messages.get(thread_id)
         if message:
@@ -2777,7 +3136,9 @@ class BaseWelcomeController:
             **self._log_fields(thread_id),
         )
 
-    def build_modal_stub(self, thread_id: int, *, index: Optional[int] = None) -> WelcomeQuestionnaireModal:
+    def build_modal_stub(
+        self, thread_id: int, *, index: Optional[int] = None
+    ) -> WelcomeQuestionnaireModal:
         session = store.get(thread_id)
         questions = self._questions.get(thread_id)
         answers = session.answers if session else {}
@@ -2798,7 +3159,9 @@ class BaseWelcomeController:
             if step_index >= len(modals):
                 step_index = len(modals) - 1
             modal = modals[step_index]
-            modal.submit_callback = self._modal_submitted(thread_id, list(modal.questions), modal.step_index)
+            modal.submit_callback = self._modal_submitted(
+                thread_id, list(modal.questions), modal.step_index
+            )
         else:
             modal = WelcomeQuestionnaireModal(
                 questions=[],
@@ -2828,18 +3191,24 @@ class BaseWelcomeController:
             return self._questions.get(thread_id)
         return None
 
-    async def prompt_retry(self, interaction: discord.Interaction, thread_id: int) -> None:
+    async def prompt_retry(
+        self, interaction: discord.Interaction, thread_id: int
+    ) -> None:
         thread = self._threads.get(thread_id)
         if thread is None and isinstance(interaction.channel, discord.Thread):
             thread = interaction.channel
         if thread is None:
             return
         try:
-            await thread.send("Something blinked. Tap **Open questions** again to continue.")
+            await thread.send(
+                "Something blinked. Tap **Open questions** again to continue."
+            )
         except Exception:
             log.warning("failed to post retry prompt", exc_info=True)
 
-    async def prompt_next(self, interaction: discord.Interaction, thread_id: int, next_idx: int) -> None:
+    async def prompt_next(
+        self, interaction: discord.Interaction, thread_id: int, next_idx: int
+    ) -> None:
         thread = self._threads.get(thread_id)
         if thread is None and isinstance(interaction.channel, discord.Thread):
             thread = interaction.channel
@@ -2857,7 +3226,9 @@ class BaseWelcomeController:
                     try:
                         await previous.delete()
                     except Exception:
-                        log.debug("failed to delete previous next-step prompt", exc_info=True)
+                        log.debug(
+                            "failed to delete previous next-step prompt", exc_info=True
+                        )
             message = await thread.send("Next up…", view=view)
             self._next_prompt_message_ids[thread_id] = int(message.id)
         except Exception:
@@ -2901,13 +3272,17 @@ class BaseWelcomeController:
 
         session = store.get(thread_id)
         if session is None:
-            session = store.ensure(thread_id, flow=self.flow, schema_hash=schema_hash(self.flow))
+            session = store.ensure(
+                thread_id, flow=self.flow, schema_hash=schema_hash(self.flow)
+            )
         if session is not None:
             session.status = "in_progress"
             session.thread_id = thread_id
 
         try:
-            questions_for_thread = await self.get_or_load_questions(thread_id, session=session)
+            questions_for_thread = await self.get_or_load_questions(
+                thread_id, session=session
+            )
         except Exception:
             log.warning("failed to load questions for inline wizard", exc_info=True)
             raise
@@ -3012,7 +3387,10 @@ class BaseWelcomeController:
                         try:
                             await fetched.delete()
                         except Exception:
-                            log.debug("failed to delete stale inline wizard message", exc_info=True)
+                            log.debug(
+                                "failed to delete stale inline wizard message",
+                                exc_info=True,
+                            )
                     else:
                         message = fetched
                         reused_existing = True
@@ -3091,13 +3469,20 @@ class BaseWelcomeController:
                         try:
                             await prompt_message.delete()
                         except Exception:
-                            log.debug("failed to delete next-step prompt message", exc_info=True)
+                            log.debug(
+                                "failed to delete next-step prompt message",
+                                exc_info=True,
+                            )
                         finally:
                             self._next_prompt_message_ids.pop(thread_id, None)
                 except Exception:
-                    log.debug("failed to inspect next-step prompt message", exc_info=True)
+                    log.debug(
+                        "failed to inspect next-step prompt message", exc_info=True
+                    )
 
-        log_payload = self._log_fields(thread_id, actor=getattr(interaction, "user", None))
+        log_payload = self._log_fields(
+            thread_id, actor=getattr(interaction, "user", None)
+        )
         if context is not None:
             log_payload.update(context)
         log_payload.setdefault("source", self._sources.get(thread_id, "unknown"))
@@ -3109,7 +3494,9 @@ class BaseWelcomeController:
             **log_payload,
         )
 
-    def _record_captured_message(self, thread_id: int, message: discord.Message) -> None:
+    def _record_captured_message(
+        self, thread_id: int, message: discord.Message
+    ) -> None:
         captured = getattr(self, "_captured_msgs", None)
         if not isinstance(captured, dict):
             captured = {}
@@ -3153,7 +3540,11 @@ class BaseWelcomeController:
             candidate_thread_id: int | None = None
             if session is not None:
                 try:
-                    candidate_thread_id = int(session.thread_id) if session.thread_id is not None else None
+                    candidate_thread_id = (
+                        int(session.thread_id)
+                        if session.thread_id is not None
+                        else None
+                    )
                 except (TypeError, ValueError):
                     candidate_thread_id = None
             if candidate_thread_id is None:
@@ -3174,7 +3565,11 @@ class BaseWelcomeController:
         if message_obj is None:
             id_map = getattr(self, "_inline_message_ids", None)
             message_id = id_map.get(thread_id) if isinstance(id_map, dict) else None
-            fetcher = getattr(resolved_thread, "fetch_message", None) if resolved_thread is not None else None
+            fetcher = (
+                getattr(resolved_thread, "fetch_message", None)
+                if resolved_thread is not None
+                else None
+            )
             if callable(fetcher) and message_id:
                 try:
                     message_obj = await fetcher(message_id)
@@ -3216,7 +3611,9 @@ class BaseWelcomeController:
             except Exception:
                 pass
 
-    def _resolve_inline_index(self, thread_id: int, session: SessionData) -> tuple[int | None, str]:
+    def _resolve_inline_index(
+        self, thread_id: int, session: SessionData
+    ) -> tuple[int | None, str]:
         questions = self._questions.get(thread_id) or []
         pending = session.pending_step or {}
         pending_kind = pending.get("kind") if isinstance(pending, dict) else None
@@ -3229,13 +3626,17 @@ class BaseWelcomeController:
 
         pending_index: int | None = None
         try:
-            pending_index = int(pending.get("index", 0)) if isinstance(pending, dict) else None
+            pending_index = (
+                int(pending.get("index", 0)) if isinstance(pending, dict) else None
+            )
         except (TypeError, ValueError):
             pending_index = None
 
         if _valid_inline(pending_index):
             if pending_kind != "inline":
-                store.set_pending_step(thread_id, {"kind": "inline", "index": cast(int, pending_index)})
+                store.set_pending_step(
+                    thread_id, {"kind": "inline", "index": cast(int, pending_index)}
+                )
                 return cast(int, pending_index), "pending_rehydrated"
             return cast(int, pending_index), "pending"
 
@@ -3250,7 +3651,9 @@ class BaseWelcomeController:
             current_index = None
 
         if _valid_inline(current_index):
-            store.set_pending_step(thread_id, {"kind": "inline", "index": cast(int, current_index)})
+            store.set_pending_step(
+                thread_id, {"kind": "inline", "index": cast(int, current_index)}
+            )
             return cast(int, current_index), "current_index"
 
         return None, pending_kind or "unknown"
@@ -3367,18 +3770,24 @@ class BaseWelcomeController:
             "view_tag": panels.WELCOME_PANEL_TAG,
             "custom_id": panels.OPEN_QUESTIONS_CUSTOM_ID,
         }
-        allowed, _ = await self.check_interaction(thread_id, interaction, context=context)
+        allowed, _ = await self.check_interaction(
+            thread_id, interaction, context=context
+        )
         if not allowed:
             return
 
-        session = store.ensure(thread_id, flow=self.flow, schema_hash=schema_hash(self.flow))
+        session = store.ensure(
+            thread_id, flow=self.flow, schema_hash=schema_hash(self.flow)
+        )
         session.status = "in_progress"
         session.thread_id = thread_id
 
         if session.respondent_id is None:
             user_identifier = getattr(getattr(interaction, "user", None), "id", None)
             try:
-                session.respondent_id = int(user_identifier) if user_identifier is not None else None
+                session.respondent_id = (
+                    int(user_identifier) if user_identifier is not None else None
+                )
             except (TypeError, ValueError):
                 session.respondent_id = session.respondent_id
 
@@ -3412,11 +3821,17 @@ class BaseWelcomeController:
         pending = refreshed.pending_step if refreshed is not None else None
         if not pending:
             try:
-                await thread.send("All set. A recruiter will review your answers shortly.")
+                await thread.send(
+                    "All set. A recruiter will review your answers shortly."
+                )
             except Exception:
-                log.warning("failed to send onboarding completion notice", exc_info=True)
+                log.warning(
+                    "failed to send onboarding completion notice", exc_info=True
+                )
 
-    def _select_changed(self, thread_id: int) -> Callable[[discord.Interaction, Question, list[str]], Awaitable[None]]:
+    def _select_changed(
+        self, thread_id: int
+    ) -> Callable[[discord.Interaction, Question, list[str]], Awaitable[None]]:
         async def handler(
             interaction: discord.Interaction,
             question: Question,
@@ -3429,7 +3844,9 @@ class BaseWelcomeController:
 
         return handler
 
-    def _select_completed(self, thread_id: int) -> Callable[[discord.Interaction], Awaitable[None]]:
+    def _select_completed(
+        self, thread_id: int
+    ) -> Callable[[discord.Interaction], Awaitable[None]]:
         async def handler(interaction: discord.Interaction) -> None:
             allowed, _ = await self.check_interaction(thread_id, interaction)
             if not allowed:
@@ -3467,9 +3884,7 @@ class BaseWelcomeController:
         try:
             refreshed = onboarding_questions.get_questions(self.flow)
         except Exception:
-            log.warning(
-                "failed to rehydrate welcome questions", exc_info=True
-            )
+            log.warning("failed to rehydrate welcome questions", exc_info=True)
             return False
 
         self._questions[thread_id] = list(refreshed)
@@ -3493,7 +3908,11 @@ class BaseWelcomeController:
         *,
         context: dict[str, Any] | None = None,
     ) -> None:
-        channel = interaction.channel if isinstance(interaction.channel, discord.Thread) else None
+        channel = (
+            interaction.channel
+            if isinstance(interaction.channel, discord.Thread)
+            else None
+        )
         thread = self._threads.get(thread_id) or channel
         message = getattr(interaction, "message", None)
         message_id = getattr(message, "id", None)
@@ -3502,7 +3921,9 @@ class BaseWelcomeController:
         if context is not None:
             log_payload.update(context)
         if thread is not None:
-            log_payload.setdefault("thread", logs.format_thread(getattr(thread, "id", None)))
+            log_payload.setdefault(
+                "thread", logs.format_thread(getattr(thread, "id", None))
+            )
             parent_id = getattr(thread, "parent_id", None)
             if parent_id is not None:
                 try:
@@ -3570,7 +3991,9 @@ class BaseWelcomeController:
             interaction: discord.Interaction,
             values: dict[str, str],
         ) -> None:
-            await self._handle_modal_submit(thread_id, interaction, questions, index, values)
+            await self._handle_modal_submit(
+                thread_id, interaction, questions, index, values
+            )
 
         return handler
 
@@ -3594,10 +4017,14 @@ class BaseWelcomeController:
                 index=index,
                 **self._log_fields(thread_id, actor=interaction.user),
             )
-            await _safe_ephemeral(interaction, "⚠️ This onboarding session is no longer active.")
+            await _safe_ephemeral(
+                interaction, "⚠️ This onboarding session is no longer active."
+            )
             return
 
-        questions_for_thread = await self.get_or_load_questions(thread_id, session=session)
+        questions_for_thread = await self.get_or_load_questions(
+            thread_id, session=session
+        )
         if not questions_for_thread:
             await logs.send_welcome_log(
                 "warning",
@@ -3737,7 +4164,13 @@ class BaseWelcomeController:
 
         display_name = _display_name(getattr(interaction, "user", None))
         channel_obj: discord.abc.GuildChannel | discord.Thread | None
-        channel_obj = interaction.channel if isinstance(interaction.channel, (discord.Thread, discord.abc.GuildChannel)) else thread
+        channel_obj = (
+            interaction.channel
+            if isinstance(
+                interaction.channel, (discord.Thread, discord.abc.GuildChannel)
+            )
+            else thread
+        )
         log.info(
             "✅ Welcome — modal_submit_ok • user=%s • channel=%s",
             display_name,
@@ -3833,7 +4266,9 @@ class BaseWelcomeController:
         view.on_change = self._select_changed(thread_id)
         view.on_complete = self._select_completed(thread_id)
         view.on_page_change = self._select_page_updated(thread_id)
-        store.set_pending_step(thread_id, {"kind": "select", "index": 0, "page": view.page})
+        store.set_pending_step(
+            thread_id, {"kind": "select", "index": 0, "page": view.page}
+        )
         await interaction.response.edit_message(view=view)
         await logs.send_welcome_log(
             "debug",
@@ -3883,7 +4318,9 @@ class BaseWelcomeController:
         )
         await self._show_preview(thread, session)
 
-    def _select_page_updated(self, thread_id: int) -> Callable[[discord.Interaction, int], Awaitable[None]]:
+    def _select_page_updated(
+        self, thread_id: int
+    ) -> Callable[[discord.Interaction, int], Awaitable[None]]:
         async def handler(interaction: discord.Interaction, page: int) -> None:
             allowed, _ = await self.check_interaction(thread_id, interaction)
             if not allowed:
@@ -3928,7 +4365,9 @@ class BaseWelcomeController:
                 **self._log_fields(thread_id),
             )
 
-    def _build_preview_embed(self, thread_id: int, session: SessionData) -> discord.Embed:
+    def _build_preview_embed(
+        self, thread_id: int, session: SessionData
+    ) -> discord.Embed:
         embed = discord.Embed(title="Review your responses")
         embed.description = "Confirm the information below before submitting."
 
@@ -3936,7 +4375,9 @@ class BaseWelcomeController:
             state = _visible_state(session.visibility, question.qid)
             if state == "skip":
                 continue
-            value = _preview_value_for_question(question, session.answers.get(question.qid))
+            value = _preview_value_for_question(
+                question, session.answers.get(question.qid)
+            )
             if not value:
                 value = "*(skipped)*"
             embed.add_field(name=question.label, value=value, inline=False)
@@ -3995,7 +4436,9 @@ class BaseWelcomeController:
                 try:
                     await preview_message.edit(view=None)
                 except Exception:
-                    log.warning("failed to remove preview after confirmation", exc_info=True)
+                    log.warning(
+                        "failed to remove preview after confirmation", exc_info=True
+                    )
 
         summary_author = self._resolve_summary_author(thread, interaction)
         summary_success = await self._send_welcome_summary_safe(
@@ -4061,7 +4504,9 @@ class BaseWelcomeController:
         anchor = getattr(interaction, "message", None)
         await self._start_modal_step(thread, session, anchor=anchor)
 
-    def _cleanup_session(self, thread_id: int, *, preserve_session: bool = False) -> None:
+    def _cleanup_session(
+        self, thread_id: int, *, preserve_session: bool = False
+    ) -> None:
         if not preserve_session:
             store.end(thread_id)
         self._threads.pop(thread_id, None)
@@ -4163,7 +4608,11 @@ class BaseWelcomeController:
             log_context.setdefault("target_user_id", int(target_id))
 
         if actor_id is not None and actor_id in allowed_cache:
-            fallback_thread = interaction.channel if isinstance(interaction.channel, discord.Thread) else self._thread_for(thread_id)
+            fallback_thread = (
+                interaction.channel
+                if isinstance(interaction.channel, discord.Thread)
+                else self._thread_for(thread_id)
+            )
             _log_gate(
                 interaction,
                 allowed=True,
@@ -4172,11 +4621,17 @@ class BaseWelcomeController:
                 flow=self.flow,
             )
             if log_context is not None:
-                await self._log_access("info", "allowed", thread_id, interaction, log_context)
+                await self._log_access(
+                    "info", "allowed", thread_id, interaction, log_context
+                )
             return True, None
 
         thread = self._thread_for(thread_id)
-        subject = interaction.channel if isinstance(interaction.channel, discord.Thread) else None
+        subject = (
+            interaction.channel
+            if isinstance(interaction.channel, discord.Thread)
+            else None
+        )
 
         if subject is None:
             _log_gate(
@@ -4187,7 +4642,9 @@ class BaseWelcomeController:
                 flow=self.flow,
             )
             if log_context is not None:
-                await self._log_access("warn", "denied_scope", thread_id, interaction, log_context)
+                await self._log_access(
+                    "warn", "denied_scope", thread_id, interaction, log_context
+                )
             await _safe_ephemeral(
                 interaction,
                 "⚠️ This onboarding panel only works inside ticket threads.",
@@ -4221,7 +4678,9 @@ class BaseWelcomeController:
         if actor_id is not None:
             allowed_cache.add(int(actor_id))
         if log_context is not None:
-            await self._log_access("info", "allowed", thread_id, interaction, log_context)
+            await self._log_access(
+                "info", "allowed", thread_id, interaction, log_context
+            )
         _log_gate(
             interaction,
             allowed=True,
@@ -4326,18 +4785,32 @@ class _PreviewView(discord.ui.View):
         self.controller = controller
         self.thread_id = thread_id
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:  # pragma: no cover - network
-        allowed, _ = await self.controller.check_interaction(self.thread_id, interaction)
+    async def interaction_check(
+        self, interaction: discord.Interaction
+    ) -> bool:  # pragma: no cover - network
+        allowed, _ = await self.controller.check_interaction(
+            self.thread_id, interaction
+        )
         return allowed
 
-    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, custom_id="ob.confirm")
-    async def confirm(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # pragma: no cover - network
+    @discord.ui.button(
+        label="Confirm", style=discord.ButtonStyle.success, custom_id="ob.confirm"
+    )
+    async def confirm(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ) -> None:  # pragma: no cover - network
         if getattr(interaction, "_c1c_claimed", False):
             return
         setattr(interaction, "_c1c_claimed", True)
-        thread = interaction.channel if isinstance(interaction.channel, discord.Thread) else None
+        thread = (
+            interaction.channel
+            if isinstance(interaction.channel, discord.Thread)
+            else None
+        )
         context = {
-            **logs.thread_context(thread if isinstance(thread, discord.Thread) else None),
+            **logs.thread_context(
+                thread if isinstance(thread, discord.Thread) else None
+            ),
             "actor": logs.format_actor(interaction.user),
             "view": "preview",
             "view_id": "ob.confirm",
@@ -4348,14 +4821,24 @@ class _PreviewView(discord.ui.View):
         await logs.send_welcome_log("debug", result="clicked", **context)
         await self.controller._handle_confirm(self.thread_id, interaction)
 
-    @discord.ui.button(label="Edit", style=discord.ButtonStyle.secondary, custom_id="ob.edit")
-    async def edit(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:  # pragma: no cover - network
+    @discord.ui.button(
+        label="Edit", style=discord.ButtonStyle.secondary, custom_id="ob.edit"
+    )
+    async def edit(
+        self, interaction: discord.Interaction, _: discord.ui.Button
+    ) -> None:  # pragma: no cover - network
         if getattr(interaction, "_c1c_claimed", False):
             return
         setattr(interaction, "_c1c_claimed", True)
-        thread = interaction.channel if isinstance(interaction.channel, discord.Thread) else None
+        thread = (
+            interaction.channel
+            if isinstance(interaction.channel, discord.Thread)
+            else None
+        )
         context = {
-            **logs.thread_context(thread if isinstance(thread, discord.Thread) else None),
+            **logs.thread_context(
+                thread if isinstance(thread, discord.Thread) else None
+            ),
             "actor": logs.format_actor(interaction.user),
             "view": "preview",
             "view_id": "ob.edit",
@@ -4508,7 +4991,9 @@ def _has_select_answer(value: Any) -> bool:
     return bool(value)
 
 
-def _final_fields(questions: Sequence[Question], answers: dict[str, Any]) -> dict[str, Any]:
+def _final_fields(
+    questions: Sequence[Question], answers: dict[str, Any]
+) -> dict[str, Any]:
     fields: dict[str, Any] = {}
     option_lookup: dict[str, dict[str, str]] = {}
     for question in questions:
@@ -4545,9 +5030,11 @@ def _convert_to_labels(value: Any, mapping: dict[str, str]) -> Any:
             items = value.get("values")
             if isinstance(items, Iterable):
                 return [
-                    mapping.get(item.get("value"), item.get("label"))
-                    if isinstance(item, dict)
-                    else mapping.get(str(item), str(item))
+                    (
+                        mapping.get(item.get("value"), item.get("label"))
+                        if isinstance(item, dict)
+                        else mapping.get(str(item), str(item))
+                    )
                     for item in items
                 ]
         return {key: _convert_to_labels(val, mapping) for key, val in value.items()}

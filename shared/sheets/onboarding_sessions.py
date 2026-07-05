@@ -27,6 +27,8 @@ CANONICAL_COLUMNS: list[str] = [
     "recruiter_summary_message_id",
     "recruiter_summary_posted_at",
     "recruiter_summary_player_id",
+    "summary_screenshot_prompt_message_id",
+    "summary_screenshot_prompt_summary_message_id",
 ]
 
 _HEADER_MISMATCH_LOGGED = False
@@ -84,14 +86,25 @@ def load(user_id: int | None, thread_id: int) -> Optional[Dict[str, Any]]:
         "first_reminder_at": record.get("first_reminder_at") or "",
         "warning_sent_at": record.get("warning_sent_at") or "",
         "auto_closed_at": record.get("auto_closed_at") or "",
-        "recruiter_summary_message_id": record.get("recruiter_summary_message_id") or "",
+        "recruiter_summary_message_id": record.get("recruiter_summary_message_id")
+        or "",
         "recruiter_summary_posted_at": record.get("recruiter_summary_posted_at") or "",
         "recruiter_summary_player_id": record.get("recruiter_summary_player_id") or "",
+        "summary_screenshot_prompt_message_id": record.get(
+            "summary_screenshot_prompt_message_id"
+        )
+        or "",
+        "summary_screenshot_prompt_summary_message_id": record.get(
+            "summary_screenshot_prompt_summary_message_id"
+        )
+        or "",
         "answers": answers,
     }
 
 
-async def aload(thread_id: int, *, timeout: float | None = 15.0) -> Optional[Dict[str, Any]]:
+async def aload(
+    thread_id: int, *, timeout: float | None = 15.0
+) -> Optional[Dict[str, Any]]:
     rows = await _aload_rows(timeout=timeout)
     return _load_from_rows(rows, thread_id=thread_id)
 
@@ -117,7 +130,9 @@ def load_all() -> list[Dict[str, Any]]:
         panel_id = _safe_int(record.get("panel_message_id"))
         completed_token = str(record.get("completed", "")).strip().lower()
         completed_at = record.get("completed_at") or None
-        completed = completed_token in {"true", "1", "yes", "true"} or bool(completed_at)
+        completed = completed_token in {"true", "1", "yes", "true"} or bool(
+            completed_at
+        )
 
         sessions.append(
             {
@@ -152,7 +167,9 @@ def save(payload: Dict[str, Any], *, allow_create: bool = True) -> bool:
         return False
 
     header_map = _header_index_map(header)
-    target_row = _get_row_index_by_thread_id(rows[1:], header_map, payload.get("thread_id"))
+    target_row = _get_row_index_by_thread_id(
+        rows[1:], header_map, payload.get("thread_id")
+    )
 
     existing: Dict[str, Any] = {}
     if target_row is not None:
@@ -181,14 +198,20 @@ def save(payload: Dict[str, Any], *, allow_create: bool = True) -> bool:
     return True
 
 
-async def asave(payload: Dict[str, Any], *, allow_create: bool = True, timeout: float | None = 15.0) -> bool:
+async def asave(
+    payload: Dict[str, Any], *, allow_create: bool = True, timeout: float | None = 15.0
+) -> bool:
     worksheet = await _asheet(timeout=timeout)
-    rows = await core._retry_with_backoff_async(core.async_adapter.aworksheet_values_all, worksheet, timeout=timeout)
+    rows = await core._retry_with_backoff_async(
+        core.async_adapter.aworksheet_values_all, worksheet, timeout=timeout
+    )
     header = _validated_header(rows[0] if rows else [])
     if header is None:
         return False
     header_map = _header_index_map(header)
-    target_row = _get_row_index_by_thread_id(rows[1:], header_map, payload.get("thread_id"))
+    target_row = _get_row_index_by_thread_id(
+        rows[1:], header_map, payload.get("thread_id")
+    )
     existing: Dict[str, Any] = {}
     if target_row is not None:
         existing = _record_from_row(rows[target_row], header, header_map)
@@ -205,16 +228,23 @@ async def asave(payload: Dict[str, Any], *, allow_create: bool = True, timeout: 
     elif allow_create:
         await core.async_adapter.arun(worksheet.append_row, values, timeout=timeout)
     else:
-        log.info("🧾 onboarding session skipped • thread_id=%s • reason=missing_row", record.get("thread_id"))
+        log.info(
+            "🧾 onboarding session skipped • thread_id=%s • reason=missing_row",
+            record.get("thread_id"),
+        )
         return False
     return True
 
 
 def get_by_thread_id(thread_id: int | str | None) -> Optional[Dict[str, Any]]:
-    return load(user_id=None, thread_id=int(thread_id)) if thread_id is not None else None
+    return (
+        load(user_id=None, thread_id=int(thread_id)) if thread_id is not None else None
+    )
 
 
-def load_from_rows(rows: Sequence[Sequence[Any]], thread_id: int | str | None) -> Optional[Dict[str, Any]]:
+def load_from_rows(
+    rows: Sequence[Sequence[Any]], thread_id: int | str | None
+) -> Optional[Dict[str, Any]]:
     return _load_from_rows(rows, thread_id=thread_id)
 
 
@@ -276,7 +306,9 @@ def mark_completed(
     )
 
 
-def build_row(payload: Dict[str, Any], *, headers: Sequence[str] | None = None) -> list[Any]:
+def build_row(
+    payload: Dict[str, Any], *, headers: Sequence[str] | None = None
+) -> list[Any]:
     header = _normalize_header(headers or CANONICAL_COLUMNS)
     record = _record_from_payload(payload)
     return [record.get(col.strip().lower(), "") for col in header]
@@ -305,7 +337,11 @@ def missing_columns(columns: Iterable[str]) -> set[str]:
     if header is None:
         return set(columns)
     header_map = _header_index_map(header)
-    return {str(column).strip() for column in columns if str(column).strip().lower() not in header_map}
+    return {
+        str(column).strip()
+        for column in columns
+        if str(column).strip().lower() not in header_map
+    }
 
 
 def _log_missing_columns(missing: Sequence[str]) -> None:
@@ -334,8 +370,12 @@ def _record_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     if answers_json is None:
         answers_json = json.dumps(answers or {}, separators=(",", ":"))
 
-    reminder_at = payload.get("first_reminder_at") or payload.get("empty_first_reminder_at") or ""
-    warning_at = payload.get("warning_sent_at") or payload.get("empty_warning_sent_at") or ""
+    reminder_at = (
+        payload.get("first_reminder_at") or payload.get("empty_first_reminder_at") or ""
+    )
+    warning_at = (
+        payload.get("warning_sent_at") or payload.get("empty_warning_sent_at") or ""
+    )
     auto_closed_at = payload.get("auto_closed_at") or ""
     updated_at = payload.get("updated_at") or _now_iso()
     if isinstance(updated_at, datetime):
@@ -356,7 +396,8 @@ def _record_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         "thread_name": str(payload.get("thread_name") or ""),
         "user_id": str(payload.get("user_id") or ""),
         "thread_id": str(payload.get("thread_id") or ""),
-        "panel_message_id": _safe_int(payload.get("panel_message_id"), default="") or "",
+        "panel_message_id": _safe_int(payload.get("panel_message_id"), default="")
+        or "",
         "step_index": _safe_int(payload.get("step_index"), default=0) or 0,
         "completed": completed_flag,
         "completed_at": completed_at_value,
@@ -366,13 +407,28 @@ def _record_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         "first_reminder_at": reminder_at,
         "warning_sent_at": warning_at,
         "auto_closed_at": auto_closed_at,
-        "recruiter_summary_message_id": _safe_int(payload.get("recruiter_summary_message_id"), default="") or "",
+        "recruiter_summary_message_id": _safe_int(
+            payload.get("recruiter_summary_message_id"), default=""
+        )
+        or "",
         "recruiter_summary_posted_at": payload.get("recruiter_summary_posted_at") or "",
-        "recruiter_summary_player_id": str(payload.get("recruiter_summary_player_id") or ""),
+        "recruiter_summary_player_id": str(
+            payload.get("recruiter_summary_player_id") or ""
+        ),
+        "summary_screenshot_prompt_message_id": _safe_int(
+            payload.get("summary_screenshot_prompt_message_id"), default=""
+        )
+        or "",
+        "summary_screenshot_prompt_summary_message_id": _safe_int(
+            payload.get("summary_screenshot_prompt_summary_message_id"), default=""
+        )
+        or "",
     }
 
 
-def _record_from_row(row: Sequence[Any], header: Sequence[str], header_map: Dict[str, int]) -> Dict[str, Any]:
+def _record_from_row(
+    row: Sequence[Any], header: Sequence[str], header_map: Dict[str, int]
+) -> Dict[str, Any]:
     record: Dict[str, Any] = {}
     for name in CANONICAL_COLUMNS:
         record[name] = _cell(row, header_map, name)
@@ -390,18 +446,46 @@ def _merge_record(existing: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str
         "thread_name": payload.get("thread_name") or existing.get("thread_name") or "",
         "thread_id": payload.get("thread_id") or existing.get("thread_id") or "",
         "user_id": payload.get("user_id") or existing.get("user_id") or "",
-        "panel_message_id": payload.get("panel_message_id") or existing.get("panel_message_id") or "",
+        "panel_message_id": payload.get("panel_message_id")
+        or existing.get("panel_message_id")
+        or "",
         "step_index": payload.get("step_index", existing.get("step_index", 0)),
         "completed": payload.get("completed", existing.get("completed", False)),
-        "completed_at": payload.get("completed_at") or existing.get("completed_at") or "",
+        "completed_at": payload.get("completed_at")
+        or existing.get("completed_at")
+        or "",
         "answers": payload.get("answers", existing_answers),
-        "updated_at": payload.get("updated_at") or existing.get("updated_at") or _now_iso(),
-        "first_reminder_at": payload.get("first_reminder_at") or existing.get("first_reminder_at") or "",
-        "warning_sent_at": payload.get("warning_sent_at") or existing.get("warning_sent_at") or "",
-        "auto_closed_at": payload.get("auto_closed_at") or existing.get("auto_closed_at") or "",
-        "recruiter_summary_message_id": payload.get("recruiter_summary_message_id") or existing.get("recruiter_summary_message_id") or "",
-        "recruiter_summary_posted_at": payload.get("recruiter_summary_posted_at") or existing.get("recruiter_summary_posted_at") or "",
-        "recruiter_summary_player_id": payload.get("recruiter_summary_player_id") or existing.get("recruiter_summary_player_id") or "",
+        "updated_at": payload.get("updated_at")
+        or existing.get("updated_at")
+        or _now_iso(),
+        "first_reminder_at": payload.get("first_reminder_at")
+        or existing.get("first_reminder_at")
+        or "",
+        "warning_sent_at": payload.get("warning_sent_at")
+        or existing.get("warning_sent_at")
+        or "",
+        "auto_closed_at": payload.get("auto_closed_at")
+        or existing.get("auto_closed_at")
+        or "",
+        "recruiter_summary_message_id": payload.get("recruiter_summary_message_id")
+        or existing.get("recruiter_summary_message_id")
+        or "",
+        "recruiter_summary_posted_at": payload.get("recruiter_summary_posted_at")
+        or existing.get("recruiter_summary_posted_at")
+        or "",
+        "recruiter_summary_player_id": payload.get("recruiter_summary_player_id")
+        or existing.get("recruiter_summary_player_id")
+        or "",
+        "summary_screenshot_prompt_message_id": payload.get(
+            "summary_screenshot_prompt_message_id"
+        )
+        or existing.get("summary_screenshot_prompt_message_id")
+        or "",
+        "summary_screenshot_prompt_summary_message_id": payload.get(
+            "summary_screenshot_prompt_summary_message_id"
+        )
+        or existing.get("summary_screenshot_prompt_summary_message_id")
+        or "",
     }
     return _record_from_payload(merged_payload)
 
@@ -421,7 +505,9 @@ def _cell(row: Sequence[Any], header_map: Dict[str, int], key: str) -> Any:
 
 
 def _get_row_index_by_thread_id(
-    rows: Sequence[Sequence[Any]], header_map: Dict[str, int], thread_id: int | str | None
+    rows: Sequence[Sequence[Any]],
+    header_map: Dict[str, int],
+    thread_id: int | str | None,
 ) -> Optional[int]:
     if thread_id is None:
         return None
@@ -471,10 +557,14 @@ async def _asheet(*, timeout: float | None = 15.0):
 
 async def _aload_rows(*, timeout: float | None = 15.0) -> list[list[Any]]:
     worksheet = await _asheet(timeout=timeout)
-    return await core._retry_with_backoff_async(core.async_adapter.aworksheet_values_all, worksheet, timeout=timeout)
+    return await core._retry_with_backoff_async(
+        core.async_adapter.aworksheet_values_all, worksheet, timeout=timeout
+    )
 
 
-def _load_from_rows(rows: Sequence[Sequence[Any]], *, thread_id: int | str | None) -> Optional[Dict[str, Any]]:
+def _load_from_rows(
+    rows: Sequence[Sequence[Any]], *, thread_id: int | str | None
+) -> Optional[Dict[str, Any]]:
     header = _validated_header(rows[0] if rows else [])
     if header is None:
         return None
@@ -490,7 +580,10 @@ def _load_all_from_rows(rows: Sequence[Sequence[Any]]) -> list[Dict[str, Any]]:
     if header is None:
         return []
     header_map = _header_index_map(header)
-    return [_session_from_record(_record_from_row(row, header, header_map)) for row in rows[1:]]
+    return [
+        _session_from_record(_record_from_row(row, header, header_map))
+        for row in rows[1:]
+    ]
 
 
 def _session_from_record(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -515,8 +608,17 @@ def _session_from_record(record: Dict[str, Any]) -> Dict[str, Any]:
         "first_reminder_at": record.get("first_reminder_at") or "",
         "warning_sent_at": record.get("warning_sent_at") or "",
         "auto_closed_at": record.get("auto_closed_at") or "",
-        "recruiter_summary_message_id": record.get("recruiter_summary_message_id") or "",
+        "recruiter_summary_message_id": record.get("recruiter_summary_message_id")
+        or "",
         "recruiter_summary_posted_at": record.get("recruiter_summary_posted_at") or "",
         "recruiter_summary_player_id": record.get("recruiter_summary_player_id") or "",
+        "summary_screenshot_prompt_message_id": record.get(
+            "summary_screenshot_prompt_message_id"
+        )
+        or "",
+        "summary_screenshot_prompt_summary_message_id": record.get(
+            "summary_screenshot_prompt_summary_message_id"
+        )
+        or "",
         "answers": answers,
     }
