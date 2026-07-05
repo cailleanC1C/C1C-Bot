@@ -110,12 +110,12 @@ def test_build_promo_leadership_summary_full_sections():
 
     embed = build_promo_summary_embed("promo.l", answers, _visibility_map(answers))
 
-    assert embed.title == "C1C – Leadership move request"
+    assert embed.title == "C1C - Leadership move request"
     assert "coordinator will review the move" in (embed.description or "")
 
-    player_section = next(field for field in embed.fields if "Player & reporter" in field.name)
+    player_section = next(field for field in embed.fields if "Move request" in field.name)
     assert "Lead Recruit" in player_section.value
-    assert "Target clan" in player_section.value
+    assert "Requested new clan / fit" in player_section.value
 
     performance_section = next(field for field in embed.fields if "Performance snapshot" in field.name)
     assert "Power & level" in performance_section.value
@@ -128,11 +128,9 @@ def test_build_promo_leadership_summary_full_sections():
     assert "Avg CvC points" in war_section.value
 
     rationale_section = next(
-        field for field in embed.fields if "Move rationale" in field.name
+        field for field in embed.fields if "Extra notes" in field.name
     )
-    assert "Move reason" in rationale_section.value
-    assert "Timing window" in rationale_section.value
-    assert "Notes" in rationale_section.value
+    assert "Ready for transfer" in rationale_section.value
 
 
 def test_build_promo_leadership_summary_handles_missing_optionals():
@@ -161,7 +159,7 @@ def test_build_promo_leadership_summary_handles_missing_optionals():
 
     embed = build_promo_summary_embed("promo.l", answers, _visibility_map(answers))
 
-    player_section = next(field for field in embed.fields if "Player & reporter" in field.name)
+    player_section = next(field for field in embed.fields if "Move request" in field.name)
     assert "Target clan" not in player_section.value
 
     performance_section = next(field for field in embed.fields if "Performance snapshot" in field.name)
@@ -175,6 +173,49 @@ def test_build_promo_leadership_summary_handles_missing_optionals():
     assert "CvC" not in war_section.value
 
     rationale_section = next(
-        (field for field in embed.fields if "Move rationale" in field.name), None
+        (field for field in embed.fields if "Extra notes" in field.name), None
     )
     assert rationale_section is None
+
+
+def test_build_promo_leadership_summary_renders_collected_move_payload():
+    answers = {
+        "pl_private": {"value": "yes", "label": "yes"},
+        "pl_discord": "<@1324831292784775309>",
+        "pl_reason": "progression mismatch",
+        "pl_time": "not urgent",
+        "pl_curr_clan": "C1CD",
+        "pl_new_clan": "relaxed",
+        "pl_CB": {"value": "Easy", "label": "Easy"},
+        "pl_hydra_diff": [{"value": "Normal", "label": "Normal"}],
+        "pl_hydra_clash": "0",
+        "pl_chimera_diff": [{"value": "Easy", "label": "Easy"}],
+        "pl_chimera_clash": "0",
+        "pl_siege": "no",
+        "pl_cvc": "no",
+        "pl_various": "I dunno what else to tell you",
+    }
+
+    embed = build_promo_summary_embed("promo.l", answers, _visibility_map(answers))
+
+    move_section = next(field for field in embed.fields if "Move request" in field.name)
+    assert "Private request:** yes" in move_section.value
+    assert "Player:** <@1324831292784775309>" in move_section.value
+    assert "Reason:** progression mismatch" in move_section.value
+    assert "Urgency / timing:** not urgent" in move_section.value
+    assert "Current clan:** C1CD" in move_section.value
+    assert "Requested new clan / fit:** relaxed" in move_section.value
+
+    performance_section = next(field for field in embed.fields if "Performance snapshot" in field.name)
+    assert "Clan Boss:** Easy" in performance_section.value
+    assert "Hydra:** Normal" in performance_section.value
+    assert "Avg Hydra Clash:** 0" in performance_section.value
+    assert "Chimera:** Easy" in performance_section.value
+    assert "Avg Chimera Clash:** 0" in performance_section.value
+
+    war_section = next(field for field in embed.fields if "War modes" in field.name)
+    assert "Siege participation:** no" in war_section.value
+    assert "CvC:** no" in war_section.value
+
+    notes_section = next(field for field in embed.fields if "Extra notes" in field.name)
+    assert notes_section.value == "I dunno what else to tell you"
