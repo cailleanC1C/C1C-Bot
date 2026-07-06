@@ -20,6 +20,8 @@ log = logging.getLogger("c1c.community.fusion.reminders")
 
 _DEDUP_TIMEOUT_BACKOFF_SEC = max(60, int(os.getenv("FUSION_REMINDER_DEDUPE_BACKOFF_SEC", "300")))
 _DEDUP_TIMEOUT_SEC = max(1.0, float(os.getenv("FUSION_REMINDER_DEDUPE_TIMEOUT_SEC", "10")))
+_DEDUP_READ_RETRY_DELAY_SEC = max(0.0, float(os.getenv("FUSION_REMINDER_DEDUPE_RETRY_DELAY_SEC", "1")))
+_DEDUP_CACHE_TTL_SEC = max(0.0, float(os.getenv("FUSION_REMINDER_DEDUPE_CACHE_TTL_SEC", "30")))
 _GROUPED_REMINDER_TYPE = "grouped_daily"
 _GROUPED_EVENT_ID_PREFIX = "grouped_daily"
 
@@ -28,6 +30,11 @@ _MEMORY_SENT_KEYS: set[tuple[str, str, str]] = set()
 _DEDUP_DEGRADED_SINCE_MONOTONIC: float = 0.0
 _DEDUP_DEGRADED_ALERTED_KEYS: set[tuple[str, str]] = set()
 _DEDUP_DEGRADED_ALERT_AFTER_SEC = 600.0
+_SENT_KEYS_CACHE: dict[str, tuple[float, set[tuple[str, str]]]] = {}
+
+_DEDUPE_SKIP_WARNING = (
+    "fusion grouped reminders skipped because sent-reminder dedupe could not be verified"
+)
 
 
 def _utc_now(now: dt.datetime | None = None) -> dt.datetime:
@@ -253,71 +260,82 @@ def _select_grouped_events(
     return live_events, upcoming_events, ending_events, skipped
 
 
-async def _load_grouped_sent_keys(target: fusion_sheets.FusionRow) -> tuple[set[tuple[str, str]], bool]:
+async def _load_grouped_sent_keys(target: fusion_sheets.FusionRow) -> tuple[set[tuple[str, str]] | None, bool]:
     dedupe_meta = fusion_sheets.reminder_dedupe_backend_metadata()
     dedupe_backend = dedupe_meta.get("backend_type", "unknown")
     dedupe_tab = dedupe_meta.get("tab_name", "")
     dedupe_config_key = dedupe_meta.get("config_key", "")
-    durable_dedupe_available = time.monotonic() >= _DEDUP_BACKOFF_UNTIL_MONOTONIC
+    now_monotonic = time.monotonic()
+
+    cached = _SENT_KEYS_CACHE.get(target.fusion_id)
+    if cached is not None:
+        cached_at, cached_keys = cached
+        if now_monotonic - cached_at <= _DEDUP_CACHE_TTL_SEC:
+            return set(cached_keys), True
+        _SENT_KEYS_CACHE.pop(target.fusion_id, None)
+
+    durable_dedupe_available = now_monotonic >= _DEDUP_BACKOFF_UNTIL_MONOTONIC
+    context = {
+        "fusion_id": target.fusion_id,
+        "timeout_sec": _DEDUP_TIMEOUT_SEC,
+        "retry_backoff_sec": _DEDUP_TIMEOUT_BACKOFF_SEC,
+        "dedupe_backend": dedupe_backend,
+        "dedupe_tab": dedupe_tab,
+        "dedupe_config_key": dedupe_config_key,
+        "operation": "read_sent_reminder_keys",
+    }
     if not durable_dedupe_available:
         _register_dedupe_degraded_mode()
-        log.warning(
-            "fusion grouped reminder durable dedupe in backoff window; using in-memory fallback",
-            extra={
-                "fusion_id": target.fusion_id,
-                "retry_backoff_sec": _DEDUP_TIMEOUT_BACKOFF_SEC,
-                "dedupe_backend": dedupe_backend,
-                "dedupe_tab": dedupe_tab,
-                "dedupe_config_key": dedupe_config_key,
-                "operation": "read_sent_reminder_keys",
-            },
-        )
-        return set(), False
-    try:
-        sent_keys = await asyncio.wait_for(
-            fusion_sheets.get_sent_reminder_keys(target.fusion_id),
-            timeout=_DEDUP_TIMEOUT_SEC,
-        )
-        _recover_from_dedupe_backoff()
-        return sent_keys, True
-    except TimeoutError as exc:
-        _register_dedupe_timeout_backoff()
-        context = {
-            "fusion_id": target.fusion_id,
-            "timeout_sec": _DEDUP_TIMEOUT_SEC,
-            "retry_backoff_sec": _DEDUP_TIMEOUT_BACKOFF_SEC,
-            "dedupe_backend": dedupe_backend,
-            "dedupe_tab": dedupe_tab,
-            "dedupe_config_key": dedupe_config_key,
-            "operation": "read_sent_reminder_keys",
-        }
-        log.exception("fusion grouped reminder durable dedupe timed out; using in-memory fallback", extra=context)
+        log.warning(_DEDUPE_SKIP_WARNING, extra={**context, "reason": "dedupe_backoff_active"})
         await fusion_logs.send_ops_alert(
             component="reminders",
-            summary="grouped_dedupe_unavailable_degraded_mode",
+            summary="grouped_dedupe_unavailable_reminders_skipped",
             dedupe_key=f"fusion:grouped_reminders:dedupe:{target.fusion_id}",
-            error=exc,
+            reason="dedupe_backoff_active",
             fields=context,
         )
-        return set(), False
-    except Exception as exc:
-        _register_dedupe_degraded_mode()
-        context = {
-            "fusion_id": target.fusion_id,
-            "dedupe_backend": dedupe_backend,
-            "dedupe_tab": dedupe_tab,
-            "dedupe_config_key": dedupe_config_key,
-            "operation": "read_sent_reminder_keys",
-        }
-        log.exception("fusion grouped reminder failed to load durable dedupe; using in-memory fallback", extra=context)
-        await fusion_logs.send_ops_alert(
-            component="reminders",
-            summary="grouped_dedupe_unavailable_degraded_mode",
-            dedupe_key=f"fusion:grouped_reminders:dedupe:{target.fusion_id}",
-            error=exc,
-            fields=context,
-        )
-        return set(), False
+        return None, False
+
+    last_exc: BaseException | None = None
+    for attempt in (1, 2):
+        try:
+            sent_keys = await asyncio.wait_for(
+                fusion_sheets.get_sent_reminder_keys(target.fusion_id),
+                timeout=_DEDUP_TIMEOUT_SEC,
+            )
+            keys = set(sent_keys)
+            _SENT_KEYS_CACHE[target.fusion_id] = (time.monotonic(), keys)
+            _recover_from_dedupe_backoff()
+            return set(keys), True
+        except TimeoutError as exc:
+            last_exc = exc
+            log.warning(
+                "fusion grouped reminder sent-reminder dedupe read timed out; retrying"
+                if attempt == 1
+                else _DEDUPE_SKIP_WARNING,
+                extra={**context, "attempt": attempt, "max_attempts": 2},
+            )
+        except Exception as exc:
+            last_exc = exc
+            log.warning(
+                "fusion grouped reminder sent-reminder dedupe read failed; retrying"
+                if attempt == 1
+                else _DEDUPE_SKIP_WARNING,
+                extra={**context, "attempt": attempt, "max_attempts": 2, "error_type": type(exc).__name__},
+                exc_info=True,
+            )
+        if attempt == 1 and _DEDUP_READ_RETRY_DELAY_SEC > 0:
+            await asyncio.sleep(_DEDUP_READ_RETRY_DELAY_SEC)
+
+    _register_dedupe_timeout_backoff()
+    await fusion_logs.send_ops_alert(
+        component="reminders",
+        summary="grouped_dedupe_unavailable_reminders_skipped",
+        dedupe_key=f"fusion:grouped_reminders:dedupe:{target.fusion_id}",
+        error=last_exc,
+        fields=context,
+    )
+    return None, False
 
 
 async def _resolve_channel_role_status(bot: commands.Bot, target: fusion_sheets.FusionRow) -> dict[str, object]:
@@ -416,6 +434,9 @@ async def collect_fusion_reminder_startup_summary(
 
     try:
         sent_keys, _durable = await _load_grouped_sent_keys(target)
+        if sent_keys is None:
+            lines.append("• skipped=sent_reminder_dedupe_unavailable")
+            return lines
         last_sent = await fusion_sheets.get_last_reminder_sent_at(target.fusion_id, reminder_type=_GROUPED_REMINDER_TYPE)
     except Exception as exc:
         await fusion_logs.send_ops_alert(
@@ -526,6 +547,13 @@ async def process_fusion_reminders(
         return
 
     sent_keys, durable_dedupe_available = await _load_grouped_sent_keys(target)
+    if sent_keys is None or not durable_dedupe_available:
+        await _maybe_alert_prolonged_dedupe_degradation(
+            target.fusion_id,
+            reminder_type=_GROUPED_REMINDER_TYPE,
+            backend=fusion_sheets.reminder_dedupe_backend_metadata().get("backend_type", "unknown"),
+        )
+        return
     grouped_event_id = _grouped_event_id_for_date(reference.date())
     grouped_key = (grouped_event_id, _GROUPED_REMINDER_TYPE)
     memory_key = (target.fusion_id, grouped_event_id, _GROUPED_REMINDER_TYPE)

@@ -292,3 +292,98 @@ def test_disabled_grouped_config_logs_resolved_source(monkeypatch):
             },
         }
     ]
+
+
+def test_grouped_reminder_skips_when_dedupe_read_times_out_after_retry(monkeypatch, caplog):
+    now = dt.datetime(2026, 4, 10, 12, 0, tzinfo=dt.timezone.utc)
+    event = _event(event_id="e-start", start_at=now)
+    channel = _DummyChannel()
+    announcement = _DummyAnnouncementMessage("https://discord.test/jump", channel)
+    alerts = []
+    attempts = 0
+
+    async def _get_sent_keys(_fusion_id: str):
+        nonlocal attempts
+        attempts += 1
+        raise TimeoutError("dedupe unavailable")
+
+    async def _send_ops_alert(**kwargs):
+        alerts.append(kwargs)
+
+    monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row(opt_in_role_id=777)))
+    monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=[event]))
+    monkeypatch.setattr(fusion_sheets, "get_valid_event_timing", lambda event, **_kwargs: (event.start_at_utc, event.end_at_utc))
+    monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", _get_sent_keys)
+    monkeypatch.setattr(fusion_sheets, "mark_reminder_sent", AsyncMock())
+    monkeypatch.setattr(fusion_sheets, "get_fusion_reminder_settings", AsyncMock(return_value=_settings()))
+    monkeypatch.setattr(reminders, "ensure_fusion_announcement", AsyncMock(return_value=announcement))
+    monkeypatch.setattr(reminders, "build_fusion_opt_in_view", lambda _target: "view")
+    monkeypatch.setattr(reminders.fusion_logs, "send_ops_alert", _send_ops_alert)
+    monkeypatch.setattr(reminders, "_DEDUP_READ_RETRY_DELAY_SEC", 0)
+    monkeypatch.setattr(reminders, "_DEDUP_BACKOFF_UNTIL_MONOTONIC", 0.0)
+    reminders._MEMORY_SENT_KEYS.clear()
+    reminders._SENT_KEYS_CACHE.clear()
+
+    asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now))
+
+    assert attempts == 2
+    assert channel.sent == []
+    fusion_sheets.mark_reminder_sent.assert_not_awaited()
+    assert "reminders skipped because sent-reminder dedupe could not be verified" in caplog.text
+    assert alerts[-1]["summary"] == "grouped_dedupe_unavailable_reminders_skipped"
+
+
+def test_grouped_reminder_retries_dedupe_then_sends_when_retry_succeeds(monkeypatch):
+    now = dt.datetime(2026, 4, 10, 12, 0, tzinfo=dt.timezone.utc)
+    event = _event(event_id="e-start", start_at=now)
+    channel = _DummyChannel()
+    announcement = _DummyAnnouncementMessage("https://discord.test/jump", channel)
+    attempts = 0
+
+    async def _get_sent_keys(_fusion_id: str):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TimeoutError("first attempt")
+        return set()
+
+    monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row()))
+    monkeypatch.setattr(fusion_sheets, "get_fusion_events", AsyncMock(return_value=[event]))
+    monkeypatch.setattr(fusion_sheets, "get_valid_event_timing", lambda event, **_kwargs: (event.start_at_utc, event.end_at_utc))
+    monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", _get_sent_keys)
+    monkeypatch.setattr(fusion_sheets, "mark_reminder_sent", AsyncMock())
+    monkeypatch.setattr(fusion_sheets, "get_fusion_reminder_settings", AsyncMock(return_value=_settings()))
+    monkeypatch.setattr(reminders, "ensure_fusion_announcement", AsyncMock(return_value=announcement))
+    monkeypatch.setattr(reminders, "build_fusion_opt_in_view", lambda _target: "view")
+    monkeypatch.setattr(reminders, "_DEDUP_READ_RETRY_DELAY_SEC", 0)
+    monkeypatch.setattr(reminders, "_DEDUP_BACKOFF_UNTIL_MONOTONIC", 0.0)
+    reminders._MEMORY_SENT_KEYS.clear()
+    reminders._SENT_KEYS_CACHE.clear()
+
+    asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now))
+
+    assert attempts == 2
+    assert len(channel.sent) == 1
+    fusion_sheets.mark_reminder_sent.assert_awaited_once()
+
+
+def test_grouped_reminder_reuses_brief_dedupe_cache(monkeypatch):
+    now = dt.datetime(2026, 4, 10, 11, 59, tzinfo=dt.timezone.utc)
+    calls = 0
+
+    async def _get_sent_keys(_fusion_id: str):
+        nonlocal calls
+        calls += 1
+        return set()
+
+    monkeypatch.setattr(fusion_sheets, "get_publishable_fusion", AsyncMock(return_value=_fusion_row()))
+    monkeypatch.setattr(fusion_sheets, "get_sent_reminder_keys", _get_sent_keys)
+    monkeypatch.setattr(fusion_sheets, "get_fusion_reminder_settings", AsyncMock(return_value=_settings(grouped_post_time_utc="12:00")))
+    monkeypatch.setattr(reminders, "_DEDUP_BACKOFF_UNTIL_MONOTONIC", 0.0)
+    reminders._SENT_KEYS_CACHE.clear()
+    reminders._MEMORY_SENT_KEYS.clear()
+
+    asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now))
+    asyncio.run(reminders.process_fusion_reminders(bot=object(), now=now + dt.timedelta(seconds=10)))
+
+    assert calls == 1
