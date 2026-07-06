@@ -14,6 +14,85 @@ from c1c_coreops.help import COREOPS_VERSION, build_coreops_footer
 from shared import logfmt
 from shared.utils import humanize_duration
 
+
+_DISCORD_FIELD_NAME_LIMIT = 256
+_DISCORD_FIELD_VALUE_LIMIT = 1024
+_DISCORD_FIELDS_PER_EMBED = 25
+_DISCORD_EMBED_TEXT_LIMIT = 6000
+
+
+def _embed_text_len(embed: discord.Embed) -> int:
+    total = len(embed.title or "") + len(embed.description or "")
+    total += len(getattr(embed.footer, "text", None) or "")
+    total += len(getattr(embed.author, "name", None) or "")
+    for field in embed.fields:
+        total += len(field.name or "") + len(field.value or "")
+    return total
+
+
+def _split_field_value(value: str, limit: int = _DISCORD_FIELD_VALUE_LIMIT) -> list[str]:
+    text = value or "—"
+    if len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    current = ""
+    for line in text.splitlines(keepends=True):
+        if len(line) > limit:
+            if current:
+                chunks.append(current.rstrip("\n") or "—")
+                current = ""
+            start = 0
+            while start < len(line):
+                chunks.append(line[start : start + limit].rstrip("\n") or "—")
+                start += limit
+            continue
+        if len(current) + len(line) > limit:
+            chunks.append(current.rstrip("\n") or "—")
+            current = line
+        else:
+            current += line
+    if current or not chunks:
+        chunks.append(current.rstrip("\n") or "—")
+    return chunks
+
+
+def _continued_field_name(base_name: str, index: int) -> str:
+    clean = _sanitize_inline(base_name, allow_empty=True)[:_DISCORD_FIELD_NAME_LIMIT] or "​"
+    if index == 0:
+        return clean
+    stem = "Continued" if clean == "​" else f"{clean} continued"
+    suffix = "" if index == 1 else f" {index}"
+    return f"{stem}{suffix}"[:_DISCORD_FIELD_NAME_LIMIT]
+
+
+def _new_checksheet_embed(colour: discord.Colour, footer_text: str, *, index: int = 0) -> discord.Embed:
+    title = "Checksheet — Tabs & Headers"
+    if index:
+        title = f"{title} ({index + 1})"
+    embed = discord.Embed(title=title, colour=colour)
+    embed.set_footer(text=footer_text)
+    return embed
+
+
+def _add_paginated_field(
+    embeds: list[discord.Embed],
+    *,
+    colour: discord.Colour,
+    footer_text: str,
+    name: str,
+    value: str,
+    inline: bool = False,
+) -> None:
+    for idx, chunk in enumerate(_split_field_value(value)):
+        field_name = _continued_field_name(name, idx)
+        current = embeds[-1]
+        projected = _embed_text_len(current) + len(field_name) + len(chunk)
+        if len(current.fields) >= _DISCORD_FIELDS_PER_EMBED or projected > _DISCORD_EMBED_TEXT_LIMIT:
+            embeds.append(_new_checksheet_embed(colour, footer_text, index=len(embeds)))
+            current = embeds[-1]
+        current.add_field(name=field_name, value=chunk, inline=inline)
+
 def _hms(seconds: float) -> str:
     s = int(max(0, seconds))
     h, s = divmod(s, 3600)
@@ -428,12 +507,25 @@ class ChecksheetEmbedData:
     debug: bool = False
 
 
-def build_checksheet_tabs_embed(data: ChecksheetEmbedData) -> discord.Embed:
+def build_checksheet_tabs_embeds(data: ChecksheetEmbedData) -> list[discord.Embed]:
     colour_factory = getattr(discord.Colour, "dark_teal", None)
     colour = colour_factory() if callable(colour_factory) else discord.Colour.teal()
-    embed = discord.Embed(title="Checksheet — Tabs & Headers", colour=colour)
+    footer_parts = [
+        logfmt.LOG_EMOJI["lifecycle"],
+        f"Bot v{_sanitize_inline(data.bot_version)}",
+        f"CoreOps v{_sanitize_inline(data.coreops_version)}",
+    ]
+    footer_text = " · ".join(part for part in footer_parts if part)
+    embeds = [_new_checksheet_embed(colour, footer_text)]
 
-    embed.add_field(name="Google Sheets", value="Public client", inline=False)
+    _add_paginated_field(
+        embeds,
+        colour=colour,
+        footer_text=footer_text,
+        name="Google Sheets",
+        value="Public client",
+        inline=False,
+    )
 
     for sheet in data.sheets:
         lines: list[str] = []
@@ -474,7 +566,14 @@ def build_checksheet_tabs_embed(data: ChecksheetEmbedData) -> discord.Embed:
                 lines.append(f"Error: {_sanitize_inline(tab.error)}")
 
         block = "\n".join(lines) if lines else "—"
-        embed.add_field(name="​", value=block, inline=False)
+        _add_paginated_field(
+            embeds,
+            colour=colour,
+            footer_text=footer_text,
+            name="​",
+            value=block,
+            inline=False,
+        )
 
         if data.debug:
             config_tab = _sanitize_inline(sheet.config_tab or "Config") or "Config"
@@ -519,15 +618,20 @@ def build_checksheet_tabs_embed(data: ChecksheetEmbedData) -> discord.Embed:
             debug_lines = [f"config_tab: {config_tab}", f"first_rows: {first_rows_value or '—'}"]
             if joined_tabs_value:
                 debug_lines.append(f"discovered: {joined_tabs_value}")
-            embed.add_field(name="Debug preview", value="\n".join(debug_lines), inline=False)
+            _add_paginated_field(
+                embeds,
+                colour=colour,
+                footer_text=footer_text,
+                name="Debug preview",
+                value="\n".join(debug_lines),
+                inline=False,
+            )
 
-    footer_parts = [
-        logfmt.LOG_EMOJI["lifecycle"],
-        f"Bot v{_sanitize_inline(data.bot_version)}",
-        f"CoreOps v{_sanitize_inline(data.coreops_version)}",
-    ]
-    embed.set_footer(text=" · ".join(part for part in footer_parts if part))
-    return embed
+    return embeds
+
+
+def build_checksheet_tabs_embed(data: ChecksheetEmbedData) -> discord.Embed:
+    return build_checksheet_tabs_embeds(data)[0]
 
 def build_health_embed(
     *,
@@ -658,6 +762,7 @@ __all__ = [
     "build_digest_line",
     "build_digest_embed",
     "build_checksheet_tabs_embed",
+    "build_checksheet_tabs_embeds",
     "build_health_embed",
     "build_env_embed",
     "build_refresh_embed",
