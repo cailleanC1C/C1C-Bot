@@ -49,19 +49,31 @@ class FakeWorksheet:
     def __init__(self, rows):
         self.rows = [list(row) for row in rows]
         self.appended = []
+        self.appended_batches = []
         self.updated = []
+        self.updated_batches = []
+        self.get_all_values_calls = 0
 
     def get_all_values(self):
+        self.get_all_values_calls += 1
         return [list(row) for row in self.rows]
 
     def append_row(self, row, value_input_option="RAW"):
         self.appended.append((list(row), value_input_option))
         self.rows.append(list(row))
 
+    def append_rows(self, rows, value_input_option="RAW"):
+        rows = [list(row) for row in rows]
+        self.appended_batches.append((rows, value_input_option))
+        self.rows.extend(rows)
+
     def update(self, range_name, rows, value_input_option="RAW"):
         self.updated.append(
             (range_name, [list(row) for row in rows], value_input_option)
         )
+
+    def batch_update(self, updates, value_input_option="RAW"):
+        self.updated_batches.append((updates, value_input_option))
 
 
 HEADERS = list(coreops_cog.HELP_REGISTRY_HEADERS)
@@ -86,10 +98,15 @@ def _command(name="sample", *, help_text="Detailed help", brief="Summary", extra
 
 def _patch_sheet(monkeypatch, worksheet, tab="HelpCommands"):
     monkeypatch.setenv("RECRUITMENT_SHEET_ID", "sheet")
+
+    async def fake_get_config_value_async(*args, **kwargs):
+        assert kwargs.get("force") is not True
+        return tab
+
     monkeypatch.setattr(
         coreops_cog,
         "get_config_value_async",
-        lambda *a, **k: asyncio.sleep(0, result=tab),
+        fake_get_config_value_async,
     )
     monkeypatch.setattr(
         coreops_cog,
@@ -157,7 +174,9 @@ def test_helpseed_existing_rows_preserve_manual_fields(monkeypatch):
         _patch_sheet(monkeypatch, worksheet)
         result = await cog._helpseed_impl(DummyCtx())
         assert result.updated == 1
-        updated = worksheet.updated[0][1][0]
+        assert worksheet.get_all_values_calls == 1
+        assert worksheet.updated == []
+        updated = worksheet.updated_batches[0][0][0]["values"][0]
         assert updated[0] == "TRUE"
         assert updated[5] == "manualcat"
         assert updated[7] == "manual summary"
@@ -178,7 +197,9 @@ def test_helpseed_new_rows_append_disabled_blank_sort(monkeypatch):
         _patch_sheet(monkeypatch, worksheet)
         result = await cog._helpseed_impl(DummyCtx())
         assert result.created == 1
-        row = worksheet.appended[0][0]
+        assert worksheet.get_all_values_calls == 1
+        assert worksheet.appended == []
+        row = worksheet.appended_batches[0][0][0]
         assert row[0] == "FALSE"
         assert row[10] == ""
 
@@ -234,5 +255,90 @@ def test_helpseed_admin_check_blocks_non_admin(monkeypatch):
             except commands.CheckFailure:
                 failures += 1
         assert failures >= 1
+
+    asyncio.run(run())
+
+
+def test_helpseed_batches_multiple_created_rows(monkeypatch):
+    async def run():
+        bot = SimpleNamespace(
+            walk_commands=lambda: [
+                _command("alpha", extras={"function_group": "general", "access_tier": "user"}),
+                _command("beta", extras={"function_group": "general", "access_tier": "user"}),
+            ]
+        )
+        cog = _make_cog(bot)
+        worksheet = FakeWorksheet([HEADERS])
+        _patch_sheet(monkeypatch, worksheet)
+        result = await cog._helpseed_impl(DummyCtx())
+        assert result.created == 2
+        assert worksheet.appended == []
+        assert len(worksheet.appended_batches) == 1
+        assert len(worksheet.appended_batches[0][0]) == 2
+
+    asyncio.run(run())
+
+
+def test_helpseed_rate_limit_reply_is_friendly(monkeypatch):
+    async def run():
+        bot = SimpleNamespace(walk_commands=lambda: [])
+        cog = _make_cog(bot)
+        ctx = DummyCtx()
+
+        async def fail(_ctx):
+            raise RuntimeError('429 RESOURCE_EXHAUSTED ReadRequestsPerMinutePerUser traceback details')
+
+        monkeypatch.setattr(cog, "_helpseed_impl", fail)
+        await CoreOpsCog.ops_helpseed.callback(cog, ctx)
+        assert ctx.replies == [
+            "⚠️ Help registry seed hit Google Sheets rate limits. Wait a minute and try again."
+        ]
+
+    asyncio.run(run())
+
+
+def test_helpseed_missing_append_rows_fails_without_append_row_fallback(monkeypatch):
+    async def run():
+        class NoAppendRowsWorksheet(FakeWorksheet):
+            append_rows = None
+
+        cmd = _command(extras={"function_group": "general", "access_tier": "user"})
+        bot = SimpleNamespace(walk_commands=lambda: [cmd])
+        cog = _make_cog(bot)
+        worksheet = NoAppendRowsWorksheet([HEADERS])
+        _patch_sheet(monkeypatch, worksheet)
+        with pytest.raises(RuntimeError, match="requires worksheet.append_rows"):
+            await cog._helpseed_impl(DummyCtx())
+        assert worksheet.appended == []
+
+    asyncio.run(run())
+
+
+def test_helpseed_missing_batch_update_fails_without_update_fallback(monkeypatch):
+    async def run():
+        class NoBatchUpdateWorksheet(FakeWorksheet):
+            batch_update = None
+
+        cmd = _command(extras={"function_group": "newcat", "access_tier": "admin"})
+        bot = SimpleNamespace(walk_commands=lambda: [cmd])
+        cog = _make_cog(bot)
+        existing = [
+            "TRUE",
+            "woadkeeper",
+            "sample",
+            "!old",
+            "!old",
+            "manualcat",
+            "staff",
+            "manual summary",
+            "manual details",
+            "manual note",
+            "9",
+        ]
+        worksheet = NoBatchUpdateWorksheet([HEADERS, existing])
+        _patch_sheet(monkeypatch, worksheet)
+        with pytest.raises(RuntimeError, match="requires worksheet.batch_update"):
+            await cog._helpseed_impl(DummyCtx())
+        assert worksheet.updated == []
 
     asyncio.run(run())
