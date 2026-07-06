@@ -73,6 +73,7 @@ from shared.sheets.async_core import (
     afetch_records,
 )
 from shared.sheets.recruitment import get_config_value_async, get_reports_tab_name
+import shared.sheets.core as sheets_core
 from modules.common.config_sheets import SHEET_TARGETS, SheetTarget
 
 from c1c_coreops.config import CoreOpsSettings, load_coreops_settings, normalize_command_text
@@ -393,6 +394,35 @@ def _column_label(index: int) -> str:
         value, rem = divmod(value - 1, 26)
         label = chr(65 + rem) + label
     return label
+
+
+async def _helpseed_append_rows(worksheet: Any, rows: list[list[str]]) -> None:
+    if not rows:
+        return
+    append_rows = getattr(worksheet, "append_rows", None)
+    if not callable(append_rows):
+        raise RuntimeError(
+            "Help registry seed requires worksheet.append_rows for batched writes."
+        )
+    await acall_with_backoff(append_rows, rows, value_input_option="RAW")
+
+
+async def _helpseed_update_rows(
+    worksheet: Any, rows: list[tuple[int, list[str]]], header_count: int
+) -> None:
+    if not rows:
+        return
+    batch_update = getattr(worksheet, "batch_update", None)
+    if not callable(batch_update):
+        raise RuntimeError(
+            "Help registry seed requires worksheet.batch_update for batched updates."
+        )
+    end_col = _column_label(header_count)
+    payload = [
+        {"range": f"A{row_number}:{end_col}{row_number}", "values": [row]}
+        for row_number, row in rows
+    ]
+    await acall_with_backoff(batch_update, payload, value_input_option="RAW")
 
 
 
@@ -1707,7 +1737,7 @@ class CoreOpsCog(commands.Cog):
                 "RECRUITMENT_SHEET_ID is required for help registry seed."
             )
 
-        tab_name = await get_config_value_async("HELP_COMMANDS_TAB", None, force=True)
+        tab_name = await get_config_value_async("HELP_COMMANDS_TAB", None)
         if not tab_name or not str(tab_name).strip():
             raise RuntimeError(
                 "Config key HELP_COMMANDS_TAB is required and must not be empty."
@@ -1750,6 +1780,10 @@ class CoreOpsCog(commands.Cog):
         for command_key, reason in skipped:
             logger.info("helpseed skipped command=%s reason=%s", command_key, reason)
 
+        rows_to_append: list[list[str]] = []
+        rows_to_update: list[tuple[int, list[str]]] = []
+        command_logs: list[tuple[str, str, list[str]]] = []
+
         for command in commands_iter:
             seed = self._build_help_seed_row(command)
             values_by_header = _help_registry_row_values(seed)
@@ -1758,9 +1792,7 @@ class CoreOpsCog(commands.Cog):
             action = "created"
             if existing is None:
                 row_values = [values_by_header.get(header, "") for header in headers]
-                await acall_with_backoff(
-                    worksheet.append_row, row_values, value_input_option="RAW"
-                )
+                rows_to_append.append(row_values)
                 result.created += 1
             else:
                 row_number, row = existing
@@ -1772,13 +1804,7 @@ class CoreOpsCog(commands.Cog):
                 for header in ("category", "summary", "details"):
                     if not str(row[header_map[header]] or "").strip():
                         row[header_map[header]] = values_by_header[header]
-                end_col = _column_label(len(headers))
-                await acall_with_backoff(
-                    worksheet.update,
-                    f"A{row_number}:{end_col}{row_number}",
-                    [row[: len(headers)]],
-                    value_input_option="RAW",
-                )
+                rows_to_update.append((row_number, row[: len(headers)]))
                 result.updated += 1
                 action = "updated"
 
@@ -1805,9 +1831,23 @@ class CoreOpsCog(commands.Cog):
             ):
                 result.missing_sort_order += 1
                 missing_fields.append("sort_order")
+            command_logs.append((seed.command_key, action, missing_fields))
+
+        logger.info(
+            "helpseed sheet calls existing_rows=%s append_rows=%s update_rows=%s",
+            max(0, len(rows) - 1),
+            len(rows_to_append),
+            len(rows_to_update),
+        )
+        if rows_to_append:
+            await _helpseed_append_rows(worksheet, rows_to_append)
+        if rows_to_update:
+            await _helpseed_update_rows(worksheet, rows_to_update, len(headers))
+
+        for command_key, action, missing_fields in command_logs:
             logger.info(
                 "helpseed command=%s action=%s missing=%s",
-                seed.command_key,
+                command_key,
                 action,
                 ",".join(missing_fields) if missing_fields else "none",
             )
@@ -3937,7 +3977,13 @@ class CoreOpsCog(commands.Cog):
     async def ops_helpseed(self, ctx: commands.Context) -> None:
         try:
             await self._helpseed_impl(ctx)
-        except RuntimeError as exc:
+        except Exception as exc:
+            if sheets_core._is_rate_limited_error(exc):
+                logger.exception("helpseed hit Google Sheets rate limits")
+                await ctx.reply(
+                    "⚠️ Help registry seed hit Google Sheets rate limits. Wait a minute and try again."
+                )
+                return
             logger.warning("helpseed failed: %s", exc)
             await ctx.reply(str(sanitize_text(f"⚠️ Help registry seed failed: {exc}")))
 
