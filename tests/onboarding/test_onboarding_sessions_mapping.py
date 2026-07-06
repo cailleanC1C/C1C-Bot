@@ -37,6 +37,39 @@ def test_onboarding_sessions_row_mapping(monkeypatch, headers):
     assert row[headers.index("auto_closed_at")] == ""
 
 
+def test_onboarding_sessions_discord_ids_are_sheet_safe_text(headers):
+    snowflake = "1523691234567890123"
+    payload = {
+        "thread_name": "R1234-smurf",
+        "user_id": int(snowflake),
+        "thread_id": snowflake,
+        "panel_message_id": 1523691234567890456,
+        "recruiter_summary_message_id": 1523691234567890789,
+        "recruiter_summary_player_id": 1523691234567890111,
+        "summary_screenshot_prompt_message_id": 1523691234567890222,
+        "summary_screenshot_prompt_summary_message_id": 1523691234567890333,
+    }
+
+    row = sheet_module.build_row(payload, headers=headers)
+
+    for column in (
+        "user_id",
+        "thread_id",
+        "panel_message_id",
+        "recruiter_summary_message_id",
+        "recruiter_summary_player_id",
+        "summary_screenshot_prompt_message_id",
+        "summary_screenshot_prompt_summary_message_id",
+    ):
+        value = row[headers.index(column)]
+        assert isinstance(value, str)
+        assert value.isdecimal()
+        assert "e" not in value.lower()
+
+    assert row[headers.index("thread_name")] == "R1234-smurf"
+    assert row[headers.index("thread_id")] == snowflake
+
+
 class _FakeSheet:
     def __init__(self, rows):
         self._rows = rows

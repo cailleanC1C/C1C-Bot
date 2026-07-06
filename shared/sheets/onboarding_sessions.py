@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import asyncio
 import json
 import logging
 from typing import Any, Dict, Iterable, Optional, Sequence
@@ -38,6 +37,17 @@ _REQUIRED_COLUMNS = {"thread_id", "thread_name", "updated_at"}
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _id_text(value: Any) -> str:
+    """Return a Discord snowflake value as sheet-safe text."""
+
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if text in {"", "0"}:
+        return ""
+    return text
 
 
 def _sheet():
@@ -269,7 +279,7 @@ def upsert_session(
         "thread_id": str(thread_id),
         "thread_name": thread_name,
         "user_id": str(user_id),
-        "panel_message_id": panel_message_id,
+        "panel_message_id": _id_text(panel_message_id),
         "step_index": 0,
         "completed": False,
         "completed_at": None,
@@ -394,10 +404,9 @@ def _record_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "thread_name": str(payload.get("thread_name") or ""),
-        "user_id": str(payload.get("user_id") or ""),
-        "thread_id": str(payload.get("thread_id") or ""),
-        "panel_message_id": _safe_int(payload.get("panel_message_id"), default="")
-        or "",
+        "user_id": _id_text(payload.get("user_id")),
+        "thread_id": _id_text(payload.get("thread_id")),
+        "panel_message_id": _id_text(payload.get("panel_message_id")),
         "step_index": _safe_int(payload.get("step_index"), default=0) or 0,
         "completed": completed_flag,
         "completed_at": completed_at_value,
@@ -407,22 +416,19 @@ def _record_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         "first_reminder_at": reminder_at,
         "warning_sent_at": warning_at,
         "auto_closed_at": auto_closed_at,
-        "recruiter_summary_message_id": _safe_int(
-            payload.get("recruiter_summary_message_id"), default=""
-        )
-        or "",
-        "recruiter_summary_posted_at": payload.get("recruiter_summary_posted_at") or "",
-        "recruiter_summary_player_id": str(
-            payload.get("recruiter_summary_player_id") or ""
+        "recruiter_summary_message_id": _id_text(
+            payload.get("recruiter_summary_message_id")
         ),
-        "summary_screenshot_prompt_message_id": _safe_int(
-            payload.get("summary_screenshot_prompt_message_id"), default=""
-        )
-        or "",
-        "summary_screenshot_prompt_summary_message_id": _safe_int(
-            payload.get("summary_screenshot_prompt_summary_message_id"), default=""
-        )
-        or "",
+        "recruiter_summary_posted_at": payload.get("recruiter_summary_posted_at") or "",
+        "recruiter_summary_player_id": _id_text(
+            payload.get("recruiter_summary_player_id")
+        ),
+        "summary_screenshot_prompt_message_id": _id_text(
+            payload.get("summary_screenshot_prompt_message_id")
+        ),
+        "summary_screenshot_prompt_summary_message_id": _id_text(
+            payload.get("summary_screenshot_prompt_summary_message_id")
+        ),
     }
 
 

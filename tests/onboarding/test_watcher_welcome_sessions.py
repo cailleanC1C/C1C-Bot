@@ -9,13 +9,14 @@ from modules.onboarding import watcher_welcome
 
 
 class DummyThread:
-    def __init__(self, name: str, thread_id: int = 4242) -> None:
+    def __init__(self, name: str, thread_id: int = 4242, panel_message_id: int = 9999) -> None:
         self.name = name
         self.id = thread_id
+        self.panel_message_id = panel_message_id
         self.parent = SimpleNamespace()
 
     async def send(self, *_args, **_kwargs):  # pragma: no cover - patched behavior verified via outcome
-        return SimpleNamespace(id=9999)
+        return SimpleNamespace(id=self.panel_message_id)
 
 
 @pytest.fixture(autouse=True)
@@ -68,9 +69,9 @@ def test_welcome_trigger_creates_session(monkeypatch):
     assert saved
     payload = saved[0]
     assert payload["thread_name"] == "W0603-smurf"
-    assert payload["thread_id"] == 4242
-    assert payload["user_id"] == 12345
-    assert payload["panel_message_id"] == 9999
+    assert payload["thread_id"] == "4242"
+    assert payload["user_id"] == "12345"
+    assert payload["panel_message_id"] == "9999"
     assert payload["step_index"] == 0
     assert payload["completed"] is False
     assert payload["answers"] == {}
@@ -87,10 +88,13 @@ def test_promo_trigger_creates_session(monkeypatch):
 
     monkeypatch.setattr(watcher_welcome.onboarding_sessions, "upsert_session", _record)
 
-    thread = DummyThread("R1234-smurf")
+    thread_id = 1523691234567890123
+    user_id = 1523691234567890456
+    panel_message_id = 1523691234567890789
+    thread = DummyThread("R1234-smurf", thread_id=thread_id, panel_message_id=panel_message_id)
     trigger_message = SimpleNamespace(
-        mentions=[SimpleNamespace(id=67890)],
-        content="✅ Promo ticket <@67890>",
+        mentions=[SimpleNamespace(id=user_id)],
+        content=f"✅ Promo ticket <@{user_id}>",
     )
 
     outcome = asyncio.run(
@@ -103,13 +107,13 @@ def test_promo_trigger_creates_session(monkeypatch):
         )
     )
 
-    assert outcome.panel_message_id == 9999
+    assert outcome.panel_message_id == panel_message_id
     assert saved
     payload = saved[0]
     assert payload["thread_name"] == "R1234-smurf"
-    assert payload["thread_id"] == 4242
-    assert payload["user_id"] == 67890
-    assert payload["panel_message_id"] == 9999
+    assert payload["thread_id"] == str(thread_id)
+    assert payload["user_id"] == str(user_id)
+    assert payload["panel_message_id"] == str(panel_message_id)
     assert payload["step_index"] == 0
     assert payload["completed"] is False
     assert payload["answers"] == {}
@@ -171,7 +175,7 @@ def test_explicit_subject_user_id_used_when_present(monkeypatch):
     assert outcome.panel_message_id == 9999
     assert saved
     payload = saved[0]
-    assert payload["user_id"] == 77777
+    assert payload["user_id"] == "77777"
 
 
 def test_welcome_session_saves_subject_not_actor(monkeypatch):
@@ -200,5 +204,5 @@ def test_welcome_session_saves_subject_not_actor(monkeypatch):
     assert outcome.panel_message_id == 9999
     assert saved
     payload = saved[0]
-    assert payload["user_id"] == 44444
-    assert payload["thread_id"] == thread.id
+    assert payload["user_id"] == "44444"
+    assert payload["thread_id"] == str(thread.id)

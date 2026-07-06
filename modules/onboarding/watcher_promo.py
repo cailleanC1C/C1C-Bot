@@ -1617,7 +1617,7 @@ class PromoTicketWatcher(commands.Cog):
 
         channel_id = get_promo_channel_id()
         if not channel_id:
-            line = log_lifecycle(
+            log_lifecycle(
                 log,
                 "promo",
                 "enabled",
@@ -1634,7 +1634,7 @@ class PromoTicketWatcher(commands.Cog):
             channel_id_int = int(channel_id)
         except (TypeError, ValueError):
             self.channel_id = None
-            line = log_lifecycle(
+            log_lifecycle(
                 log,
                 "promo",
                 "enabled",
@@ -1649,7 +1649,7 @@ class PromoTicketWatcher(commands.Cog):
         self.channel_id = channel_id_int
 
         if not feature_flags.is_enabled("promo_enabled"):
-            line = log_lifecycle(
+            log_lifecycle(
                 log,
                 "promo",
                 "enabled",
@@ -1661,7 +1661,7 @@ class PromoTicketWatcher(commands.Cog):
             return
 
         if not feature_flags.is_enabled("enable_promo_hook"):
-            line = log_lifecycle(
+            log_lifecycle(
                 log,
                 "promo",
                 "enabled",

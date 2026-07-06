@@ -423,15 +423,18 @@ async def persist_session_for_thread(
     append_session_row: bool = True,
 ) -> None:
     thread_id = int(getattr(thread, "id", 0))
-    thread_name = getattr(thread, "name", "")
+    thread_name = str(getattr(thread, "name", "") or "")
+    text_thread_id = str(thread_id)
+    text_user_id = str(user_id) if user_id is not None else ""
+    text_panel_message_id = str(panel_message_id) if panel_message_id is not None else ""
     created = _normalize_dt(created_at)
 
     try:
         onboarding_sessions.upsert_session(
-            thread_id=thread_id,
+            thread_id=text_thread_id,
             thread_name=thread_name,
-            user_id=user_id if user_id is not None else "",
-            panel_message_id=panel_message_id,
+            user_id=text_user_id,
+            panel_message_id=text_panel_message_id,
             updated_at=created,
         )
     except Exception:
@@ -1168,6 +1171,22 @@ async def _process_promo_thread(
 
     mention = f"<@{applicant_id}>"
     recruiter_ping = _recruiter_ping()
+
+    async def _touch_promo_reminder_sheet(*, phase: str, user_ref: str) -> None:
+        promo_watcher = bot.get_cog("PromoTicketWatcher")
+        if promo_watcher is None:
+            return
+        promo_context = await promo_watcher._ensure_context(thread)
+        if not promo_context:
+            return
+        await promo_watcher._touch_promo_sheet_for_reminder(
+            phase=phase,
+            thread=thread,
+            context=promo_context,
+            created_at=created_at,
+            user_ref=user_ref,
+        )
+
     if action == "reminder_empty":
         content = (
             f"Hey {mention}, your move request ticket is open but we haven't seen any details yet. "
@@ -1183,14 +1202,7 @@ async def _process_promo_thread(
             )
             return
         await _persist_reminder_state(session, action=action, timestamp=now)
-        if watcher and context:
-            await watcher._touch_promo_sheet_for_reminder(
-                phase="reminder_3h",
-                thread=thread,
-                context=context,
-                created_at=created_at,
-                user_ref=mention,
-            )
+        await _touch_promo_reminder_sheet(phase="reminder_3h", user_ref=mention)
         log.info(
             "promo empty reminder posted",
             extra={
@@ -1215,14 +1227,7 @@ async def _process_promo_thread(
             )
             return
         await _persist_reminder_state(session, action=action, timestamp=now)
-        if watcher and context:
-            await watcher._touch_promo_sheet_for_reminder(
-                phase="reminder_3h",
-                thread=thread,
-                context=context,
-                created_at=created_at,
-                user_ref=mention,
-            )
+        await _touch_promo_reminder_sheet(phase="reminder_3h", user_ref=mention)
         log.info(
             "promo incomplete reminder posted",
             extra={
@@ -1249,14 +1254,7 @@ async def _process_promo_thread(
             )
             return
         await _persist_reminder_state(session, action=action, timestamp=now)
-        if watcher and context:
-            await watcher._touch_promo_sheet_for_reminder(
-                phase="reminder_24h",
-                thread=thread,
-                context=context,
-                created_at=created_at,
-                user_ref=audience,
-            )
+        await _touch_promo_reminder_sheet(phase="reminder_24h", user_ref=audience)
         await _post_inactivity_log(
             bot,
             scope="promo",
@@ -1290,14 +1288,7 @@ async def _process_promo_thread(
             )
             return
         await _persist_reminder_state(session, action=action, timestamp=now)
-        if watcher and context:
-            await watcher._touch_promo_sheet_for_reminder(
-                phase="reminder_24h",
-                thread=thread,
-                context=context,
-                created_at=created_at,
-                user_ref=audience,
-            )
+        await _touch_promo_reminder_sheet(phase="reminder_24h", user_ref=audience)
         await _post_inactivity_log(
             bot,
             scope="promo",

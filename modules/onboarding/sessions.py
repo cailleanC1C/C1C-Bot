@@ -77,9 +77,9 @@ class Session:
     # === Sheet persistence helpers ===
     def to_dict(self) -> dict[str, Any]:
         return {
-            "thread_id": self.thread_id,
-            "applicant_id": self.applicant_id,
-            "panel_message_id": self.panel_message_id,
+            "thread_id": str(self.thread_id),
+            "applicant_id": str(self.applicant_id),
+            "panel_message_id": str(self.panel_message_id or ""),
             "step_index": self.step_index,
             "answers": dict(self.answers),
             "completed": self.completed,
@@ -98,7 +98,7 @@ class Session:
             "user_id": str(self.applicant_id),
             "thread_id": str(self.thread_id),
             "thread_name": self.thread_name or "",
-            "panel_message_id": int(self.panel_message_id or 0),
+            "panel_message_id": str(self.panel_message_id or ""),
             "step_index": int(self.step_index),
             "answers": self.answers,
             "completed": bool(self.completed),
@@ -119,7 +119,7 @@ class Session:
             "user_id": str(self.applicant_id),
             "thread_id": str(self.thread_id),
             "thread_name": self.thread_name or "",
-            "panel_message_id": int(self.panel_message_id or 0),
+            "panel_message_id": str(self.panel_message_id or ""),
             "step_index": int(self.step_index),
             "answers": self.answers,
             "completed": bool(self.completed),
