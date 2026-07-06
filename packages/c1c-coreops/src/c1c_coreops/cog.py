@@ -38,7 +38,7 @@ from c1c_coreops.render import (
     DigestSheetsClientSummary,
     RefreshEmbedRow,
     build_config_embed,
-    build_checksheet_tabs_embed,
+    build_checksheet_tabs_embeds,
     build_digest_embed,
     build_digest_line,
     build_env_embed,
@@ -2724,7 +2724,7 @@ class CoreOpsCog(commands.Cog):
             else:
                 results.append(result)
 
-        embed = build_checksheet_tabs_embed(
+        embeds = build_checksheet_tabs_embeds(
             ChecksheetEmbedData(
                 sheets=results,
                 bot_version=bot_version,
@@ -2733,7 +2733,22 @@ class CoreOpsCog(commands.Cog):
             )
         )
 
-        await ctx.reply(embed=sanitize_embed(embed))
+        await self._reply_with_checksheet_embeds(ctx, [sanitize_embed(embed) for embed in embeds])
+
+    async def _reply_with_checksheet_embeds(
+        self, ctx: commands.Context, embeds: Sequence[discord.Embed]
+    ) -> None:
+        if not embeds:
+            return
+
+        first, *rest = embeds
+        await ctx.reply(
+            embed=first,
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        for embed in rest:
+            await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     @tier("admin")
     @help_metadata(function_group="operational", section="sheet_tools", access_tier="admin")
