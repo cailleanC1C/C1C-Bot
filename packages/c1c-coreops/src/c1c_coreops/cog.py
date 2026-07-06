@@ -3961,6 +3961,19 @@ class CoreOpsCog(commands.Cog):
     async def ops_config(self, ctx: commands.Context) -> None:
         await self._config_impl(ctx)
 
+    async def _helpseed_command_impl(self, ctx: commands.Context) -> None:
+        try:
+            await self._helpseed_impl(ctx)
+        except Exception as exc:
+            if sheets_core._is_rate_limited_error(exc):
+                logger.exception("helpseed hit Google Sheets rate limits")
+                await ctx.reply(
+                    "⚠️ Help registry seed hit Google Sheets rate limits. Wait a minute and try again."
+                )
+                return
+            logger.warning("helpseed failed: %s", exc)
+            await ctx.reply(str(sanitize_text(f"⚠️ Help registry seed failed: {exc}")))
+
     @tier("admin")
     @help_metadata(
         function_group="operational", section="sheet_tools", access_tier="admin"
@@ -3975,17 +3988,27 @@ class CoreOpsCog(commands.Cog):
     @ops_only()
     @admin_only()
     async def ops_helpseed(self, ctx: commands.Context) -> None:
-        try:
-            await self._helpseed_impl(ctx)
-        except Exception as exc:
-            if sheets_core._is_rate_limited_error(exc):
-                logger.exception("helpseed hit Google Sheets rate limits")
-                await ctx.reply(
-                    "⚠️ Help registry seed hit Google Sheets rate limits. Wait a minute and try again."
-                )
-                return
-            logger.warning("helpseed failed: %s", exc)
-            await ctx.reply(str(sanitize_text(f"⚠️ Help registry seed failed: {exc}")))
+        await self._helpseed_command_impl(ctx)
+
+    @tier("admin")
+    @help_metadata(
+        function_group="operational",
+        section="sheet_tools",
+        access_tier="hidden",
+        flags=("hidden", "maintenance"),
+    )
+    @commands.command(
+        name="helpseed",
+        hidden=True,
+        help="Hidden admin alias that seeds the help registry sheet.",
+        brief="Hidden admin alias for help registry seeding.",
+        extras={"hide_in_help": True},
+    )
+    @guild_only_denied_msg()
+    @ops_only()
+    @admin_only()
+    async def helpseed(self, ctx: commands.Context) -> None:
+        await self._helpseed_command_impl(ctx)
 
     @tier("admin")
     @help_metadata(function_group="operational", section="sheet_tools", access_tier="admin")

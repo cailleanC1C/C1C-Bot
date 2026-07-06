@@ -279,6 +279,80 @@ def test_helpseed_batches_multiple_created_rows(monkeypatch):
     asyncio.run(run())
 
 
+def test_bare_helpseed_is_hidden_admin_maintenance_alias():
+    command = CoreOpsCog.helpseed
+    assert command.hidden is True
+    assert command.extras.get("hide_in_help") is True
+    assert command.extras.get("access_tier") == "hidden"
+    assert command.extras.get("help_flags") == ["hidden", "maintenance"]
+    assert _should_show(command) is False
+
+
+def test_bare_helpseed_delegates_to_same_command_impl(monkeypatch):
+    async def run():
+        bot = SimpleNamespace(walk_commands=lambda: [])
+        cog = _make_cog(bot)
+        ctx = DummyCtx()
+        calls = []
+
+        async def fake_impl(received_ctx):
+            calls.append(received_ctx)
+            await received_ctx.reply("seeded")
+
+        monkeypatch.setattr(cog, "_helpseed_impl", fake_impl)
+        await CoreOpsCog.helpseed.callback(cog, ctx)
+        assert calls == [ctx]
+        assert ctx.replies == ["seeded"]
+
+    asyncio.run(run())
+
+
+def test_ops_helpseed_delegates_to_same_command_impl(monkeypatch):
+    async def run():
+        bot = SimpleNamespace(walk_commands=lambda: [])
+        cog = _make_cog(bot)
+        ctx = DummyCtx()
+        calls = []
+
+        async def fake_impl(received_ctx):
+            calls.append(received_ctx)
+
+        monkeypatch.setattr(cog, "_helpseed_impl", fake_impl)
+        await CoreOpsCog.ops_helpseed.callback(cog, ctx)
+        assert calls == [ctx]
+
+    asyncio.run(run())
+
+
+def test_bare_helpseed_admin_check_blocks_non_admin(monkeypatch):
+    async def run():
+        monkeypatch.setattr(coreops_rbac.discord, "Member", DummyMember)
+        ctx = DummyCtx(administrator=False)
+        failures = 0
+        for check in CoreOpsCog.helpseed.checks:
+            try:
+                await check(ctx)
+            except commands.CheckFailure:
+                failures += 1
+        assert failures >= 1
+
+    asyncio.run(run())
+
+
+def test_bare_helpseed_is_not_exported_into_helpcommands(monkeypatch):
+    async def run():
+        bot = SimpleNamespace(walk_commands=lambda: [CoreOpsCog.helpseed])
+        cog = _make_cog(bot)
+        worksheet = FakeWorksheet([HEADERS])
+        _patch_sheet(monkeypatch, worksheet)
+        result = await cog._helpseed_impl(DummyCtx())
+        assert result.created == 0
+        assert result.skipped == 1
+        assert worksheet.appended_batches == []
+
+    asyncio.run(run())
+
+
 def test_helpseed_rate_limit_reply_is_friendly(monkeypatch):
     async def run():
         bot = SimpleNamespace(walk_commands=lambda: [])
