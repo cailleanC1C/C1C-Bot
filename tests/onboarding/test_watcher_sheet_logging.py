@@ -361,3 +361,111 @@ def test_welcome_auto_close_logging_failure_mentions_admin(monkeypatch, caplog):
         "sheet_update=failed" in record.message and "<@&5150>" in record.message
         for record in caplog.records
     )
+
+
+def test_promo_close_context_unresolved_writes_failure_log(monkeypatch):
+    watcher = PromoTicketWatcher(bot=MagicMock())
+    thread = SimpleNamespace(
+        id=12345,
+        name="not-a-promo-ticket",
+        parent=SimpleNamespace(id=77),
+        guild=SimpleNamespace(id=88),
+    )
+    updates: list[dict[str, object]] = []
+
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "find_promo_row_by_thread_id", lambda _thread_id: None)
+    monkeypatch.setattr(watcher_promo.onboarding_sessions, "get_by_thread_id", lambda _thread_id: None)
+    monkeypatch.setattr(watcher_promo, "locate_welcome_message", AsyncMock(return_value=SimpleNamespace(id=999)))
+    monkeypatch.setattr(watcher_promo, "extract_target_from_message", lambda _message: (456, 999))
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets,
+        "update_ticket_finalization_state",
+        lambda *args, **kwargs: updates.append(kwargs) or "updated",
+    )
+
+    result = asyncio.run(watcher._ensure_context(thread))
+
+    assert result is None
+    assert updates and updates[0]["thread_id"] == thread.id
+    assert updates[0]["finalization_status"] == "skipped_unresolved"
+    assert updates[0]["finalization_note"] == "close_context_unresolved before clan prompt"
+
+
+def test_promo_context_rich_thread_keeps_intro_target_user(monkeypatch):
+    watcher = PromoTicketWatcher(bot=MagicMock())
+    thread = SimpleNamespace(
+        id=45678,
+        name="L0061-C1C WarWalker / C1C Cholula",
+        created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
+        parent=SimpleNamespace(id=77),
+        guild=SimpleNamespace(id=88),
+    )
+    updates: list[dict[str, object]] = []
+
+    monkeypatch.setattr(watcher_promo.onboarding_sessions, "get_by_thread_id", lambda _thread_id: None)
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "find_promo_row", lambda _ticket: None)
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "find_promo_row_by_thread_id", lambda _thread_id: None)
+    monkeypatch.setattr(watcher_promo, "locate_welcome_message", AsyncMock(return_value=SimpleNamespace(id=999)))
+    monkeypatch.setattr(watcher_promo, "extract_target_from_message", lambda _message: (98765, 999))
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets,
+        "update_ticket_finalization_state",
+        lambda *args, **kwargs: updates.append(kwargs) or "updated",
+    )
+
+    context = asyncio.run(watcher._ensure_context(thread))
+
+    assert context is not None
+    assert context.ticket_number == "L0061"
+    assert context.user_id == 98765
+    assert updates == []
+
+
+def test_promo_context_uses_session_row_by_thread_id(monkeypatch):
+    watcher = PromoTicketWatcher(bot=MagicMock())
+    thread = SimpleNamespace(
+        id=56789,
+        name="promo display text changed",
+        created_at=datetime(2025, 6, 2, tzinfo=timezone.utc),
+        parent=SimpleNamespace(id=77),
+        guild=SimpleNamespace(id=88),
+    )
+
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sessions,
+        "get_by_thread_id",
+        lambda _thread_id: {
+            "thread_name": "L0061-C1C WarWalker / C1C Cholula",
+            "user_id": "24680",
+        },
+    )
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "find_promo_row", lambda _ticket: None)
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "find_promo_row_by_thread_id", lambda _thread_id: None)
+    monkeypatch.setattr(watcher_promo, "locate_welcome_message", AsyncMock(return_value=SimpleNamespace(id=999)))
+
+    context = asyncio.run(watcher._ensure_context(thread))
+
+    assert context is not None
+    assert context.ticket_number == "L0061"
+    assert context.user_id == 24680
+
+
+def test_promo_failure_no_row_found_logs_context_without_crashing(monkeypatch, caplog):
+    watcher = PromoTicketWatcher(bot=MagicMock())
+    thread = SimpleNamespace(id=67890, name="not-a-promo-ticket", parent=SimpleNamespace(id=77), guild=SimpleNamespace(id=88))
+
+    def missing_row(*_args, **_kwargs):
+        raise RuntimeError("promo finalization row not found")
+
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "find_promo_row_by_thread_id", lambda _thread_id: None)
+    monkeypatch.setattr(watcher_promo.onboarding_sessions, "get_by_thread_id", lambda _thread_id: None)
+    monkeypatch.setattr(watcher_promo, "locate_welcome_message", AsyncMock(return_value=SimpleNamespace(id=999)))
+    monkeypatch.setattr(watcher_promo, "extract_target_from_message", lambda _message: (13579, 999))
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "update_ticket_finalization_state", missing_row)
+
+    with caplog.at_level("ERROR", logger="c1c.onboarding.promo_watcher"):
+        result = asyncio.run(watcher._ensure_context(thread))
+
+    assert result is None
+    assert any("promo failure promo-row update failed" in record.message for record in caplog.records)
+    assert any(getattr(record, "target_user_id", None) == 13579 for record in caplog.records)
