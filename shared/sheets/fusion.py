@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from shared.config import cfg, get_milestones_sheet_id
+from shared.sheets import milestones_config
 from shared.sheets.async_core import (
     acall_with_backoff,
     afetch_records,
@@ -192,11 +193,8 @@ class FusionReminderSettings:
     group_events_source: FusionReminderSettingSource = field(default_factory=FusionReminderSettingSource)
 
 
-def _resolve_tab_name(key: str) -> str:
-    value = cfg.get(key)
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    raise RuntimeError(f"{key} missing in milestones Config tab")
+async def _resolve_tab_name(key: str) -> str:
+    return await milestones_config.arequire_value(key)
 
 
 def _normalize(row: Mapping[str, object]) -> dict[str, object]:
@@ -391,41 +389,53 @@ def _column_label(index: int) -> str:
     return label or "A"
 
 
-def _resolve_reminder_sheet_schema(
+async def _resolve_reminder_sheet_schema(
     *,
     include_sent_at: bool,
 ) -> tuple[str, tuple[str, ...]]:
-    tab_name = _resolve_tab_name(_FUSION_REMINDER_TAB_KEY)
+    tab_name = await _resolve_tab_name(_FUSION_REMINDER_TAB_KEY)
     required_fields: list[str] = ["fusion_id", "event_id", "reminder_type"]
     if include_sent_at:
         required_fields.append("sent_at_utc")
     return tab_name, tuple(required_fields)
 
 
-def _reminder_schema_debug() -> dict[str, str]:
-    keys = (_FUSION_REMINDER_TAB_KEY,)
-    debug: dict[str, str] = {}
-    for key in keys:
-        value = cfg.get(key)
-        debug[key] = str(value if value is not None else "").strip()
+async def _reminder_schema_debug() -> dict[str, str]:
+    debug: dict[str, str] = {"config_key": _FUSION_REMINDER_TAB_KEY}
+    try:
+        debug[_FUSION_REMINDER_TAB_KEY] = await _resolve_tab_name(_FUSION_REMINDER_TAB_KEY)
+    except Exception as exc:
+        debug["error_type"] = type(exc).__name__
+        debug["error_message"] = str(exc)
     return debug
 
 
 def reminder_dedupe_backend_metadata() -> dict[str, str]:
-    """Return non-secret metadata for reminder durable dedupe diagnostics."""
+    """Return non-secret sync metadata without consulting stale runtime config."""
 
-    debug = _reminder_schema_debug()
-    tab_name = str(debug.get(_FUSION_REMINDER_TAB_KEY, "") or "").strip()
     return {
         "backend_type": "google_sheets",
         "config_key": _FUSION_REMINDER_TAB_KEY,
-        "tab_name": tab_name,
     }
 
 
+async def areminder_dedupe_backend_metadata() -> dict[str, str]:
+    """Return non-secret metadata for reminder durable dedupe diagnostics."""
 
-def _resolve_traditional_progress_sheet_schema() -> tuple[str, dict[str, str]]:
-    tab_name = _resolve_tab_name(_FUSION_TRADITIONAL_PROGRESS_TAB_KEY)
+    debug = await _reminder_schema_debug()
+    tab_name = str(debug.get(_FUSION_REMINDER_TAB_KEY, "") or "").strip()
+    payload = reminder_dedupe_backend_metadata()
+    if tab_name:
+        payload["tab_name"] = tab_name
+    if "error_type" in debug:
+        payload["error_type"] = debug["error_type"]
+        payload["error_message"] = debug.get("error_message", "")
+    return payload
+
+
+
+async def _resolve_traditional_progress_sheet_schema() -> tuple[str, dict[str, str]]:
+    tab_name = await _resolve_tab_name(_FUSION_TRADITIONAL_PROGRESS_TAB_KEY)
     return tab_name, dict(_FUSION_TRADITIONAL_PROGRESS_COLUMN_ALIASES)
 
 
@@ -452,8 +462,8 @@ def _resolve_traditional_progress_header_indices(*, tab_name: str, header: list[
         for field in required_fields
     }
 
-def _resolve_progress_sheet_schema() -> tuple[str, dict[str, str]]:
-    tab_name = _resolve_tab_name(_FUSION_PROGRESS_TAB_KEY)
+async def _resolve_progress_sheet_schema() -> tuple[str, dict[str, str]]:
+    tab_name = await _resolve_tab_name(_FUSION_PROGRESS_TAB_KEY)
     return tab_name, dict(_FUSION_PROGRESS_COLUMN_ALIASES)
 
 
@@ -610,7 +620,7 @@ def _require_fusion_headers(*, tab_name: str, header: list[str], required: tuple
 
 
 async def _load_fusions() -> tuple[FusionRow, ...]:
-    tab_name = _resolve_tab_name("FUSION_TAB")
+    tab_name = await _resolve_tab_name("FUSION_TAB")
     rows = await afetch_records(_sheet_id(), tab_name)
     parsed: list[FusionRow] = []
     parse_errors: dict[str, str] = {}
@@ -710,7 +720,7 @@ def get_last_fusion_parse_errors() -> dict[str, str]:
 
 
 async def _load_fusion_events() -> tuple[FusionEventRow, ...]:
-    tab_name = _resolve_tab_name("FUSION_EVENT_TAB")
+    tab_name = await _resolve_tab_name("FUSION_EVENT_TAB")
     rows = await afetch_records(_sheet_id(), tab_name)
     parsed: list[FusionEventRow] = []
     for raw in rows or []:
@@ -931,7 +941,7 @@ async def get_active_events(
 
 
 async def get_fusion_reminder_settings(*, now: dt.datetime | None = None) -> FusionReminderSettings:
-    tab_name = _resolve_tab_name(_FUSION_REMINDER_SETTINGS_TAB_KEY)
+    tab_name = await _resolve_tab_name(_FUSION_REMINDER_SETTINGS_TAB_KEY)
     sheet_id, values, header = await _load_fusion_sheet_matrix(tab_name)
     key_idx = _resolve_header_index(
         tab_name=tab_name,
@@ -1030,9 +1040,9 @@ async def get_sent_reminder_keys(fusion_id: str) -> set[tuple[str, str]]:
     """Return durable reminder keys previously sent for ``fusion_id``."""
 
     try:
-        tab_name, required_fields = _resolve_reminder_sheet_schema(include_sent_at=False)
+        tab_name, required_fields = await _resolve_reminder_sheet_schema(include_sent_at=False)
     except Exception as exc:
-        debug_config = _reminder_schema_debug()
+        debug_config = await _reminder_schema_debug()
         raise RuntimeError(
             "Fusion reminder durable dedupe config invalid "
             f"(config={debug_config})"
@@ -1070,7 +1080,7 @@ async def get_last_reminder_sent_at(
 ) -> dt.datetime | None:
     """Return the latest sent_at marker for one fusion/reminder type."""
 
-    tab_name, required_fields = _resolve_reminder_sheet_schema(include_sent_at=True)
+    tab_name, required_fields = await _resolve_reminder_sheet_schema(include_sent_at=True)
     matrix = await afetch_values(_sheet_id(), tab_name)
     if not matrix:
         return None
@@ -1108,9 +1118,9 @@ async def mark_reminder_sent(
     """Persist a sent reminder marker with a durable fusion/event/type key."""
 
     try:
-        tab_name, required_fields = _resolve_reminder_sheet_schema(include_sent_at=True)
+        tab_name, required_fields = await _resolve_reminder_sheet_schema(include_sent_at=True)
     except Exception as exc:
-        debug_config = _reminder_schema_debug()
+        debug_config = await _reminder_schema_debug()
         raise RuntimeError(
             "Fusion reminder durable dedupe config invalid for write "
             f"(config={debug_config})"
@@ -1172,7 +1182,7 @@ async def upsert_role_cleanup_summary(
 ) -> None:
     """Persist an unreported Fusion role-cleanup summary in existing reminder storage."""
 
-    tab_name, required_fields = _resolve_reminder_sheet_schema(include_sent_at=True)
+    tab_name, required_fields = await _resolve_reminder_sheet_schema(include_sent_at=True)
     matrix = await afetch_values(_sheet_id(), tab_name)
     if not matrix:
         raise RuntimeError(
@@ -1228,7 +1238,7 @@ async def upsert_role_cleanup_summary(
 async def get_unreported_role_cleanup_summaries() -> list[dict[str, object]]:
     """Read unreported Fusion role-cleanup summaries from existing reminder storage."""
 
-    tab_name, required_fields = _resolve_reminder_sheet_schema(include_sent_at=True)
+    tab_name, required_fields = await _resolve_reminder_sheet_schema(include_sent_at=True)
     matrix = await afetch_values(_sheet_id(), tab_name)
     if not matrix:
         return []
@@ -1264,7 +1274,7 @@ async def get_unreported_role_cleanup_summaries() -> list[dict[str, object]]:
 async def has_role_cleanup_summary(fusion_id: str) -> bool:
     """Return True when a cleanup summary row already exists for a fusion."""
 
-    tab_name, required_fields = _resolve_reminder_sheet_schema(include_sent_at=False)
+    tab_name, required_fields = await _resolve_reminder_sheet_schema(include_sent_at=False)
     matrix = await afetch_values(_sheet_id(), tab_name)
     if not matrix:
         return False
@@ -1293,7 +1303,7 @@ async def mark_role_cleanup_summaries_reported(row_numbers: list[int]) -> None:
 
     if not row_numbers:
         return
-    tab_name, required_fields = _resolve_reminder_sheet_schema(include_sent_at=False)
+    tab_name, required_fields = await _resolve_reminder_sheet_schema(include_sent_at=False)
     matrix = await afetch_values(_sheet_id(), tab_name)
     if not matrix:
         return
@@ -1320,7 +1330,7 @@ def _normalize_progress_status(value: object) -> str:
 async def get_user_event_progress(fusion_id: str, user_id: str) -> dict[str, str]:
     """Return per-event progress status for a fusion/user tuple."""
 
-    tab_name, _progress_aliases = _resolve_progress_sheet_schema()
+    tab_name, _progress_aliases = await _resolve_progress_sheet_schema()
     matrix = await afetch_values(_sheet_id(), tab_name)
     if not matrix:
         return {}
@@ -1426,14 +1436,14 @@ async def get_progress_sheet_diagnostics() -> dict[str, object]:
     tab_name = ""
     headers: list[str] = []
     try:
-        tab_name, _aliases = _resolve_progress_sheet_schema()
+        tab_name, _aliases = await _resolve_progress_sheet_schema()
         matrix = await afetch_values(_sheet_id(), tab_name)
         if matrix:
             headers = [str(cell or "").strip().lower() for cell in matrix[0]]
     except Exception as exc:
         return {
             "progress_config_key": _FUSION_PROGRESS_TAB_KEY,
-            "tab_name": tab_name or str(cfg.get(_FUSION_PROGRESS_TAB_KEY) or "").strip(),
+            "tab_name": tab_name,
             "headers_resolved": ",".join(headers),
             "diagnostics_error": str(exc),
         }
@@ -1461,7 +1471,7 @@ async def upsert_user_event_progress(
             "Invalid fusion progress status; expected one of "
             f"{sorted(_PROGRESS_ALLOWED_STATUSES)}, got={status!r}"
         )
-    tab_name, _progress_aliases = _resolve_progress_sheet_schema()
+    tab_name, _progress_aliases = await _resolve_progress_sheet_schema()
     matrix = await afetch_values(_sheet_id(), tab_name)
     if not matrix:
         raise RuntimeError(
@@ -1621,7 +1631,7 @@ def _progress_save_log_fields(result: FusionProgressSaveResult) -> dict[str, obj
 async def get_user_traditional_progress(fusion_id: str, user_id: str) -> FusionTraditionalUserProgressRow:
     """Return champion-prep progress for one traditional fusion/user tuple."""
 
-    tab_name, _aliases = _resolve_traditional_progress_sheet_schema()
+    tab_name, _aliases = await _resolve_traditional_progress_sheet_schema()
     matrix = await afetch_values(_sheet_id(), tab_name)
     if not matrix:
         raise RuntimeError(
@@ -1669,7 +1679,7 @@ async def upsert_user_traditional_progress(
 ) -> FusionTraditionalUserProgressRow:
     """Create or update champion-prep progress for one traditional fusion/user tuple."""
 
-    tab_name, _aliases = _resolve_traditional_progress_sheet_schema()
+    tab_name, _aliases = await _resolve_traditional_progress_sheet_schema()
     matrix = await afetch_values(_sheet_id(), tab_name)
     if not matrix:
         raise RuntimeError(
@@ -1792,7 +1802,7 @@ async def update_fusion_publication(
 ) -> None:
     """Write publish metadata back to the fusion row in the configured sheet."""
 
-    tab_name = _resolve_tab_name("FUSION_TAB")
+    tab_name = await _resolve_tab_name("FUSION_TAB")
     sheet_id, matrix, header = await _load_fusion_sheet_matrix(tab_name)
     row_idx = _resolve_fusion_row_index(
         fusion_id=fusion_id,
@@ -1841,7 +1851,7 @@ async def update_fusion_announcement_refresh_state(
 ) -> None:
     """Persist announcement refresh metadata for scheduler dedupe/restart safety."""
 
-    tab_name = _resolve_tab_name("FUSION_TAB")
+    tab_name = await _resolve_tab_name("FUSION_TAB")
     sheet_id, matrix, header = await _load_fusion_sheet_matrix(tab_name)
     row_idx = _resolve_fusion_row_index(
         fusion_id=fusion_id,
@@ -1877,7 +1887,7 @@ async def update_fusion_announcement_refresh_state(
 async def transition_fusion_to_ended(fusion_id: str) -> bool:
     """Set the configured Fusion row status to ended, if not already ended."""
 
-    tab_name = _resolve_tab_name("FUSION_TAB")
+    tab_name = await _resolve_tab_name("FUSION_TAB")
     sheet_id, matrix, header = await _load_fusion_sheet_matrix(tab_name)
     row_idx = _resolve_fusion_row_index(
         fusion_id=fusion_id,
@@ -1925,6 +1935,7 @@ __all__ = [
     "get_unreported_role_cleanup_summaries",
     "has_role_cleanup_summary",
     "reminder_dedupe_backend_metadata",
+    "areminder_dedupe_backend_metadata",
     "get_user_event_progress",
     "get_user_traditional_progress",
     "get_progress_sheet_diagnostics",

@@ -61,6 +61,7 @@ Missing any **Required** key causes the bot to exit with an error at startup. If
 | `ONBOARDING_SHEET_ID` | string | — | Google Sheet ID for onboarding trackers. |
 | `REMINDER_SHEET_ID` | string | — | Google Sheet ID for reminders (service-specific). |
 | `MILESTONES_SHEET_ID` | string | — | Google Sheet ID for Milestones (claims, appreciation, shard & mercy, missions) (service-specific). |
+| `MILESTONES_CONFIG_TAB` | string | required | Deployment checklist: set `MILESTONES_CONFIG_TAB=Config` in Render for prod before deploy if it is not already configured. |
 | `RECRUITMENT_CONFIG_TAB` | string | `Config` | Worksheet name containing recruitment config. |
 | `ONBOARDING_CONFIG_TAB` | string | `Config` | Worksheet name containing onboarding config. |
 | `WORKSHEET_NAME` | string | `bot_info` | Fallback for the `clans_tab` worksheet when sheet config is missing. |
@@ -307,6 +308,9 @@ Feature Toggles:
 - `welcome_watcher_enabled`, `promo_watcher_enabled`, `resume_command_enabled` — gate onboarding watcher registration and `!onb resume`; these default to ON when rows are missing so existing deployments remain unchanged.
 
 ### Milestones sheet keys
+
+Deployment checklist: set `MILESTONES_CONFIG_TAB=Config` in Render for prod before deploy if it is not already configured. The canonical Milestones Config resolver intentionally does not hardcode or fall back to `Config`.
+
 - `SHARD_MERCY_TAB` — worksheet name that stores the Shard & Mercy tracker rows
   inside `MILESTONES_SHEET_ID`. No defaults; the config tab must provide the
   exact tab name.

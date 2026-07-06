@@ -349,9 +349,20 @@ def build_config_embed(
 
 
 def _maybe_build_tip(entries: Sequence[DigestSheetEntry]) -> str | None:
-    if entries:
+    failed = [entry for entry in entries if str(entry.status or "").lower() == "fail"]
+    if not failed:
+        return None
+    failed_names = {str(entry.display_name or "").strip().lower() for entry in failed}
+    failed_errors = " ".join(str(entry.error or "") for entry in failed).lower()
+    if "_retry_with_backoff must not run inside an active event loop" in failed_errors:
+        return "Sheet refresh hit an event-loop guard; this needs code attention, not a ClanInfo refresh."
+    if failed_names == {"claninfo"}:
         return 'Need latest openings? run "!ops refresh clansinfo" and retry.'
-    return None
+    if failed_names == {"templates"}:
+        return "Templates refresh failed; this likely needs template sheet/config attention."
+    if "fusion" in failed_errors or "config" in failed_errors:
+        return "Sheet Config/client issue detected; check the failing bucket and Config key shown above."
+    return "One or more sheet buckets failed; refresh or investigate the specific failing bucket shown above."
 
 
 @dataclass(frozen=True)

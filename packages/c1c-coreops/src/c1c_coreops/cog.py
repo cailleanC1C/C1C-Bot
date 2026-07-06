@@ -211,6 +211,7 @@ _DIGEST_SHEET_BUCKETS: Tuple[Tuple[str, str], ...] = (
     ("clans", "ClanInfo"),
     ("templates", "Templates"),
     ("clan_tags", "ClanTags"),
+    ("clan_ad_messages", "Clan Ad Messages"),
 )
 _TELEMETRY_REQUIRED_KEYS: Tuple[str, ...] = (
     "ttl_sec",
@@ -2282,10 +2283,12 @@ class CoreOpsCog(commands.Cog):
             retries = self._snapshot_int(snapshot, "retries")
 
             last_result = self._snapshot_str(snapshot, "last_result")
+            result_norm = (last_result or "").strip().lower()
             last_error = self._snapshot_str(snapshot, "last_error")
+            if result_norm in {"ok", "retry_ok"}:
+                last_error = None
 
             status = "n/a"
-            result_norm = (last_result or "").strip().lower()
             has_error = bool(last_error) or (
                 bool(result_norm) and result_norm not in {"ok", "retry_ok"}
             )
@@ -2785,7 +2788,8 @@ class CoreOpsCog(commands.Cog):
                 latest_latency = self._snapshot_int(snapshot, "last_latency_ms")
                 latest_retries = self._snapshot_int(snapshot, "retries")
                 latest_result = self._snapshot_str(snapshot, "last_result")
-                latest_error = self._snapshot_str(snapshot, "last_error")
+                latest_result_norm = (latest_result or "").strip().lower()
+                latest_error = None if latest_result_norm in {"ok", "retry_ok"} else self._snapshot_str(snapshot, "last_error")
 
             result_text = self._snapshot_str(snapshot, "last_result")
             result_norm = (result_text or "").strip().lower()
@@ -2806,10 +2810,11 @@ class CoreOpsCog(commands.Cog):
                 last_success_age = None
 
         summary_error = failure_error
-        if summary_error is None and latest_error:
+        latest_norm = (latest_result or "").strip().lower()
+        if summary_error is None and latest_norm not in {"ok", "retry_ok"} and latest_error:
             summary_error = self._trim_error_text(latest_error)
-        if summary_error is None and latest_result:
-            summary_error = self._trim_error_text(latest_result)
+        if summary_error is None and latest_norm and latest_norm not in {"ok", "retry_ok"}:
+            summary_error = self._trim_error_text(latest_result or "")
 
         return DigestSheetsClientSummary(
             last_success_age=last_success_age,

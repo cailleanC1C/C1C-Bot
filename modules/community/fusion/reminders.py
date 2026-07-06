@@ -33,11 +33,33 @@ _DEDUP_DEGRADED_SINCE_MONOTONIC: float = 0.0
 _DEDUP_DEGRADED_ALERTED_KEYS: set[tuple[str, str]] = set()
 _DEDUP_DEGRADED_ALERT_AFTER_SEC = 600.0
 _SENT_KEYS_CACHE: dict[str, tuple[float, set[tuple[str, str]]]] = {}
+_SETTINGS_FAILURE_STATE: dict[str, object] = {"key": None, "failures": 0}
 
 _DEDUPE_SKIP_WARNING = (
     "fusion grouped reminders skipped because sent-reminder dedupe could not be verified"
 )
 
+
+
+def _settings_failure_key(exc: BaseException) -> str:
+    return f"reminders:{_GROUPED_REMINDER_TYPE}:load_fusion_reminder_settings:{type(exc).__name__}:{str(exc)}"
+
+def _should_report_settings_failure(exc: BaseException) -> bool:
+    key = _settings_failure_key(exc)
+    previous = _SETTINGS_FAILURE_STATE.get("key")
+    if previous == key:
+        _SETTINGS_FAILURE_STATE["failures"] = int(_SETTINGS_FAILURE_STATE.get("failures") or 0) + 1
+        return False
+    _SETTINGS_FAILURE_STATE.update({"key": key, "failures": 1})
+    return True
+
+def _record_settings_success() -> None:
+    if _SETTINGS_FAILURE_STATE.get("key"):
+        log.info(
+            "fusion grouped reminder settings recovered",
+            extra={"component": "fusion_reminders", "operation": "load_fusion_reminder_settings", "suppressed_failures": _SETTINGS_FAILURE_STATE.get("failures")},
+        )
+    _SETTINGS_FAILURE_STATE.update({"key": None, "failures": 0})
 
 def _utc_now(now: dt.datetime | None = None) -> dt.datetime:
     if now is None:
@@ -200,45 +222,38 @@ async def _load_grouped_settings_with_retry(
         try:
             coro = fusion_sheets.get_fusion_reminder_settings(now=reference)
             if _SETTINGS_LOAD_TIMEOUT_SEC > 0:
-                return await asyncio.wait_for(coro, timeout=_SETTINGS_LOAD_TIMEOUT_SEC)
-            return await coro
-        except TimeoutError as exc:
+                result = await asyncio.wait_for(coro, timeout=_SETTINGS_LOAD_TIMEOUT_SEC)
+            else:
+                result = await coro
+            _record_settings_success()
+            return result
+        except (TimeoutError, Exception) as exc:
             last_exc = exc
-            context = _settings_unavailable_context(
-                target=target, attempt=attempt, max_attempts=max_attempts, exc=exc
-            )
-            log.warning(
-                "fusion grouped reminder settings unavailable; retrying"
-                if attempt < max_attempts
-                else "fusion grouped reminders skipped because settings could not be verified",
-                extra=context,
-            )
-        except Exception as exc:
-            last_exc = exc
-            context = _settings_unavailable_context(
-                target=target, attempt=attempt, max_attempts=max_attempts, exc=exc
-            )
-            log.warning(
-                "fusion grouped reminder settings unavailable; retrying"
-                if attempt < max_attempts
-                else "fusion grouped reminders skipped because settings could not be verified",
-                extra=context,
-                exc_info=True,
-            )
-        if attempt < max_attempts and _SETTINGS_LOAD_RETRY_DELAY_SEC > 0:
-            await asyncio.sleep(_SETTINGS_LOAD_RETRY_DELAY_SEC)
+            if attempt < max_attempts and _SETTINGS_LOAD_RETRY_DELAY_SEC > 0:
+                await asyncio.sleep(_SETTINGS_LOAD_RETRY_DELAY_SEC)
 
     if last_exc is not None:
         context = _settings_unavailable_context(
             target=target, attempt=max_attempts, max_attempts=max_attempts, exc=last_exc
         )
-        await fusion_logs.send_ops_alert(
-            component="reminders",
-            summary="grouped_settings_unavailable_reminders_skipped",
-            dedupe_key=f"fusion:grouped_reminders:settings:{target.fusion_id}",
-            error=last_exc,
-            fields=context,
-        )
+        if _should_report_settings_failure(last_exc):
+            log.warning(
+                "fusion grouped reminders skipped because settings could not be verified",
+                extra=context,
+                exc_info=not isinstance(last_exc, TimeoutError),
+            )
+            await fusion_logs.send_ops_alert(
+                component="reminders",
+                summary="grouped_settings_unavailable_reminders_skipped",
+                dedupe_key=f"fusion:grouped_reminders:settings:{target.fusion_id}:{type(last_exc).__name__}:{last_exc}",
+                error=last_exc,
+                fields=context,
+            )
+        else:
+            log.info(
+                "repeated fusion grouped reminder settings failure suppressed",
+                extra={**context, "suppressed_failures": _SETTINGS_FAILURE_STATE.get("failures")},
+            )
     return None
 
 
@@ -339,7 +354,7 @@ def _select_grouped_events(
 
 
 async def _load_grouped_sent_keys(target: fusion_sheets.FusionRow) -> tuple[set[tuple[str, str]] | None, bool]:
-    dedupe_meta = fusion_sheets.reminder_dedupe_backend_metadata()
+    dedupe_meta = await fusion_sheets.areminder_dedupe_backend_metadata()
     dedupe_backend = dedupe_meta.get("backend_type", "unknown")
     dedupe_tab = dedupe_meta.get("tab_name", "")
     dedupe_config_key = dedupe_meta.get("config_key", "")
@@ -619,7 +634,7 @@ async def process_fusion_reminders(
         await _maybe_alert_prolonged_dedupe_degradation(
             target.fusion_id,
             reminder_type=_GROUPED_REMINDER_TYPE,
-            backend=fusion_sheets.reminder_dedupe_backend_metadata().get("backend_type", "unknown"),
+            backend=(await fusion_sheets.areminder_dedupe_backend_metadata()).get("backend_type", "unknown"),
         )
         return
     grouped_event_id = _grouped_event_id_for_date(reference.date())
@@ -628,7 +643,7 @@ async def process_fusion_reminders(
     await _maybe_alert_prolonged_dedupe_degradation(
         target.fusion_id,
         reminder_type=_GROUPED_REMINDER_TYPE,
-        backend=fusion_sheets.reminder_dedupe_backend_metadata().get("backend_type", "unknown"),
+        backend=(await fusion_sheets.areminder_dedupe_backend_metadata()).get("backend_type", "unknown"),
     )
     if grouped_key in sent_keys or memory_key in _MEMORY_SENT_KEYS:
         return

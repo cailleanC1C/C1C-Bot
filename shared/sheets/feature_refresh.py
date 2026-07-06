@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Awaitable, Callable
 
-from shared.config import get_milestones_sheet_id
+from shared.sheets import milestones_config
 from shared.sheets import async_core
 from shared.sheets import recruitment
 from shared.sheets.cache_service import cache
@@ -21,7 +21,7 @@ def _missing_config_key(key: str) -> RuntimeError:
 
 def _recruitment_config_tab_loader(config_key: str) -> Loader:
     async def _load() -> list[list[str]]:
-        tab_name = recruitment.get_config_value(config_key, None, force=True)
+        tab_name = await async_core.a_to_thread_with_backoff(recruitment.get_config_value, config_key, None, force=True)
         if not tab_name:
             raise _missing_config_key(config_key)
         try:
@@ -36,23 +36,11 @@ def _recruitment_config_tab_loader(config_key: str) -> Loader:
 
 def _milestones_config_tab_loader(config_key: str) -> Loader:
     async def _load() -> list[list[str]]:
-        from shared.config import cfg as runtime_config
-
-        getter = getattr(runtime_config, "get", None)
-        tab_name = ""
-        if callable(getter):
-            tab_name = str(getter(config_key, "") or "").strip()
-        else:
-            tab_name = str(getattr(runtime_config, config_key, "") or "").strip()
-        if not tab_name:
-            raise _missing_config_key(config_key)
-        sheet_id = (get_milestones_sheet_id() or "").strip()
-        if not sheet_id:
-            raise RuntimeError("MILESTONES_SHEET_ID missing")
         try:
-            return await async_core.afetch_values(sheet_id, tab_name)
-        except Exception as exc:
-            raise RuntimeError(f"could not read configured tab {tab_name}") from exc
+            _sheet_id, _tab_name, values = await milestones_config.arequire_tab_values(config_key)
+            return values
+        except milestones_config.MilestonesConfigKeyMissing as exc:
+            raise _missing_config_key(config_key) from exc
 
     return _load
 
