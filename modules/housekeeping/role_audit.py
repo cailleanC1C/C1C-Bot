@@ -561,8 +561,17 @@ async def run_role_and_visitor_audit(
     scheduled_actors = {"scheduled", "background", "cron", "startup", "ready"}
     try:
         fusion_cleanup_summaries = await fusion_role_cleanup.load_unreported_role_cleanup_summaries()
-    except Exception:
-        log.warning("failed to load fusion role cleanup summaries", exc_info=True)
+    except Exception as exc:
+        log.warning(
+            "failed to load fusion role cleanup summaries",
+            extra={
+                "component": "role_audit",
+                "operation": "load_fusion_role_cleanup_summaries",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            },
+            exc_info=True,
+        )
         fusion_cleanup_summaries = fusion_role_cleanup.get_recent_role_cleanup_summaries()
     aggregated = AuditResult(
         checked=0,
@@ -688,8 +697,17 @@ async def run_role_and_visitor_audit(
     if actor_normalized == "scheduled":
         try:
             await fusion_role_cleanup.mark_role_cleanup_summaries_reported(fusion_cleanup_summaries)
-        except Exception:
-            log.warning("failed to mark fusion role cleanup summaries reported", exc_info=True)
+        except Exception as exc:
+            log.warning(
+                "failed to mark fusion role cleanup summaries reported",
+                extra={
+                    "component": "role_audit",
+                    "operation": "mark_fusion_role_cleanup_summaries_reported",
+                    "exception_type": type(exc).__name__,
+                    "exception_message": str(exc),
+                },
+                exc_info=True,
+            )
 
     return True, "-"
 

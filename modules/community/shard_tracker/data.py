@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Sequence
 
 from shared.config import cfg as runtime_config, get_milestones_sheet_id
-from shared.sheets import async_core
+from shared.sheets import async_core, milestones_config
 
 log = logging.getLogger("c1c.shards.data")
 _CONFIG_LOG_EMITTED = False
@@ -231,8 +231,15 @@ class ShardSheetStore:
                 return self._config_cache
 
             sheet_id = (get_milestones_sheet_id() or "").strip()
-            tab_value = _config_value("shard_mercy_tab", "")
-            tab_name = str(tab_value or "").strip()
+            try:
+                tab_name = await milestones_config.arequire_value("SHARD_MERCY_TAB")  # shard_mercy_tab
+            except milestones_config.MilestonesConfigError as exc:
+                log.warning(
+                    "shard tracker config resolution failed",
+                    extra=exc.context(component="shard_tracker", operation="resolve_tab"),
+                    exc_info=True,
+                )
+                raise ShardTrackerConfigError(str(exc)) from exc
 
             raw_env = (os.getenv("SHARD_MERCY_CHANNEL_ID") or "").strip()
             env_channel_id = _parse_channel_id(raw_env)
@@ -255,10 +262,7 @@ class ShardSheetStore:
             )
 
             if not sheet_id:
-                raise ShardTrackerConfigError("MILESTONES_SHEET_ID missing")
-
-            if not tab_name:
-                raise ShardTrackerConfigError("SHARD_MERCY_TAB missing in milestones Config tab")
+                raise ShardTrackerConfigError("milestones sheet ID unavailable")
 
             if channel_id <= 0:
                 raise ShardTrackerConfigError("SHARD_MERCY_CHANNEL_ID missing or invalid")

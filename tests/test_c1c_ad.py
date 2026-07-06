@@ -86,6 +86,11 @@ def harness(monkeypatch):
         "get_config_value",
         lambda key, default=None: config.get(key, default),
     )
+
+    async def get_config_value_async(key, default=None, *, force=False):
+        return config.get(key, default)
+
+    monkeypatch.setattr(c1c_ad.recruitment, "get_config_value_async", get_config_value_async)
     monkeypatch.setattr(
         c1c_ad.recruitment, "get_recruitment_sheet_id", lambda: "sheet123"
     )
@@ -133,6 +138,37 @@ def test_missing_config_skips_without_post(harness):
     assert result.status == "skipped"
     assert "missing Config key C1C_AD_IMAGE_RANGE" == result.message
     assert harness.channel.sent == []
+
+
+
+
+def test_run_c1c_ad_job_uses_async_config_loading(monkeypatch, harness):
+    def forbidden_sync_resolver():
+        raise AssertionError("sync C1C ad Config resolver called")
+
+    monkeypatch.setattr(c1c_ad, "_resolve_config", forbidden_sync_resolver)
+
+    result = asyncio.run(c1c_ad.run_c1c_ad_job(harness.bot, force=True))
+
+    assert result.status == "success"
+
+
+def test_run_c1c_ad_job_does_not_trigger_sync_retry_guard_during_config(monkeypatch, harness):
+    guard_message = "_retry_with_backoff must not run inside an active event loop; use the async variant"
+
+    def forbidden_sync_config(*args, **kwargs):
+        raise RuntimeError(guard_message)
+
+    async def async_config(key, default=None, *, force=False):
+        return harness.config.get(key, default)
+
+    monkeypatch.setattr(c1c_ad.recruitment, "get_config_value", forbidden_sync_config)
+    monkeypatch.setattr(c1c_ad.recruitment, "get_config_value_async", async_config)
+
+    result = asyncio.run(c1c_ad.run_c1c_ad_job(harness.bot, force=True))
+
+    assert result.status == "success"
+    assert guard_message not in result.message
 
 
 def test_missing_header_skips_without_post(harness):

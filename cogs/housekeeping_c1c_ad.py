@@ -28,16 +28,33 @@ class C1CAdCog(commands.Cog):
     async def c1cad(self, ctx: commands.Context) -> None:
         try:
             result = await run_c1c_ad_job(self.bot, trigger="manual", force=True)
-        except Exception:
-            log.exception("C1C ad manual refresh failed")
-            await ctx.send(
-                "C1C ad update failed. Please check the bot logs for details."
+        except Exception as exc:
+            author = getattr(ctx, "author", None)
+            guild = getattr(ctx, "guild", None)
+            channel = getattr(ctx, "channel", None)
+            log.exception(
+                "C1C ad manual refresh failed",
+                extra={
+                    "command": "c1cad",
+                    "operation": "manual_refresh",
+                    "actor_id": getattr(author, "id", None),
+                    "actor_name": str(author) if author is not None else None,
+                    "guild_id": getattr(guild, "id", None),
+                    "guild_name": getattr(guild, "name", None),
+                    "channel_id": getattr(channel, "id", None),
+                    "channel_name": getattr(channel, "name", None),
+                    "exception_type": type(exc).__name__,
+                    "exception_message": str(exc),
+                },
             )
+            await ctx.send("C1C ad update failed due to a config, sheet, cache, or posting error.")
             return
         if result.status == "success":
             await ctx.send("C1C recruitment ad refreshed.")
         elif result.message == "feature toggle off":
             await ctx.send("C1C recruitment ad is disabled by feature toggle.")
+        elif result.status == "failed":
+            await ctx.send(f"C1C recruitment ad failed: {result.message}.")
         else:
             await ctx.send(f"C1C recruitment ad skipped: {result.message}.")
 

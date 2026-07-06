@@ -242,6 +242,39 @@ def _load_config(force: bool = False) -> Dict[str, str]:
     return parsed
 
 
+
+async def _aload_config(force: bool = False) -> Dict[str, str]:
+    global _CONFIG_CACHE, _CONFIG_CACHE_TS
+    now = time.time()
+    if not force and _CONFIG_CACHE and (now - _CONFIG_CACHE_TS) < _CONFIG_TTL:
+        return _CONFIG_CACHE
+
+    records = await afetch_records(_sheet_id(), _config_tab())
+    parsed: Dict[str, str] = {}
+    for row in records:
+        key_value: Optional[str] = None
+        stored_value: Optional[str] = None
+        for col, value in row.items():
+            col_norm = (col or "").strip().lower()
+            if col_norm == "key":
+                key_value = str(value).strip().lower() if value is not None else ""
+            elif col_norm in {"value", "val"}:
+                stored_value = str(value).strip() if value is not None else ""
+        if key_value and stored_value:
+            parsed[key_value] = stored_value
+
+    _CONFIG_CACHE = parsed
+    _CONFIG_CACHE_TS = now
+    return parsed
+
+
+async def _aconfig_lookup(key: str, default: Optional[str] = None) -> Optional[str]:
+    want = (key or "").strip().lower()
+    if not want:
+        return default
+    config = await _aload_config()
+    return config.get(want, default)
+
 def _config_lookup(key: str, default: Optional[str] = None) -> Optional[str]:
     want = (key or "").strip().lower()
     if not want:
@@ -319,6 +352,10 @@ def _promo_tab() -> str:
 
 def _clanlist_tab() -> str:
     return _config_lookup("clanlist_tab", "ClanList") or "ClanList"
+
+
+async def _aclanlist_tab() -> str:
+    return await _aconfig_lookup("clanlist_tab", "ClanList") or "ClanList"
 
 
 def _worksheet(tab: str):
@@ -1742,7 +1779,7 @@ _TTL_CLAN_TAGS_SEC = 7 * 24 * 60 * 60
 async def _load_clan_tags_async() -> List[str]:
     _ensure_service_account_credentials()
     sheet_id = _sheet_id()
-    tab = _clanlist_tab()
+    tab = await _aclanlist_tab()
     values = await afetch_values(sheet_id, tab)
     tags: List[str] = []
     for row in values:

@@ -543,9 +543,23 @@ def _clans_tab() -> str:
     )
 
 
+async def _aclans_tab() -> str:
+    return (
+        await _aconfig_lookup("clans_tab", os.getenv("WORKSHEET_NAME", "bot_info"))
+        or "bot_info"
+    )
+
+
 def _templates_tab() -> str:
     return (
         _config_lookup("welcome_templates_tab", "WelcomeTemplates")
+        or "WelcomeTemplates"
+    )
+
+
+async def _atemplates_tab() -> str:
+    return (
+        await _aconfig_lookup("welcome_templates_tab", "WelcomeTemplates")
         or "WelcomeTemplates"
     )
 
@@ -600,13 +614,19 @@ def get_reports_tab_name(default: str = "Statistics") -> str:
     return text or default
 
 
+async def get_reports_tab_name_async(default: str = "Statistics") -> str:
+    value = await _aconfig_lookup("reports_tab", default) or default
+    text = str(value or "").strip()
+    return text or default
+
+
 async def afetch_reports_tab(tab_name: str | None = None) -> List[List[str]]:
     """Fetch the recruitment reports worksheet as a raw matrix."""
 
     _ensure_service_account_credentials()
     sheet_id = _sheet_id()
-    tab = tab_name or get_reports_tab_name()
-    normalized = tab.strip() or get_reports_tab_name()
+    tab = tab_name or await get_reports_tab_name_async()
+    normalized = tab.strip() or await get_reports_tab_name_async()
     return await afetch_values(sheet_id, normalized)
 
 
@@ -740,7 +760,7 @@ _TTL_TEMPLATES_SEC = 7 * 24 * 60 * 60
 async def _load_clans_async() -> List[List[str]]:
     _ensure_service_account_credentials()
     sheet_id = _sheet_id()
-    tab = _clans_tab()
+    tab = await _aclans_tab()
     rows = await afetch_values(sheet_id, tab)
     now = time.time()
     sanitized = _process_clan_sheet(rows, now, tab, sheet_id=sheet_id)
@@ -757,7 +777,7 @@ async def _load_clans_async() -> List[List[str]]:
 async def _load_templates_async() -> List[Dict[str, Any]]:
     _ensure_service_account_credentials()
     sheet_id = _sheet_id()
-    tab = _templates_tab()
+    tab = await _atemplates_tab()
     return await afetch_records(sheet_id, tab)
 
 

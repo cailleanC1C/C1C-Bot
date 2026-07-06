@@ -194,6 +194,7 @@ class CacheService:
                 b.value = new_val
                 b.last_refresh = dt.datetime.now(UTC)
                 b.last_item_count = _count_items(new_val)
+                err_text = None
         except asyncio.CancelledError:
             # Let the runtime cancel this task; finally will still run
             result = "cancelled"

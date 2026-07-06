@@ -16,9 +16,10 @@ from modules.common import feature_flags
 from modules.common import runtime as rt
 from modules.community.reset_reminders.models import ResetReminder
 from modules.community.reset_reminders.views import ResetReminderView
-from shared.config import cfg, get_milestones_sheet_id
+from shared.config import get_milestones_sheet_id
 from shared.dedupe import EventDeduper
 from shared.sheets.async_core import acall_with_backoff, afetch_values, aget_worksheet
+from shared.sheets import milestones_config
 
 if TYPE_CHECKING:
     from modules.common.runtime import Runtime
@@ -86,11 +87,8 @@ def _sheet_id() -> str:
     return sheet_id
 
 
-def _tab_name() -> str:
-    tab_name = str(cfg.get(_RESET_REMINDER_TAB_KEY) or "").strip()
-    if not tab_name:
-        raise RuntimeError(f"{_RESET_REMINDER_TAB_KEY} missing in milestones Config tab")
-    return tab_name
+async def _tab_name() -> str:
+    return await milestones_config.arequire_value(_RESET_REMINDER_TAB_KEY)
 
 
 def _cell(row: list[Any], index: int) -> str:
@@ -147,7 +145,7 @@ async def _load_reset_reminder_records(*, active_only: bool) -> tuple[str, dict[
     started = time.monotonic()
     tab_name = "unknown"
     try:
-        tab_name = _tab_name()
+        tab_name = await _tab_name()
         sheet_id = _sheet_id()
         stage = "sheet_fetch"
         log.info("reset reminder sheet load started", extra={"tab": tab_name, "active_only": active_only})
@@ -162,17 +160,6 @@ async def _load_reset_reminder_records(*, active_only: bool) -> tuple[str, dict[
         setattr(exc, "reset_reminder_stage", stage)
         setattr(exc, "reset_reminder_tab", tab_name)
         setattr(exc, "reset_reminder_elapsed", elapsed)
-        log.exception(
-            "reset reminder load failed",
-            extra={
-                "scheduler": "reset_reminders",
-                "config_key": _RESET_REMINDER_TAB_KEY,
-                "tab": tab_name,
-                "operation": stage,
-                "timeout_type": type(exc).__name__ if isinstance(exc, TimeoutError) else "",
-                "elapsed_s": round(elapsed, 3),
-            },
-        )
         raise
     records: list[_ResetReminderRecord] = []
     invalid_rows: list[dict[str, Any]] = []
@@ -364,7 +351,7 @@ async def _send_ops_log(message: str) -> None:
 def _load_failure_key(exc: Exception) -> str:
     stage = getattr(exc, "reset_reminder_stage", "unknown")
     tab = getattr(exc, "reset_reminder_tab", "unknown")
-    return f"{type(exc).__name__}:{stage}:{tab}"
+    return f"reset_reminders:{_RESET_REMINDER_TAB_KEY}:{stage}:{tab}:{type(exc).__name__}:{str(exc)}"
 
 
 async def _record_load_failure(exc: Exception) -> None:
@@ -378,18 +365,21 @@ async def _record_load_failure(exc: Exception) -> None:
     stage = getattr(exc, "reset_reminder_stage", "unknown")
     tab = getattr(exc, "reset_reminder_tab", "unknown")
     elapsed = getattr(exc, "reset_reminder_elapsed", None)
-    log.exception(
-        "failed to load reset reminders; scheduler tick skipped",
-        extra={
-            "scheduler": "reset_reminders",
-            "config_key": _RESET_REMINDER_TAB_KEY,
-            "tab": tab,
-            "operation": stage,
-            "timeout_type": type(exc).__name__ if isinstance(exc, TimeoutError) else "",
-            "elapsed_s": round(float(elapsed), 3) if isinstance(elapsed, (int, float)) else None,
-            "failure_count": state["failures"],
-        },
-    )
+    log_extra = {
+        "scheduler": "reset_reminders",
+        "config_key": _RESET_REMINDER_TAB_KEY,
+        "tab": tab,
+        "operation": stage,
+        "timeout_type": type(exc).__name__ if isinstance(exc, TimeoutError) else "",
+        "elapsed_s": round(float(elapsed), 3) if isinstance(elapsed, (int, float)) else None,
+        "failure_count": state["failures"],
+        "exception_type": type(exc).__name__,
+        "exception_message": str(exc),
+    }
+    if previous_key != key or int(state["failures"]) == 1:
+        log.error("failed to load reset reminders; scheduler tick skipped", extra=log_extra, exc_info=(type(exc), exc, exc.__traceback__))
+    else:
+        log.info("repeated reset reminder load failure suppressed", extra=log_extra)
 
     last_alert = float(state.get("last_alert") or 0.0)
     should_send = int(state["failures"]) >= _LOAD_FAILURE_ALERT_THRESHOLD and (

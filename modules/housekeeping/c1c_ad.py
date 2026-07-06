@@ -10,6 +10,7 @@ import discord
 
 from modules.common import feature_flags
 from shared.sheets import core as sheets_core
+from shared.sheets import async_core
 from shared.sheets import recruitment
 from shared.sheets.recruitment import afetch_reports_tab
 from shared.sheets.export_utils import ImageExportError, export_pdf_as_png, get_tab_gid
@@ -96,13 +97,7 @@ def _header_map(headers: list[Any]) -> dict[str, int]:
     }
 
 
-def _resolve_config() -> tuple[C1CAdConfig | None, str | None]:
-    values: dict[str, str] = {}
-    for key in CONFIG_KEYS:
-        value = recruitment.get_config_value(key, None)
-        if not value:
-            return None, f"missing Config key {key}"
-        values[key] = value
+def _build_config(values: Mapping[str, str]) -> tuple[C1CAdConfig | None, str | None]:
     try:
         text_row = int(values["C1C_AD_TEXT_ROW"])
         thread_id = int(values["C1C_AD_TARGET_THREAD_ID"])
@@ -126,6 +121,26 @@ def _resolve_config() -> tuple[C1CAdConfig | None, str | None]:
     )
 
 
+def _resolve_config() -> tuple[C1CAdConfig | None, str | None]:
+    values: dict[str, str] = {}
+    for key in CONFIG_KEYS:
+        value = recruitment.get_config_value(key, None)
+        if not value:
+            return None, f"missing Config key {key}"
+        values[key] = value
+    return _build_config(values)
+
+
+async def _resolve_config_async() -> tuple[C1CAdConfig | None, str | None]:
+    values: dict[str, str] = {}
+    for key in CONFIG_KEYS:
+        value = await recruitment.get_config_value_async(key, None)
+        if not value:
+            return None, f"missing Config key {key}"
+        values[key] = value
+    return _build_config(values)
+
+
 def _get_sheet_id() -> tuple[str | None, str | None]:
     sheet_id = recruitment.get_recruitment_sheet_id()
     if not sheet_id:
@@ -133,11 +148,13 @@ def _get_sheet_id() -> tuple[str | None, str | None]:
     return sheet_id, None
 
 
-def _read_text_row(
+async def _read_text_row(
     sheet_id: str, config: C1CAdConfig
 ) -> tuple[dict[str, str] | None, dict[str, int] | None, str | None]:
     values = (
-        sheets_core.sheets_read(sheet_id, f"{config.text_tab}!1:{config.text_row}")
+        await async_core.a_to_thread_with_backoff(
+            sheets_core.sheets_read, sheet_id, f"{config.text_tab}!1:{config.text_row}"
+        )
         or []
     )
     if not values:
@@ -155,13 +172,15 @@ def _read_text_row(
     return row, headers, None
 
 
-def _write_status(
+async def _write_status(
     sheet_id: str,
     config: C1CAdConfig,
     headers: Mapping[str, int],
     updates: Mapping[str, str],
 ) -> None:
-    worksheet = sheets_core.get_worksheet(sheet_id, config.text_tab)
+    worksheet = await async_core.a_to_thread_with_backoff(
+        sheets_core.get_worksheet, sheet_id, config.text_tab
+    )
     cells = []
     for header, value in updates.items():
         col = headers.get(header)
@@ -171,7 +190,9 @@ def _write_status(
             {"range": f"{_column_letter(col)}{config.text_row}", "values": [[value]]}
         )
     if cells:
-        sheets_core.call_with_backoff(worksheet.batch_update, cells)
+        await async_core.a_to_thread_with_backoff(
+            sheets_core.call_with_backoff, worksheet.batch_update, cells
+        )
 
 
 def _normalize_header(label: str) -> str:
@@ -266,8 +287,8 @@ def _split_brackets(value: str) -> list[str]:
     return [part.strip() for part in str(value or "").split(",") if part.strip()]
 
 
-def _get_reports_tab_name_required() -> str:
-    tab_name = recruitment.get_config_value("REPORTS_TAB", None)
+async def _get_reports_tab_name_required() -> str:
+    tab_name = await async_core.a_to_thread_with_backoff(recruitment.get_config_value, "REPORTS_TAB", None)
     if not str(tab_name or "").strip():
         raise ValueError("reports tab config missing")
     return str(tab_name).strip()
@@ -317,7 +338,7 @@ async def _resolve_dynamic_placeholders(ad_text: str, row: Mapping[str, str]) ->
     if not empty_text:
         raise ValueError("open_spots_empty_text empty")
 
-    tab_name = _get_reports_tab_name_required()
+    tab_name = await _get_reports_tab_name_required()
     try:
         stats_rows = await afetch_reports_tab(tab_name)
     except Exception as exc:
@@ -366,6 +387,29 @@ def _due_for_refresh(
     return now - last >= dt.timedelta(days=refresh_days)
 
 
+def _log_job_failure(
+    reason: str,
+    *,
+    operation: str,
+    config_key: str | None = None,
+    sheet_tab: str | None = None,
+    target_thread_id: int | None = None,
+    exc: BaseException | None = None,
+) -> None:
+    extra = {
+        "operation": operation,
+        "config_key": config_key,
+        "sheet_tab": sheet_tab,
+        "target_thread_id": target_thread_id,
+        "exception_type": type(exc).__name__ if exc is not None else None,
+        "exception_message": str(exc) if exc is not None else None,
+    }
+    if exc is not None:
+        log.exception("❌ C1C ad failed: %s", reason, extra=extra)
+    else:
+        log.error("❌ C1C ad failed: %s", reason, extra=extra)
+
+
 async def _resolve_thread(bot: discord.Client, thread_id: int) -> Any | None:
     channel = bot.get_channel(thread_id)
     if channel is None:
@@ -410,7 +454,7 @@ async def run_c1c_ad_job(
         log.info("⚠️ C1C ad skipped: feature toggle off")
         return C1CAdResult("skipped", "feature toggle off")
 
-    config, error = _resolve_config()
+    config, error = await _resolve_config_async()
     if config is None:
         log.warning("⚠️ C1C ad skipped: %s", error)
         return C1CAdResult("skipped", str(error))
@@ -419,7 +463,7 @@ async def run_c1c_ad_job(
         log.warning("⚠️ C1C ad skipped: %s", error)
         return C1CAdResult("skipped", str(error))
 
-    row, headers, error = _read_text_row(sheet_id, config)
+    row, headers, error = await _read_text_row(sheet_id, config)
     if row is None or headers is None:
         log.warning("⚠️ C1C ad skipped: %s", error)
         return C1CAdResult("skipped", str(error))
@@ -429,8 +473,8 @@ async def run_c1c_ad_job(
         log.info("⚠️ C1C ad skipped: refresh not due")
         return C1CAdResult("skipped", "refresh not due")
 
-    def fail(reason: str) -> C1CAdResult:
-        _write_status(
+    async def fail(reason: str) -> C1CAdResult:
+        await _write_status(
             sheet_id,
             config,
             headers,
@@ -440,11 +484,16 @@ async def run_c1c_ad_job(
                 "updated_at_utc": _timestamp(now),
             },
         )
-        log.error("❌ C1C ad failed: %s", reason)
+        _log_job_failure(
+            reason,
+            operation="write_failure_status",
+            sheet_tab=config.text_tab,
+            target_thread_id=config.target_thread_id,
+        )
         return C1CAdResult("failed", reason)
 
-    def fail_resolved_text_too_long(char_count: int) -> C1CAdResult:
-        _write_status(
+    async def fail_resolved_text_too_long(char_count: int) -> C1CAdResult:
+        await _write_status(
             sheet_id,
             config,
             headers,
@@ -458,26 +507,31 @@ async def run_c1c_ad_job(
             "❌ C1C ad failed: resolved ad text exceeds Discord limit chars=%s limit=%s",
             char_count,
             DISCORD_TEXT_LIMIT,
+            extra={
+                "operation": "validate_resolved_text",
+                "sheet_tab": config.text_tab,
+                "target_thread_id": config.target_thread_id,
+            },
         )
         return C1CAdResult("failed", RESOLVED_TEXT_TOO_LONG_ERROR)
 
     ad_text = str(row.get("ad_text", "")).strip()
     if not ad_text:
-        return fail("ad_text empty")
+        return await fail("ad_text empty")
 
     try:
         ad_text = await _resolve_dynamic_placeholders(ad_text, row)
     except ValueError as exc:
-        return fail(str(exc))
+        return await fail(str(exc))
 
     resolved_text_length = len(ad_text)
     if resolved_text_length > DISCORD_TEXT_LIMIT:
-        return fail_resolved_text_too_long(resolved_text_length)
+        return await fail_resolved_text_too_long(resolved_text_length)
 
     if ":" not in config.image_range:
-        return fail("image range invalid")
+        return await fail("image range invalid")
     try:
-        gid = get_tab_gid(sheet_id, config.image_tab)
+        gid = await async_core.a_to_thread_with_backoff(get_tab_gid, sheet_id, config.image_tab)
         png_bytes = await export_pdf_as_png(
             sheet_id,
             gid,
@@ -492,17 +546,24 @@ async def run_c1c_ad_job(
             crop_to_content=True,
         )
     except ImageExportError as exc:
-        return fail(str(exc))
-    except Exception:
-        log.exception("❌ C1C ad failed: image render exception")
-        return fail("image render failed")
+        return await fail(str(exc))
+    except Exception as exc:
+        _log_job_failure(
+            "image render failed",
+            operation="render_image",
+            config_key="C1C_AD_TAB",
+            sheet_tab=config.image_tab,
+            target_thread_id=config.target_thread_id,
+            exc=exc,
+        )
+        return await fail("image render failed")
     if not png_bytes:
-        return fail("image render failed")
+        return await fail("image render failed")
 
     channel = await _resolve_thread(bot, config.target_thread_id)
     if channel is None:
         reason = f"target thread not found thread_id={config.target_thread_id}"
-        _write_status(
+        await _write_status(
             sheet_id,
             config,
             headers,
@@ -512,30 +573,30 @@ async def run_c1c_ad_job(
                 "updated_at_utc": _timestamp(now),
             },
         )
-        log.warning("⚠️ C1C ad skipped: %s", reason)
+        log.warning("⚠️ C1C ad skipped: %s", reason, extra={"operation": "resolve_target_thread", "target_thread_id": config.target_thread_id})
         return C1CAdResult("skipped", reason)
 
     await _delete_old_messages(channel, row)
     try:
         text_message = await channel.send(ad_text)
-    except Exception:
-        log.exception("❌ C1C ad failed: Discord text post failed")
-        return fail("Discord post failed")
+    except Exception as exc:
+        _log_job_failure("Discord post failed", operation="post_text", sheet_tab=config.text_tab, target_thread_id=config.target_thread_id, exc=exc)
+        return await fail("Discord post failed")
 
     try:
         image_message = await channel.send(
             file=discord.File(io.BytesIO(png_bytes), filename="c1c_recruitment_ad.png")
         )
-    except Exception:
-        log.exception("❌ C1C ad failed: Discord image post failed")
+    except Exception as exc:
+        _log_job_failure("Discord post failed", operation="post_image", sheet_tab=config.image_tab, target_thread_id=config.target_thread_id, exc=exc)
         try:
             await text_message.delete()
         except Exception:
             log.warning("⚠️ C1C ad cleanup failed: new text message delete failed")
-        return fail("Discord post failed")
+        return await fail("Discord post failed")
 
     stamp = _timestamp(now)
-    _write_status(
+    await _write_status(
         sheet_id,
         config,
         headers,
