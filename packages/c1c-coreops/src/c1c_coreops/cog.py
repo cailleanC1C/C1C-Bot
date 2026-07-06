@@ -72,7 +72,7 @@ from shared.sheets.async_core import (
     acall_with_backoff,
     afetch_records,
 )
-from shared.sheets.recruitment import get_reports_tab_name
+from shared.sheets.recruitment import get_config_value_async, get_reports_tab_name
 from modules.common.config_sheets import SHEET_TARGETS, SheetTarget
 
 from c1c_coreops.config import CoreOpsSettings, load_coreops_settings, normalize_command_text
@@ -93,6 +93,85 @@ logger = logging.getLogger(__name__)
 
 
 _HELP_DIAGNOSTICS_CACHE: Dict[tuple[str, int | None], float] = {}
+
+HELP_REGISTRY_HEADERS: tuple[str, ...] = (
+    "enabled",
+    "bot_key",
+    "command_key",
+    "command",
+    "usage",
+    "category",
+    "access_level",
+    "summary",
+    "details",
+    "notes",
+    "sort_order",
+)
+HELP_REGISTRY_ACCESS_LEVELS = {"user", "staff", "admin", "hidden"}
+
+
+@dataclass
+class _HelpSeedRow:
+    command_key: str
+    command: str
+    usage: str
+    category: str
+    access_level: str
+    summary: str
+    details: str
+
+
+@dataclass
+class _HelpSeedResult:
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+    missing_category: int = 0
+    missing_access_level: int = 0
+    missing_summary: int = 0
+    missing_details: int = 0
+    missing_sort_order: int = 0
+
+    @property
+    def needs_manual_review(self) -> int:
+        return sum(
+            (
+                self.missing_category,
+                self.missing_access_level,
+                self.missing_summary,
+                self.missing_details,
+                self.missing_sort_order,
+            )
+        )
+
+
+def _help_registry_command_key(qualified_name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", qualified_name.strip().lower()).strip("_")
+
+
+def _help_registry_required_header_map(
+    headers: Sequence[object],
+) -> tuple[dict[str, int], list[str]]:
+    normalized = {str(value or "").strip(): idx for idx, value in enumerate(headers)}
+    missing = [header for header in HELP_REGISTRY_HEADERS if header not in normalized]
+    return normalized, missing
+
+
+def _help_registry_row_values(seed: _HelpSeedRow) -> dict[str, str]:
+    return {
+        "enabled": "FALSE",
+        "bot_key": "woadkeeper",
+        "command_key": seed.command_key,
+        "command": seed.command,
+        "usage": seed.usage,
+        "category": seed.category,
+        "access_level": seed.access_level,
+        "summary": seed.summary,
+        "details": seed.details,
+        "notes": "",
+        "sort_order": "",
+    }
+
 
 
 def _reset_help_diagnostics_cache() -> None:
@@ -1549,6 +1628,208 @@ class CoreOpsCog(commands.Cog):
                 )
             )
         )
+
+    def _build_help_seed_row(
+        self, command: commands.Command[Any, Any, Any]
+    ) -> _HelpSeedRow:
+        info = self._build_help_info(command)
+        qualified = command.qualified_name.strip()
+        command_key = _help_registry_command_key(qualified)
+
+        extras = getattr(command, "extras", None)
+        usage_override = None
+        if isinstance(extras, dict):
+            usage_override = extras.get("help_usage")
+        signature = (command.signature or "").strip()
+        usage = (
+            str(usage_override).strip()
+            if isinstance(usage_override, str) and usage_override.strip()
+            else ""
+        )
+        if not usage:
+            usage = f"!{qualified}" + (f" {signature}" if signature else "")
+
+        category = ""
+        if isinstance(extras, dict):
+            raw_category = extras.get("function_group") or getattr(
+                command, "function_group", None
+            )
+            if isinstance(raw_category, str) and raw_category.strip():
+                category = raw_category.strip()
+
+        raw_access = (info.access_tier or "").strip().lower()
+        access_level = raw_access if raw_access in HELP_REGISTRY_ACCESS_LEVELS else ""
+
+        return _HelpSeedRow(
+            command_key=command_key,
+            command=f"!{qualified}",
+            usage=usage,
+            category=category,
+            access_level=access_level,
+            summary=(info.short or "").strip(),
+            details=(info.detailed or "").strip(),
+        )
+
+    def _iter_help_seed_commands(
+        self,
+    ) -> tuple[list[commands.Command[Any, Any, Any]], list[tuple[str, str]]]:
+        commands_iter: list[commands.Command[Any, Any, Any]] = []
+        skipped: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for command in self.bot.walk_commands():
+            qualified = getattr(command, "qualified_name", "") or getattr(
+                command, "name", "<unknown>"
+            )
+            if qualified in seen:
+                skipped.append((qualified, "duplicate entry"))
+                continue
+            seen.add(qualified)
+            if not getattr(command, "enabled", True):
+                skipped.append((qualified, "disabled"))
+                continue
+            if not _should_show(command):
+                skipped.append((qualified, "hidden/internal"))
+                continue
+            if not self._include_in_overview(command):
+                skipped.append((qualified, "not in current overview"))
+                continue
+            if self._is_duplicate_admin_alias(command):
+                skipped.append((qualified, "duplicate admin alias"))
+                continue
+            commands_iter.append(command)
+        commands_iter.sort(key=lambda cmd: cmd.qualified_name)
+        return commands_iter, skipped
+
+    async def _helpseed_impl(self, ctx: commands.Context) -> _HelpSeedResult | None:
+        sheet_id = os.getenv("RECRUITMENT_SHEET_ID", "").strip()
+        if not sheet_id:
+            raise RuntimeError(
+                "RECRUITMENT_SHEET_ID is required for help registry seed."
+            )
+
+        tab_name = await get_config_value_async("HELP_COMMANDS_TAB", None, force=True)
+        if not tab_name or not str(tab_name).strip():
+            raise RuntimeError(
+                "Config key HELP_COMMANDS_TAB is required and must not be empty."
+            )
+        tab_name = str(tab_name).strip()
+
+        try:
+            worksheet = await aget_worksheet(sheet_id, tab_name)
+        except Exception as exc:
+            raise RuntimeError(
+                f"HELP_COMMANDS_TAB points to missing/unreadable tab: {tab_name}"
+            ) from exc
+
+        values = await acall_with_backoff(worksheet.get_all_values)
+        rows = list(values or [])
+        headers = rows[0] if rows else []
+        header_map, missing = _help_registry_required_header_map(headers)
+        if missing:
+            raise RuntimeError(
+                "HelpCommands sheet missing required headers: " + ", ".join(missing)
+            )
+
+        existing_by_key: dict[tuple[str, str], tuple[int, list[str]]] = {}
+        for row_number, raw in enumerate(rows[1:], start=2):
+            row = list(raw) + [""] * max(0, len(headers) - len(raw))
+            bot_key = str(
+                row[header_map["bot_key"]] if header_map["bot_key"] < len(row) else ""
+            ).strip()
+            command_key = str(
+                row[header_map["command_key"]]
+                if header_map["command_key"] < len(row)
+                else ""
+            ).strip()
+            if bot_key and command_key:
+                existing_by_key[(bot_key, command_key)] = (row_number, row)
+
+        result = _HelpSeedResult()
+        commands_iter, skipped = self._iter_help_seed_commands()
+        result.skipped = len(skipped)
+        for command_key, reason in skipped:
+            logger.info("helpseed skipped command=%s reason=%s", command_key, reason)
+
+        for command in commands_iter:
+            seed = self._build_help_seed_row(command)
+            values_by_header = _help_registry_row_values(seed)
+            key = ("woadkeeper", seed.command_key)
+            existing = existing_by_key.get(key)
+            action = "created"
+            if existing is None:
+                row_values = [values_by_header.get(header, "") for header in headers]
+                await acall_with_backoff(
+                    worksheet.append_row, row_values, value_input_option="RAW"
+                )
+                result.created += 1
+            else:
+                row_number, row = existing
+                row = row + [""] * max(0, len(headers) - len(row))
+                for header in ("bot_key", "command_key", "command", "usage"):
+                    row[header_map[header]] = values_by_header[header]
+                if seed.access_level:
+                    row[header_map["access_level"]] = seed.access_level
+                for header in ("category", "summary", "details"):
+                    if not str(row[header_map[header]] or "").strip():
+                        row[header_map[header]] = values_by_header[header]
+                end_col = _column_label(len(headers))
+                await acall_with_backoff(
+                    worksheet.update,
+                    f"A{row_number}:{end_col}{row_number}",
+                    [row[: len(headers)]],
+                    value_input_option="RAW",
+                )
+                result.updated += 1
+                action = "updated"
+
+            missing_fields = []
+            if not seed.category:
+                result.missing_category += 1
+                missing_fields.append("category")
+            if not seed.access_level:
+                result.missing_access_level += 1
+                missing_fields.append("access_level")
+            if not seed.summary:
+                result.missing_summary += 1
+                missing_fields.append("summary")
+            if not seed.details:
+                result.missing_details += 1
+                missing_fields.append("details")
+            if (
+                existing is None
+                or not str(
+                    existing[1][header_map["sort_order"]]
+                    if header_map["sort_order"] < len(existing[1])
+                    else ""
+                ).strip()
+            ):
+                result.missing_sort_order += 1
+                missing_fields.append("sort_order")
+            logger.info(
+                "helpseed command=%s action=%s missing=%s",
+                seed.command_key,
+                action,
+                ",".join(missing_fields) if missing_fields else "none",
+            )
+
+        await ctx.reply(
+            str(
+                sanitize_text(
+                    "Help registry seed complete.\n"
+                    f"Created: {result.created}\n"
+                    f"Updated: {result.updated}\n"
+                    f"Skipped: {result.skipped}\n"
+                    f"Needs manual review: {result.needs_manual_review}\n\n"
+                    "Manual review:\n"
+                    f"- missing category: {result.missing_category}\n"
+                    f"- missing access_level: {result.missing_access_level}\n"
+                    f"- missing summary: {result.missing_summary}\n"
+                    f"- missing details: {result.missing_details}\n"
+                    f"- missing sort_order: {result.missing_sort_order}"
+                )
+            )
+        )
+        return result
 
     async def _health_impl(self, ctx: commands.Context) -> None:
         env = get_env_name()
@@ -3639,6 +3920,26 @@ class CoreOpsCog(commands.Cog):
     @ops_only()
     async def ops_config(self, ctx: commands.Context) -> None:
         await self._config_impl(ctx)
+
+    @tier("admin")
+    @help_metadata(
+        function_group="operational", section="sheet_tools", access_tier="admin"
+    )
+    @ops.command(
+        name="helpseed",
+        help="Exports current Woadkeeper command metadata to the configured help registry sheet.",
+        brief="Seeds the help registry sheet from current command metadata.",
+        extras={"hide_in_help": True},
+    )
+    @guild_only_denied_msg()
+    @ops_only()
+    @admin_only()
+    async def ops_helpseed(self, ctx: commands.Context) -> None:
+        try:
+            await self._helpseed_impl(ctx)
+        except RuntimeError as exc:
+            logger.warning("helpseed failed: %s", exc)
+            await ctx.reply(str(sanitize_text(f"⚠️ Help registry seed failed: {exc}")))
 
     @tier("admin")
     @help_metadata(function_group="operational", section="sheet_tools", access_tier="admin")
