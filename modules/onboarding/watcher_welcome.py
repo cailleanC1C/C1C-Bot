@@ -71,8 +71,7 @@ _TICKET_CODE_RE = re.compile(r"(W?\d{4})", re.IGNORECASE)
 _WELCOME_TICKET_THREAD_NAME_RE = re.compile(r"^W\d{4}-")
 _PROMO_TICKET_CODE_RE = re.compile(r"([RML]\d{4})", re.IGNORECASE)
 _PROMO_THREAD_NAME_RE = re.compile(
-    r"^(?P<prefix>[RML])(?P<digits>\d{4})[-_\s]+(?P<slug>[A-Za-z0-9][A-Za-z0-9._-]*)"
-    r"(?:[-_\s]+(?P<tag>[A-Za-z0-9]+))?$",
+    r"^(?P<prefix>[RML])(?P<digits>\d{4})(?P<display>.*)$",
     re.IGNORECASE,
 )
 _CLOSED_MESSAGE_TOKEN = "ticket closed"
@@ -264,32 +263,22 @@ def parse_promo_thread_name(name: str | None) -> Optional["PromoThreadNameParts"
 
     prefix = match.group("prefix")
     digits = match.group("digits")
-    slug = (match.group("slug") or "").strip(" -_")
     ticket_code = _normalize_promo_ticket(f"{prefix}{digits}")
     if not ticket_code:
-        return None
-    if not slug:
         return None
 
     promo_type = _PROMO_TYPE_MAP.get(ticket_code[:1], "")
     if not promo_type:
         return None
-    clan_tag = (match.group("tag") or "").strip(" -_") or None
-    if clan_tag is None:
-        slug_parts = re.split(r"[-_\s]+", slug)
-        if (
-            len(slug_parts) > 1
-            and slug_parts[-1].isalpha()
-            and slug_parts[-1].isupper()
-        ):
-            clan_tag = slug_parts.pop().strip() or None
-            slug = "-".join(part for part in slug_parts if part)
+    display_text = (match.group("display") or "").strip(" -_")
 
     return PromoThreadNameParts(
         ticket_code=ticket_code,
-        username=slug,
+        prefix=ticket_code[:1],
+        digits=digits,
         promo_type=promo_type,
-        clan_tag=clan_tag,
+        promo_flow=f"promo.{ticket_code[:1].lower()}",
+        display_text=display_text,
     )
 
 
@@ -1600,9 +1589,23 @@ class ThreadNameParts:
 @dataclass(frozen=True)
 class PromoThreadNameParts:
     ticket_code: str
-    username: str
+    prefix: str
+    digits: str
     promo_type: str
-    clan_tag: Optional[str] = None
+    promo_flow: str
+    display_text: str = ""
+
+    @property
+    def username(self) -> str:
+        """Legacy display-only tail for callers that still log a username."""
+
+        return self.display_text or "unknown"
+
+    @property
+    def clan_tag(self) -> None:
+        """Promo thread names no longer encode a structured clan tag."""
+
+        return None
 
 
 @dataclass(frozen=True)

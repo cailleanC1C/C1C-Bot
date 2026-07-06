@@ -1574,6 +1574,16 @@ def update_ticket_finalization_state(
         if col < 0:
             raise RuntimeError(f"{normalized} finalization header missing for {field}: {final_headers[field]!r}")
         row[col] = str(value)
+    updated_col = next(
+        (
+            idx
+            for idx, name in enumerate(_normalize_header_name(h) for h in header)
+            if name == "updatedat"
+        ),
+        -1,
+    )
+    if updated_col >= 0:
+        row[updated_col] = datetime.now(timezone.utc).isoformat()
     end_col = _col_to_a1(len(header) - 1)
     core.call_with_backoff(ws.update, f"A{row_number}:{end_col}{row_number}", [row[: len(header)]])
     return "updated"

@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, cast
 
+import asyncio
+
 import discord
 from discord.ext import commands
 
@@ -20,6 +22,7 @@ from modules.onboarding.controllers.welcome_controller import (
 )
 from modules.onboarding.ui import panels
 from modules.onboarding.watcher_welcome import parse_promo_thread_name
+from shared.sheets import onboarding as onboarding_sheets
 from shared.sheets import onboarding_questions
 
 __all__ = ["resolve_onboarding_flow", "start_welcome_dialog"]
@@ -46,7 +49,7 @@ def resolve_onboarding_flow(thread: discord.Thread) -> FlowResolution:
             return FlowResolution(None, error="promo_ticket_parse_failed")
 
         prefix = (parts.ticket_code or "")[:1].upper()
-        flow = _PROMO_FLOW_MAP.get(prefix)
+        flow = parts.promo_flow or _PROMO_FLOW_MAP.get(prefix)
         if not flow:
             return FlowResolution(None, ticket_code=parts.ticket_code, error="promo_ticket_unknown_prefix")
 
@@ -72,7 +75,7 @@ async def start_welcome_dialog(
 
     resolution = resolve_onboarding_flow(thread)
     flow = resolution.flow or "unknown"
-    actor = initiator if isinstance(initiator, (discord.Member, discord.User)) else None
+    actor = initiator if initiator is not None else None
 
     def _context(
         extra: dict[str, Any] | None = None,
@@ -85,7 +88,14 @@ async def start_welcome_dialog(
         payload = logs.thread_context(thread)
         payload["flow"] = flow
         payload["source"] = source
+        guild = getattr(thread, "guild", None)
+        parent = getattr(thread, "parent", None)
+        payload["guild_id"] = getattr(guild, "id", None)
+        payload["parent_channel_id"] = getattr(parent, "id", None)
+        payload["thread_id"] = getattr(thread, "id", None)
+        payload["thread_name"] = getattr(thread, "name", None)
         payload["actor"] = logs.format_actor(resolved_actor)
+        payload["actor_id"] = getattr(resolved_actor, "id", None)
         handle = logs.format_actor_handle(resolved_actor)
         if handle:
             payload["actor_name"] = handle
@@ -103,6 +113,51 @@ async def start_welcome_dialog(
     if resolution.ticket_code:
         context_defaults["ticket_code"] = resolution.ticket_code
 
+    target_user_id: int | None = None
+    target_message_id: int | None = None
+    try:
+        welcome_message = await locate_welcome_message(thread)
+    except Exception as exc:  # pragma: no cover - defensive network path
+        if resolution.flow is not None:
+            await logs.send_welcome_exception(
+                "warn",
+                exc,
+                **_context({"result": "target_lookup_failed"}),
+            )
+    else:
+        target_user_id, target_message_id = extract_target_from_message(welcome_message)
+
+    if target_user_id is not None:
+        context_defaults["target_user_id"] = target_user_id
+    if target_message_id is not None:
+        context_defaults["target_message_id"] = target_message_id
+
+    async def _log_promo_failure_to_sheet(reason: str) -> None:
+        payload = _context(
+            {
+                "flow": "promo",
+                "result": "failure",
+                "reason": reason,
+                **context_defaults,
+            }
+        )
+        if resolution.flow:
+            payload["promo_flow"] = resolution.flow
+        note = {
+            "promo_ticket_parse_failed": "promo_ticket_parse_failed before dialog start",
+        }.get(reason, str(reason or "promo failure before dialog start"))
+        try:
+            await asyncio.to_thread(
+                onboarding_sheets.update_ticket_finalization_state,
+                "promo",
+                ticket=resolution.ticket_code,
+                thread_id=getattr(thread, "id", None),
+                finalization_status="pending_review",
+                finalization_note=note,
+            )
+        except Exception as exc:  # pragma: no cover - sheet/network path
+            await logs.send_welcome_exception("error", exc, **payload)
+
     if resolution.flow is None:
         await logs.send_welcome_log(
             "warn",
@@ -115,28 +170,12 @@ async def start_welcome_dialog(
             ),
         )
         if resolution.error and resolution.error.startswith("promo_ticket"):
+            await _log_promo_failure_to_sheet(resolution.error)
             await _safe_notify(
                 "⚠️ I couldn't start the promo dialog for this ticket. Please check the promo ticket number and try again."
             )
         return
 
-    target_user_id: int | None = None
-    target_message_id: int | None = None
-    try:
-        welcome_message = await locate_welcome_message(thread)
-    except Exception as exc:  # pragma: no cover - defensive network path
-        await logs.send_welcome_exception(
-            "warn",
-            exc,
-            **_context({"result": "target_lookup_failed"}),
-        )
-    else:
-        target_user_id, target_message_id = extract_target_from_message(welcome_message)
-
-    if target_user_id is not None:
-        context_defaults["target_user_id"] = target_user_id
-    if target_message_id is not None:
-        context_defaults["target_message_id"] = target_message_id
     anchor_message_id: int | None = None
     if panel_message is not None:
         raw_id = getattr(panel_message, "id", None)

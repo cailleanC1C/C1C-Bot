@@ -54,6 +54,58 @@ UTC = dt.timezone.utc
 log = logging.getLogger("c1c.onboarding.promo_watcher")
 
 
+async def _log_promo_failure_row(
+    *,
+    reason: str,
+    source: str,
+    thread: object | None = None,
+    actor: object | None = None,
+    target_user_id: int | str | None = None,
+    target_message_id: int | str | None = None,
+    message_id: int | str | None = None,
+    promo_flow: str | None = None,
+    ticket_code: str | None = None,
+) -> None:
+    guild = getattr(thread, "guild", None)
+    parent = getattr(thread, "parent", None)
+    thread_id = getattr(thread, "id", None)
+    note = {
+        "promo_ticket_parse_failed": "promo_ticket_parse_failed before dialog start",
+        "close_context_unresolved": "close_context_unresolved before clan prompt",
+        "context_not_found": "context_not_found during close/startup backfill",
+    }.get(reason, str(reason or "promo failure"))
+    payload = {
+        "flow": "promo",
+        "source": source,
+        "result": "failure",
+        "reason": reason,
+        "guild_id": getattr(guild, "id", None),
+        "parent_channel_id": getattr(parent, "id", None),
+        "thread_id": thread_id,
+        "thread_name": getattr(thread, "name", None),
+        "actor_id": getattr(actor, "id", None),
+        "actor_name": onboarding_logs.format_actor_handle(actor) if actor is not None else None,
+        "target_user_id": target_user_id,
+        "target_message_id": target_message_id,
+        "message_id": message_id,
+        "promo_flow": promo_flow,
+        "ticket_code": ticket_code,
+    }
+    try:
+        result = await asyncio.to_thread(
+            onboarding_sheets.update_ticket_finalization_state,
+            "promo",
+            ticket=ticket_code,
+            thread_id=thread_id,
+            finalization_status="skipped_unresolved",
+            finalization_note=note,
+        )
+    except Exception:
+        log.exception("promo failure promo-row update failed", extra=payload)
+    else:
+        log.warning("promo failure promo-row updated", extra={**payload, "sheet_result": result})
+
+
 def _promo_headers_for_write(*, ticket: str | None = None) -> list[str]:
     try:
         return onboarding_sheets.get_live_promo_headers()
@@ -420,12 +472,34 @@ class PromoTicketWatcher(commands.Cog):
         now = getattr(thread, "created_at", None) or dt.datetime.now(UTC)
         created_str = _format_timestamp(now)
         found = None
+        found_source = None
         parts = None
+        session_row = None
         try:
-            found = await asyncio.to_thread(onboarding_sheets.find_promo_row_by_thread_id, getattr(thread, "id", None))
+            session_row = onboarding_sessions.get_by_thread_id(getattr(thread, "id", None))
+        except Exception:
+            session_row = None
+        if session_row:
+            parts = parse_promo_thread_name(session_row.get("thread_name") or getattr(thread, "name", ""))
+        if parts is None:
+            parts = parse_promo_thread_name(thread.name)
+
+        if parts is not None:
+            try:
+                found = await asyncio.to_thread(onboarding_sheets.find_promo_row, parts.ticket_code)
+                if found is not None:
+                    found_source = "sheet_ticket"
+            except Exception:
+                log.exception("failed to read promo row during context ensure", extra={"ticket": parts.ticket_code})
+                found = None
+        try:
+            if found is None:
+                found = await asyncio.to_thread(onboarding_sheets.find_promo_row_by_thread_id, getattr(thread, "id", None))
+                if found is not None:
+                    found_source = "sheet_thread_id"
         except Exception:
             log.exception("close_context_resolved failed reading promo row by thread_id", extra={"thread_id": getattr(thread, "id", None)})
-        if found:
+        if found and found_source == "sheet_thread_id":
             _, values = found
             ticket = (values.get("ticket number") or values.get("ticket_number") or values.get("ticket") or "").strip()
             username = (values.get("username") or values.get("thread_name") or getattr(thread, "name", "") or "unknown").strip(" -_")
@@ -450,20 +524,32 @@ class PromoTicketWatcher(commands.Cog):
             except (TypeError, ValueError):
                 context.user_id = None
             self._tickets[thread.id] = context
-            log.info("close_context_resolved", extra={"flow": "promo", "thread_id": thread.id, "ticket": context.ticket_number, "source": "sheet_thread_id"})
+            log.info("close_context_resolved", extra={"flow": "promo", "thread_id": thread.id, "ticket": context.ticket_number, "source": found_source})
             return context
-
-        try:
-            session_row = onboarding_sessions.get_by_thread_id(getattr(thread, "id", None))
-        except Exception:
-            session_row = None
-        if session_row:
-            parts = parse_promo_thread_name(session_row.get("thread_name") or getattr(thread, "name", ""))
-
         if parts is None:
-            parts = parse_promo_thread_name(thread.name)
-        if parts is None:
-            log.warning("close_context_unresolved", extra={"flow": "promo", "thread_id": getattr(thread, "id", None), "thread_name": getattr(thread, "name", None)})
+            target_user_id = None
+            target_message_id = None
+            try:
+                welcome_message = await locate_welcome_message(thread)
+                target_user_id, target_message_id = extract_target_from_message(welcome_message)
+            except Exception:
+                pass
+            log.warning(
+                "close_context_unresolved",
+                extra={
+                    "flow": "promo",
+                    "thread_id": getattr(thread, "id", None),
+                    "thread_name": getattr(thread, "name", None),
+                    "target_user_id": target_user_id,
+                },
+            )
+            await _log_promo_failure_row(
+                reason="close_context_unresolved",
+                source="message",
+                thread=thread,
+                target_user_id=target_user_id,
+                target_message_id=target_message_id,
+            )
             return None
 
         context = PromoTicketContext(
@@ -476,12 +562,6 @@ class PromoTicketWatcher(commands.Cog):
             month=now.strftime("%B"),
         )
 
-        try:
-            found = await asyncio.to_thread(onboarding_sheets.find_promo_row, parts.ticket_code)
-        except Exception:
-            log.exception("failed to read promo row during context ensure", extra={"ticket": parts.ticket_code})
-            found = None
-
         if found:
             _, values = found
             context.clan_tag = values.get("clantag", "") or context.clan_tag
@@ -492,6 +572,25 @@ class PromoTicketWatcher(commands.Cog):
             context.year = values.get("year", "") or context.year
             context.month = values.get("month", "") or context.month
             context.join_month = values.get("join_month", "") or context.join_month
+
+        if context.user_id is None and session_row:
+            try:
+                uid = str(session_row.get("user_id") or "").strip()
+                context.user_id = int(uid) if uid else None
+            except (TypeError, ValueError):
+                context.user_id = None
+        if context.user_id is None and found:
+            try:
+                uid = str(found[1].get("user_id") or "").strip()
+                context.user_id = int(uid) if uid else None
+            except (TypeError, ValueError):
+                context.user_id = None
+        if context.user_id is None:
+            try:
+                welcome_message = await locate_welcome_message(thread)
+                context.user_id, _ = extract_target_from_message(welcome_message)
+            except Exception:
+                context.user_id = None
 
         self._tickets[thread.id] = context
         return context
@@ -1662,6 +1761,12 @@ class PromoTicketWatcher(commands.Cog):
                 except Exception:
                     summary["error"] += 1
                 log.warning("close_context_unresolved", extra={"flow": "promo", "trigger": "startup_backfill", "thread_id": thread_id, "ticket": ticket})
+                await _log_promo_failure_row(
+                    reason="close_context_unresolved",
+                    source="message",
+                    thread=SimpleNamespace(id=thread_id, name=values.get("thread_name")),
+                    ticket_code=ticket,
+                )
                 await _send_placement_log_line(flow="promo", outcome="unresolved", ticket=ticket, player=player, trigger="startup_backfill", reason="context_not_found", action="skipped", thread=values.get("thread_name"))
                 continue
             if not sheet_closed and not thread_closed:
@@ -1677,6 +1782,12 @@ class PromoTicketWatcher(commands.Cog):
                     await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "promo", ticket=ticket, thread_id=thread_id, finalization_status="skipped_unresolved", finalization_note="context unresolved during startup/backfill")
                 except Exception:
                     summary["error"] += 1
+                await _log_promo_failure_row(
+                    reason="close_context_unresolved",
+                    source="message",
+                    thread=thread,
+                    ticket_code=ticket,
+                )
                 await _send_placement_log_line(flow="promo", outcome="unresolved", ticket=ticket, player=player, trigger="startup_backfill", reason="context_not_found", action="skipped", thread=getattr(thread, "name", None))
                 continue
             try:
