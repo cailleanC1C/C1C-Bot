@@ -22,6 +22,8 @@ _DEDUP_TIMEOUT_BACKOFF_SEC = max(60, int(os.getenv("FUSION_REMINDER_DEDUPE_BACKO
 _DEDUP_TIMEOUT_SEC = max(1.0, float(os.getenv("FUSION_REMINDER_DEDUPE_TIMEOUT_SEC", "10")))
 _DEDUP_READ_RETRY_DELAY_SEC = max(0.0, float(os.getenv("FUSION_REMINDER_DEDUPE_RETRY_DELAY_SEC", "1")))
 _DEDUP_CACHE_TTL_SEC = max(0.0, float(os.getenv("FUSION_REMINDER_DEDUPE_CACHE_TTL_SEC", "30")))
+_SETTINGS_LOAD_RETRY_DELAY_SEC = max(0.0, float(os.getenv("FUSION_REMINDER_SETTINGS_RETRY_DELAY_SEC", "1")))
+_SETTINGS_LOAD_TIMEOUT_SEC = float(os.getenv("FUSION_REMINDER_SETTINGS_TIMEOUT_SEC", "0") or "0")
 _GROUPED_REMINDER_TYPE = "grouped_daily"
 _GROUPED_EVENT_ID_PREFIX = "grouped_daily"
 
@@ -162,6 +164,82 @@ def _group_events_config_fields(settings: fusion_sheets.FusionReminderSettings) 
     if source.duplicate_count:
         fields["group_events_duplicate_count"] = source.duplicate_count
     return fields
+
+
+def _settings_unavailable_context(
+    *,
+    target: fusion_sheets.FusionRow,
+    attempt: int,
+    max_attempts: int,
+    exc: BaseException,
+) -> dict[str, object]:
+    return {
+        "fusion_id": target.fusion_id,
+        "operation": "load_fusion_reminder_settings",
+        "attempt": attempt,
+        "max_attempts": max_attempts,
+        "timeout_sec": _SETTINGS_LOAD_TIMEOUT_SEC if _SETTINGS_LOAD_TIMEOUT_SEC > 0 else "not_configured",
+        "retry_delay_sec": _SETTINGS_LOAD_RETRY_DELAY_SEC,
+        "exception_type": type(exc).__name__,
+        "settings_source_tab": "unavailable",
+        "settings_sheet_id_tail": "unavailable",
+        "settings_cache": "not_used",
+        "cached_settings_used": False,
+        "reminder_tick_skipped": attempt >= max_attempts,
+    }
+
+
+async def _load_grouped_settings_with_retry(
+    target: fusion_sheets.FusionRow,
+    *,
+    reference: dt.datetime,
+) -> fusion_sheets.FusionReminderSettings | None:
+    max_attempts = 2
+    last_exc: BaseException | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            coro = fusion_sheets.get_fusion_reminder_settings(now=reference)
+            if _SETTINGS_LOAD_TIMEOUT_SEC > 0:
+                return await asyncio.wait_for(coro, timeout=_SETTINGS_LOAD_TIMEOUT_SEC)
+            return await coro
+        except TimeoutError as exc:
+            last_exc = exc
+            context = _settings_unavailable_context(
+                target=target, attempt=attempt, max_attempts=max_attempts, exc=exc
+            )
+            log.warning(
+                "fusion grouped reminder settings unavailable; retrying"
+                if attempt < max_attempts
+                else "fusion grouped reminders skipped because settings could not be verified",
+                extra=context,
+            )
+        except Exception as exc:
+            last_exc = exc
+            context = _settings_unavailable_context(
+                target=target, attempt=attempt, max_attempts=max_attempts, exc=exc
+            )
+            log.warning(
+                "fusion grouped reminder settings unavailable; retrying"
+                if attempt < max_attempts
+                else "fusion grouped reminders skipped because settings could not be verified",
+                extra=context,
+                exc_info=True,
+            )
+        if attempt < max_attempts and _SETTINGS_LOAD_RETRY_DELAY_SEC > 0:
+            await asyncio.sleep(_SETTINGS_LOAD_RETRY_DELAY_SEC)
+
+    if last_exc is not None:
+        context = _settings_unavailable_context(
+            target=target, attempt=max_attempts, max_attempts=max_attempts, exc=last_exc
+        )
+        await fusion_logs.send_ops_alert(
+            component="reminders",
+            summary="grouped_settings_unavailable_reminders_skipped",
+            dedupe_key=f"fusion:grouped_reminders:settings:{target.fusion_id}",
+            error=last_exc,
+            fields=context,
+        )
+    return None
 
 
 def _parse_grouped_post_time_utc(raw: object) -> dt.time | None:
@@ -512,18 +590,8 @@ async def process_fusion_reminders(
     if target is None:
         return
 
-    try:
-        settings = await fusion_sheets.get_fusion_reminder_settings(now=reference)
-    except Exception as exc:
-        context = {"fusion_id": target.fusion_id}
-        log.exception("fusion grouped reminder failed to load settings", extra=context)
-        await fusion_logs.send_ops_alert(
-            component="reminders",
-            summary="grouped_load_settings_failed",
-            dedupe_key=f"fusion:grouped_reminders:settings:{target.fusion_id}",
-            error=exc,
-            fields=context,
-        )
+    settings = await _load_grouped_settings_with_retry(target, reference=reference)
+    if settings is None:
         return
 
     if not settings.group_events:

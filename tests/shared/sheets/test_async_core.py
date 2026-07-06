@@ -75,3 +75,38 @@ def test_a_to_thread_with_backoff_retries_with_async_sleep_not_time_sleep(monkey
     assert calls == ["call", "call"]
     assert len(sleeps) == 1
     assert 0.1875 <= sleeps[0] <= 0.3125
+
+
+def test_acall_with_backoff_does_not_use_sync_retry_inside_event_loop(monkeypatch):
+    sync_retry_calls = []
+
+    def fail_sync_retry(*_args, **_kwargs):
+        sync_retry_calls.append(True)
+        raise AssertionError("sync retry helper must not run inside the event loop")
+
+    async def fake_async_retry(func, *args, **_kwargs):
+        return await func(*args)
+
+    async def fake_arun(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(core, "_retry_with_backoff", fail_sync_retry)
+    monkeypatch.setattr(core, "_retry_with_backoff_async", fake_async_retry)
+    monkeypatch.setattr(core.async_adapter, "arun", fake_arun)
+
+    result = asyncio.run(async_core.acall_with_backoff(lambda value: f"{value}-ok", "async"))
+
+    assert result == "async-ok"
+    assert sync_retry_calls == []
+
+
+def test_sync_call_with_backoff_rejects_active_event_loop():
+    async def run_inside_loop():
+        return core.call_with_backoff(lambda: "unsafe")
+
+    try:
+        asyncio.run(run_inside_loop())
+    except RuntimeError as exc:
+        assert "active event loop" in str(exc)
+    else:  # pragma: no cover - failure path assertion
+        raise AssertionError("sync retry helper should reject active event loops")

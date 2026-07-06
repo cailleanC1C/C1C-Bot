@@ -73,6 +73,8 @@ def _retry_with_backoff(
     if tries <= 0:
         raise ValueError("attempts must be positive")
 
+    _ensure_no_running_loop_for_sync_retry()
+
     last_exc: Exception | None = None
     for attempt in range(tries):
         try:
@@ -149,20 +151,26 @@ def _next_backoff_delay(delay: float, *, multiplier: float, jitter_ratio: float 
     return random.uniform(low, high)
 
 
+def _ensure_no_running_loop_for_sync_retry() -> None:
+    """Reject sync retry usage from async contexts before any Sheets call starts."""
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    raise RuntimeError(
+        "_retry_with_backoff must not run inside an active event loop; use the async variant"
+    )
+
+
 def _sleep_with_new_loop(delay: float) -> None:
     """Sleep for ``delay`` seconds only when no event loop is active."""
 
     if delay <= 0:
         return
 
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        time.sleep(delay)
-        return
-    raise RuntimeError(
-        "_retry_with_backoff must not run inside an active event loop; use the async variant"
-    )
+    _ensure_no_running_loop_for_sync_retry()
+    time.sleep(delay)
 
 
 def _resolve_sheet_id(sheet_id: str | None) -> str:
