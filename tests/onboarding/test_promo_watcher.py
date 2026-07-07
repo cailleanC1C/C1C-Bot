@@ -87,6 +87,10 @@ def promo_setup(monkeypatch: pytest.MonkeyPatch):
 
     def _fake_find(ticket):
         calls["finds"].append(ticket)
+        for idx, (row, headers) in enumerate(calls["upserts"], start=2):
+            values = dict(zip(headers, row))
+            if values.get("ticket number") == ticket:
+                return idx, values
         return None
 
     monkeypatch.setattr(onboarding_sheets, "upsert_promo", _fake_upsert)
@@ -97,6 +101,17 @@ def promo_setup(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(onboarding_sheets, "append_promo_ticket_row", _fake_append)
     monkeypatch.setattr(onboarding_sheets, "find_promo_row", _fake_find)
+    monkeypatch.setattr(onboarding_sheets, "find_promo_row_by_thread_id", lambda _thread_id: None)
+    monkeypatch.setattr(onboarding_sheets, "get_ticket_finalization_state", lambda _flow, values: {
+        "finalization_status": values.get("finalization_status", ""),
+        "reservation_status": values.get("reservation_status", ""),
+        "clan_update_status": values.get("clan_update_status", ""),
+        "finalization_note": values.get("finalization_note", ""),
+    })
+    monkeypatch.setattr(onboarding_sheets, "update_ticket_finalization_state", lambda *a, **k: "updated")
+    monkeypatch.setattr(onboarding_sheets, "patch_promo_prompt_source", lambda **kwargs: "updated")
+    monkeypatch.setattr(onboarding_sheets, "patch_promo_ticket_metadata", lambda **kwargs: "updated")
+    monkeypatch.setattr(onboarding_sheets, "patch_promo_final_close", lambda **kwargs: _fake_upsert([kwargs.get("ticket"), "", kwargs.get("clan_tag"), kwargs.get("source_clan_tag"), kwargs.get("date_closed"), "", "", kwargs.get("year"), kwargs.get("month"), kwargs.get("join_month"), kwargs.get("clan_name"), kwargs.get("progression")], onboarding_sheets.PROMO_HEADERS))
     monkeypatch.setattr(onboarding_sheets, "load_clan_tags", lambda force=False: calls["tags"][0])
 
     watcher = watcher_promo.PromoTicketWatcher(bot=SimpleNamespace())
@@ -112,7 +127,13 @@ def test_parse_promo_thread_name_maps_types() -> None:
 
     with_tag = parse_promo_thread_name("L9999-lead-ABC")
     assert with_tag is not None
-    assert with_tag.clan_tag == "ABC"
+    assert with_tag.username == "lead-ABC"
+    assert with_tag.clan_tag is None
+
+    duplicated = parse_promo_thread_name("M0392-M0392-J_Turbo")
+    assert duplicated is not None
+    assert duplicated.ticket_code == "M0392"
+    assert duplicated.username == "J_Turbo"
 
     assert parse_promo_thread_name("bad-name") is None
 
@@ -319,9 +340,30 @@ def _patch_promo_close_dependencies(monkeypatch: pytest.MonkeyPatch, *, open_spo
         "reservation_count": 6,
         "reservation_summary": 7,
     })
+    def find_promo_row(ticket):
+        return (2, {
+            "ticket number": ticket,
+            "username": "",
+            "clantag": "",
+            "source_clan_tag": "C1CV",
+            "finalization_status": "pending",
+            "reservation_status": "pending",
+            "clan_update_status": "pending",
+            "finalization_note": "",
+        })
+
     monkeypatch.setattr(watcher_promo.availability, "adjust_manual_open_spots", adjust)
     monkeypatch.setattr(watcher_promo.availability, "recompute_clan_availability", recompute)
     monkeypatch.setattr(watcher_promo.rt, "send_log_message", send_log)
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "find_promo_row", find_promo_row)
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "get_ticket_finalization_state", lambda _flow, values: {
+        "finalization_status": values.get("finalization_status", ""),
+        "reservation_status": values.get("reservation_status", ""),
+        "clan_update_status": values.get("clan_update_status", ""),
+        "finalization_note": values.get("finalization_note", ""),
+    })
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "update_ticket_finalization_state", lambda *a, **k: "updated")
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "patch_promo_final_close", lambda **kwargs: "updated")
     monkeypatch.setattr(watcher_promo.onboarding_sessions, "mark_completed", lambda *_args, **_kwargs: None)
     return state, deltas, log_messages
 
@@ -355,16 +397,112 @@ def test_promo_move_close_preserves_full_ticket_id_and_consumes_unreserved_spot(
     asyncio.run(run())
 
     assert context.state == "closed"
-    assert calls["upserts"][-1][0][0] == "M0352"
-    assert calls["upserts"][-1][0][0] != "0352"
     assert thread.name == "Closed-M0352-Lucifer-F-IT"
     assert thread.edits[-1]["name"] == "Closed-M0352-Lucifer-F-IT"
     assert sorted(deltas) == [("C1CV", 1), ("F-IT", -1)]
     assert state["open_spots"] == 2
     assert log_messages, "expected logging-channel open spot delta entry"
-    assert "M0352 • Lucifer: C1CV → F-IT" in log_messages[-1]
+    assert "M0352 • Lucifer → F-IT" in log_messages[-1]
     assert "F-IT:-1" in log_messages[-1]
 
+
+
+def test_promo_move_close_normalizes_ticket_prefixed_username_and_logs_rows(
+    promo_setup, monkeypatch: pytest.MonkeyPatch
+):
+    watcher, calls, promo_parent, _ticket_tool_id = promo_setup
+    _state, deltas, log_messages = _patch_promo_close_dependencies(
+        monkeypatch, open_spots=2
+    )
+    thread = DummyThread("M0392-J_Turbo", promo_parent)
+    context = watcher_promo.PromoTicketContext(
+        thread_id=thread.id,
+        ticket_number="M0392",
+        username="M0392-J_Turbo",
+        promo_type="move",
+        thread_created="2026-07-07 00:00:00",
+        year="2026",
+        month="July",
+        clan_tag="F-IT",
+        source_clan_tag="C1CV",
+        user_id=12345,
+    )
+
+    asyncio.run(watcher._complete_close(thread, context, progression="", clan_name="", previous_final=""))
+
+    assert context.state == "closed"
+    assert thread.name == "Closed-M0392-J_Turbo-F-IT"
+    assert sorted(deltas) == [("C1CV", 1), ("F-IT", -1)]
+    assert log_messages
+    assert "M0392 • J_Turbo" in log_messages[-1]
+    assert "M0392 • M0392-J_Turbo" not in log_messages[-1]
+    assert "snapshot unavailable" not in log_messages[-1]
+
+
+def test_promo_close_recompute_uses_promo_lookup_for_source_and_destination(
+    promo_setup, monkeypatch: pytest.MonkeyPatch
+):
+    watcher, _calls, promo_parent, _ticket_tool_id = promo_setup
+    recomputed: list[str] = []
+    lookup_functions = []
+
+    async def fake_recompute(tag, **kwargs):
+        recomputed.append(tag)
+        lookup = kwargs.get("find_clan_row_fn")
+        lookup_functions.append(lookup)
+        assert lookup is not None
+        assert lookup(tag, SimpleNamespace(header_map={"clan_tag": 2})) is not None
+
+    _state, _deltas, log_messages = _patch_promo_close_dependencies(
+        monkeypatch, open_spots=2
+    )
+    monkeypatch.setattr(watcher_promo.availability, "recompute_clan_availability", fake_recompute)
+
+    def find_clan_row(tag, force=False):
+        normalized = str(tag).strip().upper()
+        if normalized not in {"C1CV", "C1CZ"}:
+            return None
+        return (7 if normalized == "C1CZ" else 8, ["", "", normalized, "", "2", "0", "0", ""])
+
+    monkeypatch.setattr(watcher_promo.recruitment_sheets, "find_clan_row", find_clan_row)
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets,
+        "find_promo_row",
+        lambda ticket: (2, {
+            "ticket number": ticket,
+            "username": "",
+            "clantag": "",
+            "source_clan_tag": "C1CZ",
+            "finalization_status": "pending",
+            "reservation_status": "pending",
+            "clan_update_status": "pending",
+            "finalization_note": "",
+        }),
+    )
+
+    thread = DummyThread("M0392-J_Turbo", promo_parent)
+    context = watcher_promo.PromoTicketContext(
+        thread_id=thread.id,
+        ticket_number="M0392",
+        username="M0392-J_Turbo",
+        promo_type="move",
+        thread_created="2026-07-07 00:00:00",
+        year="2026",
+        month="July",
+        clan_tag="C1CV",
+        source_clan_tag="C1CZ",
+        user_id=12345,
+    )
+
+    asyncio.run(watcher._complete_close(thread, context, progression="", clan_name="", previous_final=""))
+
+    assert context.state == "closed"
+    assert sorted(recomputed) == ["C1CV", "C1CZ"]
+    assert all(lookup is watcher_promo._find_promo_availability_clan_row for lookup in lookup_functions)
+    assert thread.name == "Closed-M0392-J_Turbo-C1CV"
+    assert log_messages
+    assert "M0392 • J_Turbo" in log_messages[-1]
+    assert "snapshot unavailable" not in log_messages[-1]
 
 def test_reserved_promo_move_same_clan_does_not_double_consume_open_spot(
     promo_setup, monkeypatch: pytest.MonkeyPatch
@@ -411,7 +549,7 @@ def test_reserved_promo_move_same_clan_does_not_double_consume_open_spot(
     assert deltas == [("C1CV", 1)]
     assert state["open_spots"] == 3
     assert log_messages
-    assert "reservation=same" in log_messages[-1]
+    assert "reservation=row4(same)" in log_messages[-1]
     assert "C1CV:+1" in log_messages[-1]
 
 def test_promo_watcher_respects_feature_flags(monkeypatch: pytest.MonkeyPatch):

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from shared.sheets import async_core
 from shared.sheets import recruitment
@@ -276,7 +276,13 @@ def resolve_configured_clan_tag(clan_tag: str) -> str:
 
 
 async def preflight_clan_availability_update(
-    clan_tag: str, *, delta: int = 0
+    clan_tag: str,
+    *,
+    delta: int = 0,
+    find_clan_row_fn: Callable[
+        [str, AvailabilityHeaderResolution], tuple[int, list[str]] | None
+    ]
+    | None = None,
 ) -> AvailabilityPreflightPlan:
     """Preflight Config-resolved bot_info availability dependencies before mutating flows."""
     headers = _resolve_availability_headers()
@@ -298,7 +304,8 @@ async def preflight_clan_availability_update(
     if worksheet is None:
         raise ValueError("bot_info worksheet not accessible")
 
-    entry = _find_availability_clan_row(clan_tag, headers)
+    row_lookup = find_clan_row_fn or _find_availability_clan_row
+    entry = row_lookup(clan_tag, headers)
     if entry is None:
         _log_availability_diagnostics(
             reason="bot_info_row_not_found",
@@ -681,10 +688,16 @@ async def recompute_clan_availability(
     *,
     guild: reservations.SupportsMemberLookup | None = None,
     resolver: reservations.ResolveUserFn | None = None,
+    find_clan_row_fn: Callable[
+        [str, AvailabilityHeaderResolution], tuple[int, list[str]] | None
+    ]
+    | None = None,
 ) -> None:
     """Recompute Config-resolved bot_info availability for ``clan_tag`` and refresh cache."""
 
-    plan = await preflight_clan_availability_update(clan_tag, delta=0)
+    plan = await preflight_clan_availability_update(
+        clan_tag, delta=0, find_clan_row_fn=find_clan_row_fn
+    )
     sheet_row = plan.sheet_row
     row = plan.row
     header_map = plan.headers.header_map
