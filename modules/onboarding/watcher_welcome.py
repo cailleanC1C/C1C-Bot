@@ -253,11 +253,43 @@ def parse_welcome_thread_name(name: str | None) -> Optional[ThreadNameParts]:
     )
 
 
+def normalize_promo_username(value: str | None, ticket_code: str | None = None) -> str:
+    """Return the promo player display name without ticket/closed prefixes.
+
+    Promo usernames may be recovered from an existing thread name, metadata row,
+    or session row.  Normalize all of those inputs like the welcome parser does:
+    the ticket number identifies the ticket, and the remaining display text is
+    the player name.
+    """
+
+    text = (value or "").strip(" -_–—:")
+    if not text:
+        return ""
+    text = re.sub(r"^(?:closed|res)[:\-\s]+", "", text, flags=re.IGNORECASE).strip()
+
+    normalized_ticket = _normalize_promo_ticket(ticket_code or "") if ticket_code else ""
+    parsed = None
+    if normalized_ticket:
+        parsed = parse_promo_thread_name(text)
+        if parsed is not None and parsed.ticket_code == normalized_ticket:
+            return parsed.display_text.strip(" -_")
+        prefix_pattern = re.escape(normalized_ticket)
+        text = re.sub(rf"^{prefix_pattern}(?:[\s_\-–—:]+)", "", text, flags=re.IGNORECASE).strip(" -_–—:")
+    else:
+        parsed = parse_promo_thread_name(text)
+        if parsed is not None:
+            return parsed.display_text.strip(" -_")
+
+    return text.strip(" -_")
+
+
 def parse_promo_thread_name(name: str | None) -> Optional["PromoThreadNameParts"]:
     if not name:
         return None
 
-    match = _PROMO_THREAD_NAME_RE.match(name.strip())
+    raw = name.strip()
+    raw = re.sub(r"^(?:closed|res)[:\-\s]+", "", raw, flags=re.IGNORECASE).strip()
+    match = _PROMO_THREAD_NAME_RE.match(raw)
     if not match:
         return None
 
@@ -270,7 +302,7 @@ def parse_promo_thread_name(name: str | None) -> Optional["PromoThreadNameParts"
     promo_type = _PROMO_TYPE_MAP.get(ticket_code[:1], "")
     if not promo_type:
         return None
-    display_text = (match.group("display") or "").strip(" -_")
+    display_text = normalize_promo_username(match.group("display") or "", ticket_code)
 
     return PromoThreadNameParts(
         ticket_code=ticket_code,
@@ -2096,8 +2128,15 @@ async def cleanup_reservation_for_ticket_close(
             ok = False
             reason = f"recompute_clan_availability_failed:{tag}"
             event_log.exception(
-                "reservation_cleanup — scope=%s • ticket=%s • user=%s • user_id=%s • clan_tag=%s • affected_clan=%s • result=partial • reason=recompute_clan_availability_failed",
-                normalized_scope, ticket, user_label or "-", user_id or "-", normalized_final or "-", tag,
+                "reservation_cleanup — scope=%s • ticket=%s • user=%s • user_id=%s • clan_tag=%s • affected_clan=%s • result=partial • reason=recompute_clan_availability_failed • missing_tag=%s • lookup_path=%s",
+                normalized_scope,
+                ticket,
+                user_label or "-",
+                user_id or "-",
+                normalized_final or "-",
+                tag,
+                tag,
+                source_clan_lookup_mode or "recompute_clan_availability",
             )
 
     decision_line = _decision_visibility_line(
@@ -2232,13 +2271,15 @@ def _capture_clan_snapshots(
     column_map: Dict[str, int],
     *,
     force: bool = False,
+    find_clan_row_fn: Callable[..., object] | None = None,
 ) -> Dict[str, _ClanMathRowSnapshot]:
     snapshots: Dict[str, _ClanMathRowSnapshot] = {}
     for key, tag in targets.items():
         if not key:
             continue
+        lookup = find_clan_row_fn or recruitment_sheets.find_clan_row
         try:
-            entry = recruitment_sheets.find_clan_row(tag, force=force)
+            entry = _call_find_clan_row(lookup, tag, force=force)
         except Exception:
             log.exception(
                 "failed to capture clan row for logging",

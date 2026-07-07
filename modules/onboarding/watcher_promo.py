@@ -34,6 +34,7 @@ from modules.onboarding.watcher_welcome import (
     build_closed_thread_name,
     cleanup_reservation_for_ticket_close,
     PanelOutcome,
+    normalize_promo_username,
     parse_promo_thread_name,
     post_open_questions_panel,
     resolve_subject_user_id,
@@ -252,7 +253,9 @@ def _find_promo_clan_row(clan_tag: str, *, force: bool = False) -> tuple[int, Li
 
     try:
         headers = availability._resolve_availability_headers()  # type: ignore[attr-defined]
-        return availability._find_availability_clan_row(clan_tag, headers)  # type: ignore[attr-defined]
+        entry = availability._find_availability_clan_row(clan_tag, headers)  # type: ignore[attr-defined]
+        if entry is not None:
+            return entry
     except Exception:
         log.debug(
             "promo clan lookup falling back to recruitment.find_clan_row",
@@ -266,6 +269,31 @@ def _find_promo_clan_row(clan_tag: str, *, force: bool = False) -> tuple[int, Li
 
 
 _find_promo_clan_row.lookup_mode = "availability_configured_clan_tag_header_with_recruitment_fallback"  # type: ignore[attr-defined]
+
+
+def _find_promo_availability_clan_row(
+    clan_tag: str, headers: availability.AvailabilityHeaderResolution
+) -> tuple[int, List[str]] | None:
+    entry = availability._find_availability_clan_row(clan_tag, headers)  # type: ignore[attr-defined]
+    if entry is not None:
+        return entry
+    try:
+        return recruitment_sheets.find_clan_row(clan_tag, force=True)
+    except TypeError:
+        return recruitment_sheets.find_clan_row(clan_tag)
+
+
+_find_promo_availability_clan_row.lookup_mode = "availability_configured_clan_tag_header_with_recruitment_fallback"  # type: ignore[attr-defined]
+
+
+async def _recompute_promo_clan_availability(
+    clan_tag: str, *, guild: Any | None = None
+) -> None:
+    await availability.recompute_clan_availability(
+        clan_tag,
+        guild=guild,
+        find_clan_row_fn=_find_promo_availability_clan_row,
+    )
 
 
 async def _send_runtime(message: str) -> None:
@@ -571,17 +599,21 @@ class PromoTicketWatcher(commands.Cog):
         if found and found_source == "sheet_thread_id":
             _, values = found
             ticket = (values.get("ticket number") or values.get("ticket_number") or values.get("ticket") or "").strip()
-            username = (values.get("username") or values.get("thread_name") or getattr(thread, "name", "") or "unknown").strip(" -_")
+            username = normalize_promo_username(
+                values.get("username") or values.get("thread_name") or getattr(thread, "name", ""),
+                ticket,
+            ) or "unknown"
             ptype = (values.get("type") or "move").strip()
             context = PromoTicketContext(
                 thread_id=thread.id,
                 ticket_number=ticket,
-                username=username or "unknown",
+                username=username,
                 promo_type=ptype,
                 thread_created=values.get("thread created", "") or created_str,
                 year=values.get("year", "") or str(now.year),
                 month=values.get("month", "") or now.strftime("%B"),
             )
+            context.username = normalize_promo_username(values.get("username") or context.username, context.ticket_number) or context.username
             context.clan_tag = values.get("clantag", "") or context.clan_tag
             context.source_clan_tag = _source_clan_from_promo_values(values, ticket=ticket) or context.source_clan_tag
             context.clan_name = values.get("clan name", "") or context.clan_name
@@ -624,7 +656,7 @@ class PromoTicketWatcher(commands.Cog):
         context = PromoTicketContext(
             thread_id=thread.id,
             ticket_number=parts.ticket_code,
-            username=parts.username,
+            username=normalize_promo_username(parts.username, parts.ticket_code) or "unknown",
             promo_type=parts.promo_type,
             thread_created=created_str,
             year=str(now.year),
@@ -633,6 +665,7 @@ class PromoTicketWatcher(commands.Cog):
 
         if found:
             _, values = found
+            context.username = normalize_promo_username(values.get("username") or context.username, context.ticket_number) or context.username
             context.clan_tag = values.get("clantag", "") or context.clan_tag
             context.source_clan_tag = _source_clan_from_promo_values(values, ticket=parts.ticket_code) or context.source_clan_tag
             context.clan_name = values.get("clan name", "") or context.clan_name
@@ -784,6 +817,7 @@ class PromoTicketWatcher(commands.Cog):
 
         if found:
             _, values = found
+            context.username = normalize_promo_username(values.get("username") or context.username, context.ticket_number) or context.username
             context.clan_tag = values.get("clantag", "") or context.clan_tag
             context.source_clan_tag = _source_clan_from_promo_values(values, ticket=context.ticket_number) or context.source_clan_tag
             context.clan_name = values.get("clan name", "") or context.clan_name
@@ -1120,6 +1154,7 @@ class PromoTicketWatcher(commands.Cog):
         previous_final: str | None = "",
         trigger: str = "ticket_tool",
     ) -> None:
+        context.username = normalize_promo_username(context.username, context.ticket_number) or context.username
         timestamp = _format_date(dt.datetime.now(UTC))
         found_state = None
         try:
@@ -1275,7 +1310,7 @@ class PromoTicketWatcher(commands.Cog):
             try:
                 row_targets = _normalize_clan_math_targets(math_tags)
                 column_map = _clan_math_column_indices()
-                before_snapshots = _capture_clan_snapshots(row_targets, column_map, force=True)
+                before_snapshots = _capture_clan_snapshots(row_targets, column_map, force=True, find_clan_row_fn=_find_promo_clan_row)
                 if row_targets:
                     first_key = next(iter(row_targets))
                     snapshot = before_snapshots.get(first_key)
@@ -1306,7 +1341,7 @@ class PromoTicketWatcher(commands.Cog):
             find_clan_row_fn=_find_promo_clan_row,
             update_reservation_status_fn=reservations_sheets.update_reservation_status,
             adjust_manual_open_spots_fn=availability.adjust_manual_open_spots,
-            recompute_clan_availability_fn=availability.recompute_clan_availability,
+            recompute_clan_availability_fn=_recompute_promo_clan_availability,
         )
         if cleanup.skipped:
             log.info(
@@ -1344,7 +1379,7 @@ class PromoTicketWatcher(commands.Cog):
         row_change_lines = [cleanup.decision_line]
         if row_targets is not None and column_map is not None:
             try:
-                after_snapshots = _capture_clan_snapshots(row_targets, column_map, force=True)
+                after_snapshots = _capture_clan_snapshots(row_targets, column_map, force=True, find_clan_row_fn=_find_promo_clan_row)
                 row_change_lines.extend(
                     _build_clan_math_row_lines(row_targets, before_snapshots, after_snapshots)
                 )
