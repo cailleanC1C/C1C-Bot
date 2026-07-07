@@ -5,9 +5,13 @@ import logging
 import math
 import asyncio
 import time
+import io
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
+import aiohttp
 import discord
 from discord.ext import commands
 
@@ -25,6 +29,18 @@ if TYPE_CHECKING:
     from modules.common.runtime import Runtime
 
 log = logging.getLogger("c1c.community.reset_reminders.scheduler")
+
+_CUSTOM_EMOJI_RE = re.compile(r"^<a?:([A-Za-z0-9_]{2,32}):(\d+)>$")
+_DIRECT_IMAGE_SCHEMES = {"http", "https"}
+_RESET_IMAGE_DOWNLOAD_TIMEOUT_SEC = 10
+_RESET_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+_SUPPORTED_IMAGE_CONTENT_TYPES = {
+    "image/gif": "gif",
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+}
 
 _RESET_REMINDER_TAB_KEY = "RESET_REMINDER_TAB"
 _FEATURE_TOGGLE_KEY = "reset_reminders"
@@ -54,6 +70,7 @@ _REQUIRED_COLUMNS: tuple[str, ...] = (
     "last_sent_for_reset_utc",
     "next_scheduled_post_utc",
     "last_message_id",
+    "emojinameorid",
 )
 
 
@@ -192,7 +209,7 @@ async def _load_reset_reminder_records(*, active_only: bool) -> tuple[str, dict[
                 last_sent_for_reset_utc=_parse_dt_optional(_cell(row, header_map["last_sent_for_reset_utc"])),
                 next_scheduled_post_utc=_parse_dt_optional(_cell(row, header_map["next_scheduled_post_utc"])),
                 last_message_id=_parse_optional_int(_cell(row, header_map["last_message_id"])),
-                emoji_name_or_id=_cell(row, header_map["emojinameorid"]) if "emojinameorid" in header_map else None,
+                emoji_name_or_id=_cell(row, header_map["emojinameorid"]),
             )
             records.append(_ResetReminderRecord(row_number=row_number, reminder=reminder))
         except Exception as exc:
@@ -245,6 +262,13 @@ def _next_reset_description(base_description: str, reset_time_utc: dt.datetime |
     return f"{base}\n\n{countdown}" if base else countdown
 
 
+def _custom_emoji_id(value: str) -> int | None:
+    match = _CUSTOM_EMOJI_RE.match(value.strip())
+    if not match:
+        return None
+    return int(match.group(2))
+
+
 def _resolve_custom_emoji(target: discord.abc.Messageable | None, value: str | None) -> discord.Emoji | None:
     text = str(value or "").strip()
     if not text:
@@ -255,8 +279,8 @@ def _resolve_custom_emoji(target: discord.abc.Messageable | None, value: str | N
         return None
 
     emojis = getattr(guild, "emojis", []) or []
-    if text.isdigit():
-        wanted_id = int(text)
+    wanted_id = int(text) if text.isdigit() else _custom_emoji_id(text)
+    if wanted_id is not None:
         for emoji in emojis:
             if getattr(emoji, "id", None) == wanted_id:
                 return emoji
@@ -268,27 +292,96 @@ def _resolve_custom_emoji(target: discord.abc.Messageable | None, value: str | N
     return None
 
 
-def _message_content_for_reminder(target: discord.abc.Messageable | None, reminder: ResetReminder) -> str:
-    role_mention = f"<@&{reminder.role_id}>"
+def _message_content_for_reminder(reminder: ResetReminder) -> str:
+    return f"<@&{reminder.role_id}>"
+
+
+def _is_direct_image_url(value: str) -> bool:
+    parsed = urlparse(value.strip())
+    return parsed.scheme.lower() in _DIRECT_IMAGE_SCHEMES and bool(parsed.netloc)
+
+
+def _reset_image_filename(reminder: ResetReminder, extension: str) -> str:
+    safe_reset_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", reminder.reset_id or "reset_reminder").strip("._")
+    return f"{safe_reset_id or 'reset_reminder'}_icon.{extension}"
+
+
+async def _download_image_url_to_file(url: str, *, reminder: ResetReminder) -> discord.File | None:
+    timeout = aiohttp.ClientTimeout(total=_RESET_IMAGE_DOWNLOAD_TIMEOUT_SEC)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url) as response:
+                if response.status < 200 or response.status >= 300:
+                    log.warning(
+                        "reset reminder image URL download failed",
+                        extra={"reset_id": reminder.reset_id, "image_value": url, "status": response.status},
+                    )
+                    return None
+
+                content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+                extension = _SUPPORTED_IMAGE_CONTENT_TYPES.get(content_type)
+                if extension is None:
+                    log.warning(
+                        "reset reminder image URL rejected; non-image or unsupported content type",
+                        extra={"reset_id": reminder.reset_id, "image_value": url, "content_type": content_type},
+                    )
+                    return None
+
+                raw = await response.content.read(_RESET_IMAGE_MAX_BYTES + 1)
+                if len(raw) > _RESET_IMAGE_MAX_BYTES:
+                    log.warning(
+                        "reset reminder image URL rejected; image too large",
+                        extra={"reset_id": reminder.reset_id, "image_value": url},
+                    )
+                    return None
+                return discord.File(io.BytesIO(raw), filename=_reset_image_filename(reminder, extension))
+    except Exception:
+        log.warning(
+            "reset reminder image URL download failed",
+            extra={"reset_id": reminder.reset_id, "image_value": url},
+            exc_info=True,
+        )
+        return None
+
+
+async def _reset_image_to_file(
+    target: discord.abc.Messageable | None,
+    reminder: ResetReminder,
+) -> discord.File | None:
     configured = str(reminder.emoji_name_or_id or "").strip()
     if not configured:
-        return role_mention
+        return None
+
+    if _is_direct_image_url(configured):
+        return await _download_image_url_to_file(configured, reminder=reminder)
 
     if getattr(target, "guild", None) is None:
         log.warning(
-            "reset reminder emoji could not be resolved; target guild unavailable",
-            extra={"reset_id": reminder.reset_id, "emoji_name_or_id": configured},
+            "reset reminder image emoji could not be resolved; target guild unavailable",
+            extra={"reset_id": reminder.reset_id, "image_value": configured},
         )
-        return role_mention
+        return None
 
     emoji = _resolve_custom_emoji(target, configured)
     if emoji is None:
         log.warning(
-            "reset reminder emoji could not be resolved",
-            extra={"reset_id": reminder.reset_id, "emoji_name_or_id": configured},
+            "reset reminder image emoji could not be resolved",
+            extra={"reset_id": reminder.reset_id, "image_value": configured},
         )
-        return role_mention
-    return f"{emoji} {role_mention}"
+        return None
+
+    try:
+        raw = await emoji.read()
+    except Exception:
+        log.warning(
+            "reset reminder image emoji download failed",
+            extra={"reset_id": reminder.reset_id, "image_value": configured},
+            exc_info=True,
+        )
+        return None
+
+    extension = "gif" if bool(getattr(emoji, "animated", False)) else "png"
+    return discord.File(io.BytesIO(raw), filename=_reset_image_filename(reminder, extension))
 
 
 def _utc_now(now: dt.datetime | None = None) -> dt.datetime:
@@ -722,10 +815,18 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
             )
 
             try:
+                icon_file = await _reset_image_to_file(target, reminder)
+                files = [icon_file] if icon_file else []
                 message = await target.send(
-                    content=_message_content_for_reminder(target, reminder),
+                    content=_message_content_for_reminder(reminder),
+                    files=files,
                     embed=embed,
                     view=view,
+                    allowed_mentions=discord.AllowedMentions(
+                        everyone=False,
+                        roles=True,
+                        users=False,
+                    ),
                 )
             except Exception as exc:
                 log.exception(
