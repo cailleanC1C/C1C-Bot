@@ -1,6 +1,10 @@
 import asyncio
 import datetime as dt
+import io
 from types import SimpleNamespace
+
+import discord
+import pytest
 
 from modules.community.reset_reminders import scheduler
 
@@ -42,8 +46,14 @@ class _DummyChannel:
         assert message_id == 111
         return self.last_message
 
-    async def send(self, *, content=None, embed=None, view=None):
-        self.sent.append({"content": content, "embed": embed, "view": view})
+    async def send(self, *, content=None, files=None, embed=None, view=None, allowed_mentions=None):
+        self.sent.append({
+            "content": content,
+            "files": files or [],
+            "embed": embed,
+            "view": view,
+            "allowed_mentions": allowed_mentions,
+        })
         return _DummyMessage(222)
 
 
@@ -139,6 +149,9 @@ def test_process_reset_reminder_sends_once_and_updates_sheet(monkeypatch) -> Non
     assert channel.last_message.deleted is True
     assert len(channel.sent) == 1
     assert channel.sent[0]["content"] == "<@&999>"
+    assert channel.sent[0]["allowed_mentions"].everyone is False
+    assert channel.sent[0]["allowed_mentions"].roles is True
+    assert channel.sent[0]["allowed_mentions"].users is False
     assert len(updates) == 2
     assert updates[0]["row_number"] == 7
     assert updates[-1]["row_number"] == 7
@@ -248,13 +261,13 @@ def test_process_reset_reminder_delete_failure_does_not_block_send(monkeypatch) 
 def test_invalid_rows_skipped_without_crash(monkeypatch) -> None:
     async def _fetch_values(_sheet_id, _tab):
         return [
-            ["reset_id", "label", "status", "reference_date_utc", "cycle_days", "lead_minutes", "role_id", "channel_id", "thread_id", "embed_title", "embed_description", "embed_footer", "button_label_opt_in", "button_label_opt_out", "last_sent_for_reset_utc", "next_scheduled_post_utc", "last_message_id"],
-            ["doom", "Doom", "active", "not-a-date", "30", "60", "1", "2", "", "", "", "", "Opt in", "Opt out", "", "", ""],
-            ["grim", "Grim", "active", "2026-01-01T00:00:00Z", "30", "60", "1", "2", "", "", "", "", "Opt in", "Opt out", "", "", ""],
+            ["reset_id", "label", "status", "reference_date_utc", "cycle_days", "lead_minutes", "role_id", "channel_id", "thread_id", "embed_title", "embed_description", "embed_footer", "button_label_opt_in", "button_label_opt_out", "last_sent_for_reset_utc", "next_scheduled_post_utc", "last_message_id", "EmojiNameOrId"],
+            ["doom", "Doom", "active", "not-a-date", "30", "60", "1", "2", "", "", "", "", "Opt in", "Opt out", "", "", "", ""],
+            ["grim", "Grim", "active", "2026-01-01T00:00:00Z", "30", "60", "1", "2", "", "", "", "", "Opt in", "Opt out", "", "", "", ""],
         ]
 
     monkeypatch.setattr(scheduler, "afetch_values", _fetch_values)
-    monkeypatch.setattr(scheduler, "_tab_name", lambda: "ResetTab")
+    monkeypatch.setattr(scheduler, "_tab_name", lambda: asyncio.sleep(0, result="ResetTab"))
     monkeypatch.setattr(scheduler, "_sheet_id", lambda: "sheet")
     tab, header, records = asyncio.run(scheduler._load_reset_reminder_records(active_only=True))
     assert tab == "ResetTab"
@@ -541,6 +554,9 @@ class _FakeEmoji:
         self.name = name
         self.animated = animated
 
+    async def read(self) -> bytes:
+        return b"fake-image-bytes"
+
     def __str__(self) -> str:
         prefix = "a" if self.animated else ""
         return f"<{prefix}:{self.name}:{self.id}>"
@@ -552,7 +568,7 @@ class _GuildChannel(_DummyChannel):
         self.guild = SimpleNamespace(emojis=emojis)
 
 
-def test_missing_emoji_name_or_id_column_does_not_break_parsing(monkeypatch) -> None:
+def test_missing_emoji_name_or_id_column_is_schema_error(monkeypatch) -> None:
     async def _fetch_values(_sheet_id, _tab):
         return [
             [
@@ -596,11 +612,10 @@ def test_missing_emoji_name_or_id_column_does_not_break_parsing(monkeypatch) -> 
         ]
 
     monkeypatch.setattr(scheduler, "afetch_values", _fetch_values)
-    monkeypatch.setattr(scheduler, "_tab_name", lambda: "ResetTab")
+    monkeypatch.setattr(scheduler, "_tab_name", lambda: asyncio.sleep(0, result="ResetTab"))
     monkeypatch.setattr(scheduler, "_sheet_id", lambda: "sheet")
-    _tab, _header, records = asyncio.run(scheduler._load_reset_reminder_records(active_only=True))
-    assert len(records) == 1
-    assert records[0].reminder.emoji_name_or_id is None
+    with pytest.raises(RuntimeError, match="emojinameorid"):
+        asyncio.run(scheduler._load_reset_reminder_records(active_only=True))
 
 
 def test_exact_emoji_name_or_id_sheet_header_is_parsed(monkeypatch) -> None:
@@ -649,7 +664,7 @@ def test_exact_emoji_name_or_id_sheet_header_is_parsed(monkeypatch) -> None:
         ]
 
     monkeypatch.setattr(scheduler, "afetch_values", _fetch_values)
-    monkeypatch.setattr(scheduler, "_tab_name", lambda: "ResetTab")
+    monkeypatch.setattr(scheduler, "_tab_name", lambda: asyncio.sleep(0, result="ResetTab"))
     monkeypatch.setattr(scheduler, "_sheet_id", lambda: "sheet")
 
     _tab, header, records = asyncio.run(scheduler._load_reset_reminder_records(active_only=True))
@@ -663,9 +678,10 @@ def test_empty_emoji_name_or_id_keeps_message_content_unchanged(monkeypatch) -> 
     reminder = _make_reset_reminder(reference_date_utc=reference, emoji_name_or_id=" ")
     channel, _updates = _run_reset_process(monkeypatch, reminder, reference)
     assert channel.sent[0]["content"] == "<@&999>"
+    assert channel.sent[0]["files"] == []
 
 
-def test_numeric_emoji_id_resolves_into_message_content(monkeypatch) -> None:
+def test_numeric_emoji_id_resolves_into_standalone_file(monkeypatch) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
     reminder = _make_reset_reminder(reference_date_utc=reference, emoji_name_or_id=" 1413557246297637025 ")
     channel = _GuildChannel([_FakeEmoji(1413557246297637025, "doom_tower_icon")])
@@ -683,10 +699,12 @@ def test_numeric_emoji_id_resolves_into_message_content(monkeypatch) -> None:
     monkeypatch.setattr(scheduler, "_update_next_scheduled_post", lambda **kwargs: asyncio.sleep(0))
     monkeypatch.setattr(scheduler, "_update_row_after_send", lambda **kwargs: asyncio.sleep(0))
     asyncio.run(scheduler.process_reset_reminders(_DummyBot(channel), now=reference))
-    assert channel.sent[0]["content"] == "<:doom_tower_icon:1413557246297637025> <@&999>"
+    assert channel.sent[0]["content"] == "<@&999>"
+    assert len(channel.sent[0]["files"]) == 1
+    assert channel.sent[0]["files"][0].filename == "cursed_city_icon.png"
 
 
-def test_emoji_name_resolves_and_is_not_embed_thumbnail(monkeypatch) -> None:
+def test_emoji_name_resolves_to_file_and_is_not_embed_thumbnail(monkeypatch) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
     reminder = _make_reset_reminder(reference_date_utc=reference, emoji_name_or_id="doom_tower_icon")
     channel = _GuildChannel([_FakeEmoji(12345, "doom_tower_icon")])
@@ -705,8 +723,68 @@ def test_emoji_name_resolves_and_is_not_embed_thumbnail(monkeypatch) -> None:
     monkeypatch.setattr(scheduler, "_update_row_after_send", lambda **kwargs: asyncio.sleep(0))
     asyncio.run(scheduler.process_reset_reminders(_DummyBot(channel), now=reference))
     sent = channel.sent[0]
-    assert sent["content"] == "<:doom_tower_icon:12345> <@&999>"
+    assert sent["content"] == "<@&999>"
+    assert len(sent["files"]) == 1
+    assert sent["files"][0].filename == "cursed_city_icon.png"
     assert sent["embed"].thumbnail.url is None
+
+
+def test_direct_image_url_resolves_into_standalone_file(monkeypatch) -> None:
+    reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(
+        reference_date_utc=reference,
+        emoji_name_or_id="https://cdn.example.invalid/reset.png",
+    )
+
+    async def _download(url: str, *, reminder: scheduler.ResetReminder):
+        assert url == "https://cdn.example.invalid/reset.png"
+        return discord.File(io.BytesIO(b"png"), filename="direct_reset_icon.png")
+
+    monkeypatch.setattr(scheduler, "_download_image_url_to_file", _download)
+    channel, _updates = _run_reset_process(monkeypatch, reminder, reference)
+
+    sent = channel.sent[0]
+    assert sent["content"] == "<@&999>"
+    assert len(sent["files"]) == 1
+    assert sent["files"][0].filename == "direct_reset_icon.png"
+    assert sent["embed"].thumbnail.url is None
+
+
+def test_direct_image_url_rejects_non_image_content_type_and_sends_without_file(monkeypatch, caplog) -> None:
+    class _Content:
+        async def read(self, _limit: int) -> bytes:
+            return b"not an image"
+
+    class _Response:
+        status = 200
+        headers = {"Content-Type": "text/html; charset=utf-8"}
+        content = _Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class _Session:
+        def get(self, url: str):
+            assert url == "https://cdn.example.invalid/not-image"
+            return _Response()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(scheduler.aiohttp, "ClientSession", lambda timeout: _Session())
+    reminder = _make_reset_reminder(emoji_name_or_id="https://cdn.example.invalid/not-image")
+
+    channel, _updates = _run_reset_process(monkeypatch, reminder, reminder.reference_date_utc)
+
+    assert channel.sent[0]["content"] == "<@&999>"
+    assert channel.sent[0]["files"] == []
+    assert "non-image or unsupported content type" in caplog.text
 
 
 def test_missing_emoji_logs_warning_and_posts_without_icon(monkeypatch, caplog) -> None:
@@ -714,7 +792,8 @@ def test_missing_emoji_logs_warning_and_posts_without_icon(monkeypatch, caplog) 
     reminder = _make_reset_reminder(reference_date_utc=reference, emoji_name_or_id="missing_icon")
     channel, _updates = _run_reset_process(monkeypatch, reminder, reference)
     assert channel.sent[0]["content"] == "<@&999>"
-    assert "reset reminder emoji could not be resolved" in caplog.text
+    assert channel.sent[0]["files"] == []
+    assert "reset reminder image emoji could not be resolved" in caplog.text
 
 
 def test_embed_includes_next_reset_timestamps_inside_description(monkeypatch) -> None:
@@ -766,7 +845,8 @@ def test_emoji_resolution_ignores_unrelated_bot_guilds(monkeypatch, caplog) -> N
     asyncio.run(scheduler.process_reset_reminders(bot, now=reference))
 
     assert channel.sent[0]["content"] == "<@&999>"
-    assert "reset reminder emoji could not be resolved" in caplog.text
+    assert channel.sent[0]["files"] == []
+    assert "reset reminder image emoji could not be resolved" in caplog.text
 
 
 def test_configured_emoji_with_missing_target_guild_logs_warning(monkeypatch, caplog) -> None:
