@@ -1526,12 +1526,13 @@ class CleanupCog(commands.Cog):
 
     @tier("admin")
     @help_metadata(
-        function_group="operational", section="housekeeping", access_tier="admin"
+        function_group="operational", section="housekeeping", access_tier="admin", usage="!cleanup run"
     )
     @commands.group(
         name="cleanup",
         invoke_without_command=True,
-        help="Housekeeping cleanup admin commands.",
+        help="Admin housekeeping cleanup group. Current supported action is `run`, which starts the cleanup job immediately, scans configured housekeeping targets, runs with writeback enabled and writes cleanup state as the job requires, sends log-channel notices, and replies with start/completion status.",
+        brief="Run the housekeeping cleanup job.",
     )
     @commands.guild_only()
     @admin_only()
@@ -1540,9 +1541,9 @@ class CleanupCog(commands.Cog):
 
     @tier("admin")
     @help_metadata(
-        function_group="operational", section="housekeeping", access_tier="admin"
+        function_group="operational", section="housekeeping", access_tier="admin", usage="!cleanup run"
     )
-    @cleanup.command(name="run", help="Run housekeeping cleanup immediately.")
+    @cleanup.command(name="run", help="Admin action that starts housekeeping cleanup immediately with writeback enabled; replies when started and when complete/failing, and posts operational log notices.", brief="Start housekeeping cleanup immediately.")
     @commands.guild_only()
     @admin_only()
     async def cleanup_run(self, ctx: commands.Context) -> None:

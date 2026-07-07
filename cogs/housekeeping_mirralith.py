@@ -20,12 +20,12 @@ class MirralithOverviewCog(commands.Cog):
         self._last_manual_run: float | None = None
 
     @tier("admin")
-    @help_metadata(function_group="operational", section="utilities", access_tier="admin")
+    @help_metadata(function_group="operational", section="utilities", access_tier="admin", usage="!mirralith refresh")
     @commands.group(
         name="mirralith",
         invoke_without_command=True,
-        help="Post or refresh the Mirralith overview.",
-        brief="Post or refresh the Mirralith overview.",
+        help="Admin Mirralith overview group. Current action is refresh, which regenerates sheet-backed Mirralith overview images/posts in the configured Mirralith channel and replies with visible start/result messages; subject to a manual cooldown.",
+        brief="Refresh the Mirralith overview channel post.",
     )
     @admin_only()
     async def mirralith_group(self, ctx: commands.Context) -> None:
@@ -33,8 +33,8 @@ class MirralithOverviewCog(commands.Cog):
             await ctx.send('Use "!mirralith refresh" to regenerate the Mirralith overview.')
 
     @tier("admin")
-    @help_metadata(function_group="operational", section="utilities", access_tier="admin")
-    @mirralith_group.command(name="refresh")
+    @help_metadata(function_group="operational", section="utilities", access_tier="admin", usage="!mirralith refresh")
+    @mirralith_group.command(name="refresh", help="Regenerate and post the Mirralith overview to the configured Mirralith channel from sheet-backed overview data; replies with start/result messages and enforces a 5-minute manual cooldown.", brief="Regenerate and post Mirralith overview.")
     @admin_only()
     async def mirralith_refresh(self, ctx: commands.Context) -> None:
         now = asyncio.get_event_loop().time()

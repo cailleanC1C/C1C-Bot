@@ -243,12 +243,14 @@ class AppAdmin(commands.Cog):
         function_group="operational",
         section="utilities",
         access_tier="admin",
+        usage="!servermap refresh",
     )
     @commands.group(
         name="servermap",
         invoke_without_command=True,
         hidden=True,
-        help="Admin tools for the automated #server-map post.",
+        help="Hidden admin group for the automated #server-map post. The refresh subcommand rebuilds the configured server-map channel from the live guild category/channel structure, deletes/replaces prior bot map messages as needed, replies with counts, and logs failures.",
+        brief="Refresh the automated server-map channel post.",
     )
     @admin_only()
     async def servermap(self, ctx: commands.Context) -> None:
@@ -299,11 +301,12 @@ class AppAdmin(commands.Cog):
         function_group="operational",
         section="utilities",
         access_tier="admin",
+        usage="!next [component]",
     )
     @commands.command(
         name="next",
         hidden=True,
-        help="Show upcoming scheduled jobs. Optionally filter by component.",
+        help="Hidden admin scheduler viewer. Replies with upcoming scheduled jobs from the active runtime; optional component filters by scheduler component/tag text such as cleanup, leagues, mirralith, fusion, or other registered runtime job names.",
     )
     @admin_only()
     async def next_jobs(self, ctx: commands.Context, component: str | None = None) -> None:
@@ -324,11 +327,13 @@ class AppAdmin(commands.Cog):
         function_group="operational",
         section="utilities",
         access_tier="admin",
+        usage="!whoweare",
     )
     @commands.command(
         name="whoweare",
         hidden=True,
-        help="Generate the live Who We Are overview from the WhoWeAre sheet.",
+        help="Hidden admin command that reads the configured role-map/Who We Are sheet tab, renders the current guild role overview, removes previous bot-authored overview messages in the configured channel, posts the refreshed overview there, replies in-channel, and logs status.",
+        brief="Refresh the Who We Are role overview post.",
     )
     @admin_only()
     async def whoweare(self, ctx: commands.Context) -> None:

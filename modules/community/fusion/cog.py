@@ -407,12 +407,13 @@ class FusionCog(commands.Cog):
         function_group="milestones",
         section="community",
         access_tier="user",
-        usage="!fusion debug",
+        usage="!fusion [debug|refresh-announcement|publish]",
     )
     @commands.group(
         name="fusion",
         invoke_without_command=True,
-        help="Fusion reminder data commands.",
+        help=("Shows the current Fusion tracker announcement in-channel for users. Admin subcommands: debug reads active Fusion rows/events from Sheets cache; refresh-announcement edits the stored announcement in place; publish posts the configured announcement channel."),
+        brief="Shows Fusion tracker status and admin announcement tools.",
     )
     async def fusion(self, ctx: commands.Context) -> None:
         await self._tracker_entrypoint(
@@ -429,7 +430,8 @@ class FusionCog(commands.Cog):
     @commands.group(
         name="titan",
         invoke_without_command=True,
-        help="Titan reminder data commands.",
+        help=("Shows the current Titan tracker announcement in-channel for users. Admin subcommand: publish posts the configured Titan announcement to its announcement channel."),
+        brief="Shows Titan tracker status and admin publish tools.",
     )
     async def titan(self, ctx: commands.Context) -> None:
         await self._tracker_entrypoint(ctx, tracker_kind="titan", tracker_label="titan")
@@ -442,7 +444,7 @@ class FusionCog(commands.Cog):
         usage="!fusion debug",
     )
     @fusion.command(
-        name="debug", help="Debug active fusion + first events from sheets cache."
+        name="debug", help="Admin-only debug output for active Fusion rows and the first events read from the Sheets cache; replies in-channel and does not mutate state."
     )
     @commands.guild_only()
     @admin_only()
@@ -515,7 +517,7 @@ class FusionCog(commands.Cog):
     )
     @fusion.command(
         name="refresh-announcement",
-        help="Refresh the stored fusion announcement in place.",
+        help="Admin-only refresh that edits the existing configured Fusion announcement message in place from cached Sheets data.",
     )
     @commands.guild_only()
     @admin_only()
@@ -534,7 +536,7 @@ class FusionCog(commands.Cog):
         usage="!fusion publish",
     )
     @fusion.command(
-        name="publish", help="Publish fusion announcement to the configured channel."
+        name="publish", help="Admin-only publish that posts the Fusion announcement from Sheets/cache to the configured announcement channel."
     )
     @commands.guild_only()
     @admin_only()
@@ -554,7 +556,7 @@ class FusionCog(commands.Cog):
         usage="!titan publish",
     )
     @titan.command(
-        name="publish", help="Publish titan announcement to the configured channel."
+        name="publish", help="Admin-only publish that posts the Titan announcement from Sheets/cache to the configured announcement channel."
     )
     @commands.guild_only()
     @admin_only()

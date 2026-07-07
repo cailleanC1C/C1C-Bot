@@ -1114,11 +1114,11 @@ class PermissionsUICog(commands.Cog):
         self.bot = bot
 
     @tier("admin")
-    @help_metadata(function_group="operational", section="permissions", access_tier="admin")
+    @help_metadata(function_group="operational", section="permissions", access_tier="admin", usage="!perm")
     @commands.command(
         name="perm",
-        help="Launches the interactive permissions UI.",
-        brief="Open the permissions UI.",
+        help="Admin/manage-channels command that opens the interactive permissions UI in-channel. The UI manages channel/category permission overwrites while respecting configured blacklist IDs; it mutates Discord permissions only through the interactive controls.",
+        brief="Open the interactive permissions management UI.",
     )
     @admin_only()
     async def perm(self, ctx: commands.Context) -> None:

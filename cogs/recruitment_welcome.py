@@ -57,11 +57,11 @@ class WelcomeBridge(commands.Cog):
         await self._service.post_welcome(ctx, clan, tail=note)
 
     @tier("admin")
-    @help_metadata(function_group="operational", section="welcome_templates", access_tier="admin")
+    @help_metadata(function_group="operational", section="welcome_templates", access_tier="admin", usage="!welcome-refresh")
     @commands.command(
         name="welcome-refresh",
-        help="Reloads the WelcomeTemplates cache bucket so fresh messages are ready for staff.",
-        brief="Reloads the WelcomeTemplates cache bucket.",
+        help="Admin cache refresh for WelcomeTemplates. Reloads the sheet-backed welcome template cache used by !welcome and replies with visible refresh status; does not post a welcome message or change sheet schema.",
+        brief="Refresh sheet-backed WelcomeTemplates cache.",
     )
     @admin_only()
     async def welcome_refresh(self, ctx: commands.Context) -> None:

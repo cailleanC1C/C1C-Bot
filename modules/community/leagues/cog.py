@@ -471,11 +471,12 @@ class LeaguesCog(commands.Cog):
 
     # === Commands ===
     @tier("admin")
-    @help_metadata(function_group="operational", section="utilities", access_tier="admin")
+    @help_metadata(function_group="operational", section="utilities", access_tier="admin", usage="!leagues post")
     @commands.group(
         name="leagues",
         invoke_without_command=True,
-        help="C1C Leagues admin commands.",
+        help="Admin C1C Leagues command group. Current action is post, which manually runs the league posting job from the C1C_Leagues sheet/config and sends status to the invoking channel; scheduled reminders/approval prompts are handled separately.",
+        brief="Run C1C Leagues posting tools.",
     )
     @admin_only()
     async def leagues(self, ctx: commands.Context) -> None:
@@ -484,8 +485,8 @@ class LeaguesCog(commands.Cog):
         await ctx.send("Usage: !leagues post")
 
     @tier("admin")
-    @help_metadata(function_group="operational", section="utilities", access_tier="admin")
-    @leagues.command(name="post", help="Manually run the C1C Leagues posting job.")
+    @help_metadata(function_group="operational", section="utilities", access_tier="admin", usage="!leagues post")
+    @leagues.command(name="post", help="Manually run the C1C Leagues posting job from configured sheet data and report status in the invoking channel.", brief="Manually run the C1C Leagues posting job.")
     @admin_only()
     async def leagues_post(self, ctx: commands.Context) -> None:
         await self.run_leagues_job(trigger="command", status_channel=ctx.channel)

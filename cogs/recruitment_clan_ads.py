@@ -14,14 +14,14 @@ class ClanAdsCog(commands.Cog):
 
     @tier("admin")
     @help_metadata(
-        function_group="operational", section="recruitment", access_tier="admin"
+        function_group="operational", section="recruitment", access_tier="admin", usage="!clanads post <all|clantag>"
     )
-    @commands.group(name="clanads", invoke_without_command=True)
+    @commands.group(name="clanads", invoke_without_command=True, help="Admin clan-ad publishing tools. Use post all to evaluate every configured clan, or post <clantag> to publish one clan ad; posts to the configured clan-ad channel and replies with a run summary.", brief="Publish configured clan recruitment ads.")
     @admin_only()
     async def clanads(self, ctx: commands.Context):
         await ctx.send("Usage: `!clanads post all` or `!clanads post <clantag>`")
 
-    @clanads.group(name="post", invoke_without_command=True)
+    @clanads.group(name="post", invoke_without_command=True, help="Posts clan ads for all configured clans or one clan tag from Sheets-backed clan data; replies with success/failure counts and may delete the command response in the ad channel.", brief="Post all clan ads or one clan ad.")
     @admin_only()
     async def post(self, ctx: commands.Context, clantag: str | None = None):
         if not clantag:

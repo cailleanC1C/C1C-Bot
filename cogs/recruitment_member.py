@@ -15,12 +15,12 @@ class RecruitmentMember(commands.Cog):
         self.ctrl = MemberPanelControllerLegacy(bot)
 
     @tier("user")
-    @help_metadata(function_group="recruitment", section="recruitment", access_tier="user")
+    @help_metadata(function_group="recruitment", section="recruitment", access_tier="user", usage="!clansearch")
     @commands.cooldown(1, 2, commands.BucketType.user)
     @commands.command(
         name="clansearch",
-        help="Opens the member clan search panel so recruits can filter available clans.",
-        brief="Opens the member clan search panel.",
+        help="Opens the interactive member clan search/filter panel in-channel so recruits can browse available clans. It takes no arguments; use !clan <tag or name> for a specific clan profile.",
+        brief="Open the interactive clan search/filter panel.",
     )
     async def clansearch(
         self, ctx: commands.Context, *, extra: str | None = None

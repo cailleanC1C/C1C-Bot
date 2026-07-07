@@ -25,11 +25,12 @@ class RecruitmentReporting(commands.Cog):
         function_group="operational",
         section="utilities",
         access_tier="admin",
+        usage="!report recruiters [all]",
     )
     @commands.command(
         name="report",
-        help="Posts the Daily Recruiter Update to the configured channel immediately.",
-        brief="Posts the Daily Recruiter Update immediately.",
+        help="Admin manual recruitment reporting. `!report recruiters` posts the Daily Recruiter Update to its configured channel. `!report recruiters all` runs the full recruiter report bundle: daily report, role/visitor audit, and open-ticket report, then replies with each result. Other report types are not supported.",
+        brief="Post recruiter reports; optional all runs the full bundle.",
     )
     @admin_only()
     async def report_group(self, ctx: commands.Context, *args: str) -> None:
@@ -92,10 +93,10 @@ class RecruitmentReporting(commands.Cog):
                 await ctx.reply("Failed to post report. Check log channel.", mention_author=False)
 
     @tier("admin")
-    @help_metadata(function_group="operational", section="utilities", access_tier="admin")
+    @help_metadata(function_group="operational", section="utilities", access_tier="admin", usage="!roleaudit [preview|apply CONFIRM [override]]")
     @commands.command(
         name="roleaudit",
-        help="Preview or apply role-audit role mutations.",
+        help="Admin role/visitor audit. `preview` (default) dry-runs proposed member role removals/additions and replies with the first 20 affected members. `apply CONFIRM` mutates Discord roles with the normal safety cap; add `override` to allow over-cap application. Applies role changes only when explicitly confirmed.",
         brief="Preview or apply role-audit role mutations.",
     )
     @admin_only()

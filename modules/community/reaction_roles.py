@@ -287,11 +287,11 @@ class ReactionRolesCog(commands.Cog):
         )
 
     @tier("admin")
-    @help_metadata(function_group="operational", section="permissions", access_tier="admin")
+    @help_metadata(function_group="operational", section="permissions", access_tier="admin", usage="!reactrole <key>")
     @commands.command(
         name="reactrole",
-        help="Manage reaction role mappings.",
-        brief="Manage reaction role mappings.",
+        help="Admin command used while replying to a target message. `<key>` is the reaction-role mapping key from the sheet-backed reaction-role configuration; the command attaches all active rows for that key to the replied-to message and adds reactions. It replies in-channel if the key/message cannot be used.",
+        brief="Attach a sheet-configured reaction-role key to a message.",
     )
     @commands.guild_only()
     @admin_only()

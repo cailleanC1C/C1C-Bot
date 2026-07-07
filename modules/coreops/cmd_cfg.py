@@ -28,8 +28,7 @@ class ConfigCmd(commands.Cog):
     @commands.command(
         name="cfg",
         help=(
-            "Admin-only snapshot of the merged config registry. Provide a key to "
-            "see the current value and source sheet tail (defaults to ONBOARDING_TAB)."
+            "Admin-only merged config lookup. With KEY, replies in-channel with the current cached value, redacted source sheet tail, and merged key count. Without KEY, defaults to ONBOARDING_TAB. Reads runtime config only and does not write Sheets."
         ),
     )
     @commands.has_permissions(administrator=True)

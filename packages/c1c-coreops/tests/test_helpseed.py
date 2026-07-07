@@ -416,3 +416,101 @@ def test_helpseed_missing_batch_update_fails_without_update_fallback(monkeypatch
         assert worksheet.updated == []
 
     asyncio.run(run())
+
+
+def test_helpseed_fills_blank_curated_fields_from_metadata(monkeypatch):
+    async def run():
+        cmd = _command(
+            extras={"function_group": "newcat", "access_tier": "admin"},
+            brief="Generated summary",
+            help_text="Generated details",
+        )
+        bot = SimpleNamespace(walk_commands=lambda: [cmd])
+        cog = _make_cog(bot)
+        existing = [
+            "TRUE",
+            "woadkeeper",
+            "sample",
+            "!old",
+            "!old",
+            "",
+            "staff",
+            "",
+            "",
+            "manual note",
+            "7",
+        ]
+        worksheet = FakeWorksheet([HEADERS, existing])
+        _patch_sheet(monkeypatch, worksheet)
+        result = await cog._helpseed_impl(DummyCtx())
+        assert result.updated == 1
+        updated = worksheet.updated_batches[0][0][0]["values"][0]
+        assert updated[5] == "newcat"
+        assert updated[7] == "Generated summary"
+        assert updated[8] == "Generated details"
+        assert updated[9] == "manual note"
+        assert updated[10] == "7"
+
+    asyncio.run(run())
+
+
+def test_touched_woadkeeper_command_metadata_is_useful() -> None:
+    from cogs.app_admin import AppAdmin
+    from cogs.clanrole_management import ClanRoleManagementCog
+    from cogs.housekeeping_mirralith import MirralithOverviewCog
+    from cogs.recruitment_clan_ads import ClanAdsCog
+    from cogs.recruitment_member import RecruitmentMember
+    from cogs.recruitment_reporting import RecruitmentReporting
+    from cogs.recruitment_welcome import WelcomeBridge
+    from modules.community.fusion.cog import FusionCog
+    from modules.community.leagues.cog import LeaguesCog
+    from modules.community.reaction_roles import ReactionRolesCog
+    from modules.coreops.cmd_cfg import ConfigCmd
+    from modules.housekeeping.cleanup import CleanupCog
+    from modules.ops.permissions_ui import PermissionsUICog
+
+    commands_by_name = {
+        "cfg": ConfigCmd.cfg_cmd,
+        "fusion": FusionCog.fusion,
+        "titan": FusionCog.titan,
+        "clanrole": ClanRoleManagementCog.clanrole,
+        "clanads": ClanAdsCog.clanads,
+        "next": AppAdmin.next_jobs,
+        "servermap": AppAdmin.servermap,
+        "whoweare": AppAdmin.whoweare,
+        "report": RecruitmentReporting.report_group,
+        "roleaudit": RecruitmentReporting.roleaudit,
+        "cleanup": CleanupCog.cleanup,
+        "welcome-refresh": WelcomeBridge.welcome_refresh,
+        "mirralith": MirralithOverviewCog.mirralith_group,
+        "leagues": LeaguesCog.leagues,
+        "reactrole": ReactionRolesCog.reactrole_cmd,
+        "perm": PermissionsUICog.perm,
+        "clansearch": RecruitmentMember.clansearch,
+        "ops health": CoreOpsCog.ops_health,
+        "ops checksheet": CoreOpsCog.ops_checksheet,
+        "ops config": CoreOpsCog.ops_config,
+        "ops refresh": CoreOpsCog.ops_refresh,
+        "ops refresh all": CoreOpsCog.ops_refresh_all,
+        "ops reload": CoreOpsCog.ops_reload,
+    }
+    required_terms = {
+        "reactrole": ["<key>", "mapping key"],
+        "ops refresh": ["bucket", "registered"],
+        "ops reload": ["--reboot", "Unknown flags"],
+        "next": ["component", "scheduled jobs"],
+        "roleaudit": ["preview", "apply CONFIRM"],
+        "cleanup": ["run", "writeback"],
+        "report": ["recruiters", "all"],
+        "clansearch": ["takes no arguments", "!clan <tag or name>"],
+    }
+
+    cog = _make_cog(SimpleNamespace())
+    for name, command in commands_by_name.items():
+        row = cog._build_help_seed_row(command)
+        details = row.details
+        assert row.summary, name
+        assert details and len(details) >= 40, name
+        assert row.usage.startswith("!"), name
+        for term in required_terms.get(name, []):
+            assert term in f"{row.usage} {row.summary} {details}", name

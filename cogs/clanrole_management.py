@@ -138,14 +138,14 @@ class ClanRoleTargetView(discord.ui.View):
 
 class ClanRoleManagementCog(commands.Cog):
     @tier("user")
-    @help_metadata(function_group="recruitment", section="recruitment", access_tier="staff")
-    @commands.group(name="clanrole", invoke_without_command=True)
+    @help_metadata(function_group="recruitment", section="recruitment", access_tier="staff", usage="!clanrole remove <member query>")
+    @commands.group(name="clanrole", invoke_without_command=True, help="Staff clan-role tools. Use remove with a mention, Discord ID, or exact member name to remove clan roles and run Raid/Wandering Souls cleanup; ambiguous matches open an in-channel selection UI.", brief="Staff tool for clan-role removal and related cleanup.")
     async def clanrole(self, ctx: commands.Context) -> None:
         await ctx.reply("Usage: `!clanrole remove <member query>`", mention_author=False)
 
     @tier("user")
-    @help_metadata(function_group="recruitment", section="recruitment", access_tier="staff")
-    @clanrole.command(name="remove", help="Remove a member from a clan role and run Raid/Wandering Souls cleanup.")
+    @help_metadata(function_group="recruitment", section="recruitment", access_tier="staff", usage="!clanrole remove <member query>")
+    @clanrole.command(name="remove", help="Staff-only removal by mention, Discord ID, or exact name. Removes clan role assignments and runs Raid/Wandering Souls cleanup; replies in-channel and may open a target picker for ambiguous matches.", brief="Remove clan roles and related Raid/Wandering Souls state.")
     async def clanrole_remove(self, ctx: commands.Context, *, member_query: str | None = None) -> None:
         if ctx.guild is None or not isinstance(ctx.author, discord.Member):
             await ctx.reply("⚠️ This command can only be used in a server.", mention_author=False)

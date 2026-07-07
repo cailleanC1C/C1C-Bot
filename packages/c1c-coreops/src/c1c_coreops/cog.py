@@ -2149,11 +2149,11 @@ class CoreOpsCog(commands.Cog):
         logger.info(log_msg, extra=extra)
 
     @tier("admin")
-    @help_metadata(function_group="operational", section="config_health", access_tier="admin")
+    @help_metadata(function_group="operational", section="config_health", access_tier="admin", usage="!ops health")
     @ops.command(
         name="health",
-        help="Checks the bot’s internal health status.",
-        brief="Checks the bot’s internal health status.",
+        help="Admin health check that replies in-channel with an embed showing environment, version, uptime, Discord latency, heartbeat age, and watchdog thresholds. It does not mutate Sheets or runtime state.",
+        brief="Show bot health, latency, heartbeat, and watchdog status.",
     )
     @ops_only()
     async def ops_health(self, ctx: commands.Context) -> None:
@@ -2751,11 +2751,11 @@ class CoreOpsCog(commands.Cog):
             await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     @tier("admin")
-    @help_metadata(function_group="operational", section="sheet_tools", access_tier="admin")
+    @help_metadata(function_group="operational", section="sheet_tools", access_tier="admin", usage="!ops checksheet [debug]")
     @ops.command(
         name="checksheet",
-        help="Shows loaded tabs and headers.",
-        brief="Shows loaded tabs and headers.",
+        help="Admin sheet diagnostics for recruitment/onboarding configuration. Replies with loaded worksheet tabs, discovered headers, and cache/config status; adding debug includes extra discovery details. Does not write to Sheets.",
+        brief="Show configured Sheets tabs, headers, and discovery status.",
     )
     @guild_only_denied_msg()
     @ops_only()
@@ -3970,11 +3970,11 @@ class CoreOpsCog(commands.Cog):
         await ctx.reply(embed=sanitize_embed(embed))
 
     @tier("admin")
-    @help_metadata(function_group="operational", section="sheet_tools", access_tier="admin")
+    @help_metadata(function_group="operational", section="sheet_tools", access_tier="admin", usage="!ops config")
     @ops.command(
         name="config",
-        help="Shows current configuration values.",
-        brief="Shows current configuration values.",
+        help="Admin config snapshot that replies in-channel with merged runtime configuration source/status and selected non-secret operational values. It reads current cache/config state and does not write Sheets.",
+        brief="Show merged runtime config source and status.",
     )
     @guild_only_denied_msg()
     @ops_only()
@@ -4077,11 +4077,11 @@ class CoreOpsCog(commands.Cog):
         await self._reload_impl(ctx, reboot=reboot)
 
     @tier("admin")
-    @help_metadata(function_group="operational", section="utilities", access_tier="admin")
+    @help_metadata(function_group="operational", section="utilities", access_tier="admin", usage="!ops reload [--reboot]")
     @ops.command(
         name="reload",
-        help="Reloads runtime configs and command modules.",
-        brief="Reloads runtime configs and command modules.",
+        help="Admin runtime reload. With no flags, reloads runtime config and command modules; --reboot additionally requests the configured reboot path. Unknown flags are rejected. Replies with reload status and may affect live bot modules/config.",
+        brief="Reload runtime config/modules; optional --reboot.",
     )
     @guild_only_denied_msg()
     @ops_only()
@@ -4117,12 +4117,12 @@ class CoreOpsCog(commands.Cog):
         await self._refresh_root(ctx)
 
     @tier("admin")
-    @help_metadata(function_group="operational", section="sheet_tools", access_tier="admin")
+    @help_metadata(function_group="operational", section="sheet_tools", access_tier="admin", usage="!ops refresh [bucket]")
     @ops.group(
         name="refresh",
         invoke_without_command=True,
-        help="Refreshes a single data bucket from Google Sheets.",
-        brief="Refreshes a single data bucket from Google Sheets.",
+        help="Admin cache refresh from Google Sheets. With a bucket name, refreshes that registered cache bucket and replies with telemetry; with no bucket, lists available refresh commands. Valid buckets are the runtime cache registry names, for example clansinfo when registered; use !ops refresh all for every registered bucket.",
+        brief="Refresh one registered Sheets cache bucket.",
     )
     @guild_only_denied_msg()
     @ops_only()
@@ -4223,11 +4223,11 @@ class CoreOpsCog(commands.Cog):
         await self._refresh_all_impl(ctx)
 
     @tier("admin")
-    @help_metadata(function_group="operational", section="sheet_tools", access_tier="admin")
+    @help_metadata(function_group="operational", section="sheet_tools", access_tier="admin", usage="!ops refresh all")
     @ops_refresh.command(
         name="all",
-        help="Reloads all data from Sheets.",
-        brief="Reloads all data from Sheets.",
+        help="Admin refresh of every registered Sheets cache bucket. Runs each cache refresh, replies with an in-channel summary/embed of bucket results, and logs refresh telemetry; does not change sheet schema.",
+        brief="Refresh all registered Sheets cache buckets.",
     )
     @guild_only_denied_msg()
     @ops_only()
