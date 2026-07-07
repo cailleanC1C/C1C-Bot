@@ -257,9 +257,23 @@ def _next_reset_description(base_description: str, reset_time_utc: dt.datetime |
     if reset_time_utc is None:
         return base_description
     unix_seconds = int(reset_time_utc.astimezone(dt.timezone.utc).timestamp())
-    countdown = f"Next reset: <t:{unix_seconds}:F>\nTime left: <t:{unix_seconds}:R>"
+    countdown = f"Current cycle resets at: <t:{unix_seconds}:F>\nTime left: <t:{unix_seconds}:R>"
     base = str(base_description or "").rstrip()
     return f"{base}\n\n{countdown}" if base else countdown
+
+
+def _reset_reminder_footer(
+    configured_footer: str,
+    reset_time_utc: dt.datetime,
+    cycle_days: int,
+) -> str:
+    following_cycle_reset_time = reset_time_utc.astimezone(dt.timezone.utc) + dt.timedelta(days=cycle_days)
+    following_cycle_text = (
+        "Following cycle reset: "
+        f"{following_cycle_reset_time.strftime('%Y-%m-%d %H:%M UTC')}"
+    )
+    footer = str(configured_footer or "").strip()
+    return f"{footer} • {following_cycle_text}" if footer else following_cycle_text
 
 
 def _custom_emoji_id(value: str) -> int | None:
@@ -847,10 +861,14 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                 title=reminder.embed_title or reminder.label,
                 description=_next_reset_description(reminder.embed_description, reset_time),
                 color=get_embed_colour("community"),
-                timestamp=reset_time,
             )
-            if reminder.embed_footer:
-                embed.set_footer(text=reminder.embed_footer)
+            embed.set_footer(
+                text=_reset_reminder_footer(
+                    reminder.embed_footer,
+                    reset_time,
+                    reminder.cycle_days,
+                )
+            )
 
             view = ResetReminderView(
                 role_id=reminder.role_id,

@@ -594,8 +594,9 @@ def test_doom_tower_regression_uses_next_scheduled_post_not_reference_date(monke
 
     assert len(channel.sent) == 1
     embed = channel.sent[0]["embed"]
-    assert embed.timestamp == reset_time
+    assert embed.timestamp is None
     assert f"<t:{int(reset_time.timestamp())}:R>" in embed.description
+    assert embed.footer.text == "footer • Following cycle reset: 2026-08-07 07:30 UTC"
     assert updates[-1]["next_scheduled_post"] == dt.datetime(2026, 8, 7, 3, 30, tzinfo=dt.timezone.utc)
 
 
@@ -899,7 +900,7 @@ def test_missing_emoji_logs_warning_and_posts_without_icon(monkeypatch, caplog) 
     assert "reset reminder image emoji could not be resolved" in caplog.text
 
 
-def test_embed_includes_next_reset_timestamps_inside_description(monkeypatch) -> None:
+def test_embed_includes_current_cycle_reset_timestamps_inside_description(monkeypatch) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
     reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=60, next_scheduled_post_utc=dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc), embed_description="Reset incoming")
     channel, _updates = _run_reset_process(
@@ -907,11 +908,11 @@ def test_embed_includes_next_reset_timestamps_inside_description(monkeypatch) ->
     )
     unix_seconds = int(reference.timestamp())
     desc = channel.sent[0]["embed"].description
-    assert desc == f"Reset incoming\n\nNext reset: <t:{unix_seconds}:F>\nTime left: <t:{unix_seconds}:R>"
+    assert desc == f"Reset incoming\n\nCurrent cycle resets at: <t:{unix_seconds}:F>\nTime left: <t:{unix_seconds}:R>"
     assert f"<t:{unix_seconds}:R>" not in channel.sent[0]["content"]
 
 
-def test_timestamp_uses_reset_time_not_reminder_time(monkeypatch) -> None:
+def test_description_uses_reset_time_not_reminder_time(monkeypatch) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
     reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=120, next_scheduled_post_utc=dt.datetime(2026, 5, 29, 8, 0, tzinfo=dt.timezone.utc))
     channel, _updates = _run_reset_process(
@@ -959,3 +960,37 @@ def test_configured_emoji_with_missing_target_guild_logs_warning(monkeypatch, ca
 
     assert channel.sent[0]["content"] == "<@&999>"
     assert "target guild unavailable" in caplog.text
+
+
+def test_footer_uses_following_cycle_reset_without_embed_timestamp(monkeypatch) -> None:
+    reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(
+        reference_date_utc=reference,
+        cycle_days=14,
+        lead_minutes=60,
+        next_scheduled_post_utc=dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc),
+        embed_footer="Configured footer",
+    )
+
+    channel, _updates = _run_reset_process(monkeypatch, reminder, dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc))
+
+    embed = channel.sent[0]["embed"]
+    assert embed.timestamp is None
+    assert embed.footer.text == "Configured footer • Following cycle reset: 2026-06-12 10:00 UTC"
+
+
+def test_footer_uses_following_cycle_reset_when_configured_footer_blank(monkeypatch) -> None:
+    reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(
+        reference_date_utc=reference,
+        cycle_days=14,
+        lead_minutes=60,
+        next_scheduled_post_utc=dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc),
+        embed_footer="",
+    )
+
+    channel, _updates = _run_reset_process(monkeypatch, reminder, dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc))
+
+    embed = channel.sent[0]["embed"]
+    assert embed.timestamp is None
+    assert embed.footer.text == "Following cycle reset: 2026-06-12 10:00 UTC"
