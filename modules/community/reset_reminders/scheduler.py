@@ -396,7 +396,7 @@ def _reminder_time(reset_time_utc: dt.datetime, lead_minutes: int) -> dt.datetim
     return reset_time_utc - dt.timedelta(minutes=lead_minutes)
 
 
-def _reset_cycle_for_reminder(
+def _next_reminder_from_anchor(
     reference_date_utc: dt.datetime,
     cycle_days: int,
     lead_minutes: int,
@@ -404,14 +404,31 @@ def _reset_cycle_for_reminder(
 ) -> dt.datetime:
     cycle = dt.timedelta(days=cycle_days)
     first_reminder_time = _reminder_time(reference_date_utc, lead_minutes)
-    if now_utc < first_reminder_time:
-        return reference_date_utc
-    cycles_passed = math.floor((now_utc - first_reminder_time) / cycle)
-    return reference_date_utc + cycles_passed * cycle
+    if now_utc <= first_reminder_time:
+        return first_reminder_time
+    cycles_ahead = math.ceil((now_utc - first_reminder_time) / cycle)
+    return first_reminder_time + cycles_ahead * cycle
 
 
-def _following_reset(reset_time_utc: dt.datetime, cycle_days: int) -> dt.datetime:
-    return reset_time_utc + dt.timedelta(days=cycle_days)
+def _reset_time_for_scheduled_post(reminder_time_utc: dt.datetime, lead_minutes: int) -> dt.datetime:
+    return reminder_time_utc + dt.timedelta(minutes=lead_minutes)
+
+
+def _following_reminder_time(reminder_time_utc: dt.datetime, cycle_days: int) -> dt.datetime:
+    return reminder_time_utc + dt.timedelta(days=cycle_days)
+
+
+def _advance_reminder_until_reset_future(
+    reminder_time_utc: dt.datetime,
+    *,
+    cycle_days: int,
+    lead_minutes: int,
+    now_utc: dt.datetime,
+) -> dt.datetime:
+    advanced = reminder_time_utc
+    while _reset_time_for_scheduled_post(advanced, lead_minutes) <= now_utc:
+        advanced = _following_reminder_time(advanced, cycle_days)
+    return advanced
 
 
 async def register_persistent_reset_views(bot: commands.Bot) -> None:
@@ -725,22 +742,66 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                 continue
 
             try:
-                reset_time = _reset_cycle_for_reminder(
-                    reminder.reference_date_utc,
-                    reminder.cycle_days,
-                    reminder.lead_minutes,
-                    now_utc,
-                )
-                reminder_time = _reminder_time(reset_time, reminder.lead_minutes)
+                if reminder.next_scheduled_post_utc is None:
+                    reminder_time = _next_reminder_from_anchor(
+                        reminder.reference_date_utc,
+                        reminder.cycle_days,
+                        reminder.lead_minutes,
+                        now_utc,
+                    )
+                    await _update_next_scheduled_post(
+                        tab_name=tab_name,
+                        header_map=header_map,
+                        row_number=record.row_number,
+                        reminder_time=reminder_time,
+                    )
+                    # First write the authoritative schedule back to the sheet. A
+                    # later tick will send only after that persisted time is due.
+                    continue
+
+                reminder_time = reminder.next_scheduled_post_utc
+                reset_time = _reset_time_for_scheduled_post(reminder_time, reminder.lead_minutes)
             except Exception:
                 log.exception("reset reminder skipped; failed to compute cycle", extra={"reset_id": reminder.reset_id})
                 continue
 
-            if reminder.last_sent_for_reset_utc == reset_time:
-                following_reminder_time = _reminder_time(
-                    _following_reset(reset_time, reminder.cycle_days),
-                    reminder.lead_minutes,
+            if now_utc < reminder_time:
+                continue
+
+            if now_utc >= reset_time:
+                advanced_reminder_time = _advance_reminder_until_reset_future(
+                    reminder_time,
+                    cycle_days=reminder.cycle_days,
+                    lead_minutes=reminder.lead_minutes,
+                    now_utc=now_utc,
                 )
+                log.warning(
+                    "stale reset reminder skipped; next scheduled post advanced",
+                    extra={
+                        "reset_id": reminder.reset_id,
+                        "row_number": record.row_number,
+                        "stale_reminder_time": reminder_time.isoformat(),
+                        "stale_reset_time": reset_time.isoformat(),
+                        "advanced_reminder_time": advanced_reminder_time.isoformat(),
+                        "now_utc": now_utc.isoformat(),
+                    },
+                )
+                try:
+                    await _update_next_scheduled_post(
+                        tab_name=tab_name,
+                        header_map=header_map,
+                        row_number=record.row_number,
+                        reminder_time=advanced_reminder_time,
+                    )
+                except Exception:
+                    log.exception(
+                        "reset reminder next scheduled update failed",
+                        extra={"reset_id": reminder.reset_id, "row_number": record.row_number},
+                    )
+                continue
+
+            following_reminder_time = _following_reminder_time(reminder_time, reminder.cycle_days)
+            if reminder.last_sent_for_reset_utc == reset_time:
                 if reminder.next_scheduled_post_utc != following_reminder_time:
                     try:
                         await _update_next_scheduled_post(
@@ -754,23 +815,6 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                             "reset reminder next scheduled update failed",
                             extra={"reset_id": reminder.reset_id, "row_number": record.row_number},
                         )
-                continue
-
-            if reminder.next_scheduled_post_utc != reminder_time:
-                try:
-                    await _update_next_scheduled_post(
-                        tab_name=tab_name,
-                        header_map=header_map,
-                        row_number=record.row_number,
-                        reminder_time=reminder_time,
-                    )
-                except Exception:
-                    log.exception(
-                        "reset reminder next scheduled update failed",
-                        extra={"reset_id": reminder.reset_id, "row_number": record.row_number},
-                    )
-
-            if now_utc < reminder_time:
                 continue
 
             target = await _resolve_target_channel(bot, reminder)
@@ -846,8 +890,7 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                 )
                 continue
 
-            following_reset = _following_reset(reset_time, reminder.cycle_days)
-            following_reminder_time = _reminder_time(following_reset, reminder.lead_minutes)
+            following_reminder_time = _following_reminder_time(reminder_time, reminder.cycle_days)
             try:
                 await _update_row_after_send(
                     tab_name=tab_name,

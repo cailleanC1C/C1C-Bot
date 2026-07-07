@@ -119,7 +119,7 @@ def test_process_reset_reminder_sends_once_and_updates_sheet(monkeypatch) -> Non
         button_label_opt_in="Opt in",
         button_label_opt_out="Opt out",
         last_sent_for_reset_utc=None,
-        next_scheduled_post_utc=None,
+        next_scheduled_post_utc=dt.datetime(2026, 5, 22, 23, 0, tzinfo=dt.timezone.utc),
         last_message_id=111,
     )
     record = scheduler._ResetReminderRecord(row_number=7, reminder=reminder)
@@ -152,9 +152,8 @@ def test_process_reset_reminder_sends_once_and_updates_sheet(monkeypatch) -> Non
     assert channel.sent[0]["allowed_mentions"].everyone is False
     assert channel.sent[0]["allowed_mentions"].roles is True
     assert channel.sent[0]["allowed_mentions"].users is False
-    assert len(updates) == 2
+    assert len(updates) == 1
     assert updates[0]["row_number"] == 7
-    assert updates[-1]["row_number"] == 7
 
 
 def test_process_reset_reminder_dedupes_by_last_sent(monkeypatch) -> None:
@@ -231,7 +230,7 @@ def test_process_reset_reminder_delete_failure_does_not_block_send(monkeypatch) 
         button_label_opt_in="Opt in",
         button_label_opt_out="Opt out",
         last_sent_for_reset_utc=None,
-        next_scheduled_post_utc=None,
+        next_scheduled_post_utc=dt.datetime(2026, 5, 22, 23, 0, tzinfo=dt.timezone.utc),
         last_message_id=111,
     )
     record = scheduler._ResetReminderRecord(row_number=7, reminder=reminder)
@@ -255,7 +254,7 @@ def test_process_reset_reminder_delete_failure_does_not_block_send(monkeypatch) 
     bot = _DummyBot(channel)
     asyncio.run(scheduler.process_reset_reminders(bot, now=now))
     assert len(channel.sent) == 1
-    assert len(updates) == 2
+    assert len(updates) == 1
 
 
 def test_invalid_rows_skipped_without_crash(monkeypatch) -> None:
@@ -407,20 +406,19 @@ def test_next_scheduled_post_written_from_reference_minus_lead(monkeypatch) -> N
     ]
 
 
-def test_lead_zero_posts_at_reset_time(monkeypatch) -> None:
+def test_lead_zero_at_reset_time_is_stale_and_advances(monkeypatch) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
-    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=0)
+    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=0, next_scheduled_post_utc=reference)
 
     channel, updates = _run_reset_process(monkeypatch, reminder, reference)
 
-    assert len(channel.sent) == 1
-    assert updates[-1]["reset_time"] == reference
-    assert updates[-1]["next_scheduled_post"] == dt.datetime(2026, 6, 26, 10, 0, tzinfo=dt.timezone.utc)
+    assert channel.sent == []
+    assert updates[-1]["reminder_time"] == dt.datetime(2026, 6, 26, 10, 0, tzinfo=dt.timezone.utc)
 
 
-def test_lead_zero_posts_after_reset_time_when_not_already_sent(monkeypatch) -> None:
+def test_lead_zero_after_reset_time_is_stale_and_advances(monkeypatch) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
-    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=0)
+    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=0, next_scheduled_post_utc=reference)
 
     channel, updates = _run_reset_process(
         monkeypatch,
@@ -428,13 +426,14 @@ def test_lead_zero_posts_after_reset_time_when_not_already_sent(monkeypatch) -> 
         dt.datetime(2026, 5, 29, 10, 5, tzinfo=dt.timezone.utc),
     )
 
-    assert len(channel.sent) == 1
-    assert updates[-1]["reset_time"] == reference
+    assert channel.sent == []
+    assert updates[-1]["reminder_time"] == dt.datetime(2026, 6, 26, 10, 0, tzinfo=dt.timezone.utc)
 
 
 def test_positive_lead_posts_before_reset_time(monkeypatch) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
-    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=60)
+    reminder_time = dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=60, next_scheduled_post_utc=reminder_time)
 
     channel, updates = _run_reset_process(
         monkeypatch,
@@ -449,12 +448,12 @@ def test_positive_lead_posts_before_reset_time(monkeypatch) -> None:
 
 def test_successful_post_updates_last_sent_and_next_scheduled(monkeypatch) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
-    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=0)
+    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=60, next_scheduled_post_utc=dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc))
 
-    _channel, updates = _run_reset_process(monkeypatch, reminder, reference)
+    _channel, updates = _run_reset_process(monkeypatch, reminder, dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc))
 
     assert updates[-1]["reset_time"] == reference
-    assert updates[-1]["next_scheduled_post"] == dt.datetime(2026, 6, 26, 10, 0, tzinfo=dt.timezone.utc)
+    assert updates[-1]["next_scheduled_post"] == dt.datetime(2026, 6, 26, 9, 0, tzinfo=dt.timezone.utc)
     assert updates[-1]["message_id"] == 222
 
 
@@ -468,7 +467,7 @@ def test_same_last_sent_suppresses_duplicate(monkeypatch) -> None:
         next_scheduled_post_utc=following,
     )
 
-    channel, updates = _run_reset_process(monkeypatch, reminder, reference)
+    channel, updates = _run_reset_process(monkeypatch, reminder, dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc))
 
     assert channel.sent == []
     assert updates == []
@@ -478,11 +477,12 @@ def test_older_last_sent_does_not_suppress_current_reset(monkeypatch) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
     reminder = _make_reset_reminder(
         reference_date_utc=reference,
-        lead_minutes=0,
+        lead_minutes=60,
         last_sent_for_reset_utc=dt.datetime(2026, 5, 1, 10, 0, tzinfo=dt.timezone.utc),
+        next_scheduled_post_utc=dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc),
     )
 
-    channel, updates = _run_reset_process(monkeypatch, reminder, reference)
+    channel, updates = _run_reset_process(monkeypatch, reminder, dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc))
 
     assert len(channel.sent) == 1
     assert updates[-1]["reset_time"] == reference
@@ -490,12 +490,113 @@ def test_older_last_sent_does_not_suppress_current_reset(monkeypatch) -> None:
 
 def test_empty_thread_id_posts_to_channel_id(monkeypatch) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
-    reminder = _make_reset_reminder(reference_date_utc=reference, thread_id=None)
+    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=60, thread_id=None, next_scheduled_post_utc=dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc))
 
-    channel, updates = _run_reset_process(monkeypatch, reminder, reference)
+    channel, updates = _run_reset_process(monkeypatch, reminder, dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc))
 
     assert len(channel.sent) == 1
     assert updates[-1]["reset_time"] == reference
+
+def test_next_scheduled_post_present_future_does_not_send(monkeypatch) -> None:
+    reference = dt.datetime(2026, 6, 8, 7, 30, tzinfo=dt.timezone.utc)
+    scheduled = dt.datetime(2026, 7, 8, 3, 30, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(
+        reset_id="doom_tower",
+        reference_date_utc=reference,
+        cycle_days=30,
+        lead_minutes=240,
+        next_scheduled_post_utc=scheduled,
+    )
+
+    channel, updates = _run_reset_process(monkeypatch, reminder, dt.datetime(2026, 7, 8, 3, 29, tzinfo=dt.timezone.utc))
+
+    assert channel.sent == []
+    assert updates == []
+
+
+def test_next_scheduled_post_present_due_displays_derived_reset_time(monkeypatch) -> None:
+    reference = dt.datetime(2026, 6, 8, 7, 30, tzinfo=dt.timezone.utc)
+    scheduled = dt.datetime(2026, 7, 8, 3, 30, tzinfo=dt.timezone.utc)
+    reset_time = dt.datetime(2026, 7, 8, 7, 30, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(
+        reset_id="doom_tower",
+        reference_date_utc=reference,
+        cycle_days=30,
+        lead_minutes=240,
+        next_scheduled_post_utc=scheduled,
+    )
+
+    channel, updates = _run_reset_process(monkeypatch, reminder, scheduled)
+
+    assert len(channel.sent) == 1
+    assert f"<t:{int(reset_time.timestamp())}:F>" in channel.sent[0]["embed"].description
+    assert f"<t:{int(reference.timestamp())}:F>" not in channel.sent[0]["embed"].description
+    assert updates[-1]["reset_time"] == reset_time
+    assert updates[-1]["next_scheduled_post"] == dt.datetime(2026, 8, 7, 3, 30, tzinfo=dt.timezone.utc)
+
+
+def test_next_scheduled_post_blank_computes_from_anchor_and_does_not_send_stale(monkeypatch) -> None:
+    reference = dt.datetime(2026, 6, 8, 7, 30, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(
+        reset_id="doom_tower",
+        reference_date_utc=reference,
+        cycle_days=30,
+        lead_minutes=240,
+        next_scheduled_post_utc=None,
+    )
+
+    channel, updates = _run_reset_process(monkeypatch, reminder, dt.datetime(2026, 7, 1, 12, 0, tzinfo=dt.timezone.utc))
+
+    assert channel.sent == []
+    assert updates == [
+        {
+            "tab_name": "ResetTab",
+            "header_map": {"last_sent_for_reset_utc": 14, "next_scheduled_post_utc": 15, "last_message_id": 16},
+            "row_number": 7,
+            "reminder_time": dt.datetime(2026, 7, 8, 3, 30, tzinfo=dt.timezone.utc),
+        }
+    ]
+
+
+def test_next_scheduled_post_due_but_reset_past_skips_and_advances(monkeypatch, caplog) -> None:
+    reference = dt.datetime(2026, 6, 8, 7, 30, tzinfo=dt.timezone.utc)
+    scheduled = dt.datetime(2026, 7, 8, 3, 30, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(
+        reset_id="doom_tower",
+        reference_date_utc=reference,
+        cycle_days=30,
+        lead_minutes=240,
+        next_scheduled_post_utc=scheduled,
+    )
+
+    caplog.set_level("WARNING", logger="c1c.community.reset_reminders.scheduler")
+    channel, updates = _run_reset_process(monkeypatch, reminder, dt.datetime(2026, 7, 8, 7, 30, tzinfo=dt.timezone.utc))
+
+    assert channel.sent == []
+    assert updates[-1]["reminder_time"] == dt.datetime(2026, 8, 7, 3, 30, tzinfo=dt.timezone.utc)
+    assert "stale reset reminder skipped; next scheduled post advanced" in caplog.text
+
+
+def test_doom_tower_regression_uses_next_scheduled_post_not_reference_date(monkeypatch) -> None:
+    reference = dt.datetime(2026, 6, 8, 7, 30, tzinfo=dt.timezone.utc)
+    scheduled = dt.datetime(2026, 7, 8, 3, 30, tzinfo=dt.timezone.utc)
+    reset_time = dt.datetime(2026, 7, 8, 7, 30, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(
+        reset_id="doom_tower",
+        label="Doom Tower",
+        reference_date_utc=reference,
+        cycle_days=30,
+        lead_minutes=240,
+        next_scheduled_post_utc=scheduled,
+    )
+
+    channel, updates = _run_reset_process(monkeypatch, reminder, scheduled)
+
+    assert len(channel.sent) == 1
+    embed = channel.sent[0]["embed"]
+    assert embed.timestamp == reset_time
+    assert f"<t:{int(reset_time.timestamp())}:R>" in embed.description
+    assert updates[-1]["next_scheduled_post"] == dt.datetime(2026, 8, 7, 3, 30, tzinfo=dt.timezone.utc)
 
 
 def test_reset_reminder_load_timeout_ops_log_is_rate_limited_and_recovers(monkeypatch) -> None:
@@ -675,15 +776,15 @@ def test_exact_emoji_name_or_id_sheet_header_is_parsed(monkeypatch) -> None:
 
 def test_empty_emoji_name_or_id_keeps_message_content_unchanged(monkeypatch) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
-    reminder = _make_reset_reminder(reference_date_utc=reference, emoji_name_or_id=" ")
-    channel, _updates = _run_reset_process(monkeypatch, reminder, reference)
+    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=60, next_scheduled_post_utc=dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc), emoji_name_or_id=" ")
+    channel, _updates = _run_reset_process(monkeypatch, reminder, dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc))
     assert channel.sent[0]["content"] == "<@&999>"
     assert channel.sent[0]["files"] == []
 
 
 def test_numeric_emoji_id_resolves_into_standalone_file(monkeypatch) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
-    reminder = _make_reset_reminder(reference_date_utc=reference, emoji_name_or_id=" 1413557246297637025 ")
+    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=60, next_scheduled_post_utc=dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc), emoji_name_or_id=" 1413557246297637025 ")
     channel = _GuildChannel([_FakeEmoji(1413557246297637025, "doom_tower_icon")])
     monkeypatch.setattr(scheduler, "_resolve_target_channel", lambda *_args: asyncio.sleep(0, result=channel))
     record = scheduler._ResetReminderRecord(row_number=7, reminder=reminder)
@@ -698,7 +799,7 @@ def test_numeric_emoji_id_resolves_into_standalone_file(monkeypatch) -> None:
     )
     monkeypatch.setattr(scheduler, "_update_next_scheduled_post", lambda **kwargs: asyncio.sleep(0))
     monkeypatch.setattr(scheduler, "_update_row_after_send", lambda **kwargs: asyncio.sleep(0))
-    asyncio.run(scheduler.process_reset_reminders(_DummyBot(channel), now=reference))
+    asyncio.run(scheduler.process_reset_reminders(_DummyBot(channel), now=dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc)))
     assert channel.sent[0]["content"] == "<@&999>"
     assert len(channel.sent[0]["files"]) == 1
     assert channel.sent[0]["files"][0].filename == "cursed_city_icon.png"
@@ -706,7 +807,7 @@ def test_numeric_emoji_id_resolves_into_standalone_file(monkeypatch) -> None:
 
 def test_emoji_name_resolves_to_file_and_is_not_embed_thumbnail(monkeypatch) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
-    reminder = _make_reset_reminder(reference_date_utc=reference, emoji_name_or_id="doom_tower_icon")
+    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=60, next_scheduled_post_utc=dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc), emoji_name_or_id="doom_tower_icon")
     channel = _GuildChannel([_FakeEmoji(12345, "doom_tower_icon")])
     monkeypatch.setattr(scheduler, "_resolve_target_channel", lambda *_args: asyncio.sleep(0, result=channel))
     record = scheduler._ResetReminderRecord(row_number=7, reminder=reminder)
@@ -721,7 +822,7 @@ def test_emoji_name_resolves_to_file_and_is_not_embed_thumbnail(monkeypatch) -> 
     )
     monkeypatch.setattr(scheduler, "_update_next_scheduled_post", lambda **kwargs: asyncio.sleep(0))
     monkeypatch.setattr(scheduler, "_update_row_after_send", lambda **kwargs: asyncio.sleep(0))
-    asyncio.run(scheduler.process_reset_reminders(_DummyBot(channel), now=reference))
+    asyncio.run(scheduler.process_reset_reminders(_DummyBot(channel), now=dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc)))
     sent = channel.sent[0]
     assert sent["content"] == "<@&999>"
     assert len(sent["files"]) == 1
@@ -733,6 +834,8 @@ def test_direct_image_url_resolves_into_standalone_file(monkeypatch) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
     reminder = _make_reset_reminder(
         reference_date_utc=reference,
+        lead_minutes=60,
+        next_scheduled_post_utc=dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc),
         emoji_name_or_id="https://cdn.example.invalid/reset.png",
     )
 
@@ -741,7 +844,7 @@ def test_direct_image_url_resolves_into_standalone_file(monkeypatch) -> None:
         return discord.File(io.BytesIO(b"png"), filename="direct_reset_icon.png")
 
     monkeypatch.setattr(scheduler, "_download_image_url_to_file", _download)
-    channel, _updates = _run_reset_process(monkeypatch, reminder, reference)
+    channel, _updates = _run_reset_process(monkeypatch, reminder, dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc))
 
     sent = channel.sent[0]
     assert sent["content"] == "<@&999>"
@@ -778,9 +881,9 @@ def test_direct_image_url_rejects_non_image_content_type_and_sends_without_file(
             return None
 
     monkeypatch.setattr(scheduler.aiohttp, "ClientSession", lambda timeout: _Session())
-    reminder = _make_reset_reminder(emoji_name_or_id="https://cdn.example.invalid/not-image")
+    reminder = _make_reset_reminder(lead_minutes=60, next_scheduled_post_utc=dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc), emoji_name_or_id="https://cdn.example.invalid/not-image")
 
-    channel, _updates = _run_reset_process(monkeypatch, reminder, reminder.reference_date_utc)
+    channel, _updates = _run_reset_process(monkeypatch, reminder, dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc))
 
     assert channel.sent[0]["content"] == "<@&999>"
     assert channel.sent[0]["files"] == []
@@ -789,8 +892,8 @@ def test_direct_image_url_rejects_non_image_content_type_and_sends_without_file(
 
 def test_missing_emoji_logs_warning_and_posts_without_icon(monkeypatch, caplog) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
-    reminder = _make_reset_reminder(reference_date_utc=reference, emoji_name_or_id="missing_icon")
-    channel, _updates = _run_reset_process(monkeypatch, reminder, reference)
+    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=60, next_scheduled_post_utc=dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc), emoji_name_or_id="missing_icon")
+    channel, _updates = _run_reset_process(monkeypatch, reminder, dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc))
     assert channel.sent[0]["content"] == "<@&999>"
     assert channel.sent[0]["files"] == []
     assert "reset reminder image emoji could not be resolved" in caplog.text
@@ -798,7 +901,7 @@ def test_missing_emoji_logs_warning_and_posts_without_icon(monkeypatch, caplog) 
 
 def test_embed_includes_next_reset_timestamps_inside_description(monkeypatch) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
-    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=60, embed_description="Reset incoming")
+    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=60, next_scheduled_post_utc=dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc), embed_description="Reset incoming")
     channel, _updates = _run_reset_process(
         monkeypatch, reminder, dt.datetime(2026, 5, 29, 9, 5, tzinfo=dt.timezone.utc)
     )
@@ -810,7 +913,7 @@ def test_embed_includes_next_reset_timestamps_inside_description(monkeypatch) ->
 
 def test_timestamp_uses_reset_time_not_reminder_time(monkeypatch) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
-    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=120)
+    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=120, next_scheduled_post_utc=dt.datetime(2026, 5, 29, 8, 0, tzinfo=dt.timezone.utc))
     channel, _updates = _run_reset_process(
         monkeypatch, reminder, dt.datetime(2026, 5, 29, 8, 0, tzinfo=dt.timezone.utc)
     )
@@ -823,7 +926,7 @@ def test_timestamp_uses_reset_time_not_reminder_time(monkeypatch) -> None:
 
 def test_emoji_resolution_ignores_unrelated_bot_guilds(monkeypatch, caplog) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
-    reminder = _make_reset_reminder(reference_date_utc=reference, emoji_name_or_id="shared_icon")
+    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=60, next_scheduled_post_utc=dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc), emoji_name_or_id="shared_icon")
     channel = _GuildChannel([])
     bot = _DummyBot(channel)
     bot.guilds = [SimpleNamespace(emojis=[_FakeEmoji(54321, "shared_icon")])]
@@ -842,7 +945,7 @@ def test_emoji_resolution_ignores_unrelated_bot_guilds(monkeypatch, caplog) -> N
     monkeypatch.setattr(scheduler, "_update_next_scheduled_post", lambda **kwargs: asyncio.sleep(0))
     monkeypatch.setattr(scheduler, "_update_row_after_send", lambda **kwargs: asyncio.sleep(0))
 
-    asyncio.run(scheduler.process_reset_reminders(bot, now=reference))
+    asyncio.run(scheduler.process_reset_reminders(bot, now=dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc)))
 
     assert channel.sent[0]["content"] == "<@&999>"
     assert channel.sent[0]["files"] == []
@@ -851,8 +954,8 @@ def test_emoji_resolution_ignores_unrelated_bot_guilds(monkeypatch, caplog) -> N
 
 def test_configured_emoji_with_missing_target_guild_logs_warning(monkeypatch, caplog) -> None:
     reference = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
-    reminder = _make_reset_reminder(reference_date_utc=reference, emoji_name_or_id="doom_tower_icon")
-    channel, _updates = _run_reset_process(monkeypatch, reminder, reference)
+    reminder = _make_reset_reminder(reference_date_utc=reference, lead_minutes=60, next_scheduled_post_utc=dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc), emoji_name_or_id="doom_tower_icon")
+    channel, _updates = _run_reset_process(monkeypatch, reminder, dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc))
 
     assert channel.sent[0]["content"] == "<@&999>"
     assert "target guild unavailable" in caplog.text
