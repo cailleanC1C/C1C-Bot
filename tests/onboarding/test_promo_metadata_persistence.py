@@ -676,3 +676,148 @@ def test_promo_startup_backfill_loader_error_logs_reason(monkeypatch, caplog):
     errors = [record for record in caplog.records if record.name == "c1c.onboarding.promo_watcher" and record.levelname == "ERROR"]
     assert errors
     assert "RuntimeError: Promo backfill missing required header(s): finalization_status" == errors[-1].reason
+
+def test_patch_promo_final_close_preserves_unrelated_metadata(promo_sheet):
+    original = [
+        "M0392", "M0392-J_Turbo", "", "C1C2", "", "move", "2026-07-01 12:00:00",
+        "Closed-M0392-J_Turbo", "111", "222", "333", "prompt_required", "keep-review",
+        "created-value", "updated-value", "in_progress", "pending", "pending",
+        "finalization started by ticket_tool", "1899", "", "", "", "",
+    ]
+    promo_sheet.rows.append(original)
+
+    result = onboarding_sheets.patch_promo_final_close(
+        ticket="M0392",
+        thread_id=222,
+        clan_tag="C1CV",
+        source_clan_tag="C1C2",
+        date_closed="2026-07-07",
+        clan_name="Vindicators",
+        progression="TH16",
+        year="",
+        month="",
+        join_month="",
+    )
+
+    assert result == "updated"
+    row = _row_map(promo_sheet)
+    assert row["clantag"] == "C1CV"
+    assert row["source_clan_tag"] == "C1C2"
+    assert row["date closed"] == "2026-07-07"
+    assert row["clan name"] == "Vindicators"
+    assert row["progression"] == "TH16"
+    assert row["review_reason"] == "keep-review"
+    assert row["created_at"] == "created-value"
+    assert row["user_id"] == "111"
+    assert row["thread_id"] == "222"
+    assert row["panel_message_id"] == "333"
+    assert row["status"] == "prompt_required"
+    assert row["finalization_status"] == "in_progress"
+    assert row["reservation_status"] == "pending"
+    assert row["clan_update_status"] == "pending"
+    assert row["finalization_note"] == "finalization started by ticket_tool"
+    assert row["year"] == "1899"
+    assert row["month"] == ""
+    assert row["join_month"] == ""
+    assert row["updated_at"] != "updated-value"
+
+
+def test_patch_promo_final_close_missing_row_fails(promo_sheet):
+    with pytest.raises(RuntimeError, match="promo final close row not found"):
+        onboarding_sheets.patch_promo_final_close(
+            ticket="M404",
+            thread_id=404,
+            clan_tag="C1CV",
+            source_clan_tag="C1C2",
+            date_closed="2026-07-07",
+            clan_name="Vindicators",
+        )
+
+@pytest.mark.parametrize(
+    ("missing_header", "normalized_field"),
+    [
+        ("clantag", "clantag"),
+        ("source_clan_tag", "sourceclantag"),
+        ("date closed", "dateclosed"),
+    ],
+)
+def test_patch_promo_final_close_missing_required_headers_fail(monkeypatch, missing_header, normalized_field):
+    headers = [h for h in LIVE_PROMO_HEADERS if h != missing_header]
+    worksheet = FakeWorksheet(headers=headers)
+    worksheet.rows.append(["M0392" if h == "ticket number" else "222" if h == "thread_id" else "keep" for h in headers])
+    monkeypatch.setattr(onboarding_sheets.core, "call_with_backoff", lambda func, *args, **kwargs: func(*args, **kwargs))
+    monkeypatch.setattr(onboarding_sheets, "_resolve_onboarding_and_promo_tab", lambda: ("sheet", "PromoFromConfig"))
+    monkeypatch.setattr(onboarding_sheets.core, "get_worksheet", lambda sheet_id, tab: worksheet)
+    monkeypatch.setattr(onboarding_sheets, "get_promo_source_clan_tag_header", lambda **kwargs: "source_clan_tag")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        onboarding_sheets.patch_promo_final_close(
+            ticket="M0392",
+            thread_id=222,
+            clan_tag="C1CV",
+            source_clan_tag="C1C2",
+            date_closed="2026-07-07",
+        )
+
+    message = str(excinfo.value)
+    assert "operation=promo final close" in message
+    assert f"normalized_field='{normalized_field}'" in message
+    assert "ticket=M0392" in message
+    assert "thread_id=222" in message
+
+
+def test_patch_promo_final_close_missing_optional_headers_do_not_fail(monkeypatch):
+    optional = {"clan name", "progression", "year", "month", "join_month", "updated_at"}
+    headers = [h for h in LIVE_PROMO_HEADERS if h not in optional]
+    worksheet = FakeWorksheet(headers=headers)
+    worksheet.rows.append(["M0392" if h == "ticket number" else "222" if h == "thread_id" else "keep" for h in headers])
+    monkeypatch.setattr(onboarding_sheets.core, "call_with_backoff", lambda func, *args, **kwargs: func(*args, **kwargs))
+    monkeypatch.setattr(onboarding_sheets, "_resolve_onboarding_and_promo_tab", lambda: ("sheet", "PromoFromConfig"))
+    monkeypatch.setattr(onboarding_sheets.core, "get_worksheet", lambda sheet_id, tab: worksheet)
+    monkeypatch.setattr(onboarding_sheets, "get_promo_source_clan_tag_header", lambda **kwargs: "source_clan_tag")
+
+    result = onboarding_sheets.patch_promo_final_close(
+        ticket="M0392",
+        thread_id=222,
+        clan_tag="C1CV",
+        source_clan_tag="C1C2",
+        date_closed="2026-07-07",
+        clan_name="Vindicators",
+        progression="TH16",
+        year="2026",
+        month="July",
+        join_month="July",
+    )
+
+    assert result == "updated"
+    row = dict(zip(worksheet.rows[0], worksheet.rows[1]))
+    assert row["clantag"] == "C1CV"
+    assert row["source_clan_tag"] == "C1C2"
+    assert row["date closed"] == "2026-07-07"
+
+
+def test_patch_promo_final_close_can_atomically_mark_closed(promo_sheet):
+    promo_sheet.rows.append([
+        "M0392", "M0392-J_Turbo", "", "C1C2", "", "move", "2026-07-01 12:00:00",
+        "Closed-M0392-J_Turbo", "111", "222", "333", "prompt_required", "keep-review",
+        "created-value", "updated-value", "in_progress", "pending", "pending",
+        "finalization started by ticket_tool", "", "", "", "", "",
+    ])
+
+    result = onboarding_sheets.patch_promo_final_close(
+        ticket="M0392",
+        thread_id=222,
+        clan_tag="C1CV",
+        source_clan_tag="C1C2",
+        date_closed="2026-07-07",
+        status="closed",
+    )
+
+    assert result == "updated"
+    row = _row_map(promo_sheet)
+    assert row["clantag"] == "C1CV"
+    assert row["source_clan_tag"] == "C1C2"
+    assert row["date closed"] == "2026-07-07"
+    assert row["status"] == "closed"
+    assert row["review_reason"] == "keep-review"
+    assert row["created_at"] == "created-value"

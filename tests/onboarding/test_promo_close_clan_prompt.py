@@ -31,6 +31,14 @@ def _promo_source_header_config(monkeypatch):
         "shared.sheets.onboarding.find_promo_row",
         lambda *_args, **_kwargs: (2, {"clantag": "", "source_clan_tag": "NONE", "finalization_status": "pending"}),
     )
+    monkeypatch.setattr(
+        "shared.sheets.onboarding.patch_promo_final_close",
+        lambda **_kwargs: "updated",
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_promo.recruitment_sheets.get_clan_header_map",
+        lambda *_args, **_kwargs: {},
+    )
 
     async def no_reservations(*_args, **_kwargs):
         return []
@@ -157,6 +165,46 @@ def test_typed_tag_while_awaiting_clan_finalizes(monkeypatch):
     message = SimpleNamespace(channel=thread, author=DummyAuthor(bot=False, user_id=77), content="c1ce")
     asyncio.run(watcher.on_message(message))
     watcher._finalize_clan_tag.assert_awaited_once()
+
+
+def test_natural_language_destination_text_is_rejected(monkeypatch):
+    watcher = _setup_watcher(monkeypatch)
+    ctx = _context(state="awaiting_destination_clan", source_clan_tag="C1CB")
+    watcher._ensure_context = AsyncMock(return_value=ctx)
+    watcher._load_clan_tags = AsyncMock(return_value=["C1CB", "C1CE"])
+    watcher._finalize_clan_tag = AsyncMock()
+    watcher._send_invalid_tag_notice = AsyncMock()
+
+    thread = DummyThread(55)
+    message = SimpleNamespace(
+        channel=thread,
+        author=DummyAuthor(bot=False, user_id=77),
+        content="zealots to vindicators mate",
+    )
+    asyncio.run(watcher.on_message(message))
+
+    watcher._finalize_clan_tag.assert_not_awaited()
+    watcher._send_invalid_tag_notice.assert_awaited_once()
+
+
+def test_typed_source_tag_stores_source_before_destination_prompt(monkeypatch):
+    watcher = _setup_watcher(monkeypatch)
+    ctx = _context(state="awaiting_source_clan", source_clan_tag="")
+    watcher._ensure_context = AsyncMock(return_value=ctx)
+    watcher._load_clan_tags = AsyncMock(return_value=["C1CB", "C1CE"])
+    watcher._persist_prompt_source = AsyncMock(return_value=True)
+
+    thread = DummyThread(56)
+    message = SimpleNamespace(
+        channel=thread,
+        author=DummyAuthor(bot=False, user_id=77),
+        content="c1cb",
+    )
+    asyncio.run(watcher.on_message(message))
+
+    assert ctx.source_clan_tag == "C1CB"
+    assert ctx.state == "awaiting_destination_clan"
+    watcher._persist_prompt_source.assert_awaited_once()
 
 
 def test_dropdown_selection_finalizes(monkeypatch):

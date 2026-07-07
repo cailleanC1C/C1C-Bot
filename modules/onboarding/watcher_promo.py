@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass
 from types import SimpleNamespace
 from time import monotonic
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import discord
 from discord.ext import commands
@@ -35,7 +35,6 @@ from modules.onboarding.watcher_welcome import (
     cleanup_reservation_for_ticket_close,
     PanelOutcome,
     parse_promo_thread_name,
-    persist_session_for_thread,
     post_open_questions_panel,
     resolve_subject_user_id,
 )
@@ -46,7 +45,6 @@ from shared.logs import log_lifecycle
 from shared.cache import telemetry as cache_telemetry
 from shared.sheets import onboarding as onboarding_sheets
 from shared.sheets import onboarding_sessions
-from shared.sheets import promo_tickets
 from shared.sheets import recruitment as recruitment_sheets
 from shared.sheets import reservations as reservations_sheets
 
@@ -106,13 +104,68 @@ async def _log_promo_failure_row(
         log.warning("promo failure promo-row updated", extra={**payload, "sheet_result": result})
 
 
+
+def _promo_log_transition(
+    phase: str,
+    *,
+    thread: object | None = None,
+    context: "PromoTicketContext" | None = None,
+    actor: object | None = None,
+    raw_message_content: str | None = None,
+    metadata_row_number: int | None = None,
+    session_row_number: int | None = None,
+    status_before: str | None = None,
+    status_after: str | None = None,
+    finalization_status_before: str | None = None,
+    finalization_status_after: str | None = None,
+    missing_config_key: str | None = None,
+    missing_schema_field: str | None = None,
+    write_skipped: bool | str | None = None,
+    reason: str | None = None,
+    **extra: Any,
+) -> None:
+    payload: dict[str, Any] = {
+        "flow": "promo",
+        "phase": phase,
+        "ticket": getattr(context, "ticket_number", None),
+        "thread_id": getattr(thread, "id", None) or getattr(context, "thread_id", None),
+        "thread_name": getattr(thread, "name", None),
+        "acting_user_id": getattr(actor, "id", None),
+        "raw_message_content": raw_message_content,
+        "source_clan_tag": getattr(context, "source_clan_tag", None),
+        "destination_clan_tag": getattr(context, "clan_tag", None),
+        "metadata_row_number": metadata_row_number,
+        "session_row_number": session_row_number,
+        "status_before": status_before,
+        "status_after": status_after,
+        "finalization_status_before": finalization_status_before,
+        "finalization_status_after": finalization_status_after,
+        "missing_config_key": missing_config_key,
+        "missing_schema_field": missing_schema_field,
+        "write_skipped": write_skipped,
+        "reason": reason,
+    }
+    payload.update({k: v for k, v in extra.items() if v is not None})
+    log.info("promo_finalization_transition", extra=payload)
+
+
+def _valid_promo_year(value: object) -> str:
+    text = str(value or "").strip()
+    try:
+        year = int(text)
+    except (TypeError, ValueError):
+        return ""
+    if year <= 1900:
+        return ""
+    return str(year)
+
 def _promo_headers_for_write(*, ticket: str | None = None) -> list[str]:
     try:
         return onboarding_sheets.get_live_promo_headers()
     except Exception:
         log.exception(
-            "promo source clan header mapping unavailable; cannot write Promo row",
-            extra={"ticket": ticket or "-"},
+            "promo live header read failed; promo write skipped",
+            extra={"ticket": ticket or "-", "write_skipped": True, "reason": "live_header_read_failed"},
         )
         raise
 
@@ -464,6 +517,22 @@ class PromoTicketWatcher(commands.Cog):
         self._clan_tags = normalized
         return self._clan_tags
 
+    async def _clan_name_for_tag(self, tag: str) -> str:
+        tag = (tag or "").strip().upper()
+        if not tag:
+            return ""
+        try:
+            found = await asyncio.to_thread(_find_promo_clan_row, tag, force=True)
+            header_map = await asyncio.to_thread(recruitment_sheets.get_clan_header_map)
+        except Exception:
+            log.exception("promo destination clan name resolution failed", extra={"clan_tag": tag})
+            return ""
+        if not found:
+            return ""
+        _, row = found
+        name_idx = header_map.get("clan_name")
+        return str(row[name_idx] if name_idx is not None and name_idx < len(row) else "").strip()
+
     async def _ensure_context(self, thread: discord.Thread) -> Optional[PromoTicketContext]:
         context = self._tickets.get(thread.id)
         if context is not None:
@@ -667,7 +736,7 @@ class PromoTicketWatcher(commands.Cog):
         review_reason: str | None = None,
         created_at: dt.datetime | None = None,
         updated_at: dt.datetime | None = None,
-    ) -> str | None:
+    ) -> bool:
         resolved_user_id = user_id if user_id is not None else context.user_id
         reason = review_reason
         if resolved_user_id is None and not reason:
@@ -695,13 +764,13 @@ class PromoTicketWatcher(commands.Cog):
                 "promo metadata write failed",
                 extra={"phase": phase, "ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)},
             )
-            return None
+            return False
         log.info(
             "promo metadata write %s",
             result,
             extra={"phase": phase, "ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)},
         )
-        return result
+        return True
 
     async def _ensure_row_initialized(self, thread: discord.Thread, context: PromoTicketContext) -> None:
         try:
@@ -729,6 +798,43 @@ class PromoTicketWatcher(commands.Cog):
             "promo watcher could not locate ticket row for closure; skipping append",
             extra={"thread_id": getattr(thread, "id", None), "ticket": context.ticket_number},
         )
+
+    async def _persist_prompt_source(self, thread: discord.Thread, context: PromoTicketContext, *, actor: discord.abc.User | None = None, raw_message_content: str | None = None) -> bool:
+        source = (context.source_clan_tag or "").strip().upper()
+        if not source:
+            _promo_log_transition("source_persist_skipped", thread=thread, context=context, actor=actor, raw_message_content=raw_message_content, write_skipped=True, reason="missing_runtime_source")
+            return False
+        try:
+            found = await asyncio.to_thread(onboarding_sheets.find_promo_row, context.ticket_number)
+        except Exception as exc:
+            log.exception("promo source persist row lookup failed; write skipped", extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None), "phase": "source_persist", "write_skipped": True, "reason": str(exc)})
+            _promo_log_transition("source_persist_failed", thread=thread, context=context, actor=actor, raw_message_content=raw_message_content, write_skipped=True, reason="row_lookup_exception", exception=str(exc))
+            await thread.send("⚠️ I couldn't read the promo metadata row, so I skipped writing source context. Please try again or finish manually.")
+            return False
+        row_no = found[0] if found else None
+        values = found[1] if found else {}
+        before_state = _promo_finalization_state(values)
+        existing_source = _source_clan_from_promo_values(values, ticket=context.ticket_number) if values else ""
+        if existing_source:
+            context.source_clan_tag = existing_source.strip().upper()
+            _promo_log_transition("source_persist_skipped", thread=thread, context=context, actor=actor, raw_message_content=raw_message_content, metadata_row_number=row_no, finalization_status_before=before_state.get("finalization_status"), finalization_status_after=before_state.get("finalization_status"), write_skipped=True, reason="source_already_persisted")
+            return True
+        try:
+            result = await asyncio.to_thread(
+                onboarding_sheets.patch_promo_prompt_source,
+                ticket=context.ticket_number,
+                thread_id=getattr(thread, "id", None),
+                source_clan_tag=source,
+                finalization_status="prompt_required",
+                finalization_note="source clan persisted; awaiting destination",
+            )
+        except Exception as exc:
+            log.exception("promo source persist write failed", extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)})
+            _promo_log_transition("source_persist_failed", thread=thread, context=context, actor=actor, raw_message_content=raw_message_content, metadata_row_number=row_no, missing_schema_field=str(exc), write_skipped=True, reason="write_failed")
+            await thread.send("⚠️ I couldn't persist the promo source clan before asking for destination. Please try again or finish manually.")
+            return False
+        _promo_log_transition("source_persisted", thread=thread, context=context, actor=actor, raw_message_content=raw_message_content, metadata_row_number=row_no, finalization_status_before=before_state.get("finalization_status"), finalization_status_after="prompt_required", reason=str(result))
+        return True
 
     async def _send_invalid_tag_notice(self, thread: discord.Thread, actor: discord.abc.User | None, candidate: str) -> None:
         notice = (
@@ -767,21 +873,31 @@ class PromoTicketWatcher(commands.Cog):
             context.state = "awaiting_destination_clan"
             await self._complete_close(thread, context, progression=context.progression, clan_name=context.clan_name, phase="close", previous_final=context.source_clan_tag, trigger=trigger)
             return
-        try:
-            await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "promo", ticket=context.ticket_number, thread_id=getattr(thread, "id", None), finalization_status="prompt_required", finalization_note="missing source/destination, prompted staff")
-        except Exception:
-            log.exception("promo prompt finalization state update failed", extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)})
-
-        context.state = "awaiting_source_clan"
-        content = (
-            f"Where did the member come from?\n"
-            f"Where is the member going?\n"
-            f"First select the source clan for {context.username} (ticket {context.ticket_number}).\n"
-            f"Use **{_NO_PLACEMENT_TAG}** only when there was no source placement.\n{CLAN_TAG_PROMPT_HELPER}"
-        )
-        source_tags = [tag for tag in tags if tag != _NO_PLACEMENT_TAG]
-        source_tags.insert(0, _NO_PLACEMENT_TAG)
-        view = PromoClanSelectView(self, context, source_tags, role="source")
+        if context.source_clan_tag:
+            if not await self._persist_prompt_source(thread, context):
+                return
+            context.state = "awaiting_destination_clan"
+            content = (
+                f"Source recorded as **{context.source_clan_tag}**. Where is the member going?\n"
+                f"Select the destination clan for {context.username} (ticket {context.ticket_number}).\n"
+                f"{CLAN_TAG_PROMPT_HELPER}"
+            )
+            view = PromoClanSelectView(self, context, tags, role="destination")
+        else:
+            try:
+                await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "promo", ticket=context.ticket_number, thread_id=getattr(thread, "id", None), finalization_status="prompt_required", finalization_note="missing source/destination, prompted staff")
+            except Exception:
+                log.exception("promo prompt finalization state update failed", extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)})
+            context.state = "awaiting_source_clan"
+            content = (
+                f"Where did the member come from?\n"
+                f"Where is the member going?\n"
+                f"First select the source clan for {context.username} (ticket {context.ticket_number}).\n"
+                f"Use **{_NO_PLACEMENT_TAG}** only when there was no source placement.\n{CLAN_TAG_PROMPT_HELPER}"
+            )
+            source_tags = [tag for tag in tags if tag != _NO_PLACEMENT_TAG]
+            source_tags.insert(0, _NO_PLACEMENT_TAG)
+            view = PromoClanSelectView(self, context, source_tags, role="source")
         try:
             message = await thread.send(content, view=view)
         except Exception:
@@ -801,48 +917,12 @@ class PromoTicketWatcher(commands.Cog):
             status="prompt_required",
             updated_at=getattr(message, "created_at", None),
         )
+        _promo_log_transition("prompt", thread=thread, context=context, status_after="prompt_required", finalization_status_after="prompt_required", reason="destination" if context.source_clan_tag else "source_destination")
         log.info("close_prompt_started", extra={"flow": "promo", "trigger": trigger, "thread_id": getattr(thread, "id", None), "ticket": context.ticket_number})
         await _send_placement_log_line(flow="promo", outcome="prompt", ticket=context.ticket_number, player=context.username, trigger=trigger, finalization_status="prompt_required", reason="missing_source_destination", action="prompted_staff")
 
-        if context.user_id is None:
-            log.warning(
-                "promo watcher: skipping session persist; no resolved user id",
-                extra={"thread_id": getattr(thread, "id", None), "ticket": context.ticket_number},
-            )
-            return
-
-        ticket_username = None
-        try:
-            _, ticket_username = (getattr(thread, "name", "") or "").split("-", 1)
-            ticket_username = ticket_username.strip()
-        except ValueError:
-            ticket_username = None
-
-        created_at = getattr(message, "created_at", None) or dt.datetime.now(UTC)
-        try:
-            await persist_session_for_thread(
-                flow="promo",
-                ticket_number=context.ticket_number,
-                thread=thread,
-                user_id=context.user_id,
-                username=context.username,
-                created_at=created_at,
-                panel_message_id=message.id,
-            )
-        except Exception:
-            log.exception(
-                "promo watcher: failed to persist onboarding session at panel creation",
-                extra={"thread_id": getattr(thread, "id", None), "ticket": context.ticket_number},
-            )
-        else:
-            if context.ticket_number and ticket_username:
-                try:
-                    await promo_tickets.save(context.ticket_number, ticket_username)
-                except Exception:
-                    log.exception(
-                        "failed to persist promo ticket log",
-                        extra={"thread_id": getattr(thread, "id", None), "ticket": context.ticket_number},
-                    )
+        # Promo close/finalization recovery state lives in Promo ticket metadata;
+        # do not create empty OnboardingSessions placeholders from this prompt path.
 
 
     async def source_from_interaction(
@@ -890,6 +970,8 @@ class PromoTicketWatcher(commands.Cog):
             return
 
         context.source_clan_tag = source_tag
+        if not await self._persist_prompt_source(thread, context, actor=actor):
+            return
         context.state = "awaiting_destination_clan"
         if view is not None:
             view.stop()
@@ -962,7 +1044,40 @@ class PromoTicketWatcher(commands.Cog):
             await self._send_invalid_tag_notice(thread, actor, final_tag)
             return
 
+        found = None
+        try:
+            found = await asyncio.to_thread(onboarding_sheets.find_promo_row, context.ticket_number)
+        except Exception as exc:
+            log.exception("promo destination row lookup failed; finalization skipped", extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None), "phase": "destination_continue", "write_skipped": True, "reason": str(exc)})
+            _promo_log_transition("destination_failed", thread=thread, context=context, actor=actor, write_skipped=True, reason="row_lookup_exception", exception=str(exc))
+            await thread.send("⚠️ I couldn't read the promo metadata row, so I skipped finalization. Please try again or finish manually.")
+            return
+        if found:
+            row_no, values = found
+            persisted_source = _source_clan_from_promo_values(values, ticket=context.ticket_number)
+            if persisted_source:
+                context.source_clan_tag = persisted_source.strip().upper()
+            elif context.source_clan_tag:
+                if context.state == "awaiting_destination_clan" and not await self._persist_prompt_source(thread, context, actor=actor):
+                    return
+            elif context.state == "awaiting_clan":
+                context.source_clan_tag = str(values.get("clantag") or _NO_PLACEMENT_TAG).strip().upper()
+            else:
+                _promo_log_transition("destination_failed", thread=thread, context=context, actor=actor, metadata_row_number=row_no, reason="missing_persisted_source_context")
+                await thread.send("⚠️ Promo source clan context is missing from the ticket metadata row, so I can't safely finalize this move. Please re-select the source clan or use `!finishplacement` with source and destination tags.")
+                return
+        elif context.source_clan_tag:
+            if context.state == "awaiting_destination_clan" and not await self._persist_prompt_source(thread, context, actor=actor):
+                return
+        elif context.state == "awaiting_clan":
+            context.source_clan_tag = _NO_PLACEMENT_TAG
+        else:
+            _promo_log_transition("destination_failed", thread=thread, context=context, actor=actor, reason="missing_source_context_no_row")
+            await thread.send("⚠️ Promo source clan context is missing and no promo metadata row could be loaded. Please use `!finishplacement` with source and destination tags.")
+            return
+
         context.clan_tag = final_tag
+        _promo_log_transition("destination_received", thread=thread, context=context, actor=actor, metadata_row_number=(found[0] if found else None))
 
         if view is not None:
             view.stop()
@@ -973,12 +1088,13 @@ class PromoTicketWatcher(commands.Cog):
                 prompt_message = None
 
         previous_final: str | None = (context.source_clan_tag or "").strip().upper()
+        destination_clan_name = await self._clan_name_for_tag(final_tag)
 
         await self._complete_close(
             thread,
             context,
             progression="",
-            clan_name="",
+            clan_name=destination_clan_name,
             previous_final=previous_final,
         )
         if context.state != "closed":
@@ -1017,6 +1133,7 @@ class PromoTicketWatcher(commands.Cog):
                 context.state = "closed"
                 return
             await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "promo", ticket=context.ticket_number, thread_id=getattr(thread, "id", None), finalization_status="in_progress", finalization_note=f"finalization started by {trigger}")
+            _promo_log_transition("start", thread=thread, context=context, metadata_row_number=found_state[0] if found_state else None, finalization_status_before=finalization_state.get("finalization_status"), finalization_status_after="in_progress", reason=f"trigger={trigger}")
         except Exception:
             log.exception("promo finalization state preflight failed", extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)})
             try:
@@ -1026,41 +1143,63 @@ class PromoTicketWatcher(commands.Cog):
             await _send_placement_log_line(flow="promo", outcome="failed", ticket=context.ticket_number, reason="finalization_state_preflight_failed", action="manual_check")
             return
         log.info("close_finalization_started", extra={"flow": "promo", "trigger": trigger, "thread_id": getattr(thread, "id", None), "ticket": context.ticket_number})
-        try:
-            promo_headers = _promo_headers_for_write(ticket=context.ticket_number)
-        except Exception:
-            await thread.send("⚠️ Promo source clan header mapping is missing. Please fix Config before closing this promo ticket.")
-            return
 
-        row_map = {
-            "ticketnumber": context.ticket_number,
-            "username": context.username,
-            "clantag": context.clan_tag,
-            "sourceclantag": context.source_clan_tag,
-            "dateclosed": timestamp,
-            "type": context.promo_type,
-            "threadcreated": context.thread_created,
-            "year": context.year,
-            "month": context.month,
-            "joinmonth": context.join_month,
-            "clanname": clan_name,
-            "progression": progression,
-        }
-        row = [
-            row_map.get(
-                "".join(ch for ch in str(header or "").lower() if ch.isalnum()),
-                "",
-            )
-            for header in promo_headers
-        ]
-        try:
-            await self._patch_ticket_metadata(
-                phase="finalization_metadata",
+        async def mark_failed_after_start(reason: str, note: str, *, exc: Exception | None = None) -> None:
+            _promo_log_transition(
+                "finalization_failed",
                 thread=thread,
                 context=context,
-                panel_message_id=context.prompt_message_id,
-                status="closed",
+                metadata_row_number=(found_state[0] if found_state else None),
+                finalization_status_after="failed",
+                write_skipped=True,
+                reason=reason,
+                exception=str(exc) if exc else None,
             )
+            try:
+                await asyncio.to_thread(
+                    onboarding_sheets.update_ticket_finalization_state,
+                    "promo",
+                    ticket=context.ticket_number,
+                    thread_id=getattr(thread, "id", None),
+                    finalization_status="failed",
+                    finalization_note=note,
+                )
+            except Exception:
+                log.exception(
+                    "promo finalization failed marker update failed",
+                    extra={
+                        "ticket": context.ticket_number,
+                        "thread_id": getattr(thread, "id", None),
+                        "phase": reason,
+                    },
+                )
+
+        persisted_source = _source_clan_from_promo_values(found_state[1], ticket=context.ticket_number) if found_state else ""
+        if persisted_source:
+            context.source_clan_tag = persisted_source.strip().upper()
+        elif (context.source_clan_tag or "").strip().upper() and (context.source_clan_tag or "").strip().upper() != _NO_PLACEMENT_TAG and context.state == "awaiting_destination_clan":
+            if not await self._persist_prompt_source(thread, context):
+                await mark_failed_after_start(
+                    "source_persist_failed_after_start",
+                    "finalization started but source persistence failed before close fields were written",
+                )
+                return
+        elif (context.source_clan_tag or "").strip().upper() and (context.source_clan_tag or "").strip().upper() != _NO_PLACEMENT_TAG:
+            context.source_clan_tag = (context.source_clan_tag or "").strip().upper()
+        elif (context.source_clan_tag or "").strip().upper() == _NO_PLACEMENT_TAG:
+            context.source_clan_tag = _NO_PLACEMENT_TAG
+        elif context.state == "awaiting_clan" and found_state:
+            context.source_clan_tag = str(found_state[1].get("clantag") or _NO_PLACEMENT_TAG).strip().upper()
+        else:
+            await mark_failed_after_start(
+                "missing_source_context",
+                "finalization started but source clan context was missing before close fields were written",
+            )
+            await thread.send("⚠️ Promo source clan context is missing from the promo metadata row. Please provide the source clan before closing this promo ticket.")
+            return
+        close_year = str(dt.datetime.now(UTC).year)
+        safe_context_year = _valid_promo_year(context.year) or close_year
+        try:
             result = await log_sheet_write(
                 flow="promo",
                 phase=phase or "close",
@@ -1069,15 +1208,35 @@ class PromoTicketWatcher(commands.Cog):
                 thread=thread,
                 user=context.username,
                 write_coro=lambda: asyncio.to_thread(
-                    onboarding_sheets.upsert_promo, row, promo_headers
+                    onboarding_sheets.patch_promo_final_close,
+                    ticket=context.ticket_number,
+                    thread_id=getattr(thread, "id", None),
+                    clan_tag=context.clan_tag,
+                    source_clan_tag=context.source_clan_tag,
+                    date_closed=timestamp,
+                    clan_name=clan_name,
+                    progression=progression,
+                    year=safe_context_year,
+                    month=context.month or dt.datetime.now(UTC).strftime("%B"),
+                    join_month=context.join_month,
+                    status="closed",
                 ),
             )
-        except Exception:
+            _promo_log_transition("sheet_write", thread=thread, context=context, metadata_row_number=(found_state[0] if found_state else None), status_after="closed", reason=str(result))
+        except Exception as exc:
             log.exception(
-                "failed to finalize promo closure",
-                extra={"thread_id": getattr(thread, "id", None), "ticket": context.ticket_number},
+                "failed to patch required promo close fields; status not closed",
+                extra={"thread_id": getattr(thread, "id", None), "ticket": context.ticket_number, "phase": "final_close_patch", "write_skipped": True, "reason": str(exc)},
             )
-            await thread.send("⚠️ I couldn't update the promo log. Please try again later.")
+            _promo_log_transition("finalization_failed", thread=thread, context=context, metadata_row_number=(found_state[0] if found_state else None), write_skipped=True, reason="final_close_patch_failed", exception=str(exc))
+            try:
+                await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "promo", ticket=context.ticket_number, thread_id=getattr(thread, "id", None), finalization_status="failed", finalization_note=f"final close patch failed: {exc}")
+            except Exception:
+                log.exception("promo final close failure marker update failed", extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)})
+            try:
+                await thread.send("⚠️ I couldn't write the required promo close fields, so this ticket was not marked closed. Please try again later.")
+            except Exception:
+                log.debug("failed to notify promo thread about final close patch failure", exc_info=True)
             return
 
         context.clan_name = clan_name
@@ -1207,10 +1366,16 @@ class PromoTicketWatcher(commands.Cog):
         finalization_note = "finalized by close handler" if cleanup.ok else (cleanup.reason or "reservation/clan update partially failed")
         try:
             await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "promo", ticket=ticket_id_final, thread_id=getattr(thread, "id", None), finalization_status=finalization_status, reservation_status=reservation_status, clan_update_status=clan_update_status, finalization_note=finalization_note)
+            _promo_log_transition("success" if finalization_status == "done" else "failure", thread=thread, context=context, metadata_row_number=(found_state[0] if found_state else None), status_after="closed", finalization_status_after=finalization_status, reason=finalization_note)
         except Exception:
             finalization_status = "partial"
             logging_channel_result = "state_error"
             log.exception("promo finalization state completion update failed", extra={"ticket": ticket_id_final, "thread_id": getattr(thread, "id", None)})
+            try:
+                await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "promo", ticket=ticket_id_final, thread_id=getattr(thread, "id", None), finalization_status="failed", reservation_status=reservation_status, clan_update_status=clan_update_status, finalization_note="finalization completion state update failed after close fields were written")
+                finalization_status = "failed"
+            except Exception:
+                log.exception("promo finalization failed marker update after completion failure failed", extra={"ticket": ticket_id_final, "thread_id": getattr(thread, "id", None)})
         outcome = "success" if finalization_status == "done" else "partial"
         await _send_placement_log_line(flow="promo", outcome=outcome, ticket=ticket_id_final, player=context.username, source=source_tag or None, destination=final_tag or _NO_PLACEMENT_TAG, trigger=trigger, reservation=reservation_status, clan_update=clan_update_status, finalization_status=finalization_status, action=(None if outcome == "success" else "manual_check"))
         try:
@@ -1537,10 +1702,13 @@ class PromoTicketWatcher(commands.Cog):
             if not candidate:
                 return
             tags = await self._load_clan_tags()
-            valid = set(tags) | ({_NO_PLACEMENT_TAG} if context.state == "awaiting_source_clan" else set())
-            if candidate not in valid:
+            valid_tags = set(tags)
+            if context.state == "awaiting_source_clan":
+                valid_tags.add(_NO_PLACEMENT_TAG)
+            if candidate not in valid_tags:
                 await self._send_invalid_tag_notice(thread, message.author, candidate)
                 return
+            _promo_log_transition("prompt_message_received", thread=thread, context=context, actor=message.author, raw_message_content=candidate)
             if context.state == "awaiting_source_clan":
                 await self._set_source_clan_tag(
                     thread,

@@ -1410,7 +1410,7 @@ def append_promo_ticket_row(
 ) -> str:
     sheet_id, tab = _resolve_onboarding_and_promo_tab()
     ws = core.get_worksheet(sheet_id, tab)
-    header = _ensure_promo_headers(ws)
+    header = _read_promo_live_header_row(ws)
     source_header = require_promo_source_clan_header(header)
     ticket_value = _fmt_ticket(ticket)
     created, updated = _normalize_ticket_timestamps(created_at, updated_at)
@@ -1544,6 +1544,151 @@ def get_ticket_finalization_state(flow: str, row_values: Dict[str, str] | Sequen
     require_finalization_headers(flow, base_headers)
     return {field: str(row_map.get(header, "") or "").strip() for field, header in headers.items()}
 
+
+
+def patch_promo_prompt_source(
+    *,
+    ticket: str | None,
+    thread_id: int | str | None = None,
+    source_clan_tag: str,
+    finalization_status: str | None = None,
+    finalization_note: str | None = None,
+) -> str:
+    """Patch only Promo source/finalization prompt fields on an existing row."""
+
+    sheet_id, tab = _resolve_onboarding_and_promo_tab()
+    ws = core.get_worksheet(sheet_id, tab)
+    header = _ensure_promo_headers(ws)
+    source_header = require_promo_source_clan_header(header)
+    final_headers = require_finalization_headers("promo", header)
+    values = core.call_with_backoff(ws.get_all_values)
+    row_number, row = _promo_find_row_in_values(
+        header,
+        values,
+        ticket=_fmt_ticket(ticket) if ticket else "",
+        thread_id=str(thread_id or "").strip(),
+    )
+    if row_number is None or row is None:
+        raise RuntimeError(f"promo prompt source row not found for ticket={ticket or '-'} thread_id={thread_id or '-'}")
+    if len(row) < len(header):
+        row.extend("" for _ in range(len(header) - len(row)))
+
+    updates: dict[str, str] = {source_header: str(source_clan_tag or "").strip()}
+    if finalization_status is not None:
+        updates[final_headers["finalization_status"]] = str(finalization_status)
+    if finalization_note is not None:
+        updates[final_headers["finalization_note"]] = str(finalization_note)
+    updated_col = next(
+        (idx for idx, name in enumerate(_normalize_header_name(h) for h in header) if name == "updatedat"),
+        -1,
+    )
+    if updated_col >= 0:
+        row[updated_col] = datetime.now(timezone.utc).isoformat()
+
+    for header_name, value in updates.items():
+        col = _column_index(header, header_name, default=-1)
+        if col < 0:
+            raise RuntimeError(f"promo prompt source header missing: {header_name!r}")
+        row[col] = value
+
+    end_col = _col_to_a1(len(header) - 1)
+    core.call_with_backoff(ws.update, f"A{row_number}:{end_col}{row_number}", [row[: len(header)]])
+    return "updated"
+
+
+def patch_promo_final_close(
+    *,
+    ticket: str | None,
+    thread_id: int | str | None = None,
+    clan_tag: str,
+    source_clan_tag: str,
+    date_closed: str,
+    clan_name: str | None = None,
+    progression: str | None = None,
+    year: str | None = None,
+    month: str | None = None,
+    join_month: str | None = None,
+    status: str | None = None,
+) -> str:
+    """Patch only intended Promo final-close fields on an existing row."""
+
+    sheet_id, tab = _resolve_onboarding_and_promo_tab()
+    ws = core.get_worksheet(sheet_id, tab)
+    header = _read_promo_live_header_row(ws)
+    source_header = get_promo_source_clan_tag_header()
+    values = core.call_with_backoff(ws.get_all_values)
+    row_number, row = _promo_find_row_in_values(
+        header,
+        values,
+        ticket=_fmt_ticket(ticket) if ticket else "",
+        thread_id=str(thread_id or "").strip(),
+    )
+    if row_number is None or row is None:
+        raise RuntimeError(f"promo final close row not found for ticket={ticket or '-'} thread_id={thread_id or '-'}")
+    if len(row) < len(header):
+        row.extend("" for _ in range(len(header) - len(row)))
+
+    normalized_to_col = {_normalize_header_name(name): idx for idx, name in enumerate(header)}
+    required_updates: dict[str, str] = {
+        "clantag": str(clan_tag or "").strip(),
+        _normalize_header_name(source_header): str(source_clan_tag or "").strip(),
+        "dateclosed": str(date_closed or "").strip(),
+    }
+    if status is not None:
+        required_updates["status"] = str(status or "").strip()
+    for normalized in required_updates:
+        if normalized not in normalized_to_col:
+            raise RuntimeError(
+                "promo final close missing required header "
+                f"normalized_field={normalized!r} ticket={ticket or '-'} thread_id={thread_id or '-'} "
+                "operation=promo final close"
+            )
+
+    optional_updates: dict[str, str] = {}
+    if clan_name is not None:
+        optional_updates["clanname"] = str(clan_name or "").strip()
+    if progression is not None:
+        optional_updates["progression"] = str(progression or "").strip()
+
+    year_text = str(year or "").strip()
+    try:
+        valid_year = int(year_text) > 1900
+    except (TypeError, ValueError):
+        valid_year = False
+    if valid_year:
+        optional_updates["year"] = year_text
+        if str(month or "").strip():
+            optional_updates["month"] = str(month or "").strip()
+        if str(join_month or "").strip():
+            optional_updates["joinmonth"] = str(join_month or "").strip()
+
+    updated_col = normalized_to_col.get("updatedat")
+    if updated_col is not None:
+        row[updated_col] = datetime.now(timezone.utc).isoformat()
+
+    changed = False
+    for normalized, value in {**required_updates, **optional_updates}.items():
+        col = normalized_to_col.get(normalized)
+        if col is None:
+            continue
+        if normalized in required_updates and not value:
+            raise RuntimeError(
+                "promo final close missing required value "
+                f"normalized_field={normalized!r} ticket={ticket or '-'} thread_id={thread_id or '-'} "
+                "operation=promo final close"
+            )
+        if not value and normalized not in {"clanname", "progression"}:
+            continue
+        if str(row[col] if col < len(row) else "") == value:
+            continue
+        row[col] = value
+        changed = True
+
+    if not changed and updated_col is None:
+        return "unchanged"
+    end_col = _col_to_a1(len(header) - 1)
+    core.call_with_backoff(ws.update, f"A{row_number}:{end_col}{row_number}", [row[: len(header)]])
+    return "updated" if changed else "updated_timestamp"
 
 def update_ticket_finalization_state(
     flow: str,

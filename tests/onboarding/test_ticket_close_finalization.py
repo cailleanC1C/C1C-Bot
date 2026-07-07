@@ -477,3 +477,149 @@ def test_promo_finalization_in_progress_write_failure_blocks_side_effects(monkey
     assert side_effects == []
     assert [update["finalization_status"] for update in updates] == ["in_progress", "failed"]
     assert discord_logs == [{"flow": "promo", "outcome": "failed", "ticket": "M2002", "reason": "finalization_state_preflight_failed", "action": "manual_check"}]
+
+
+def test_promo_final_close_patch_failure_does_not_mark_closed(monkeypatch):
+    _seed_finalization_config(monkeypatch)
+    updates = []
+    metadata_statuses = []
+    side_effects = []
+
+    watcher = watcher_promo.PromoTicketWatcher(SimpleNamespace())
+    row = {"ticket number": "M2003", "username": "PatchFail", "clantag": "", "source_clan_tag": "C1CB", "finalization_status": "pending", "reservation_status": "pending", "clan_update_status": "pending", "finalization_note": ""}
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "find_promo_row", lambda ticket: (2, row))
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "update_ticket_finalization_state", lambda *a, **k: updates.append(k) or "updated")
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "patch_promo_final_close", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("required close write failed")))
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "upsert_promo", lambda *a, **k: side_effects.append("upsert"))
+
+    async def fake_metadata(**kwargs):
+        metadata_statuses.append(kwargs.get("status"))
+        return True
+
+    monkeypatch.setattr(watcher, "_patch_ticket_metadata", fake_metadata)
+    monkeypatch.setattr(watcher_promo, "cleanup_reservation_for_ticket_close", lambda *a, **k: side_effects.append("cleanup"))
+    monkeypatch.setattr(watcher_promo, "_send_placement_log_line", lambda **kwargs: asyncio.sleep(0))
+
+    context = watcher_promo.PromoTicketContext(thread_id=123, ticket_number="M2003", username="PatchFail", promo_type="move", thread_created="", year="2026", month="June", source_clan_tag="C1CB", clan_tag="C1CD")
+    asyncio.run(watcher._complete_close(_BackfillThread(name="M2003-PatchFail"), context, "", "", trigger="ticket_tool"))
+
+    assert "closed" not in metadata_statuses
+    assert side_effects == []
+    assert [update["finalization_status"] for update in updates] == ["in_progress", "failed"]
+    assert "final close patch failed" in updates[-1]["finalization_note"]
+
+
+def test_promo_missing_source_after_start_records_failed_finalization(monkeypatch):
+    _seed_finalization_config(monkeypatch)
+    updates = []
+    side_effects = []
+
+    watcher = watcher_promo.PromoTicketWatcher(SimpleNamespace())
+    row = {"ticket number": "M2007", "username": "NoSource", "clantag": "", "source_clan_tag": "", "finalization_status": "pending", "reservation_status": "pending", "clan_update_status": "pending", "finalization_note": ""}
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "find_promo_row", lambda ticket: (2, row))
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "update_ticket_finalization_state", lambda *a, **k: updates.append(k) or "updated")
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "patch_promo_final_close", lambda **kwargs: side_effects.append("final_close"))
+    monkeypatch.setattr(watcher_promo, "cleanup_reservation_for_ticket_close", lambda *a, **k: side_effects.append("cleanup"))
+
+    sent = []
+
+    class Thread(_BackfillThread):
+        async def send(self, message):
+            sent.append(message)
+
+    context = watcher_promo.PromoTicketContext(thread_id=123, ticket_number="M2007", username="NoSource", promo_type="move", thread_created="", year="2026", month="June", source_clan_tag="", clan_tag="C1CD")
+    asyncio.run(watcher._complete_close(Thread(name="M2007-NoSource"), context, "", "", trigger="ticket_tool"))
+
+    assert [update["finalization_status"] for update in updates] == ["in_progress", "failed"]
+    assert "source clan context was missing" in updates[-1]["finalization_note"]
+    assert side_effects == []
+    assert context.state != "closed"
+    assert sent
+
+
+def test_promo_success_closes_in_final_close_patch_not_metadata(monkeypatch):
+    _seed_finalization_config(monkeypatch)
+    operations = []
+    updates = []
+
+    class Thread(_BackfillThread):
+        guild = None
+
+        async def edit(self, **kwargs):
+            operations.append(("thread_edit", kwargs))
+
+    watcher = watcher_promo.PromoTicketWatcher(SimpleNamespace())
+    row = {"ticket number": "M2006", "username": "OrderOk", "clantag": "", "source_clan_tag": "C1CB", "finalization_status": "pending", "reservation_status": "pending", "clan_update_status": "pending", "finalization_note": ""}
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "find_promo_row", lambda ticket: (2, row))
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "update_ticket_finalization_state", lambda *a, **k: operations.append(("state", k.get("finalization_status"))) or updates.append(k) or "updated")
+
+    def fake_final_close(**kwargs):
+        operations.append(("final_close", kwargs.get("status"), kwargs.get("source_clan_tag"), kwargs.get("clan_tag"), kwargs.get("date_closed")))
+        return "updated"
+
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "patch_promo_final_close", fake_final_close)
+
+    async def fail_metadata(**kwargs):
+        raise AssertionError("successful promo close must not use metadata status patch")
+
+    monkeypatch.setattr(watcher, "_patch_ticket_metadata", fail_metadata)
+    monkeypatch.setattr(watcher_promo, "_normalize_clan_math_targets", lambda tags: {})
+    monkeypatch.setattr(watcher_promo, "_clan_math_column_indices", lambda: {})
+    monkeypatch.setattr(watcher_promo, "_capture_clan_snapshots", lambda *a, **k: {})
+
+    async def fake_cleanup(**kwargs):
+        operations.append(("cleanup", None))
+        return SimpleNamespace(
+            skipped=True,
+            ok=True,
+            reason=None,
+            reservation_row=None,
+            old_status=None,
+            new_status=None,
+            recomputed_tags=[],
+            decision_line="decision: ok",
+            reservation_label="none",
+            applied_open_deltas={},
+            source_clan_lookup_key="C1CB",
+            source_clan_row_found=True,
+            source_clan_row_number=9,
+            previous_is_real=True,
+            source_clan_not_real_reason=None,
+            source_clan_lookup_mode="tag",
+        )
+
+    monkeypatch.setattr(watcher_promo, "cleanup_reservation_for_ticket_close", fake_cleanup)
+    monkeypatch.setattr(watcher_promo, "_send_placement_log_line", lambda **kwargs: operations.append(("placement_log", kwargs.get("outcome"))) or asyncio.sleep(0))
+    monkeypatch.setattr(watcher_promo, "_log_clan_math_event", lambda *a, **k: asyncio.sleep(0))
+    monkeypatch.setattr(watcher_promo.onboarding_sessions, "mark_completed", lambda thread_id: operations.append(("session_complete", thread_id)))
+
+    context = watcher_promo.PromoTicketContext(thread_id=123, ticket_number="M2006", username="OrderOk", promo_type="move", thread_created="", year="2026", month="June", source_clan_tag="C1CB", clan_tag="C1CD")
+    asyncio.run(watcher._complete_close(Thread(name="M2006-OrderOk"), context, "", "Destination", trigger="ticket_tool"))
+
+    assert operations[0] == ("state", "in_progress")
+    assert operations[1][:4] == ("final_close", "closed", "C1CB", "C1CD")
+    assert operations[1][4]
+    assert operations[2] == ("cleanup", None)
+    assert updates[0]["finalization_status"] == "in_progress"
+    assert updates[-1]["finalization_status"] == "done"
+    assert context.state == "closed"
+
+
+def test_promo_patch_ticket_metadata_returns_explicit_bool(monkeypatch):
+    watcher = watcher_promo.PromoTicketWatcher(SimpleNamespace())
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "patch_promo_ticket_metadata", lambda **kwargs: "updated")
+    context = watcher_promo.PromoTicketContext(thread_id=123, ticket_number="M2004", username="MetaOk", promo_type="move", thread_created="", year="2026", month="June")
+
+    result = asyncio.run(watcher._patch_ticket_metadata(phase="test", thread=_BackfillThread(name="M2004-MetaOk"), context=context, status="closed"))
+
+    assert result is True
+
+
+def test_promo_patch_ticket_metadata_failure_returns_false(monkeypatch):
+    watcher = watcher_promo.PromoTicketWatcher(SimpleNamespace())
+    monkeypatch.setattr(watcher_promo.onboarding_sheets, "patch_promo_ticket_metadata", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("metadata write failed")))
+    context = watcher_promo.PromoTicketContext(thread_id=123, ticket_number="M2005", username="MetaFail", promo_type="move", thread_created="", year="2026", month="June")
+
+    result = asyncio.run(watcher._patch_ticket_metadata(phase="test", thread=_BackfillThread(name="M2005-MetaFail"), context=context, status="closed"))
+
+    assert result is False
