@@ -802,3 +802,60 @@ def test_availability_header_config_resolves_production_columns(monkeypatch):
         "manual_open_spots_seen": "AJ",
         "clan_tag": "AK",
     }
+
+
+def test_adjust_and_recompute_accept_same_configured_row_resolver(monkeypatch):
+    worksheet = StubWorksheet()
+    row = [""] * 42
+    row[5] = "C1CD"
+    row[6] = "4"
+    row[20] = "4"
+    row[32] = "0"
+    row[33] = "0"
+    row[34] = ""
+    row[36] = "4"
+    header = [""] * 42
+    header[5] = "Live Clan Tag"
+    header[6] = "Manual open spots"
+    header[20] = "Effective open spots"
+    header[32] = "Inactives"
+    header[33] = "Reservation count"
+    header[34] = "Reservation summary"
+    header[36] = "Manual open spots seen"
+    config = {
+        "clans_header_clan_tag": "Live Clan Tag",
+        "clans_header_manual_open_spots": "Manual open spots",
+        "clans_header_open_spots": "Effective open spots",
+        "clans_header_inactives": "Inactives",
+        "clans_header_reservation_count": "Reservation count",
+        "clans_header_reservation_summary": "Reservation summary",
+        "clans_header_manual_open_spots_seen": "Manual open spots seen",
+    }
+    monkeypatch.setattr(availability.recruitment, "get_config_value", lambda key, default=None: config.get(key, default))
+    monkeypatch.setattr(availability.recruitment, "get_clan_header_row", lambda force=True: header)
+    monkeypatch.setattr(availability.recruitment, "get_clans_tab_name", lambda: "bot_info")
+    monkeypatch.setattr(availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet123456")
+    monkeypatch.setattr(availability.recruitment, "fetch_clans", lambda force=True: [list(row)])
+    monkeypatch.setattr(availability.recruitment, "update_cached_clan_row", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(availability.recruitment, "get_clan_header_map", lambda: {"clan_tag": 2})
+    monkeypatch.setattr(availability.reservations, "get_active_reservations_for_clan", lambda tag: asyncio.sleep(0, result=[]))
+    monkeypatch.setattr(availability.reservations, "resolve_reservation_names", lambda *a, **k: asyncio.sleep(0, result=[]))
+
+    async def fake_aget(_sheet_id: str, _tab_name: str):
+        return worksheet
+
+    async def fake_acall(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(availability.async_core, "aget_worksheet", fake_aget)
+    monkeypatch.setattr(availability.async_core, "acall_with_backoff", fake_acall)
+
+    calls = []
+
+    def resolver(tag, headers):
+        calls.append((tag, headers.header_map["clan_tag"]))
+        return availability.resolve_availability_clan_row(tag, headers)
+
+    assert asyncio.run(availability.adjust_manual_open_spots("C1CD", -1, find_clan_row_fn=resolver)) == 3
+    asyncio.run(availability.recompute_clan_availability("C1CD", find_clan_row_fn=resolver))
+    assert calls == [("C1CD", 5), ("C1CD", 5), ("C1CD", 5)]
