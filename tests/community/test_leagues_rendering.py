@@ -41,7 +41,7 @@ def test_league_role_mention_prefers_role_id(monkeypatch) -> None:
     assert cog._league_role_mention() == "<@&12345>"
 
 
-def _approval_row(status: str = "pending"):
+def _approval_row(status: str = "pending", *, posted_at_utc: str = "", approved_by_user_ids: str = ""):
     values = {
         "season_key": "2026",
         "week_key": "26",
@@ -49,8 +49,8 @@ def _approval_row(status: str = "pending"):
         "prompt_channel_id": "5678",
         "status": status,
         "required_reactions": "1",
-        "approved_by_user_ids": "",
-        "posted_at_utc": "",
+        "approved_by_user_ids": approved_by_user_ids,
+        "posted_at_utc": posted_at_utc,
         "created_at_utc": "2026-06-24T00:00:00+00:00",
         "updated_at_utc": "2026-06-24T00:00:00+00:00",
         "last_error": "",
@@ -77,13 +77,26 @@ class _LeagueApprovalPayload:
     member = SimpleNamespace(id=1111)
 
 
-async def _run_approval(monkeypatch, *, is_admin: bool, job_result: bool = True, job_error: Exception | None = None):
+async def _run_approval(
+    monkeypatch,
+    *,
+    is_admin: bool,
+    job_result: bool = True,
+    job_error: Exception | None = None,
+    status: str = "pending",
+    posted_at_utc: str = "",
+    approved_by_user_ids: str = "",
+    league_admin_ids: str | None = None,
+):
     cog = LeaguesCog(_LeagueApprovalBot())
-    row = _approval_row()
+    row = _approval_row(status, posted_at_utc=posted_at_utc, approved_by_user_ids=approved_by_user_ids)
     updates = []
     calls = {"job": 0}
 
-    monkeypatch.delenv("LEAGUE_ADMIN_IDS", raising=False)
+    if league_admin_ids is None:
+        monkeypatch.delenv("LEAGUE_ADMIN_IDS", raising=False)
+    else:
+        monkeypatch.setenv("LEAGUE_ADMIN_IDS", league_admin_ids)
     monkeypatch.setattr("modules.community.leagues.cog.is_admin_member", lambda member: is_admin)
 
     async def _find(channel_id, message_id, *, include_terminal=False):
@@ -122,6 +135,43 @@ def test_league_approval_allows_project_admin_without_league_admin_ids(monkeypat
     assert row["values"]["status"] == "posted"
 
 
+def test_league_approval_allows_configured_league_admin_id(monkeypatch) -> None:
+    import asyncio
+
+    row, updates, calls = asyncio.run(
+        _run_approval(monkeypatch, is_admin=False, league_admin_ids="1111")
+    )
+
+    assert calls["job"] == 1
+    assert any(update.get("status") == "posting" for update in updates)
+    assert row["values"]["status"] == "posted"
+
+
+def test_league_approval_rejected_user_logs_admin_gate(monkeypatch, caplog) -> None:
+    import asyncio
+    import logging
+
+    caplog.set_level(logging.INFO, logger="c1c.community.leagues")
+
+    row, updates, calls = asyncio.run(
+        _run_approval(monkeypatch, is_admin=False, league_admin_ids="2222")
+    )
+
+    assert calls["job"] == 0
+    assert updates == []
+    assert row["values"]["status"] == "pending"
+    assert any(
+        record.getMessage() == "league approval admin gate failed"
+        and getattr(record, "reason", "") == "not_in_league_admin_ids_or_discord_admin"
+        for record in caplog.records
+    )
+    assert any(
+        record.getMessage() == "league approval reaction ignored"
+        and getattr(record, "reason", "") == "user_not_allowed"
+        for record in caplog.records
+    )
+
+
 def test_league_approval_rejects_non_admin_when_not_in_league_admin_ids(monkeypatch) -> None:
     import asyncio
 
@@ -154,6 +204,77 @@ def test_league_approval_marks_failed_and_last_error_on_post_failure(monkeypatch
     assert calls["job"] == 1
     assert statuses == ["posting", "failed"]
     assert "RuntimeError: boom" in row["values"]["last_error"]
+
+
+def test_league_approval_retries_failed_unposted_row(monkeypatch) -> None:
+    import asyncio
+
+    row, updates, calls = asyncio.run(
+        _run_approval(
+            monkeypatch,
+            is_admin=True,
+            job_result=True,
+            status="failed",
+            approved_by_user_ids="1111",
+        )
+    )
+
+    statuses = [update.get("status") for update in updates if "status" in update]
+    assert calls["job"] == 1
+    assert statuses == ["posting", "posted"]
+    assert row["values"]["posted_at_utc"]
+    assert row["values"]["last_error"] == ""
+
+
+def test_league_approval_ignores_failed_row_with_posted_at(monkeypatch) -> None:
+    import asyncio
+
+    row, updates, calls = asyncio.run(
+        _run_approval(
+            monkeypatch,
+            is_admin=True,
+            status="failed",
+            posted_at_utc="2026-06-24T00:00:00+00:00",
+            approved_by_user_ids="1111",
+        )
+    )
+
+    assert calls["job"] == 0
+    assert updates == []
+    assert row["values"]["status"] == "failed"
+    assert row["values"]["posted_at_utc"] == "2026-06-24T00:00:00+00:00"
+
+
+def test_league_approval_ignores_posted_row(monkeypatch) -> None:
+    import asyncio
+
+    row, updates, calls = asyncio.run(
+        _run_approval(monkeypatch, is_admin=True, status="posted", posted_at_utc="2026-06-24T00:00:00+00:00")
+    )
+
+    assert calls["job"] == 0
+    assert updates == []
+    assert row["values"]["status"] == "posted"
+
+
+def test_league_approval_retry_failure_sets_failed_and_last_error(monkeypatch) -> None:
+    import asyncio
+
+    row, updates, calls = asyncio.run(
+        _run_approval(
+            monkeypatch,
+            is_admin=True,
+            status="failed",
+            approved_by_user_ids="1111",
+            job_error=RuntimeError("retry boom"),
+        )
+    )
+
+    statuses = [update.get("status") for update in updates if "status" in update]
+    assert calls["job"] == 1
+    assert statuses == ["posting", "failed"]
+    assert row["values"]["posted_at_utc"] == ""
+    assert "RuntimeError: retry boom" in row["values"]["last_error"]
 
 
 def test_reaction_approval_runtime_uses_async_league_config_loader(monkeypatch):

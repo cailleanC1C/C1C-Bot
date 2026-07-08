@@ -259,6 +259,72 @@ def _resolve_availability_headers() -> AvailabilityHeaderResolution:
     )
 
 
+async def _aresolve_availability_headers() -> AvailabilityHeaderResolution:
+    tab_name = await recruitment.get_clans_tab_name_async()
+    sheet_id = recruitment.get_recruitment_sheet_id()
+    header_row = list(await recruitment.aget_clan_header_row(force=True))
+    header_row_index = 3
+
+    configured_headers: dict[str, str] = {}
+    for field in AVAILABILITY_FIELDS:
+        config_key = f"clans_header_{field}"
+        value = await recruitment.get_config_value_async(config_key, None, force=True)
+        if value is None or not str(value).strip():
+            _log_availability_diagnostics(
+                reason="missing_required_config_key",
+                tab_name=tab_name,
+                sheet_id=sheet_id,
+                header_row_index=header_row_index,
+                header_row=header_row,
+                configured_headers=configured_headers,
+                missing_config_key=config_key,
+            )
+            raise ValueError(f"missing required Config key: {config_key}")
+        configured_headers[field] = str(value).strip()
+
+    lookup: dict[str, int] = {}
+    for index, cell in enumerate(header_row):
+        normalized = _normalize_configured_header(cell)
+        if normalized:
+            lookup[normalized] = index
+
+    header_map: dict[str, int] = {}
+    for field, configured_value in configured_headers.items():
+        normalized = _normalize_configured_header(configured_value)
+        if normalized not in lookup:
+            _log_availability_diagnostics(
+                reason="configured_header_not_found",
+                tab_name=tab_name,
+                sheet_id=sheet_id,
+                header_row_index=header_row_index,
+                header_row=header_row,
+                configured_headers=configured_headers,
+                header_map=header_map,
+                configured_header_value=configured_value,
+            )
+            raise ValueError(
+                f"configured bot_info header not found for {field}: {configured_value}"
+            )
+        header_map[field] = lookup[normalized]
+
+    _log_availability_diagnostics(
+        reason="resolved",
+        tab_name=tab_name,
+        sheet_id=sheet_id,
+        header_row_index=header_row_index,
+        header_row=header_row,
+        configured_headers=configured_headers,
+        header_map=header_map,
+    )
+    return AvailabilityHeaderResolution(
+        tab_name=tab_name,
+        sheet_id_masked=_mask_sheet_id(sheet_id),
+        header_row_index=header_row_index,
+        header_row=tuple(str(cell) if cell is not None else "" for cell in header_row),
+        header_map=header_map,
+        configured_headers=configured_headers,
+    )
+
 def _find_availability_clan_row(
     clan_tag: str, headers: AvailabilityHeaderResolution
 ) -> tuple[int, list[str]] | None:
@@ -281,6 +347,42 @@ def _find_availability_clan_row(
         except TypeError:
             return recruitment.find_clan_row(clan_tag)
     return None
+
+
+async def _afind_availability_clan_row(
+    clan_tag: str, headers: AvailabilityHeaderResolution
+) -> tuple[int, list[str]] | None:
+    tag_index = headers.header_map["clan_tag"]
+    normalized_target = _normalize_tag(clan_tag)
+    clan_rows = await recruitment.afetch_clans(force=True)
+    for idx, row in enumerate(clan_rows):
+        tag_value = row[tag_index] if tag_index < len(row) else ""
+        if _normalize_tag(tag_value) == normalized_target:
+            return idx + headers.header_row_index + 1, list(row)
+    return None
+
+
+async def aresolve_configured_clan_tag(clan_tag: str) -> str:
+    """Async resolve of a clan tag from bot_info using Config-provided clan_tag header."""
+
+    headers = await _aresolve_availability_headers()
+    entry = await _afind_availability_clan_row(clan_tag, headers)
+    if entry is None:
+        _log_availability_diagnostics(
+            reason="bot_info_row_not_found",
+            tab_name=headers.tab_name,
+            sheet_id=recruitment.get_recruitment_sheet_id(),
+            header_row_index=headers.header_row_index,
+            header_row=headers.header_row,
+            configured_headers=headers.configured_headers,
+            header_map=headers.header_map,
+            clan_tag=clan_tag,
+        )
+        raise ValueError(f"Unknown clan tag: {clan_tag}")
+    _sheet_row, row = entry
+    tag_index = headers.header_map["clan_tag"]
+    value = row[tag_index] if tag_index < len(row) else ""
+    return (str(value).strip() if value is not None else "") or clan_tag
 
 
 def resolve_configured_clan_tag(clan_tag: str) -> str:
@@ -315,7 +417,7 @@ async def preflight_clan_availability_update(
     | None = None,
 ) -> AvailabilityPreflightPlan:
     """Preflight Config-resolved bot_info availability dependencies before mutating flows."""
-    headers = _resolve_availability_headers()
+    headers = await _aresolve_availability_headers()
     sheet_id = recruitment.get_recruitment_sheet_id()
     try:
         worksheet = await async_core.aget_worksheet(sheet_id, headers.tab_name)
@@ -341,8 +443,10 @@ async def preflight_clan_availability_update(
     if worksheet is None:
         raise ValueError("bot_info worksheet not accessible")
 
-    row_lookup = find_clan_row_fn or _find_availability_clan_row
-    entry = row_lookup(clan_tag, headers)
+    if find_clan_row_fn is None:
+        entry = await _afind_availability_clan_row(clan_tag, headers)
+    else:
+        entry = find_clan_row_fn(clan_tag, headers)
     if entry is None:
         _log_availability_diagnostics(
             reason="bot_info_row_not_found",
@@ -675,7 +779,7 @@ async def adjust_manual_open_spots(clan_tag: str, delta: int) -> int:
             cache_result,
         )
         phase = "post-write verification"
-        refreshed = recruitment.find_clan_row(clan_tag, force=True)
+        refreshed = await recruitment.afind_clan_row(clan_tag, force=True)
         if refreshed is None:
             raise RuntimeError(f"clan cache refresh failed for {clan_tag}")
         _, refreshed_row = refreshed
@@ -926,6 +1030,7 @@ def _normalize_tag(tag: str | None) -> str:
 
 __all__ = [
     "AvailabilityOperationError",
+    "aresolve_configured_clan_tag",
     "adjust_manual_open_spots",
     "is_rate_limited_error",
     "preflight_manual_open_spots_adjustment",

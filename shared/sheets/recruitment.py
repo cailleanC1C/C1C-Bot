@@ -582,6 +582,12 @@ def get_clans_tab_name() -> str:
     return _clans_tab()
 
 
+async def get_clans_tab_name_async() -> str:
+    """Async return of the configured clan roster tab name."""
+
+    return await _aclans_tab()
+
+
 def get_reservations_tab_name(default: str = "Reservations") -> str:
     value = _config_lookup("reservations_tab", default) or default
     text = str(value or "").strip()
@@ -701,6 +707,49 @@ def get_clan_header_row(force: bool = False) -> List[str]:
     if force or _CLAN_HEADER_ROW is None or (now - _CLAN_HEADER_TS) >= _CACHE_TTL:
         fetch_clans(force=force)
     return list(_CLAN_HEADER_ROW or [])
+
+
+async def afetch_clans(force: bool = False) -> List[List[str]]:
+    """Async fetch of the recruitment clan matrix from Sheets."""
+
+    global _CLAN_ROWS, _CLAN_ROWS_TS, _CLAN_TAG_INDEX, _CLAN_TAG_INDEX_TS
+    now = time.time()
+    if not force and _CLAN_ROWS and (now - _CLAN_ROWS_TS) < _CACHE_TTL:
+        if _CLAN_TAG_INDEX is None:
+            _CLAN_TAG_INDEX = _build_tag_index(_CLAN_ROWS)
+            _CLAN_TAG_INDEX_TS = _CLAN_ROWS_TS
+        return _CLAN_ROWS
+    return await _load_clans_async()
+
+
+async def aget_clan_header_row(force: bool = False) -> List[str]:
+    """Async return of the cached clan roster header row."""
+
+    global _CLAN_HEADER_ROW, _CLAN_HEADER_TS
+    now = time.time()
+    if force or _CLAN_HEADER_ROW is None or (now - _CLAN_HEADER_TS) >= _CACHE_TTL:
+        await afetch_clans(force=force)
+    return list(_CLAN_HEADER_ROW or [])
+
+
+async def afind_clan_row(
+    clan_tag: str, *, force: bool = False
+) -> tuple[int, List[str]] | None:
+    """Async return of the sheet row number and values for ``clan_tag``."""
+
+    normalized = _normalize_tag(clan_tag)
+    if not normalized:
+        return None
+
+    rows = await afetch_clans(force=force)
+    tag_index = (_CLAN_HEADER_MAP or {}).get("clan_tag", 2)
+    for idx, row in enumerate(rows):
+        if tag_index >= len(row):
+            continue
+        if _normalize_tag(row[tag_index]) == normalized:
+            sheet_row = idx + 4  # Account for the three summary/header rows.
+            return sheet_row, list(row)
+    return None
 
 
 def get_clan_records(force: bool = False) -> List[RecruitmentClanRecord]:

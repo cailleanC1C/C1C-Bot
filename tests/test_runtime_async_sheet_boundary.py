@@ -10,6 +10,7 @@ SYNC_SHEETS_CORE_MODULE = "shared.sheets.core"
 SYNC_CONFIG_MODULE = "shared.config"
 LEAGUES_CONFIG_MODULE = "modules.community.leagues.config"
 ONBOARDING_SHEETS_MODULE = "shared.sheets.onboarding"
+RECRUITMENT_SHEETS_MODULE = "shared.sheets.recruitment"
 
 FORBIDDEN_SYNC_HELPERS = {
     f"{SYNC_SHEETS_CORE_MODULE}.fetch_records",
@@ -24,6 +25,11 @@ FORBIDDEN_SYNC_HELPERS = {
     f"{SYNC_CONFIG_MODULE}._load_milestones_config_values",
     f"{LEAGUES_CONFIG_MODULE}.load_league_bundles",
     f"{ONBOARDING_SHEETS_MODULE}._read_onboarding_config",
+    f"{RECRUITMENT_SHEETS_MODULE}.get_config_value",
+    f"{RECRUITMENT_SHEETS_MODULE}.get_clan_header_row",
+    f"{RECRUITMENT_SHEETS_MODULE}.fetch_clans",
+    f"{RECRUITMENT_SHEETS_MODULE}.find_clan_row",
+    f"{RECRUITMENT_SHEETS_MODULE}.get_clan_by_tag",
     "_read_onboarding_config",
 }
 
@@ -45,6 +51,7 @@ MODULE_ALIAS_TARGETS = {
     SYNC_CONFIG_MODULE,
     LEAGUES_CONFIG_MODULE,
     ONBOARDING_SHEETS_MODULE,
+    RECRUITMENT_SHEETS_MODULE,
     "shared.sheets.async_core",
     "asyncio",
 }
@@ -54,6 +61,7 @@ DIRECT_IMPORT_MODULES = {
     SYNC_CONFIG_MODULE,
     LEAGUES_CONFIG_MODULE,
     ONBOARDING_SHEETS_MODULE,
+    RECRUITMENT_SHEETS_MODULE,
     "shared.sheets.async_core",
 }
 
@@ -80,6 +88,8 @@ class _RuntimeBoundaryVisitor(ast.NodeVisitor):
                 self.aliases[local] = SYNC_SHEETS_CORE_MODULE
             elif node.module == "shared.sheets" and alias.name == "onboarding":
                 self.aliases[local] = ONBOARDING_SHEETS_MODULE
+            elif node.module == "shared.sheets" and alias.name == "recruitment":
+                self.aliases[local] = RECRUITMENT_SHEETS_MODULE
             elif node.module == "shared" and alias.name == "config":
                 self.aliases[local] = SYNC_CONFIG_MODULE
             elif node.module in DIRECT_IMPORT_MODULES:
@@ -219,6 +229,7 @@ from shared import config as shared_config
 from shared.config import merge_onboarding_config_early, _load_onboarding_config_values, _load_milestones_config_values
 from modules.community.leagues.config import load_league_bundles
 from shared.sheets.onboarding import _read_onboarding_config
+from shared.sheets import recruitment
 
 async def bad():
     _read_onboarding_config('sheet')
@@ -229,16 +240,26 @@ async def bad():
     _load_onboarding_config_values()
     _load_milestones_config_values()
     load_league_bundles('sheet')
+    recruitment.fetch_clans(force=True)
+    recruitment.find_clan_row('FIT', force=True)
+    recruitment.get_config_value('clans_tab')
+    recruitment.get_clan_header_row(force=True)
+    recruitment.get_clan_by_tag('FIT')
 """
 
     violations = _violations_for_source(source)
 
-    assert len(violations) == 8
+    assert len(violations) == 13
     assert any("shared.sheets.onboarding._read_onboarding_config" in violation for violation in violations)
     assert any("shared.config.merge_onboarding_config_early" in violation for violation in violations)
     assert any("shared.config._load_onboarding_config_values" in violation for violation in violations)
     assert any("shared.config._load_milestones_config_values" in violation for violation in violations)
     assert any("modules.community.leagues.config.load_league_bundles" in violation for violation in violations)
+    assert any("shared.sheets.recruitment.fetch_clans" in violation for violation in violations)
+    assert any("shared.sheets.recruitment.find_clan_row" in violation for violation in violations)
+    assert any("shared.sheets.recruitment.get_config_value" in violation for violation in violations)
+    assert any("shared.sheets.recruitment.get_clan_header_row" in violation for violation in violations)
+    assert any("shared.sheets.recruitment.get_clan_by_tag" in violation for violation in violations)
 
 
 def test_runtime_boundary_rejects_local_asyncio_to_thread_bridges() -> None:

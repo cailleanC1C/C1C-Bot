@@ -281,7 +281,7 @@ def _split_brackets(value: str) -> list[str]:
 
 
 async def _get_reports_tab_name_required() -> str:
-    tab_name = await async_core.a_to_thread_with_backoff(recruitment.get_config_value, "REPORTS_TAB", None)
+    tab_name = await recruitment.get_config_value_async("REPORTS_TAB", None)
     if not str(tab_name or "").strip():
         raise ValueError("reports tab config missing")
     return str(tab_name).strip()

@@ -11,6 +11,9 @@ from modules.placement import reservations as reserve_module
 from shared.sheets import reservations as reservations_sheet
 
 
+_REAL_AVAILABILITY_PREFLIGHT = reserve_module.availability.preflight_clan_availability_update
+
+
 @pytest.fixture(autouse=True)
 def _stub_availability_preflight(monkeypatch):
     header_map = {
@@ -50,7 +53,7 @@ def _stub_availability_preflight(monkeypatch):
             "Headers", (), {"header_map": header_map, "tab_name": "bot_info"}
         )()
 
-    async def fake_preflight(_tag, *, delta=0):
+    async def fake_preflight(_tag, *, delta=0, **_kwargs):
         return Plan()
 
     monkeypatch.setattr(
@@ -61,6 +64,32 @@ def _stub_availability_preflight(monkeypatch):
     monkeypatch.setattr(
         reserve_module, "_resolve_configured_reservation_clan_tag", lambda tag: tag
     )
+
+    async def fake_async_resolve(tag):
+        return tag
+
+    monkeypatch.setattr(
+        reserve_module, "_aresolve_configured_reservation_clan_tag", fake_async_resolve
+    )
+
+
+    async def fake_afind_clan_row(tag, *, force=False):
+        try:
+            row = reserve_module.recruitment.get_clan_by_tag(tag)
+        except Exception:
+            row = None
+        if row is not None:
+            return (10, list(row))
+        try:
+            found = reserve_module.recruitment.find_clan_row(tag)
+        except Exception:
+            return None
+        if found is None:
+            return None
+        row_number, values = found
+        return row_number, list(values)
+
+    monkeypatch.setattr(reserve_module.recruitment, "afind_clan_row", fake_afind_clan_row)
 
 
 class FakeMember:
@@ -278,6 +307,114 @@ def _reservation_ledger(
     rows: list[reservations_sheet.ReservationRow],
 ) -> reservations_sheet.ReservationLedger:
     return reservations_sheet.ReservationLedger(rows=list(rows), status_index=0)
+
+
+def test_reserve_availability_preflight_uses_async_sheets(monkeypatch):
+    header = [""] * 36
+    configured = {
+        "clan_tag": "Clan Tag",
+        "manual_open_spots": "Manual Open Spots",
+        "open_spots": "Open Spots",
+        "inactives": "Inactives",
+        "reservation_count": "Reservation Count",
+        "reservation_summary": "Reservation Summary",
+        "manual_open_spots_seen": "Manual Open Spots Seen",
+    }
+    indexes = {
+        "clan_tag": 2,
+        "manual_open_spots": 4,
+        "open_spots": 31,
+        "inactives": 32,
+        "reservation_count": 33,
+        "reservation_summary": 34,
+        "manual_open_spots_seen": 35,
+    }
+    for key, index in indexes.items():
+        header[index] = configured[key]
+    clan_row = [""] * 36
+    clan_row[2] = "FIT"
+    clan_row[4] = "3"
+    clan_row[31] = "3"
+    clan_row[32] = "0"
+    clan_row[33] = "0"
+    clan_row[34] = ""
+    clan_row[35] = "3"
+
+    class _Worksheet:
+        pass
+
+    async def _config_value(key, default=None, *, force=False):
+        if key == "clans_tab":
+            return "bot_info"
+        prefix = "clans_header_"
+        if key.startswith(prefix):
+            return configured[key.removeprefix(prefix)]
+        return default
+
+    async def _header_row(*, force=False):
+        return list(header)
+
+    async def _clans(*, force=False):
+        return [list(clan_row)]
+
+    async def _aget(sheet_id, tab_name):
+        assert sheet_id == "recruitment-sheet"
+        assert tab_name == "bot_info"
+        return _Worksheet()
+
+    def _sync_forbidden(*_args, **_kwargs):
+        raise AssertionError("sync Sheets/config helper must not run during reserve preflight")
+
+    monkeypatch.setattr(
+        reserve_module.availability,
+        "preflight_clan_availability_update",
+        _REAL_AVAILABILITY_PREFLIGHT,
+    )
+    monkeypatch.setattr(
+        reserve_module.recruitment, "get_recruitment_sheet_id", lambda: "recruitment-sheet"
+    )
+    monkeypatch.setattr(
+        reserve_module.recruitment, "get_config_value_async", _config_value
+    )
+    monkeypatch.setattr(
+        reserve_module.recruitment,
+        "get_clans_tab_name_async",
+        lambda: asyncio.sleep(0, result="bot_info"),
+    )
+    monkeypatch.setattr(reserve_module.recruitment, "aget_clan_header_row", _header_row)
+    monkeypatch.setattr(reserve_module.recruitment, "afetch_clans", _clans)
+    monkeypatch.setattr(reserve_module.recruitment, "get_config_value", _sync_forbidden)
+    monkeypatch.setattr(reserve_module.recruitment, "get_clan_header_row", _sync_forbidden)
+    monkeypatch.setattr(reserve_module.recruitment, "fetch_clans", _sync_forbidden)
+    monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", _sync_forbidden)
+    monkeypatch.setattr(reserve_module.availability.async_core, "aget_worksheet", _aget)
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "count_active_reservations_for_clan",
+        lambda *_: asyncio.sleep(0, result=0),
+    )
+
+    parent_id = 555
+    recruit = FakeMember(2222, "Recruit")
+    author = FakeMember(1111, "Recruiter")
+    guild = FakeGuild([recruit, author])
+    thread = FakeThread(
+        999, parent_id, name="W1234-Recruit", owner_id=recruit.id, guild=guild
+    )
+    bot = FakeBot([])
+    ctx = FakeContext(bot, guild, thread, author)
+
+    _enable_feature(monkeypatch, True)
+    _setup_parents(monkeypatch, parent_id)
+    _setup_permissions(monkeypatch, recruiter=True)
+
+    cog = _make_cog(bot)
+    asyncio.run(cog.reserve.callback(cog, ctx, "FIT"))
+
+    assert any(
+        "Who do you want to reserve" in (message.content or "")
+        for message in thread.sent
+    )
 
 
 def test_reserve_success(monkeypatch):
@@ -2235,7 +2372,7 @@ def _setup_successful_reserve(
     guild = FakeGuild([recruit])
     thread = FakeThread(thread_id=555, parent_id=parent_id, name=thread_name)
     author = FakeMember(111, "Recruiter")
-    date_message = FakeMessage("2026-06-13", author=author, channel=thread)
+    date_message = FakeMessage("2026-08-13", author=author, channel=thread)
     confirm_message = FakeMessage("yes", author=author, channel=thread)
     bot = FakeBot([date_message, confirm_message])
     ctx = FakeContext(bot, guild=guild, channel=thread, author=author)
@@ -2481,10 +2618,10 @@ def test_reserve_change_flow_cleans_full_completed_chain(monkeypatch):
     guild = FakeGuild([recruit])
     thread = FakeThread(thread_id=555, parent_id=999, name="W0057-ChangeRecruit")
     author = FakeMember(111, "Recruiter")
-    date_message = FakeMessage("2026-06-13", author=author, channel=thread)
+    date_message = FakeMessage("2026-08-13", author=author, channel=thread)
     change_message = FakeMessage("change", author=author, channel=thread)
     change_choice_message = FakeMessage("date", author=author, channel=thread)
-    changed_date_message = FakeMessage("2026-06-14", author=author, channel=thread)
+    changed_date_message = FakeMessage("2026-08-14", author=author, channel=thread)
     confirm_message = FakeMessage("yes", author=author, channel=thread)
     bot = FakeBot(
         [
@@ -2554,7 +2691,7 @@ def test_reserve_change_flow_cleans_full_completed_chain(monkeypatch):
         for message in thread.sent
         if not (message.content or "").startswith("✅ Reserved 1 spot")
     )
-    assert any("2026-06-14" in (message.content or "") for message in thread.sent)
+    assert any("2026-08-14" in (message.content or "") for message in thread.sent)
 
 
 def test_reserve_cleanup_works_for_promo_parent(monkeypatch):

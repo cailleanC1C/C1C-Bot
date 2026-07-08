@@ -380,6 +380,11 @@ def _resolve_configured_reservation_clan_tag(clan_tag: str) -> str:
     return availability.resolve_configured_clan_tag(clan_tag)
 
 
+async def _aresolve_configured_reservation_clan_tag(clan_tag: str) -> str:
+    """Async resolve of the sheet clan tag through the availability Config clan_tag header."""
+    return await availability.aresolve_configured_clan_tag(clan_tag)
+
+
 def _normalize_tag(tag: str | None) -> str:
     text = "" if tag is None else str(tag).strip().upper()
     return "".join(ch for ch in text if ch.isalnum())
@@ -1124,7 +1129,8 @@ class ReservationCog(commands.Cog):
         fallback_reserved = active_reservations + 1
         fallback_available = max(manual_open - fallback_reserved, 0)
 
-        updated_row = recruitment.get_clan_by_tag(sheet_tag)
+        updated_entry = await recruitment.afind_clan_row(sheet_tag, force=True)
+        updated_row = updated_entry[1] if updated_entry is not None else None
         if updated_row is not None:
             ah_value = _safe_cell(updated_row, 33, fallback_reserved)
             af_value = _safe_cell(updated_row, 31, fallback_available)
@@ -1227,7 +1233,7 @@ class ReservationCog(commands.Cog):
 
         clan_tag = args[1]
         try:
-            sheet_tag = _resolve_configured_reservation_clan_tag(clan_tag)
+            sheet_tag = await _aresolve_configured_reservation_clan_tag(clan_tag)
         except ValueError:
             await ctx.reply(
                 f"I don’t know the clan tag `{clan_tag}`. Please check the tag and try again.",
@@ -1407,7 +1413,7 @@ class ReservationCog(commands.Cog):
 
         clan_tag = args[1]
         try:
-            sheet_tag = _resolve_configured_reservation_clan_tag(clan_tag)
+            sheet_tag = await _aresolve_configured_reservation_clan_tag(clan_tag)
         except ValueError:
             await ctx.reply(
                 f"I don’t know the clan tag `{clan_tag}`. Please check the tag and try again.",
@@ -1825,7 +1831,7 @@ class ReservationCog(commands.Cog):
         self, ctx: commands.Context, clan_tag: str
     ) -> None:
         try:
-            sheet_tag = _resolve_configured_reservation_clan_tag(clan_tag)
+            sheet_tag = await _aresolve_configured_reservation_clan_tag(clan_tag)
         except ValueError:
             await ctx.reply(
                 f"I don’t know the clan tag `{clan_tag}`. Please check the tag and try again.",

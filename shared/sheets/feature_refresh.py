@@ -21,7 +21,7 @@ def _missing_config_key(key: str) -> RuntimeError:
 
 def _recruitment_config_tab_loader(config_key: str) -> Loader:
     async def _load() -> list[list[str]]:
-        tab_name = await async_core.a_to_thread_with_backoff(recruitment.get_config_value, config_key, None, force=True)
+        tab_name = await recruitment.get_config_value_async(config_key, None, force=True)
         if not tab_name:
             raise _missing_config_key(config_key)
         try:
