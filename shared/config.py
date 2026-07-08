@@ -89,6 +89,7 @@ __all__ = [
     "redact_ids",
     "redact_value",
     "merge_onboarding_config_early",
+    "amerge_onboarding_config_early",
     "onboarding_config_merge_count",
     "get_ticket_tool_bot_id",
     "features",
@@ -331,6 +332,32 @@ def _load_onboarding_config_values() -> tuple[str, Dict[str, str]]:
     return sheet_id, normalized
 
 
+async def _aload_onboarding_config_values() -> tuple[str, Dict[str, str]]:
+    """Return onboarding config values via async Sheets access for bot runtime."""
+
+    sheet_id = (os.getenv("ONBOARDING_SHEET_ID") or "").strip()
+    if not sheet_id:
+        raise RuntimeError("ONBOARDING_SHEET_ID not set")
+
+    onboarding_sheets = sys.modules.get("shared.sheets.onboarding")
+    if onboarding_sheets is None:
+        from shared.sheets import onboarding as onboarding_sheets  # type: ignore
+
+    async_loader = getattr(onboarding_sheets, "_aload_config", None)
+    if not callable(async_loader):
+        raise RuntimeError("async onboarding Config loader unavailable")
+
+    raw_config = await async_loader(force=True)
+    normalized: Dict[str, str] = {}
+    for key, value in raw_config.items():
+        key_norm = (key or "").strip().upper()
+        if not key_norm:
+            continue
+        text = "" if value is None else str(value).strip()
+        normalized[key_norm] = text
+    return sheet_id, normalized
+
+
 def _merge_onboarding_tab(config: Dict[str, object]) -> None:
     """Merge the onboarding questions tab name from sheet config."""
 
@@ -386,6 +413,15 @@ def _load_milestones_config_values() -> tuple[str, Dict[str, str]]:
     return sheet_id, _parse_sheet_config(rows)
 
 
+async def _aload_milestones_config_values() -> tuple[str, Dict[str, str]]:
+    """Return Milestones config values via async Sheets access for bot runtime."""
+
+    from shared.sheets import milestones_config
+
+    sheet_id, _tab_name, values = await milestones_config.aload_values()
+    return sheet_id, values
+
+
 def _merge_milestones_tab(config: Dict[str, object]) -> None:
     """Merge shard tracker settings from the milestones Config tab."""
 
@@ -413,6 +449,41 @@ def merge_onboarding_config_early() -> int:
     for key, value in values.items():
         _CONFIG[key] = value
         merged += 1
+
+    global _LAST_ONBOARDING_CONFIG_KEYS
+    _LAST_ONBOARDING_CONFIG_KEYS = len(values)
+
+    tail = sheet_id[-6:] if len(sheet_id) >= 6 else sheet_id
+    display = f"…{tail}" if len(sheet_id) > len(tail) else tail
+    result = "ok" if merged else "empty"
+    log.info(
+        "🧩 Config — merged onboarding tab • sheet=%s • keys=%d • result=%s",
+        display,
+        len(values),
+        result,
+        extra={"sheet_tail": tail, "keys": len(values), "result": result},
+    )
+    return len(values)
+
+
+async def amerge_onboarding_config_early() -> int:
+    """Async bot-runtime variant of :func:`merge_onboarding_config_early`."""
+
+    sheet_id, values = await _aload_onboarding_config_values()
+
+    merged = 0
+    for key, value in values.items():
+        _CONFIG[key] = value
+        merged += 1
+
+    try:
+        _, milestone_values = await _aload_milestones_config_values()
+    except RuntimeError:
+        log.debug("config: milestones sheet id not configured; skipping async tab merge")
+    except Exception as exc:  # pragma: no cover - network or credential failures
+        log.warning("config: failed to async-load milestones Config tab: %s", exc)
+    else:
+        _CONFIG.update(milestone_values)
 
     global _LAST_ONBOARDING_CONFIG_KEYS
     _LAST_ONBOARDING_CONFIG_KEYS = len(values)

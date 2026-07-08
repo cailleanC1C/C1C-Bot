@@ -156,6 +156,80 @@ def test_league_approval_marks_failed_and_last_error_on_post_failure(monkeypatch
     assert "RuntimeError: boom" in row["values"]["last_error"]
 
 
+def test_reaction_approval_runtime_uses_async_league_config_loader(monkeypatch):
+    import asyncio
+
+    from modules.community.leagues import cog as leagues_cog
+    from shared.sheets import core as sheets_core
+
+    row = _approval_row()
+    updates = []
+    calls = {"async_loader": 0}
+
+    monkeypatch.setenv("LEAGUES_SHEET_ID", "leagues-sheet")
+    monkeypatch.setenv("LEAGUES_LEGENDARY_THREAD_ID", "1")
+    monkeypatch.setenv("LEAGUES_RISING_THREAD_ID", "2")
+    monkeypatch.setenv("LEAGUES_STORMFORGED_THREAD_ID", "3")
+    monkeypatch.setenv("ANNOUNCEMENT_CHANNEL_ID", "4")
+    monkeypatch.delenv("LEAGUE_ADMIN_IDS", raising=False)
+    monkeypatch.setattr(leagues_cog, "is_admin_member", lambda member: True)
+
+    def _sync_retry_forbidden(*_args, **_kwargs):
+        raise AssertionError("sync Sheets retry must not be used by reaction_approval runtime")
+
+    async def _async_loader(sheet_id, *, config_tab="Config"):
+        calls["async_loader"] += 1
+        assert sheet_id == "leagues-sheet"
+        assert config_tab == "Config"
+        return [_bundle("legendary", "Legendary League"), _bundle("rising", "Rising Stars League"), _bundle("storm", "Stormforged League")]
+
+    class _Channel:
+        def __init__(self, channel_id):
+            self.id = channel_id
+            self.sent = []
+
+        async def send(self, *args, **kwargs):
+            message = SimpleNamespace(id=len(self.sent) + 10, jump_url=f"https://discord.test/{self.id}/{len(self.sent)}")
+            self.sent.append((args, kwargs, message))
+            return message
+
+    channels = {channel_id: _Channel(channel_id) for channel_id in (1, 2, 3, 4, 5678)}
+
+    async def _find(channel_id, message_id, *, include_terminal=False):
+        return row
+
+    async def _update(target, changes):
+        updates.append(dict(changes))
+        target["values"].update({key: str(value) for key, value in changes.items()})
+
+    async def _resolve(channel_id):
+        return channels.get(channel_id)
+
+    async def _export_header(_loop, _sheet_id, bundle):
+        return SimpleNamespace(filename=f"{bundle.slug}_header.png")
+
+    async def _export_boards(_loop, _sheet_id, bundle):
+        return [SimpleNamespace(filename=f"{bundle.slug}_1.png")]
+
+    monkeypatch.setattr(sheets_core, "_retry_with_backoff", _sync_retry_forbidden)
+    monkeypatch.setattr(leagues_cog, "aload_league_bundles", _async_loader)
+
+    bot = _LeagueApprovalBot()
+    bot.get_cog = lambda _name: None
+    cog = LeaguesCog(bot)
+    monkeypatch.setattr(cog, "_find_approval_row", _find)
+    monkeypatch.setattr(cog, "_update_approval_row", _update)
+    monkeypatch.setattr(cog, "_resolve_channel", _resolve)
+    monkeypatch.setattr(cog, "_export_header_image", _export_header)
+    monkeypatch.setattr(cog, "_export_board_images", _export_boards)
+
+    asyncio.run(cog.on_raw_reaction_add(_LeagueApprovalPayload()))
+
+    assert calls["async_loader"] == 1
+    assert row["values"]["status"] == "posted"
+    assert [update.get("status") for update in updates if "status" in update] == ["posting", "posted"]
+
+
 def test_approval_state_tab_is_loaded_from_leagues_config(monkeypatch):
     import asyncio
     from modules.community.leagues import cog as leagues_cog
