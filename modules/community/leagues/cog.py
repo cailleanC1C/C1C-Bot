@@ -86,19 +86,53 @@ class LeaguesCog(commands.Cog):
     async def _is_valid_approval_admin(self, payload: discord.RawReactionActionEvent) -> bool:
         admin_ids = self._admin_ids()
         if payload.user_id in admin_ids:
+            log.info(
+                "league approval admin gate passed",
+                extra={"gate": "league_admin_ids", "message_id": payload.message_id},
+            )
             return True
 
         member = getattr(payload, "member", None)
+        member_source = "payload" if member is not None else "missing"
         if member is None and payload.guild_id is not None:
             guild = self.bot.get_guild(payload.guild_id)
             if guild is not None:
                 member = guild.get_member(payload.user_id)
+                member_source = "guild_cache" if member is not None else "guild_fetch"
                 if member is None:
                     try:
                         member = await guild.fetch_member(payload.user_id)
                     except Exception:
+                        log.info(
+                            "league approval admin gate failed",
+                            extra={
+                                "reason": "member_fetch_failed",
+                                "configured_user_ids": bool(admin_ids),
+                                "message_id": payload.message_id,
+                            },
+                        )
                         member = None
-        return bool(member is not None and is_admin_member(member))
+        if member is not None and is_admin_member(member):
+            log.info(
+                "league approval admin gate passed",
+                extra={
+                    "gate": "discord_admin",
+                    "member_source": member_source,
+                    "message_id": payload.message_id,
+                },
+            )
+            return True
+        log.info(
+            "league approval admin gate failed",
+            extra={
+                "reason": "not_in_league_admin_ids_or_discord_admin",
+                "configured_user_ids": bool(admin_ids),
+                "member_available": member is not None,
+                "member_source": member_source,
+                "message_id": payload.message_id,
+            },
+        )
+        return False
 
     @staticmethod
     def _is_image_attachment(attachment: discord.Attachment) -> bool:
@@ -208,16 +242,46 @@ class LeaguesCog(commands.Cog):
                     extra={"reason": "no_active_approval_row", "channel_id": payload.channel_id, "message_id": payload.message_id},
                 )
                 return
-            status = row["values"].get("status", "").lower()
-            if status != "pending":
+            status = row["values"].get("status", "").strip().lower()
+            posted_at_utc = row["values"].get("posted_at_utc", "").strip()
+            retrying_failed = status == "failed" and not posted_at_utc
+            if status == "posted" or posted_at_utc:
                 log.info(
-                    "league approval reaction ignored",
-                    extra={"reason": "approval_not_pending", "status": status, "message_id": payload.message_id},
+                    "approval_not_retryable",
+                    extra={
+                        "reason": "approval_not_retryable",
+                        "status": status,
+                        "posted_at_utc": posted_at_utc,
+                        "message_id": payload.message_id,
+                    },
                 )
                 return
+            if status not in {"pending", "failed"}:
+                log.info(
+                    "approval_not_retryable",
+                    extra={
+                        "reason": "approval_not_retryable",
+                        "status": status,
+                        "posted_at_utc": posted_at_utc,
+                        "message_id": payload.message_id,
+                    },
+                )
+                return
+            if retrying_failed:
+                self._handled_messages.discard(payload.message_id)
+                log.info(
+                    "approval_retry_from_failed",
+                    extra={
+                        "reason": "approval_retry_from_failed",
+                        "status": status,
+                        "message_id": payload.message_id,
+                        "season_key": row["values"].get("season_key"),
+                        "week_key": row["values"].get("week_key"),
+                    },
+                )
 
             approvers = self._parse_approvers(row["values"].get("approved_by_user_ids", ""))
-            if payload.user_id in approvers:
+            if payload.user_id in approvers and not retrying_failed:
                 log.info("league approval reaction ignored", extra={"reason": "user_already_approved", "message_id": payload.message_id})
                 return
             approvers.add(payload.user_id)

@@ -265,8 +265,8 @@ async def run_mirralith_overview_job(bot: discord.Client, trigger: str = "schedu
             failed_labels.append((spec.label, reason))
 
         try:
-            tab_name = recruitment.get_config_value(spec.tab_key, "") or ""
-            range_value = recruitment.get_config_value(spec.range_key, "") or ""
+            tab_name = await recruitment.get_config_value_async(spec.tab_key, "") or ""
+            range_value = await recruitment.get_config_value_async(spec.range_key, "") or ""
         except Exception as exc:
             record_failure("config lookup failed")
             log.warning(
