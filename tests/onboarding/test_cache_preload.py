@@ -168,11 +168,12 @@ def test_preload_on_startup_refreshes_onboarding(monkeypatch: pytest.MonkeyPatch
 
         monkeypatch.setattr(cache_scheduler, "ensure_cache_registration", lambda: None)
         monkeypatch.setattr(cache_scheduler.cache, "refresh_now", fake_refresh)
+        monkeypatch.setattr(cache_scheduler.asyncio, "sleep", AsyncMock(return_value=None))
 
         await cache_scheduler.preload_on_startup()
 
         expected = [
-            (bucket, "startup", "manual") for bucket in cache_scheduler.STARTUP_BUCKETS
+            (bucket, "startup", "manual") for bucket, _delay in cache_scheduler.STARTUP_BUCKETS
         ]
         assert calls == expected
 
@@ -201,3 +202,47 @@ def test_schema_loader_refreshes_when_cache_cold(monkeypatch: pytest.MonkeyPatch
         asyncio.run(runner())
     finally:
         onboarding_schema._clear_welcome_questions_cache()
+
+
+def test_runtime_startup_preload_staggers_cache_refreshes(monkeypatch: pytest.MonkeyPatch) -> None:
+    from modules.common import runtime as runtime_module
+
+    async def runner() -> None:
+        sleeps: list[float] = []
+        calls: list[str] = []
+
+        class Bot:
+            pass
+
+        class Result:
+            ok = True
+            error = None
+            duration_ms = 1
+            retries = 0
+            snapshot = types.SimpleNamespace(
+                available=True,
+                last_result="ok",
+                last_error=None,
+                ttl_expired=False,
+                item_count=1,
+            )
+
+        monkeypatch.setattr(runtime_module, "get_active_runtime", lambda: types.SimpleNamespace(bot=Bot()))
+        monkeypatch.setattr(runtime_module.asyncio, "sleep", AsyncMock(side_effect=lambda sec: sleeps.append(sec)))
+        import shared.cache.telemetry as cache_telemetry_module
+        monkeypatch.setattr(cache_telemetry_module, "list_buckets", lambda: ["clans", "templates", "clan_tags"])
+
+        async def fake_refresh(name, *, actor):
+            calls.append(name)
+            return Result()
+
+        monkeypatch.setattr(cache_telemetry_module, "refresh_now", fake_refresh)
+        monkeypatch.setattr(runtime_module, "send_log_message", AsyncMock())
+        monkeypatch.setattr(runtime_module, "refresh_bucket_results", lambda results: [])
+
+        await runtime_module._startup_preload()
+
+        assert calls == ["clans", "templates", "clan_tags"]
+        assert sleeps[:3] == [15, 8, 8]
+
+    asyncio.run(runner())

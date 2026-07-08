@@ -49,6 +49,8 @@ from shared.sheets.cache_service import cache as sheets_cache
 from shared.cache import telemetry as cache_telemetry
 
 log = logging.getLogger("c1c.onboarding.welcome_watcher")
+STARTUP_CLOSE_BACKFILL_DELAY_SEC = 90
+
 
 _REMINDER_JOB_NAME = "welcome_incomplete_scan"
 _REMINDER_INTERVAL_SECONDS = 900
@@ -112,36 +114,6 @@ async def _ensure_fresh_clans_for_placement(
         return False
     return True
 
-
-
-def _find_configured_availability_clan_row(clan_tag: str, *, force: bool = False) -> tuple[int, List[str]] | None:
-    """Resolve clan rows through the shared Config-driven availability row resolver."""
-
-    headers = availability._resolve_availability_headers()  # type: ignore[attr-defined]
-    return availability.resolve_availability_clan_row(clan_tag, headers)
-
-
-_find_configured_availability_clan_row.lookup_mode = "shared_configured_availability_clan_row"  # type: ignore[attr-defined]
-
-
-def _find_configured_availability_clan_row_with_headers(
-    clan_tag: str, headers: availability.AvailabilityHeaderResolution
-) -> tuple[int, List[str]] | None:
-    return availability.resolve_availability_clan_row(clan_tag, headers)
-
-
-async def _adjust_configured_manual_open_spots(clan_tag: str, delta: int) -> int:
-    return await availability.adjust_manual_open_spots(
-        clan_tag, delta, find_clan_row_fn=_find_configured_availability_clan_row_with_headers
-    )
-
-
-async def _recompute_configured_clan_availability(
-    clan_tag: str, *, guild: discord.Guild | None = None
-) -> None:
-    await availability.recompute_clan_availability(
-        clan_tag, guild=guild, find_clan_row_fn=_find_configured_availability_clan_row_with_headers
-    )
 
 def _inspect_stable_welcome_intro_message(
     message: discord.Message | None,
@@ -1922,10 +1894,10 @@ async def cleanup_reservation_for_ticket_close(
     event_log = logger or log
     ensure_fresh = ensure_fresh_fn or _ensure_fresh_clans_for_placement
     find_active_reservations = find_active_reservations_fn or reservations_sheets.find_active_reservations_for_recruit
-    find_clan_row = find_clan_row_fn or _find_configured_availability_clan_row
+    find_clan_row = find_clan_row_fn or recruitment_sheets.find_clan_row
     update_reservation_status = update_reservation_status_fn or reservations_sheets.update_reservation_status
-    adjust_manual_open_spots = adjust_manual_open_spots_fn or _adjust_configured_manual_open_spots
-    recompute_clan_availability = recompute_clan_availability_fn or _recompute_configured_clan_availability
+    adjust_manual_open_spots = adjust_manual_open_spots_fn or availability.adjust_manual_open_spots
+    recompute_clan_availability = recompute_clan_availability_fn or availability.recompute_clan_availability
     normalized_scope = (scope or "welcome").strip().lower() or "welcome"
     normalized_final = (final_tag or "").strip().upper()
     normalized_previous = (previous_final or "").strip().upper()
@@ -4445,7 +4417,7 @@ class WelcomeTicketWatcher(commands.Cog):
             final_is_real = False
         else:
             final_entry = (
-                _call_find_clan_row(_find_configured_availability_clan_row, final_tag, force=True)
+                _call_find_clan_row(recruitment_sheets.find_clan_row, final_tag, force=True)
                 if final_tag != _NO_PLACEMENT_TAG
                 else None
             )
@@ -4500,7 +4472,7 @@ class WelcomeTicketWatcher(commands.Cog):
             for tag, delta in preflight_targets.items():
                 try:
                     await availability.preflight_clan_availability_update(
-                        tag, delta=delta, find_clan_row_fn=_find_configured_availability_clan_row_with_headers
+                        tag, delta=delta
                     )
                 except Exception:
                     preflight_failed = True
@@ -4570,7 +4542,7 @@ class WelcomeTicketWatcher(commands.Cog):
                 try:
                     column_map = _clan_math_column_indices()
                     before_snapshots = _capture_clan_snapshots(
-                        row_targets, column_map, force=True, find_clan_row_fn=_find_configured_availability_clan_row
+                        row_targets, column_map, force=True
                     )
                 except Exception:
                     column_map = None
@@ -4642,7 +4614,7 @@ class WelcomeTicketWatcher(commands.Cog):
             decision.open_deltas.items() if clans_fresh and not row_missing else ()
         ):
             try:
-                adjust_result = _adjust_configured_manual_open_spots(tag, delta)
+                adjust_result = availability.adjust_manual_open_spots(tag, delta)
                 if hasattr(adjust_result, "__await__"):
                     await adjust_result
                 applied_open_deltas[tag] = applied_open_deltas.get(tag, 0) + delta
@@ -4663,7 +4635,7 @@ class WelcomeTicketWatcher(commands.Cog):
         )
         for tag in recompute_tags:
             try:
-                recompute_result = _recompute_configured_clan_availability(tag, guild=thread.guild)
+                recompute_result = availability.recompute_clan_availability(tag, guild=thread.guild)
                 if hasattr(recompute_result, "__await__"):
                     await recompute_result
             except Exception:
@@ -4675,7 +4647,7 @@ class WelcomeTicketWatcher(commands.Cog):
 
         if not row_missing and row_targets and column_map is not None:
             after_snapshots = _capture_clan_snapshots(
-                row_targets, column_map, force=True, find_clan_row_fn=_find_configured_availability_clan_row
+                row_targets, column_map, force=True
             )
             row_change_lines = _build_clan_math_row_lines(
                 row_targets, before_snapshots, after_snapshots
@@ -4847,7 +4819,14 @@ class WelcomeTicketWatcher(commands.Cog):
         self._close_backfill_done = True
         if not self._features_enabled():
             return
-        await self.run_close_backfill()
+        asyncio.create_task(
+            self._run_close_backfill_after_startup_delay(),
+            name="welcome_close_backfill_startup",
+        )
+
+    async def _run_close_backfill_after_startup_delay(self) -> dict[str, int]:
+        await asyncio.sleep(STARTUP_CLOSE_BACKFILL_DELAY_SEC)
+        return await self.run_close_backfill()
 
     async def run_close_backfill(self) -> dict[str, int]:
         summary = {"scanned": 0, "finalized": 0, "prompt_required": 0, "already_done": 0, "unresolved": 0, "error": 0}

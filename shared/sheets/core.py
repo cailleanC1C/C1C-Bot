@@ -83,7 +83,7 @@ def _retry_with_backoff(
             last_exc = exc
             if attempt >= tries - 1:
                 raise
-            _sleep_with_new_loop(_next_backoff_delay(delay, multiplier=multiplier, jitter_ratio=0.25 if _is_rate_limited_error(exc) else 0.0))
+            _sleep_with_new_loop(_next_backoff_delay(delay, multiplier=multiplier, jitter_ratio=0.25 if is_rate_limited_error(exc) else 0.0))
             delay *= multiplier if multiplier > 1 else 1
     if last_exc is not None:  # pragma: no cover - defensive
         raise last_exc
@@ -117,7 +117,7 @@ async def _retry_with_backoff_async(
             last_exc = exc
             if attempt >= tries - 1:
                 raise
-            await asyncio.sleep(_next_backoff_delay(delay, multiplier=multiplier, jitter_ratio=0.25 if _is_rate_limited_error(exc) else 0.0))
+            await asyncio.sleep(_next_backoff_delay(delay, multiplier=multiplier, jitter_ratio=0.25 if is_rate_limited_error(exc) else 0.0))
             delay *= multiplier if multiplier > 1 else 1
     if last_exc is not None:  # pragma: no cover - defensive
         raise last_exc
@@ -126,7 +126,7 @@ async def _retry_with_backoff_async(
 
 
 
-def _is_rate_limited_error(exc: Exception) -> bool:
+def is_rate_limited_error(exc: BaseException) -> bool:
     """Best-effort detection for Google Sheets/API 429-style failures."""
 
     status_code = getattr(exc, "status_code", None)
@@ -137,6 +137,9 @@ def _is_rate_limited_error(exc: Exception) -> bool:
         return True
     text = str(exc).upper()
     return "429" in text or "RESOURCE_EXHAUSTED" in text or "READREQUESTSPERMINUTEPERUSER" in text
+
+
+_is_rate_limited_error = is_rate_limited_error
 
 
 def _next_backoff_delay(delay: float, *, multiplier: float, jitter_ratio: float = 0.25) -> float:

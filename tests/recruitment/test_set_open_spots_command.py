@@ -374,12 +374,12 @@ def test_sheet_write_failure_uses_write_message_and_logs_exc_info(monkeypatch, c
     with caplog.at_level("ERROR", logger=command_module.log.name):
         _run(cog.setopenspots.callback(cog, ctx, "C1CC", "4", reason="reason"))
 
-    assert "sheet update failed" in ctx.replies[0][0]
-    assert logs and "sheet write failed" in logs[0]
+    assert "sheet write failed" in ctx.replies[0][0]
+    assert logs and "worksheet_update" in logs[0]
     record = next(
         rec
         for rec in caplog.records
-        if rec.getMessage() == "setopenspots sheet update failed"
+        if rec.getMessage() == "setopenspots failed"
     )
     assert record.exc_info is not None
 
@@ -422,3 +422,78 @@ def test_success_reply_failure_does_not_report_config_failure(monkeypatch, caplo
         if rec.getMessage() == "setopenspots success reply failed after sheet update"
     )
     assert record.exc_info is not None
+
+
+def test_sheet_failure_logs_phase_context_and_exception_details(monkeypatch, caplog):
+    ctx = FakeContext()
+    logs = []
+    monkeypatch.setattr(command_module, "is_staff_member", lambda _ctx: True)
+    monkeypatch.setattr(command_module, "is_admin_member", lambda _ctx: False)
+
+    async def fake_set(_clan, _value):
+        raise command_module.availability.AvailabilityOperationError(
+            "worksheet_update", "C1CC", "worksheet update failed: RuntimeError: boom"
+        )
+
+    async def fake_log(message):
+        logs.append(message)
+
+    monkeypatch.setattr(command_module.availability, "set_manual_open_spots", fake_set)
+    monkeypatch.setattr(command_module.runtime_helpers, "send_log_message", fake_log)
+
+    cog = RecruitmentOpenSpotsCog(bot=None)
+    with caplog.at_level("ERROR", logger=command_module.log.name):
+        _run(cog.setopenspots.callback(cog, ctx, "C1CC", "4", reason="reason"))
+
+    assert "sheet write failed" in ctx.replies[0][0]
+    record = next(rec for rec in caplog.records if rec.getMessage() == "setopenspots failed")
+    assert record.exc_info is not None
+    assert record.clan_tag == "C1CC"
+    assert record.requested_open_spots == 4
+    assert record.caller_source == "staff"
+    assert record.operation_phase == "worksheet_update"
+    assert record.exception_type == "AvailabilityOperationError"
+    assert "worksheet update failed" in record.exception_message
+    assert logs and "worksheet_update" in logs[0]
+
+
+def test_quota_failure_gets_rate_limit_message(monkeypatch):
+    ctx = FakeContext()
+    monkeypatch.setattr(command_module, "is_staff_member", lambda _ctx: True)
+    monkeypatch.setattr(command_module, "is_admin_member", lambda _ctx: False)
+
+    async def fake_set(_clan, _value):
+        raise command_module.availability.AvailabilityOperationError(
+            "worksheet_lookup",
+            "C1CC",
+            "429 RESOURCE_EXHAUSTED read requests per minute per user",
+        )
+
+    monkeypatch.setattr(command_module.availability, "set_manual_open_spots", fake_set)
+    monkeypatch.setattr(command_module.runtime_helpers, "send_log_message", AsyncMock())
+
+    cog = RecruitmentOpenSpotsCog(bot=None)
+    _run(cog.setopenspots.callback(cog, ctx, "C1CC", "4", reason="reason"))
+
+    assert "quota/rate limits" in ctx.replies[0][0]
+    assert "sheet update failed" not in ctx.replies[0][0]
+
+
+def test_post_write_verification_failure_has_distinct_message(monkeypatch):
+    ctx = FakeContext()
+    monkeypatch.setattr(command_module, "is_staff_member", lambda _ctx: True)
+    monkeypatch.setattr(command_module, "is_admin_member", lambda _ctx: False)
+
+    async def fake_set(_clan, _value):
+        raise command_module.availability.AvailabilityOperationError(
+            "post-write verification", "C1CC", "clan cache refresh failed for C1CC"
+        )
+
+    monkeypatch.setattr(command_module.availability, "set_manual_open_spots", fake_set)
+    monkeypatch.setattr(command_module.runtime_helpers, "send_log_message", AsyncMock())
+
+    cog = RecruitmentOpenSpotsCog(bot=None)
+    _run(cog.setopenspots.callback(cog, ctx, "C1CC", "4", reason="reason"))
+
+    assert "post-write verification failed" in ctx.replies[0][0]
+    assert "sheet write failed" not in ctx.replies[0][0]

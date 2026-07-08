@@ -21,6 +21,7 @@ from aiohttp import web
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from discord.ext import commands
+from shared.sheets.core import is_rate_limited_error as is_sheets_rate_limited_error
 
 from shared import health as healthmod
 from shared import socket_heartbeat as hb
@@ -217,7 +218,9 @@ async def _startup_preload(bot: commands.Bot | None = None) -> StartupPreloadRep
     fallback_lines: list[str] = []
     refresh_results: list[cache_telemetry.RefreshResult] = []
 
-    for name in bucket_names:
+    for index, name in enumerate(bucket_names):
+        if index > 0:
+            await asyncio.sleep(8)
         try:
             result = await cache_telemetry.refresh_now(
                 name=name,
@@ -226,8 +229,14 @@ async def _startup_preload(bot: commands.Bot | None = None) -> StartupPreloadRep
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # pragma: no cover - defensive guard
-            log.exception("startup preload refresh failed", extra={"bucket": name})
-            await send_log_message(f"❌ Startup refresh failed for {name}: {exc}")
+            quota = is_sheets_rate_limited_error(exc)
+            log.exception(
+                "startup preload refresh failed",
+                extra={"bucket": name, "quota_exhausted": quota, "exception_type": type(exc).__name__, "exception_message": str(exc)},
+            )
+            await send_log_message(f"❌ Startup refresh failed for {name}: {'quota_exhausted' if quota else exc}")
+            if quota:
+                break
             continue
 
         snapshot = result.snapshot
@@ -1456,68 +1465,84 @@ class Runtime:
 
     async def start(self, token: str) -> None:
         await self.start_webserver()
-        startup_attempt = 1
+        max_attempts = 3
 
-        self._reset_startup_diag(attempt=startup_attempt)
+        for startup_attempt in range(1, max_attempts + 1):
+            self._reset_startup_diag(attempt=startup_attempt)
 
-        attempt_bot = self._build_bot_for_attempt(startup_attempt)
-        log.info("startup attempt %s created new bot/client", startup_attempt)
+            attempt_bot = self._build_bot_for_attempt(startup_attempt)
+            log.info("startup attempt %s created new bot/client", startup_attempt)
 
-        await asyncio.sleep(3)
+            await asyncio.sleep(3)
 
-        if attempt_bot.is_closed():
-            raise RuntimeError("startup aborted: bot closed before login")
+            if attempt_bot.is_closed():
+                raise RuntimeError("startup aborted: bot closed before login")
 
-        log.info("startup attempt %s begin", startup_attempt)
-        self.startup_diag_mark(attempt=startup_attempt, phase="startup_setup")
+            log.info("startup attempt %s begin", startup_attempt)
+            self.startup_diag_mark(attempt=startup_attempt, phase="startup_setup")
 
-        try:
-            await self._run_startup_setup()
-        except StartupPhaseError:
-            raise
+            try:
+                await self._run_startup_setup()
+            except StartupPhaseError:
+                raise
 
-        if _is_bot_http_session_closed(attempt_bot):
-            raise RuntimeError(
-                "startup refused: bot HTTP session is already closed before login"
-            )
+            if _is_bot_http_session_closed(attempt_bot):
+                raise RuntimeError(
+                    "startup refused: bot HTTP session is already closed before login"
+                )
 
-        try:
-            self.startup_diag_mark(phase="discord_login")
-            _startup_phase_log("discord login", "start", attempt=startup_attempt)
+            try:
+                self.startup_diag_mark(phase="discord_login")
+                _startup_phase_log("discord login", "start", attempt=startup_attempt)
 
-            await attempt_bot.start(token)
+                await attempt_bot.start(token)
 
-            _startup_phase_log("discord login", "ok", attempt=startup_attempt)
-            return
+                _startup_phase_log("discord login", "ok", attempt=startup_attempt)
+                return
 
-        except asyncio.CancelledError:
-            raise
+            except asyncio.CancelledError:
+                raise
 
-        except Exception as exc:
-            self.startup_diag_mark(
-                login_reached=bool(getattr(attempt_bot, "user", None))
-            )
+            except Exception as exc:
+                login_reached = bool(getattr(attempt_bot, "user", None))
+                self.startup_diag_mark(login_reached=login_reached)
 
-            should_retry, detail = _is_retryable_discord_start_failure(exc)
+                should_retry, detail = _is_retryable_discord_start_failure(exc)
+                retry_allowed = should_retry and not login_reached and startup_attempt < max_attempts
 
-            _startup_phase_log(
-                "discord login",
-                "fail",
-                attempt=startup_attempt,
-                reason=detail,
-                retry="no",
-            )
+                _startup_phase_log(
+                    "discord login",
+                    "fail",
+                    attempt=startup_attempt,
+                    reason=detail,
+                    retry="yes" if retry_allowed else "no",
+                )
 
-            log.exception(
-                "startup failed (DEV MODE - NO RETRY)",
-                extra={
-                    "startup_diag": self.startup_diag_snapshot(),
-                    "retryable": should_retry,
-                    "reason": detail,
-                },
-            )
+                if not retry_allowed:
+                    log.exception(
+                        "startup failed",
+                        extra={
+                            "startup_diag": self.startup_diag_snapshot(),
+                            "retryable": should_retry,
+                            "reason": detail,
+                        },
+                    )
+                    raise
 
-            raise
+                log.warning(
+                    "startup login failed; retrying with a fresh bot/client",
+                    exc_info=True,
+                    extra={
+                        "startup_diag": self.startup_diag_snapshot(),
+                        "retryable": should_retry,
+                        "reason": detail,
+                        "attempt": startup_attempt,
+                    },
+                )
+                await self._dispose_bot_for_attempt(attempt_bot)
+                await _sleep_startup_retry_backoff(2 ** (startup_attempt - 1))
+
+        raise RuntimeError("startup retry attempts exhausted")
 
     async def _run_startup_setup(self) -> None:
         _startup_phase_log("config validation", "start")
