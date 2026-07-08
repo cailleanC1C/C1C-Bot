@@ -802,3 +802,36 @@ def test_availability_header_config_resolves_production_columns(monkeypatch):
         "manual_open_spots_seen": "AJ",
         "clan_tag": "AK",
     }
+
+
+def test_preflight_clan_availability_wraps_worksheet_lookup_quota(monkeypatch):
+    class QuotaError(RuntimeError):
+        status_code = 429
+
+    header = ["Manual open spots", "Effective open spots", "Inactives", "Reservation count", "Reservation summary", "Manual open spots seen", "Clan Tag"]
+    config = {
+        "clans_header_manual_open_spots": "Manual open spots",
+        "clans_header_open_spots": "Effective open spots",
+        "clans_header_inactives": "Inactives",
+        "clans_header_reservation_count": "Reservation count",
+        "clans_header_reservation_summary": "Reservation summary",
+        "clans_header_manual_open_spots_seen": "Manual open spots seen",
+        "clans_header_clan_tag": "Clan Tag",
+    }
+    monkeypatch.setattr(availability.recruitment, "get_config_value", lambda key, default=None: config.get(key, default))
+    monkeypatch.setattr(availability.recruitment, "get_clan_header_row", lambda force=True: header)
+    monkeypatch.setattr(availability.recruitment, "get_clans_tab_name", lambda: "bot_info")
+    monkeypatch.setattr(availability.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
+
+    async def fake_aget(_sheet_id, _tab_name):
+        raise QuotaError("429 RESOURCE_EXHAUSTED read requests per minute per user")
+
+    monkeypatch.setattr(availability.async_core, "aget_worksheet", fake_aget)
+
+    with pytest.raises(availability.AvailabilityOperationError) as raised:
+        asyncio.run(availability.preflight_clan_availability_update("C1CC"))
+
+    assert raised.value.phase == "worksheet_lookup"
+    assert raised.value.clan_tag == "C1CC"
+    assert isinstance(raised.value.__cause__, QuotaError)
+    assert availability.is_rate_limited_error(raised.value)

@@ -15,6 +15,7 @@ from c1c_coreops.cog import resolve_ops_log_channel_id
 from shared.sheets.runtime import register_default_cache_buckets
 
 from shared.sheets.cache_service import cache
+from shared.sheets.core import is_rate_limited_error as is_sheets_rate_limited_error
 from modules.common import runtime as rt
 from shared.logfmt import LogTemplates, human_reason
 
@@ -291,12 +292,16 @@ async def preload_on_startup() -> None:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # pragma: no cover - defensive guard
+            quota = is_sheets_rate_limited_error(exc)
             log.warning(
                 LogTemplates.cache(
                     bucket=bucket,
                     ok=False,
                     duration_s=0.0,
                     retries=None,
-                    reason=human_reason(exc),
+                    reason="quota_exhausted" if quota else human_reason(exc),
                 )
             )
+            if quota:
+                log.warning("startup cache preload stopped after Sheets quota exhaustion", extra={"bucket": bucket})
+                break

@@ -49,6 +49,8 @@ from shared.sheets.cache_service import cache as sheets_cache
 from shared.cache import telemetry as cache_telemetry
 
 log = logging.getLogger("c1c.onboarding.welcome_watcher")
+STARTUP_CLOSE_BACKFILL_DELAY_SEC = 90
+
 
 _REMINDER_JOB_NAME = "welcome_incomplete_scan"
 _REMINDER_INTERVAL_SECONDS = 900
@@ -4846,7 +4848,14 @@ class WelcomeTicketWatcher(commands.Cog):
         self._close_backfill_done = True
         if not self._features_enabled():
             return
-        await self.run_close_backfill()
+        asyncio.create_task(
+            self._run_close_backfill_after_startup_delay(),
+            name="welcome_close_backfill_startup",
+        )
+
+    async def _run_close_backfill_after_startup_delay(self) -> dict[str, int]:
+        await asyncio.sleep(STARTUP_CLOSE_BACKFILL_DELAY_SEC)
+        return await self.run_close_backfill()
 
     async def run_close_backfill(self) -> dict[str, int]:
         summary = {"scanned": 0, "finalized": 0, "prompt_required": 0, "already_done": 0, "unresolved": 0, "error": 0}

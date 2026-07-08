@@ -51,6 +51,8 @@ from shared.sheets import reservations as reservations_sheets
 
 UTC = dt.timezone.utc
 log = logging.getLogger("c1c.onboarding.promo_watcher")
+STARTUP_CLOSE_BACKFILL_DELAY_SEC = 120
+
 
 
 async def _log_promo_failure_row(
@@ -1884,8 +1886,15 @@ class PromoTicketWatcher(commands.Cog):
             channel_id=channel_id_int,
             triggers=len(_PROMO_TRIGGER_MAP),
         )
-        await self.run_close_backfill()
+        asyncio.create_task(
+            self._run_close_backfill_after_startup_delay(),
+            name="promo_close_backfill_startup",
+        )
         # Startup watcher status is included in the global startup summary.
+
+    async def _run_close_backfill_after_startup_delay(self) -> dict[str, int]:
+        await asyncio.sleep(STARTUP_CLOSE_BACKFILL_DELAY_SEC)
+        return await self.run_close_backfill()
 
     async def run_close_backfill(self) -> dict[str, int]:
         summary = {

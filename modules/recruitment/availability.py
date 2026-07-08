@@ -76,6 +76,36 @@ class ManualOpenSpotAdjustmentPlan:
     resolved_clan_tag: str
 
 
+class AvailabilityOperationError(RuntimeError):
+    """Wrap availability sheet failures with the operation phase that failed."""
+
+    def __init__(self, phase: str, clan_tag: str, message: str, *, cause: BaseException | None = None) -> None:
+        self.phase = phase
+        self.clan_tag = clan_tag
+        self.cause = cause
+        super().__init__(message)
+
+
+def is_rate_limited_error(exc: BaseException | None) -> bool:
+    """Best-effort detection for Google Sheets quota/rate-limit failures."""
+
+    current = exc
+    seen = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        status_code = getattr(current, "status_code", None)
+        if status_code == 429:
+            return True
+        response = getattr(current, "response", None)
+        if response is not None and getattr(response, "status_code", None) == 429:
+            return True
+        text = f"{type(current).__name__}: {current}".upper()
+        if any(marker in text for marker in ("429", "RESOURCE_EXHAUSTED", "READREQUESTSPERMINUTEPERUSER", "READ REQUESTS PER MINUTE PER USER")):
+            return True
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+    return False
+
+
 def _mask_sheet_id(sheet_id: str | None) -> str:
     text = (sheet_id or "").strip()
     if not text:
@@ -289,7 +319,9 @@ async def preflight_clan_availability_update(
     sheet_id = recruitment.get_recruitment_sheet_id()
     try:
         worksheet = await async_core.aget_worksheet(sheet_id, headers.tab_name)
-    except Exception:
+    except ValueError:
+        raise
+    except Exception as exc:
         _log_availability_diagnostics(
             reason="worksheet_not_accessible",
             tab_name=headers.tab_name,
@@ -300,7 +332,12 @@ async def preflight_clan_availability_update(
             header_map=headers.header_map,
             clan_tag=clan_tag,
         )
-        raise
+        raise AvailabilityOperationError(
+            "worksheet_lookup",
+            clan_tag,
+            f"clan availability worksheet lookup failed: {type(exc).__name__}: {exc}",
+            cause=exc,
+        ) from exc
     if worksheet is None:
         raise ValueError("bot_info worksheet not accessible")
 
@@ -507,7 +544,18 @@ async def set_manual_open_spots(clan_tag: str, open_spots: int) -> tuple[int, in
     if open_spots < 0:
         raise ValueError("open_spots must be >= 0")
 
-    plan = await preflight_manual_open_spots_adjustment(clan_tag, 0)
+    try:
+        plan = await preflight_manual_open_spots_adjustment(clan_tag, 0)
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise AvailabilityOperationError(
+            "preflight",
+            clan_tag,
+            f"manual open-spots preflight failed: {type(exc).__name__}: {exc}",
+            cause=exc,
+        ) from exc
+
     old_value = plan.current_available
     delta = open_spots - plan.new_value
     new_value = await adjust_manual_open_spots(clan_tag, delta)
@@ -519,6 +567,7 @@ async def adjust_manual_open_spots(clan_tag: str, delta: int) -> int:
     """Adjust manual open spots for ``clan_tag`` and return the new value."""
     plan: ManualOpenSpotAdjustmentPlan | None = None
     write_range = ""
+    phase = "preflight"
     try:
         log.info("adjust_manual_open_spots:start clan_tag=%s delta=%s", clan_tag, delta)
         plan = await preflight_manual_open_spots_adjustment(clan_tag, delta)
@@ -548,8 +597,10 @@ async def adjust_manual_open_spots(clan_tag: str, delta: int) -> int:
         updated_row[plan.open_index] = str(plan.new_value)
         updated_row[plan.seen_index] = str(plan.manual_open)
 
+        phase = "worksheet_lookup"
         sheet_id = recruitment.get_recruitment_sheet_id()
         worksheet = await async_core.aget_worksheet(sheet_id, plan.tab_name)
+        phase = "worksheet_update"
         if plan.combined_range:
             first_index = min(plan.open_index, plan.seen_index)
             second_index = max(plan.open_index, plan.seen_index)
@@ -616,12 +667,14 @@ async def adjust_manual_open_spots(clan_tag: str, delta: int) -> int:
                 seen_result,
             )
 
+        phase = "cache_refresh"
         cache_result = recruitment.update_cached_clan_row(plan.sheet_row, updated_row)
         log.info(
             "adjust_manual_open_spots:cache_update_result clan_tag=%s result=%r",
             clan_tag,
             cache_result,
         )
+        phase = "post-write verification"
         refreshed = recruitment.find_clan_row(clan_tag, force=True)
         if refreshed is None:
             raise RuntimeError(f"clan cache refresh failed for {clan_tag}")
@@ -648,11 +701,15 @@ async def adjust_manual_open_spots(clan_tag: str, delta: int) -> int:
             },
         )
         return plan.new_value
-    except Exception:
+    except Exception as exc:
         extra = {
             "clan_tag": clan_tag,
             "delta": delta,
             "write_range": write_range or None,
+            "operation_phase": phase,
+            "exception_type": type(exc).__name__,
+            "exception_message": str(exc),
+            "quota_exhausted": is_rate_limited_error(exc),
         }
         if plan is not None:
             extra.update(
@@ -680,7 +737,14 @@ async def adjust_manual_open_spots(clan_tag: str, delta: int) -> int:
             write_range or None,
             extra=extra,
         )
-        raise
+        if isinstance(exc, AvailabilityOperationError) or (phase == "preflight" and isinstance(exc, ValueError)):
+            raise
+        raise AvailabilityOperationError(
+            phase,
+            clan_tag,
+            f"manual open-spots {phase} failed: {type(exc).__name__}: {exc}",
+            cause=exc,
+        ) from exc
 
 
 async def recompute_clan_availability(
@@ -861,7 +925,9 @@ def _normalize_tag(tag: str | None) -> str:
 
 
 __all__ = [
+    "AvailabilityOperationError",
     "adjust_manual_open_spots",
+    "is_rate_limited_error",
     "preflight_manual_open_spots_adjustment",
     "preflight_clan_availability_update",
     "resolve_configured_clan_tag",

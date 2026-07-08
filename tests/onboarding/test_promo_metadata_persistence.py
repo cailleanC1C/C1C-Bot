@@ -380,8 +380,9 @@ def test_patch_promo_metadata_missing_required_header_skips_without_header_rewri
     assert worksheet.header_updates == []
 
 
-def test_promo_close_backfill_runs_on_startup_with_bounded_runner(monkeypatch):
+def test_promo_close_backfill_is_deferred_on_startup(monkeypatch):
     calls = []
+    created = []
     monkeypatch.setattr(watcher_promo, "get_promo_channel_id", lambda: 1)
     monkeypatch.setattr(watcher_promo, "get_ticket_tool_bot_id", lambda: 2)
     monkeypatch.setattr(watcher_promo.feature_flags, "is_enabled", lambda name: True)
@@ -392,12 +393,19 @@ def test_promo_close_backfill_runs_on_startup_with_bounded_runner(monkeypatch):
         return {"scanned": 0}
 
     monkeypatch.setattr(watcher_promo.PromoTicketWatcher, "run_close_backfill", fake_backfill)
+    def fake_create_task(coro, *, name=None):
+        created.append(name)
+        coro.close()
+        return SimpleNamespace(done=lambda: False)
+
+    monkeypatch.setattr(watcher_promo.asyncio, "create_task", fake_create_task)
     watcher = watcher_promo.PromoTicketWatcher(bot=SimpleNamespace())
 
     import asyncio
     asyncio.run(watcher.on_ready())
 
-    assert calls == ["backfill"]
+    assert calls == []
+    assert created == ["promo_close_backfill_startup"]
 
 
 def test_startup_backfill_includes_recent_unresolved_closed_promo(monkeypatch):
