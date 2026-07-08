@@ -54,6 +54,17 @@ class AvailabilityPreflightPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class AvailabilityRecomputeResult:
+    clan_tag: str
+    sheet_row: int
+    available_after_reservations: int
+    reservation_count: int
+    reservation_summary: str
+    cache_updated: bool
+    verified: bool
+
+
+@dataclass(frozen=True, slots=True)
 class ManualOpenSpotAdjustmentPlan:
     clan_tag: str
     delta: int
@@ -79,7 +90,14 @@ class ManualOpenSpotAdjustmentPlan:
 class AvailabilityOperationError(RuntimeError):
     """Wrap availability sheet failures with the operation phase that failed."""
 
-    def __init__(self, phase: str, clan_tag: str, message: str, *, cause: BaseException | None = None) -> None:
+    def __init__(
+        self,
+        phase: str,
+        clan_tag: str,
+        message: str,
+        *,
+        cause: BaseException | None = None,
+    ) -> None:
         self.phase = phase
         self.clan_tag = clan_tag
         self.cause = cause
@@ -100,9 +118,19 @@ def is_rate_limited_error(exc: BaseException | None) -> bool:
         if response is not None and getattr(response, "status_code", None) == 429:
             return True
         text = f"{type(current).__name__}: {current}".upper()
-        if any(marker in text for marker in ("429", "RESOURCE_EXHAUSTED", "READREQUESTSPERMINUTEPERUSER", "READ REQUESTS PER MINUTE PER USER")):
+        if any(
+            marker in text
+            for marker in (
+                "429",
+                "RESOURCE_EXHAUSTED",
+                "READREQUESTSPERMINUTEPERUSER",
+                "READ REQUESTS PER MINUTE PER USER",
+            )
+        ):
             return True
-        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        current = getattr(current, "__cause__", None) or getattr(
+            current, "__context__", None
+        )
     return False
 
 
@@ -325,6 +353,7 @@ async def _aresolve_availability_headers() -> AvailabilityHeaderResolution:
         configured_headers=configured_headers,
     )
 
+
 def _find_availability_clan_row(
     clan_tag: str, headers: AvailabilityHeaderResolution
 ) -> tuple[int, list[str]] | None:
@@ -411,10 +440,10 @@ async def preflight_clan_availability_update(
     clan_tag: str,
     *,
     delta: int = 0,
-    find_clan_row_fn: Callable[
-        [str, AvailabilityHeaderResolution], tuple[int, list[str]] | None
-    ]
-    | None = None,
+    find_clan_row_fn: (
+        Callable[[str, AvailabilityHeaderResolution], tuple[int, list[str]] | None]
+        | None
+    ) = None,
 ) -> AvailabilityPreflightPlan:
     """Preflight Config-resolved bot_info availability dependencies before mutating flows."""
     headers = await _aresolve_availability_headers()
@@ -841,7 +870,9 @@ async def adjust_manual_open_spots(clan_tag: str, delta: int) -> int:
             write_range or None,
             extra=extra,
         )
-        if isinstance(exc, AvailabilityOperationError) or (phase == "preflight" and isinstance(exc, ValueError)):
+        if isinstance(exc, AvailabilityOperationError) or (
+            phase == "preflight" and isinstance(exc, ValueError)
+        ):
             raise
         raise AvailabilityOperationError(
             phase,
@@ -856,16 +887,20 @@ async def recompute_clan_availability(
     *,
     guild: reservations.SupportsMemberLookup | None = None,
     resolver: reservations.ResolveUserFn | None = None,
-    find_clan_row_fn: Callable[
-        [str, AvailabilityHeaderResolution], tuple[int, list[str]] | None
-    ]
-    | None = None,
-) -> None:
+    find_clan_row_fn: (
+        Callable[[str, AvailabilityHeaderResolution], tuple[int, list[str]] | None]
+        | None
+    ) = None,
+    preflight_plan: AvailabilityPreflightPlan | None = None,
+    active_reservations: Sequence[reservations.ReservationRow] | None = None,
+) -> AvailabilityRecomputeResult:
     """Recompute Config-resolved bot_info availability for ``clan_tag`` and refresh cache."""
 
-    plan = await preflight_clan_availability_update(
-        clan_tag, delta=0, find_clan_row_fn=find_clan_row_fn
-    )
+    plan = preflight_plan
+    if plan is None:
+        plan = await preflight_clan_availability_update(
+            clan_tag, delta=0, find_clan_row_fn=find_clan_row_fn
+        )
     sheet_row = plan.sheet_row
     row = plan.row
     header_map = plan.headers.header_map
@@ -882,7 +917,10 @@ async def recompute_clan_availability(
     rebase_manual_open_spots = manual_open != seen_manual_open
     base_available = manual_open if rebase_manual_open_spots else current_available
 
-    active_reservations = await reservations.get_active_reservations_for_clan(clan_tag)
+    if active_reservations is None:
+        active_reservations = await reservations.get_active_reservations_for_clan(
+            clan_tag
+        )
     reservation_count = len(active_reservations)
     available_after_reservations = max(base_available - reservation_count, 0)
 
@@ -962,7 +1000,7 @@ async def recompute_clan_availability(
             )
             raise
 
-    recruitment.update_cached_clan_row(sheet_row, updated_row)
+    cache_updated = recruitment.update_cached_clan_row(sheet_row, updated_row)
 
     log.debug(
         "recomputed clan availability",
@@ -977,6 +1015,15 @@ async def recompute_clan_availability(
             "aj_after": manual_open,
             "resolved_header_map": _availability_header_map_columns(header_map),
         },
+    )
+    return AvailabilityRecomputeResult(
+        clan_tag=clan_tag,
+        sheet_row=sheet_row,
+        available_after_reservations=available_after_reservations,
+        reservation_count=reservation_count,
+        reservation_summary=reservation_summary,
+        cache_updated=bool(cache_updated),
+        verified=True,
     )
 
 
@@ -1030,6 +1077,7 @@ def _normalize_tag(tag: str | None) -> str:
 
 __all__ = [
     "AvailabilityOperationError",
+    "AvailabilityRecomputeResult",
     "aresolve_configured_clan_tag",
     "adjust_manual_open_spots",
     "is_rate_limited_error",

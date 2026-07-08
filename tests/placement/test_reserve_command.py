@@ -10,8 +10,9 @@ import pytest
 from modules.placement import reservations as reserve_module
 from shared.sheets import reservations as reservations_sheet
 
-
-_REAL_AVAILABILITY_PREFLIGHT = reserve_module.availability.preflight_clan_availability_update
+_REAL_AVAILABILITY_PREFLIGHT = (
+    reserve_module.availability.preflight_clan_availability_update
+)
 
 
 @pytest.fixture(autouse=True)
@@ -72,7 +73,6 @@ def _stub_availability_preflight(monkeypatch):
         reserve_module, "_aresolve_configured_reservation_clan_tag", fake_async_resolve
     )
 
-
     async def fake_afind_clan_row(tag, *, force=False):
         try:
             row = reserve_module.recruitment.get_clan_by_tag(tag)
@@ -89,7 +89,18 @@ def _stub_availability_preflight(monkeypatch):
         row_number, values = found
         return row_number, list(values)
 
-    monkeypatch.setattr(reserve_module.recruitment, "afind_clan_row", fake_afind_clan_row)
+    monkeypatch.setattr(
+        reserve_module.recruitment, "afind_clan_row", fake_afind_clan_row
+    )
+
+    async def fake_active_reservations_for_clan(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "get_active_reservations_for_clan",
+        fake_active_reservations_for_clan,
+    )
 
 
 class FakeMember:
@@ -225,6 +236,18 @@ class FakeContext:
 
     async def send(self, content: str, **kwargs):
         return await self.channel.send(content=content, **kwargs)
+
+
+def _verified_recompute_result(tag="#ABC", *, reserved=1, available=2):
+    return reserve_module.availability.AvailabilityRecomputeResult(
+        clan_tag=tag,
+        sheet_row=7,
+        available_after_reservations=available,
+        reservation_count=reserved,
+        reservation_summary="",
+        cache_updated=True,
+        verified=True,
+    )
 
 
 def _enable_feature(monkeypatch, enabled: bool = True) -> None:
@@ -363,7 +386,9 @@ def test_reserve_availability_preflight_uses_async_sheets(monkeypatch):
         return _Worksheet()
 
     def _sync_forbidden(*_args, **_kwargs):
-        raise AssertionError("sync Sheets/config helper must not run during reserve preflight")
+        raise AssertionError(
+            "sync Sheets/config helper must not run during reserve preflight"
+        )
 
     monkeypatch.setattr(
         reserve_module.availability,
@@ -371,7 +396,9 @@ def test_reserve_availability_preflight_uses_async_sheets(monkeypatch):
         _REAL_AVAILABILITY_PREFLIGHT,
     )
     monkeypatch.setattr(
-        reserve_module.recruitment, "get_recruitment_sheet_id", lambda: "recruitment-sheet"
+        reserve_module.recruitment,
+        "get_recruitment_sheet_id",
+        lambda: "recruitment-sheet",
     )
     monkeypatch.setattr(
         reserve_module.recruitment, "get_config_value_async", _config_value
@@ -384,7 +411,9 @@ def test_reserve_availability_preflight_uses_async_sheets(monkeypatch):
     monkeypatch.setattr(reserve_module.recruitment, "aget_clan_header_row", _header_row)
     monkeypatch.setattr(reserve_module.recruitment, "afetch_clans", _clans)
     monkeypatch.setattr(reserve_module.recruitment, "get_config_value", _sync_forbidden)
-    monkeypatch.setattr(reserve_module.recruitment, "get_clan_header_row", _sync_forbidden)
+    monkeypatch.setattr(
+        reserve_module.recruitment, "get_clan_header_row", _sync_forbidden
+    )
     monkeypatch.setattr(reserve_module.recruitment, "fetch_clans", _sync_forbidden)
     monkeypatch.setattr(reserve_module.recruitment, "find_clan_row", _sync_forbidden)
     monkeypatch.setattr(reserve_module.availability.async_core, "aget_worksheet", _aget)
@@ -484,8 +513,9 @@ def test_reserve_success(monkeypatch):
 
     recomputed = {}
 
-    async def fake_recompute(clan_tag, *, guild=None, resolver=None):
+    async def fake_recompute(clan_tag, **_kwargs):
         recomputed["tag"] = clan_tag
+        return _verified_recompute_result(clan_tag, reserved=2, available=1)
 
     monkeypatch.setattr(
         reserve_module.availability, "recompute_clan_availability", fake_recompute
@@ -718,7 +748,7 @@ def test_reserve_accepts_inline_recruit(monkeypatch):
     monkeypatch.setattr(
         reserve_module.availability,
         "recompute_clan_availability",
-        lambda *args, **kwargs: asyncio.sleep(0),
+        lambda tag, **kwargs: asyncio.sleep(0, result=_verified_recompute_result(tag)),
     )
     monkeypatch.setattr(
         reserve_module,
@@ -928,6 +958,29 @@ def test_reserve_requires_reason(monkeypatch):
         fake_find_active,
     )
 
+    monkeypatch.setattr(
+        reserve_module.reservations,
+        "get_active_reservations_for_clan",
+        lambda *_args, **_kwargs: asyncio.sleep(
+            0,
+            result=[
+                reservations_sheet.ReservationRow(
+                    row_number=2,
+                    thread_id="old",
+                    ticket_user_id=999,
+                    recruiter_id=444,
+                    clan_tag="#DEF",
+                    reserved_until=None,
+                    created_at=None,
+                    status=reserve_module.ACTIVE_STATUS,
+                    notes="",
+                    username_snapshot="Existing",
+                    raw=(),
+                )
+            ],
+        ),
+    )
+
     appended: list[list[str]] = []
 
     async def fake_append(row_values):
@@ -939,7 +992,7 @@ def test_reserve_requires_reason(monkeypatch):
     monkeypatch.setattr(
         reserve_module.availability,
         "recompute_clan_availability",
-        lambda *args, **kwargs: asyncio.sleep(0),
+        lambda tag, **kwargs: asyncio.sleep(0, result=_verified_recompute_result(tag)),
     )
     monkeypatch.setattr(
         reserve_module,
@@ -2422,7 +2475,7 @@ def _setup_successful_reserve(
     monkeypatch.setattr(
         reserve_module.availability,
         "recompute_clan_availability",
-        lambda *_args, **_kwargs: asyncio.sleep(0),
+        lambda tag, **_kwargs: asyncio.sleep(0, result=_verified_recompute_result(tag)),
     )
     monkeypatch.setattr(
         reserve_module,
@@ -2669,7 +2722,7 @@ def test_reserve_change_flow_cleans_full_completed_chain(monkeypatch):
     monkeypatch.setattr(
         reserve_module.availability,
         "recompute_clan_availability",
-        lambda *_args, **_kwargs: asyncio.sleep(0),
+        lambda tag, **_kwargs: asyncio.sleep(0, result=_verified_recompute_result(tag)),
     )
     monkeypatch.setattr(
         reserve_module,
@@ -2707,3 +2760,105 @@ def test_reserve_cleanup_works_for_promo_parent(monkeypatch):
     assert date_message.deleted is True
     assert confirm_message.deleted is True
     assert any(name == "Res-M1234-denbotron-C1C5" for name in thread.edited_names)
+
+
+def test_reserve_reuses_preflight_plan_and_rows_without_post_append_reload(monkeypatch):
+    cog, ctx, thread, _messages = _setup_successful_reserve(monkeypatch)
+    calls = {"ensure_fresh": 0, "afind": 0}
+
+    async def forbidden_fresh(**_kwargs):
+        calls["ensure_fresh"] += 1
+        return False
+
+    async def forbidden_afind(*_args, **_kwargs):
+        calls["afind"] += 1
+        raise AssertionError("post-append clan force refresh should not run")
+
+    seen_kwargs = {}
+
+    async def fake_recompute(tag, **kwargs):
+        seen_kwargs.update(kwargs)
+        return _verified_recompute_result(
+            tag, reserved=len(kwargs["active_reservations"]), available=4
+        )
+
+    monkeypatch.setattr(
+        reserve_module, "_ensure_fresh_clans_for_reservations", forbidden_fresh
+    )
+    monkeypatch.setattr(reserve_module.recruitment, "afind_clan_row", forbidden_afind)
+    monkeypatch.setattr(
+        reserve_module.availability, "recompute_clan_availability", fake_recompute
+    )
+
+    asyncio.run(cog.reserve.callback(cog, ctx, "C1C5", "<@222>"))
+
+    assert calls == {"ensure_fresh": 0, "afind": 0}
+    assert seen_kwargs["preflight_plan"] is not None
+    assert len(seen_kwargs["active_reservations"]) == 1
+    assert any("Effective open spots: `4`" in (m.content or "") for m in thread.sent)
+
+
+def test_reserve_retries_transient_429_after_append(monkeypatch):
+    cog, ctx, thread, _messages = _setup_successful_reserve(monkeypatch)
+    attempts = {"count": 0}
+
+    class QuotaError(RuntimeError):
+        status_code = 429
+
+    async def fake_sleep(_delay, result=None):
+        return result
+
+    async def flaky_recompute(tag, **_kwargs):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise QuotaError("429 RESOURCE_EXHAUSTED read requests per minute per user")
+        return _verified_recompute_result(tag, reserved=1, available=4)
+
+    monkeypatch.setattr(reserve_module.sheets_core.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(
+        reserve_module.availability, "recompute_clan_availability", flaky_recompute
+    )
+
+    asyncio.run(cog.reserve.callback(cog, ctx, "C1C5", "<@222>"))
+
+    assert attempts["count"] == 2
+    assert any((m.content or "").startswith("✅ Reserved 1 spot") for m in thread.sent)
+
+
+def test_reserve_all_recompute_retries_fail_partial_warning(monkeypatch):
+    cog, ctx, thread, _messages = _setup_successful_reserve(monkeypatch)
+    attempts = {"count": 0}
+    runtime_logs: list[tuple[str, str]] = []
+
+    class QuotaError(RuntimeError):
+        status_code = 429
+
+    async def fake_sleep(_delay, result=None):
+        return result
+
+    async def always_quota(*_args, **_kwargs):
+        attempts["count"] += 1
+        raise QuotaError("429 RESOURCE_EXHAUSTED read requests per minute per user")
+
+    monkeypatch.setattr(reserve_module.sheets_core.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(
+        reserve_module.availability, "recompute_clan_availability", always_quota
+    )
+    monkeypatch.setattr(
+        reserve_module.human_log,
+        "human",
+        lambda level, message, **_: runtime_logs.append((level, message)),
+    )
+
+    asyncio.run(cog.reserve.callback(cog, ctx, "C1C5", "<@222>"))
+
+    assert attempts["count"] >= 2
+    assert any(
+        "Reservation row was added, but recruiter-facing availability was NOT updated."
+        in (m.content or "")
+        for m in thread.sent
+    )
+    assert any(
+        "clan=C1C5" in message and "reservation_row=append:" in message
+        for _, message in runtime_logs
+    )
