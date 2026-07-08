@@ -208,16 +208,46 @@ class LeaguesCog(commands.Cog):
                     extra={"reason": "no_active_approval_row", "channel_id": payload.channel_id, "message_id": payload.message_id},
                 )
                 return
-            status = row["values"].get("status", "").lower()
-            if status != "pending":
+            status = row["values"].get("status", "").strip().lower()
+            posted_at_utc = row["values"].get("posted_at_utc", "").strip()
+            retrying_failed = status == "failed" and not posted_at_utc
+            if status == "posted" or posted_at_utc:
                 log.info(
-                    "league approval reaction ignored",
-                    extra={"reason": "approval_not_pending", "status": status, "message_id": payload.message_id},
+                    "approval_not_retryable",
+                    extra={
+                        "reason": "approval_not_retryable",
+                        "status": status,
+                        "posted_at_utc": posted_at_utc,
+                        "message_id": payload.message_id,
+                    },
                 )
                 return
+            if status not in {"pending", "failed"}:
+                log.info(
+                    "approval_not_retryable",
+                    extra={
+                        "reason": "approval_not_retryable",
+                        "status": status,
+                        "posted_at_utc": posted_at_utc,
+                        "message_id": payload.message_id,
+                    },
+                )
+                return
+            if retrying_failed:
+                self._handled_messages.discard(payload.message_id)
+                log.info(
+                    "approval_retry_from_failed",
+                    extra={
+                        "reason": "approval_retry_from_failed",
+                        "status": status,
+                        "message_id": payload.message_id,
+                        "season_key": row["values"].get("season_key"),
+                        "week_key": row["values"].get("week_key"),
+                    },
+                )
 
             approvers = self._parse_approvers(row["values"].get("approved_by_user_ids", ""))
-            if payload.user_id in approvers:
+            if payload.user_id in approvers and not retrying_failed:
                 log.info("league approval reaction ignored", extra={"reason": "user_already_approved", "message_id": payload.message_id})
                 return
             approvers.add(payload.user_id)

@@ -82,3 +82,60 @@ def test_amerge_onboarding_config_early_uses_async_loader(monkeypatch):
     assert calls == {"async": 1, "milestones": 1}
     assert config.cfg.get("ONBOARDING_TAB") == "WelcomeQuestions"
     assert config.cfg.get("SHARD_MERCY_TAB") == "Mercy"
+
+
+def test_amerge_onboarding_config_early_executes_real_async_sheet_loaders(monkeypatch):
+    import asyncio
+
+    import shared.config as config
+    from shared.sheets import core as sheets_core
+    from shared.sheets import milestones_config
+    from shared.sheets import onboarding as onboarding_sheets
+
+    monkeypatch.setenv("ONBOARDING_SHEET_ID", "onboard-sheet-XYZ")
+    monkeypatch.setenv("ONBOARDING_CONFIG_TAB", "OnboardingConfigTab")
+    monkeypatch.setenv("MILESTONES_SHEET_ID", "milestone-sheet-XYZ")
+    monkeypatch.setenv("MILESTONES_CONFIG_TAB", "MilestonesConfigTab")
+    config._CONFIG["MILESTONES_SHEET_ID"] = "milestone-sheet-XYZ"
+
+    onboarding_sheets._CONFIG_CACHE = None
+    onboarding_sheets._CONFIG_CACHE_TS = 0.0
+
+    calls = []
+
+    async def _fake_onboarding_afetch_records(sheet_id, tab_name, *args, **kwargs):
+        calls.append(("onboarding", sheet_id, tab_name))
+        assert sheet_id == "onboard-sheet-XYZ"
+        assert tab_name == "OnboardingConfigTab"
+        return [
+            {"Key": "ONBOARDING_TAB", "Value": "WelcomeQuestions"},
+            {"Key": "WELCOME_TICKETS_TAB", "Value": "WelcomeTickets"},
+        ]
+
+    async def _fake_milestones_afetch_records(sheet_id, tab_name, *args, **kwargs):
+        calls.append(("milestones", sheet_id, tab_name))
+        assert sheet_id == "milestone-sheet-XYZ"
+        assert tab_name == "MilestonesConfigTab"
+        return [
+            {"Key": "SHARD_MERCY_TAB", "Value": "Mercy"},
+            {"Key": "RESET_REMINDER_TAB", "Value": "ResetReminders"},
+        ]
+
+    def _sync_fetch_records(*args, **kwargs):
+        raise AssertionError("sync Sheets fetch_records must not run during async startup preload")
+
+    monkeypatch.setattr(onboarding_sheets, "afetch_records", _fake_onboarding_afetch_records)
+    monkeypatch.setattr(milestones_config.async_core, "afetch_records", _fake_milestones_afetch_records)
+    monkeypatch.setattr(sheets_core, "fetch_records", _sync_fetch_records)
+
+    merged = asyncio.run(config.amerge_onboarding_config_early())
+
+    assert merged == 2
+    assert config.cfg.get("ONBOARDING_TAB") == "WelcomeQuestions"
+    assert config.cfg.get("WELCOME_TICKETS_TAB") == "WelcomeTickets"
+    assert config.cfg.get("SHARD_MERCY_TAB") == "Mercy"
+    assert config.cfg.get("RESET_REMINDER_TAB") == "ResetReminders"
+    assert calls == [
+        ("onboarding", "onboard-sheet-XYZ", "OnboardingConfigTab"),
+        ("milestones", "milestone-sheet-XYZ", "MilestonesConfigTab"),
+    ]
