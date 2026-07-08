@@ -30,6 +30,7 @@ from shared.config import (
 )
 from shared.cache import telemetry as cache_telemetry
 from shared.logfmt import channel_label
+from shared.sheets import core as sheets_core
 from shared.sheets import recruitment, reservations
 
 log = logging.getLogger(__name__)
@@ -908,9 +909,10 @@ class ReservationCog(commands.Cog):
         manual_open = preflight_plan.numeric_values["manual_open_spots"]
 
         try:
-            active_reservations = await reservations.count_active_reservations_for_clan(
-                sheet_tag
+            active_reservation_rows = (
+                await reservations.get_active_reservations_for_clan(sheet_tag)
             )
+            active_reservations = len(active_reservation_rows)
         except Exception:
             log.exception(
                 "failed to count active reservations",
@@ -1055,44 +1057,30 @@ class ReservationCog(commands.Cog):
             return
 
         source = "reserve"
-        actor = "placement_reservation"
         actor_user = f"{ctx.author} ({getattr(ctx.author, 'id', '-')})"
-        clans_fresh = await _ensure_fresh_clans_for_reservations(
-            actor=actor,
+        reservation_row_ref = f"append:{now.isoformat()} thread:{getattr(ctx.channel, 'id', '')} user:{details.ticket_user_id or ''}"
+        appended_reservation = reservations.ReservationRow(
+            row_number=0,
+            thread_id=str(getattr(ctx.channel, "id", "")),
+            ticket_user_id=details.ticket_user_id,
+            recruiter_id=getattr(ctx.author, "id", None),
             clan_tag=sheet_tag,
-            user=actor_user,
-            source=source,
+            reserved_until=details.reserved_until,
+            created_at=now,
+            status=ACTIVE_STATUS,
+            notes=details.notes,
+            username_snapshot=username_snapshot or "",
+            raw=tuple(str(value) for value in row_values),
         )
-        reservation_row_ref = f"append:{now.isoformat()}"
-        if not clans_fresh:
-            log.warning(
-                "skipped recompute clan availability",
-                extra={
-                    "reason": "fresh_clans_unavailable",
-                    "clan_tag": _normalize_tag(sheet_tag),
-                    "reservation_row": reservation_row_ref,
-                    "thread_id": getattr(ctx.channel, "id", None),
-                    "ticket_user_id": details.ticket_user_id,
-                    "user": actor_user,
-                    "source": source,
-                },
-            )
-            human_log.human(
-                "warning",
-                "⚠️ reservation_partial_success — source=reserve • clan=%s • reservation_row=%s • thread=%s • ticket_user=%s • error_type=FreshClansUnavailable • error=fresh_clans_unavailable • action=rerun recompute/refresh for clan and verify recruiter-facing bot_info open spots"
-                % (
-                    _normalize_tag(sheet_tag),
-                    reservation_row_ref,
-                    getattr(ctx.channel, "id", "-"),
-                    details.ticket_user_id or "-",
-                ),
-            )
-            await ctx.send(
-                "Reservation row was added, but recruiter-facing availability was NOT updated. Admin hint: rerun recompute/refresh for this clan and manually verify bot_info/open spots."
-            )
-            return
+        recompute_rows = [*active_reservation_rows, appended_reservation]
         try:
-            await availability.recompute_clan_availability(sheet_tag, guild=ctx.guild)
+            recompute_result = await sheets_core._retry_with_backoff_async(
+                availability.recompute_clan_availability,
+                sheet_tag,
+                guild=ctx.guild,
+                preflight_plan=preflight_plan,
+                active_reservations=recompute_rows,
+            )
         except Exception as exc:
             error_type = type(exc).__name__
             error_text = str(exc) or repr(exc)
@@ -1126,17 +1114,25 @@ class ReservationCog(commands.Cog):
             )
             return
 
-        fallback_reserved = active_reservations + 1
-        fallback_available = max(manual_open - fallback_reserved, 0)
+        if not getattr(recompute_result, "verified", False):
+            log.error(
+                "reservation recompute finished without verification",
+                extra={
+                    "clan_tag": _normalize_tag(sheet_tag),
+                    "reservation_row": reservation_row_ref,
+                    "thread_id": getattr(ctx.channel, "id", None),
+                    "ticket_user_id": details.ticket_user_id,
+                    "user": actor_user,
+                    "source": source,
+                },
+            )
+            await ctx.send(
+                "Reservation row was added, but recruiter-facing availability was NOT updated. Admin hint: rerun recompute/refresh for this clan and manually verify bot_info/open spots."
+            )
+            return
 
-        updated_entry = await recruitment.afind_clan_row(sheet_tag, force=True)
-        updated_row = updated_entry[1] if updated_entry is not None else None
-        if updated_row is not None:
-            ah_value = _safe_cell(updated_row, 33, fallback_reserved)
-            af_value = _safe_cell(updated_row, 31, fallback_available)
-        else:
-            ah_value = str(fallback_reserved)
-            af_value = str(fallback_available)
+        ah_value = str(recompute_result.reservation_count)
+        af_value = str(recompute_result.available_after_reservations)
 
         await ctx.send(
             (
