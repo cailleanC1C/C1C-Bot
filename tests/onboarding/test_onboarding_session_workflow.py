@@ -367,3 +367,112 @@ def test_auto_closed_thread_skips_manual_prompt(monkeypatch):
     asyncio.run(watcher.on_thread_update(before, after))
 
     assert manual_called is False
+
+
+def test_welcome_archive_close_posts_prompt_without_availability_preflight(monkeypatch):
+    monkeypatch.setattr("modules.common.feature_flags.is_enabled", lambda *_: True)
+    from modules.onboarding import watcher_welcome
+
+    preflight_calls = []
+    adjust_calls = []
+    recompute_calls = []
+
+    async def _preflight(*args, **kwargs):
+        preflight_calls.append((args, kwargs))
+
+    async def _adjust(*args, **kwargs):
+        adjust_calls.append((args, kwargs))
+
+    async def _recompute(*args, **kwargs):
+        recompute_calls.append((args, kwargs))
+
+    monkeypatch.setattr(watcher_welcome.availability, "preflight_clan_availability_update", _preflight)
+    monkeypatch.setattr(watcher_welcome.availability, "adjust_manual_open_spots", _adjust)
+    monkeypatch.setattr(watcher_welcome.availability, "recompute_clan_availability", _recompute)
+    monkeypatch.setattr(watcher_welcome, "_send_placement_log_line", lambda **_: asyncio.sleep(0))
+    monkeypatch.setattr(watcher_welcome.onboarding_sessions, "get_by_thread_id", lambda *_: None)
+    monkeypatch.setattr(watcher_welcome.onboarding_sheets, "find_welcome_row", lambda *_: None)
+    monkeypatch.setattr(watcher_welcome.onboarding_sheets, "update_ticket_finalization_state", lambda *_, **__: "updated")
+
+    watcher = WelcomeTicketWatcher(bot=_DummyBot())
+    monkeypatch.setattr(watcher, "_is_ticket_thread", lambda *_: True)
+    monkeypatch.setattr(watcher, "_load_clan_tags", lambda: asyncio.sleep(0, result=["C1CD", "NONE"]))
+
+    before = _DummyThread(9701, "W0971-Player", datetime.now(timezone.utc))
+    after = _DummyThread(9701, "W0971-Player", datetime.now(timezone.utc))
+    after.archived = True
+    watcher._tickets[after.id] = TicketContext(thread_id=after.id, ticket_number="W0971", username="Player")
+
+    asyncio.run(watcher.on_thread_update(before, after))
+
+    assert after.sent, "archive close should post the clan selection prompt"
+    assert "Which clan tag for Player" in after.sent[0].content
+    assert preflight_calls == []
+    assert adjust_calls == []
+    assert recompute_calls == []
+
+
+def test_welcome_manual_close_existing_sheet_clan_still_prompts_before_availability(monkeypatch):
+    monkeypatch.setattr("modules.common.feature_flags.is_enabled", lambda *_: True)
+    from modules.onboarding import watcher_welcome
+
+    finalized = []
+    prompted = []
+    monkeypatch.setattr(watcher_welcome.onboarding_sessions, "get_by_thread_id", lambda *_: None)
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "find_welcome_row",
+        lambda *_: (2, ["W0971", "Player", "C1CD", ""]),
+    )
+
+    watcher = WelcomeTicketWatcher(bot=_DummyBot())
+    monkeypatch.setattr(watcher, "_is_ticket_thread", lambda *_: True)
+
+    async def _finalize(*args, **kwargs):
+        finalized.append((args, kwargs))
+
+    async def _prompt(thread, context, manual=False):
+        prompted.append((thread, context, manual))
+
+    monkeypatch.setattr(watcher, "_finalize_clan_tag", _finalize)
+    monkeypatch.setattr(watcher, "_handle_ticket_closed", _prompt)
+
+    before = _DummyThread(9702, "W0971-Player", datetime.now(timezone.utc))
+    after = _DummyThread(9702, "W0971-Player", datetime.now(timezone.utc))
+    after.archived = True
+    watcher._tickets[after.id] = TicketContext(thread_id=after.id, ticket_number="W0971", username="Player")
+
+    asyncio.run(watcher.on_thread_update(before, after))
+
+    assert finalized == []
+    assert prompted and prompted[0][2] is True
+
+
+def test_welcome_on_thread_update_logs_close_handler_exception_details(monkeypatch, caplog):
+    monkeypatch.setattr("modules.common.feature_flags.is_enabled", lambda *_: True)
+    from modules.onboarding import watcher_welcome
+
+    watcher = WelcomeTicketWatcher(bot=_DummyBot())
+    monkeypatch.setattr(watcher, "_is_ticket_thread", lambda *_: True)
+    monkeypatch.setattr(watcher_welcome.onboarding_sessions, "get_by_thread_id", lambda *_: None)
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("prompt exploded")
+
+    monkeypatch.setattr(watcher, "_handle_manual_close", _boom)
+
+    before = _DummyThread(9703, "W0971-Player", datetime.now(timezone.utc))
+    after = _DummyThread(9703, "W0971-Player", datetime.now(timezone.utc))
+    after.archived = True
+    watcher._tickets[after.id] = TicketContext(thread_id=after.id, ticket_number="W0971", username="Player")
+
+    with caplog.at_level("ERROR"):
+        asyncio.run(watcher.on_thread_update(before, after))
+
+    records = [r for r in caplog.records if r.message == "welcome on_thread_update close handler failed"]
+    assert records
+    assert records[0].phase == "manual_close_prompt"
+    assert records[0].ticket == "W0971"
+    assert records[0].thread_id == 9703
+    assert records[0].thread_name == "W0971-Player"
+    assert records[0].exc_info[0] is RuntimeError
