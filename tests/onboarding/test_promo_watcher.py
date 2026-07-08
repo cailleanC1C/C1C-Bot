@@ -439,19 +439,16 @@ def test_promo_move_close_normalizes_ticket_prefixed_username_and_logs_rows(
     assert "snapshot unavailable" not in log_messages[-1]
 
 
-def test_promo_close_recompute_uses_promo_lookup_for_source_and_destination(
+def test_promo_close_recompute_keeps_shared_availability_path(
     promo_setup, monkeypatch: pytest.MonkeyPatch
 ):
     watcher, _calls, promo_parent, _ticket_tool_id = promo_setup
     recomputed: list[str] = []
-    lookup_functions = []
+    recompute_kwargs = []
 
     async def fake_recompute(tag, **kwargs):
         recomputed.append(tag)
-        lookup = kwargs.get("find_clan_row_fn")
-        lookup_functions.append(lookup)
-        assert lookup is not None
-        assert lookup(tag, SimpleNamespace(header_map={"clan_tag": 2})) is not None
+        recompute_kwargs.append(kwargs)
 
     _state, _deltas, log_messages = _patch_promo_close_dependencies(
         monkeypatch, open_spots=2
@@ -498,7 +495,7 @@ def test_promo_close_recompute_uses_promo_lookup_for_source_and_destination(
 
     assert context.state == "closed"
     assert sorted(recomputed) == ["C1CV", "C1CZ"]
-    assert all(lookup is watcher_promo._find_promo_availability_clan_row for lookup in lookup_functions)
+    assert all("find_clan_row_fn" not in kwargs for kwargs in recompute_kwargs)
     assert thread.name == "Closed-M0392-J_Turbo-C1CV"
     assert log_messages
     assert "M0392 • J_Turbo" in log_messages[-1]
