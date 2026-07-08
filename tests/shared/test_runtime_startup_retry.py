@@ -43,7 +43,7 @@ def _patch_runtime_startup(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runtime, "rehydrate_tiers", lambda _bot: None)
     monkeypatch.setattr(runtime, "audit_tiers", lambda _bot, _logger: None)
     monkeypatch.setattr(
-        runtime.shared_config, "merge_onboarding_config_early", lambda: 0
+        runtime.shared_config, "amerge_onboarding_config_early", AsyncMock(return_value=0)
     )
     monkeypatch.setattr(
         "shared.sheets.cache_scheduler.ensure_cache_registration", lambda: None

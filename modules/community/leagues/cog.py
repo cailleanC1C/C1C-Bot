@@ -16,7 +16,7 @@ from modules.community.leagues.config import (
     LeagueBundle,
     LeagueSpec,
     LeaguesConfigError,
-    load_league_bundles,
+    aload_league_bundles,
 )
 from shared.logfmt import channel_label, user_label
 from shared.sheets.async_core import acall_with_backoff, afetch_records, afetch_values, aget_worksheet
@@ -621,7 +621,7 @@ class LeaguesCog(commands.Cog):
             return False
 
         try:
-            bundles = load_league_bundles(sheet_id, config_tab=self._config_tab_name())
+            bundles = await aload_league_bundles(sheet_id, config_tab=self._config_tab_name())
         except LeaguesConfigError as exc:
             await self._post_status(
                 status_channel,

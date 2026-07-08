@@ -151,12 +151,9 @@ def _get_sheet_id() -> tuple[str | None, str | None]:
 async def _read_text_row(
     sheet_id: str, config: C1CAdConfig
 ) -> tuple[dict[str, str] | None, dict[str, int] | None, str | None]:
-    values = (
-        await async_core.a_to_thread_with_backoff(
-            sheets_core.sheets_read, sheet_id, f"{config.text_tab}!1:{config.text_row}"
-        )
-        or []
-    )
+    values = await async_core.asheets_read(
+        sheet_id, f"{config.text_tab}!1:{config.text_row}"
+    ) or []
     if not values:
         return None, None, "missing C1C_AD_TEXT headers"
     headers = _header_map(list(values[0]))
@@ -178,9 +175,7 @@ async def _write_status(
     headers: Mapping[str, int],
     updates: Mapping[str, str],
 ) -> None:
-    worksheet = await async_core.a_to_thread_with_backoff(
-        sheets_core.get_worksheet, sheet_id, config.text_tab
-    )
+    worksheet = await async_core.aget_worksheet(sheet_id, config.text_tab)
     cells = []
     for header, value in updates.items():
         col = headers.get(header)
@@ -190,9 +185,7 @@ async def _write_status(
             {"range": f"{_column_letter(col)}{config.text_row}", "values": [[value]]}
         )
     if cells:
-        await async_core.a_to_thread_with_backoff(
-            sheets_core.call_with_backoff, worksheet.batch_update, cells
-        )
+        await async_core.acall_with_backoff(worksheet.batch_update, cells)
 
 
 def _normalize_header(label: str) -> str:

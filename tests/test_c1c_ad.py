@@ -94,9 +94,10 @@ def harness(monkeypatch):
     monkeypatch.setattr(
         c1c_ad.recruitment, "get_recruitment_sheet_id", lambda: "sheet123"
     )
-    monkeypatch.setattr(
-        c1c_ad.sheets_core, "sheets_read", lambda sheet_id, a1_range: rows
-    )
+    async def asheets_read(sheet_id, a1_range, **_kwargs):
+        return rows
+
+    monkeypatch.setattr(c1c_ad.async_core, "asheets_read", asheets_read)
     monkeypatch.setattr(c1c_ad, "get_tab_gid", lambda sheet_id, tab_name: "456")
 
     async def render(*args, **kwargs):
@@ -108,14 +109,14 @@ def harness(monkeypatch):
         def batch_update(self, cells):
             updates.extend(cells)
 
-    monkeypatch.setattr(
-        c1c_ad.sheets_core, "get_worksheet", lambda sheet_id, tab: Worksheet()
-    )
-    monkeypatch.setattr(
-        c1c_ad.sheets_core,
-        "call_with_backoff",
-        lambda func, *args, **kwargs: func(*args, **kwargs),
-    )
+    async def aget_worksheet(sheet_id, tab, **_kwargs):
+        return Worksheet()
+
+    async def acall_with_backoff(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(c1c_ad.async_core, "aget_worksheet", aget_worksheet)
+    monkeypatch.setattr(c1c_ad.async_core, "acall_with_backoff", acall_with_backoff)
     return SimpleNamespace(
         config=config,
         rows=rows,

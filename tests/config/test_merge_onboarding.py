@@ -47,3 +47,38 @@ def test_merge_onboarding_config_early_merges(monkeypatch, caplog):
 
     messages = [record.getMessage() for record in caplog.records]
     assert any("🧩 Config — merged onboarding tab" in message for message in messages)
+
+
+def test_amerge_onboarding_config_early_uses_async_loader(monkeypatch):
+    import asyncio
+    import shared.config as config
+
+    monkeypatch.setenv("ONBOARDING_SHEET_ID", "onboard-sheet-XYZ")
+    fake_config = {"onboarding_tab": "WelcomeQuestions"}
+    calls = {"async": 0, "milestones": 0}
+
+    async def _aload_config(*, force=False):
+        calls["async"] += 1
+        assert force is True
+        return fake_config
+
+    async def _aload_milestones_config_values():
+        calls["milestones"] += 1
+        return "milestone-sheet", {"SHARD_MERCY_TAB": "Mercy"}
+
+    def _sync_loader():
+        raise AssertionError("sync onboarding Config loader must not run in async runtime")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "shared.sheets.onboarding",
+        types.SimpleNamespace(_aload_config=_aload_config, _read_onboarding_config=_sync_loader),
+    )
+    monkeypatch.setattr(config, "_aload_milestones_config_values", _aload_milestones_config_values)
+
+    merged = asyncio.run(config.amerge_onboarding_config_early())
+
+    assert merged == 1
+    assert calls == {"async": 1, "milestones": 1}
+    assert config.cfg.get("ONBOARDING_TAB") == "WelcomeQuestions"
+    assert config.cfg.get("SHARD_MERCY_TAB") == "Mercy"

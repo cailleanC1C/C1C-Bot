@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Iterable, Iterator, Mapping
 
 from shared.sheets import core as sheets_core
+from shared.sheets.async_core import afetch_records
 
 
 class LeaguesConfigError(RuntimeError):
@@ -40,8 +41,21 @@ def _normalize(text: str | None) -> str:
 
 
 def _iter_league_rows(sheet_id: str, config_tab: str) -> Iterator[Mapping[str, object]]:
+    """Yield league Config rows for sync scripts/tools/tests only.
+
+    Live Discord runtime must use :func:`aload_league_bundles` so blocking
+    Google Sheets reads never execute inside the bot event loop.
+    """
+
     records = sheets_core.fetch_records(sheet_id, config_tab)
     yield from records or []
+
+
+async def _aiter_league_rows(sheet_id: str, config_tab: str) -> list[Mapping[str, object]]:
+    """Return league Config rows using the async Sheets boundary for bot runtime."""
+
+    records = await afetch_records(sheet_id, config_tab)
+    return list(records or [])
 
 
 def _parse_bool(value: str | object | None) -> bool:
@@ -203,5 +217,20 @@ def load_league_bundles_from_rows(rows: Iterable[Mapping[str, object]]) -> list[
 
 
 def load_league_bundles(sheet_id: str, *, config_tab: str = "Config") -> list[LeagueBundle]:
+    """Load league bundles synchronously for scripts/tools/tests only.
+
+    Do not call this from Discord commands, listeners, schedulers, view
+    callbacks, or background jobs. Use :func:`aload_league_bundles` instead.
+    The sync Sheets retry guard intentionally raises when this path is used
+    from an active event loop.
+    """
+
     rows = list(_iter_league_rows(sheet_id, config_tab))
+    return load_league_bundles_from_rows(rows)
+
+
+async def aload_league_bundles(sheet_id: str, *, config_tab: str = "Config") -> list[LeagueBundle]:
+    """Load league bundles through async Sheets access for live bot runtime."""
+
+    rows = await _aiter_league_rows(sheet_id, config_tab)
     return load_league_bundles_from_rows(rows)
