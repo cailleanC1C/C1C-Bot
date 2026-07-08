@@ -74,7 +74,6 @@ class ManualOpenSpotAdjustmentPlan:
     seen_range: str
     combined_range: str | None
     resolved_clan_tag: str
-    headers: AvailabilityHeaderResolution
 
 
 def _mask_sheet_id(sheet_id: str | None) -> str:
@@ -117,7 +116,6 @@ def _log_availability_diagnostics(
     configured_header_value: str | None = None,
     clan_tag: str | None = None,
     sheet_row: int | None = None,
-    operation: str | None = None,
 ) -> None:
     raw_values = _diagnostic_header_values(header_row)
     normalized_values = {
@@ -139,25 +137,11 @@ def _log_availability_diagnostics(
         "configured_headers": dict(configured_headers or {}),
         "clan_tag": _normalize_tag(clan_tag),
         "bot_info_row_number": sheet_row,
-        "operation": operation,
     }
     log_method = log.info if reason in {"resolved", "preflight_ok"} else log.warning
-    if reason == "bot_info_row_not_found" and clan_tag:
-        extra.update(_known_clan_tag_column_report(
-            AvailabilityHeaderResolution(
-                tab_name=tab_name,
-                sheet_id_masked=_mask_sheet_id(sheet_id),
-                header_row_index=header_row_index,
-                header_row=tuple(str(cell) if cell is not None else "" for cell in header_row),
-                header_map=dict(header_map or {}),
-                configured_headers=dict(configured_headers or {}),
-            ),
-            clan_tag,
-        ))
     log_method(
-        "bot_info availability header diagnostics: operation=%s tab=%r sheet_id=%s header_row_index=%s "
+        "bot_info availability header diagnostics: tab=%r sheet_id=%s header_row_index=%s "
         "reason=%s missing_config_key=%s configured_header_value=%r raw=%s normalized=%s header_map=%s",
-        operation,
         tab_name,
         _mask_sheet_id(sheet_id),
         header_row_index,
@@ -269,48 +253,6 @@ def _find_availability_clan_row(
     return None
 
 
-
-def _known_clan_tag_column_report(headers: AvailabilityHeaderResolution, clan_tag: str) -> dict[str, object]:
-    normalized_target = _normalize_tag(clan_tag)
-    known_indices: dict[str, int] = {}
-    if "clan_tag" in headers.header_map:
-        known_indices["configured_clan_tag"] = headers.header_map["clan_tag"]
-    try:
-        for key, index in recruitment.get_clan_header_map().items():
-            text = f"{key} {headers.header_row[index] if index < len(headers.header_row) else ''}"
-            normalized = _normalize_configured_header(text)
-            if "clan" in normalized and "tag" in normalized:
-                known_indices[f"header_map:{key}"] = int(index)
-    except Exception:
-        pass
-    try:
-        clan_rows = recruitment.fetch_clans(force=True)
-    except TypeError:
-        clan_rows = recruitment.fetch_clans()
-    except Exception:
-        clan_rows = []
-    matches: list[str] = []
-    for label, index in known_indices.items():
-        for offset, row in enumerate(clan_rows):
-            value = row[index] if index < len(row) else ""
-            if _normalize_tag(value) == normalized_target:
-                matches.append(f"{label}:{_column_label(index)}:row{offset + headers.header_row_index + 1}")
-                break
-    return {
-        "known_clan_tag_columns": {label: _column_label(index) for label, index in known_indices.items()},
-        "searched_tag": normalized_target,
-        "tag_found_in_known_clan_tag_column": bool(matches),
-        "tag_column_matches": matches,
-    }
-
-
-def resolve_availability_clan_row(
-    clan_tag: str, headers: AvailabilityHeaderResolution
-) -> tuple[int, list[str]] | None:
-    """Resolve a clan row using only the Config-defined clan_tag header."""
-
-    return _find_availability_clan_row(clan_tag, headers)
-
 def resolve_configured_clan_tag(clan_tag: str) -> str:
     """Resolve a clan tag from bot_info using the Config-provided clan_tag header."""
     headers = _resolve_availability_headers()
@@ -325,7 +267,6 @@ def resolve_configured_clan_tag(clan_tag: str) -> str:
             configured_headers=headers.configured_headers,
             header_map=headers.header_map,
             clan_tag=clan_tag,
-            operation="resolve_configured_clan_tag",
         )
         raise ValueError(f"Unknown clan tag: {clan_tag}")
     _sheet_row, row = entry
@@ -338,7 +279,6 @@ async def preflight_clan_availability_update(
     clan_tag: str,
     *,
     delta: int = 0,
-    operation: str = "preflight_clan_availability_update",
     find_clan_row_fn: Callable[
         [str, AvailabilityHeaderResolution], tuple[int, list[str]] | None
     ]
@@ -376,7 +316,6 @@ async def preflight_clan_availability_update(
             configured_headers=headers.configured_headers,
             header_map=headers.header_map,
             clan_tag=clan_tag,
-            operation=operation,
         )
         raise ValueError(f"Unknown clan tag: {clan_tag}")
 
@@ -416,7 +355,6 @@ async def preflight_clan_availability_update(
         header_map=headers.header_map,
         clan_tag=clan_tag,
         sheet_row=sheet_row,
-        operation="preflight_clan_availability_update",
     )
     return AvailabilityPreflightPlan(
         clan_tag=clan_tag,
@@ -496,18 +434,10 @@ def _parse_required_int(
 
 
 async def preflight_manual_open_spots_adjustment(
-    clan_tag: str,
-    delta: int,
-    *,
-    find_clan_row_fn: Callable[
-        [str, AvailabilityHeaderResolution], tuple[int, list[str]] | None
-    ]
-    | None = None,
+    clan_tag: str, delta: int
 ) -> ManualOpenSpotAdjustmentPlan:
     """Resolve and validate the row, configured headers, parseable cells, and writable worksheet."""
-    plan = await preflight_clan_availability_update(
-        clan_tag, delta=delta, operation="adjust_manual_open_spots", find_clan_row_fn=find_clan_row_fn
-    )
+    plan = await preflight_clan_availability_update(clan_tag, delta=delta)
     header_map = plan.headers.header_map
     row = plan.row
     sheet_row = plan.sheet_row
@@ -560,7 +490,6 @@ async def preflight_manual_open_spots_adjustment(
         seen_range=seen_range,
         combined_range=combined_range,
         resolved_clan_tag=resolved_clan_tag,
-        headers=plan.headers,
     )
 
 
@@ -586,23 +515,13 @@ async def set_manual_open_spots(clan_tag: str, open_spots: int) -> tuple[int, in
     return old_value, new_value, plan.resolved_clan_tag
 
 
-async def adjust_manual_open_spots(
-    clan_tag: str,
-    delta: int,
-    *,
-    find_clan_row_fn: Callable[
-        [str, AvailabilityHeaderResolution], tuple[int, list[str]] | None
-    ]
-    | None = None,
-) -> int:
+async def adjust_manual_open_spots(clan_tag: str, delta: int) -> int:
     """Adjust manual open spots for ``clan_tag`` and return the new value."""
     plan: ManualOpenSpotAdjustmentPlan | None = None
     write_range = ""
     try:
         log.info("adjust_manual_open_spots:start clan_tag=%s delta=%s", clan_tag, delta)
-        plan = await preflight_manual_open_spots_adjustment(
-            clan_tag, delta, find_clan_row_fn=find_clan_row_fn
-        )
+        plan = await preflight_manual_open_spots_adjustment(clan_tag, delta)
         rebase_manual_open_spots = plan.manual_open != plan.seen_manual_open
         log.info(
             "adjust_manual_open_spots:resolved_row clan_tag=%s sheet_row=%s",
@@ -703,8 +622,7 @@ async def adjust_manual_open_spots(
             clan_tag,
             cache_result,
         )
-        refresh_lookup = find_clan_row_fn or _find_availability_clan_row
-        refreshed = refresh_lookup(clan_tag, plan.headers)
+        refreshed = recruitment.find_clan_row(clan_tag, force=True)
         if refreshed is None:
             raise RuntimeError(f"clan cache refresh failed for {clan_tag}")
         _, refreshed_row = refreshed
@@ -778,7 +696,7 @@ async def recompute_clan_availability(
     """Recompute Config-resolved bot_info availability for ``clan_tag`` and refresh cache."""
 
     plan = await preflight_clan_availability_update(
-        clan_tag, delta=0, operation="recompute_clan_availability", find_clan_row_fn=find_clan_row_fn
+        clan_tag, delta=0, find_clan_row_fn=find_clan_row_fn
     )
     sheet_row = plan.sheet_row
     row = plan.row
@@ -946,7 +864,6 @@ __all__ = [
     "adjust_manual_open_spots",
     "preflight_manual_open_spots_adjustment",
     "preflight_clan_availability_update",
-    "resolve_availability_clan_row",
     "resolve_configured_clan_tag",
     "recompute_clan_availability",
 ]

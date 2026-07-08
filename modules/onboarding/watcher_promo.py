@@ -249,38 +249,49 @@ async def _ensure_fresh_clans_for_placement(*, actor: str, ticket: str, user: st
 
 
 def _find_promo_clan_row(clan_tag: str, *, force: bool = False) -> tuple[int, List[str]] | None:
-    """Resolve promo clans with the shared Config-driven availability row resolver."""
+    """Resolve promo clans with the same configured bot_info tag column used by availability writes."""
 
-    headers = availability._resolve_availability_headers()  # type: ignore[attr-defined]
-    return availability.resolve_availability_clan_row(clan_tag, headers)
+    try:
+        headers = availability._resolve_availability_headers()  # type: ignore[attr-defined]
+        entry = availability._find_availability_clan_row(clan_tag, headers)  # type: ignore[attr-defined]
+        if entry is not None:
+            return entry
+    except Exception:
+        log.debug(
+            "promo clan lookup falling back to recruitment.find_clan_row",
+            exc_info=True,
+            extra={"clan_tag": clan_tag},
+        )
+    try:
+        return recruitment_sheets.find_clan_row(clan_tag, force=force)
+    except TypeError:
+        return recruitment_sheets.find_clan_row(clan_tag)
 
 
-_find_promo_clan_row.lookup_mode = "shared_configured_availability_clan_row"  # type: ignore[attr-defined]
+_find_promo_clan_row.lookup_mode = "availability_configured_clan_tag_header_with_recruitment_fallback"  # type: ignore[attr-defined]
 
 
 def _find_promo_availability_clan_row(
     clan_tag: str, headers: availability.AvailabilityHeaderResolution
 ) -> tuple[int, List[str]] | None:
-    return availability.resolve_availability_clan_row(clan_tag, headers)
+    entry = availability._find_availability_clan_row(clan_tag, headers)  # type: ignore[attr-defined]
+    if entry is not None:
+        return entry
+    try:
+        return recruitment_sheets.find_clan_row(clan_tag, force=True)
+    except TypeError:
+        return recruitment_sheets.find_clan_row(clan_tag)
 
 
-_find_promo_availability_clan_row.lookup_mode = "shared_configured_availability_clan_row"  # type: ignore[attr-defined]
-
-
-async def _adjust_promo_manual_open_spots(clan_tag: str, delta: int) -> int:
-    return await availability.adjust_manual_open_spots(
-        clan_tag, delta, find_clan_row_fn=_find_promo_availability_clan_row
-    )
+_find_promo_availability_clan_row.lookup_mode = "availability_configured_clan_tag_header_with_recruitment_fallback"  # type: ignore[attr-defined]
 
 
 async def _recompute_promo_clan_availability(
     clan_tag: str, *, guild: Any | None = None
 ) -> None:
-    await availability.recompute_clan_availability(
-        clan_tag,
-        guild=guild,
-        find_clan_row_fn=_find_promo_availability_clan_row,
-    )
+    # Emergency stabilization: keep promo recompute on the stable shared
+    # availability path instead of injecting promo-specific row resolvers.
+    await availability.recompute_clan_availability(clan_tag, guild=guild)
 
 
 async def _send_runtime(message: str) -> None:
@@ -1327,7 +1338,7 @@ class PromoTicketWatcher(commands.Cog):
             find_active_reservations_fn=reservations_sheets.find_active_reservations_for_recruit,
             find_clan_row_fn=_find_promo_clan_row,
             update_reservation_status_fn=reservations_sheets.update_reservation_status,
-            adjust_manual_open_spots_fn=_adjust_promo_manual_open_spots,
+            adjust_manual_open_spots_fn=availability.adjust_manual_open_spots,
             recompute_clan_availability_fn=_recompute_promo_clan_availability,
         )
         if cleanup.skipped:
