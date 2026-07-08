@@ -3977,51 +3977,74 @@ class WelcomeTicketWatcher(commands.Cog):
     async def on_thread_update(
         self, before: discord.Thread, after: discord.Thread
     ) -> None:
-        if not self._features_enabled():
-            return
-        if not self._is_ticket_thread(after):
-            return
-
-        context = await self._ensure_context(after)
-        if context is None:
-            return
-
-        parsed = self._parse_thread(after.name)
-        if parsed:
-            context.ticket_number = parsed.ticket_code
-            context.username = parsed.username
-
-        if context.state == "awaiting_clan":
-            return
-
-        if getattr(after, "id", None) in self._auto_closed_threads:
-            context.state = "closed"
-            return
-
-        session_row = onboarding_sessions.get_by_thread_id(getattr(after, "id", None))
-        if session_row and session_row.get("auto_closed_at"):
-            context.state = "closed"
-            return
-
+        phase = "feature_check"
+        context: TicketContext | None = None
         reason = ""
-        parsed_state = parsed.state if parsed else "open"
-        archived_now = bool(getattr(after, "archived", False))
-        archived_before = bool(getattr(before, "archived", False))
-        locked_now = bool(getattr(after, "locked", False))
-        locked_before = bool(getattr(before, "locked", False))
-        renamed_closed = parsed_state == "closed" and (getattr(before, "name", "") != getattr(after, "name", ""))
-        if archived_now and not archived_before:
-            reason = "manual_archive"
-        elif locked_now and not locked_before:
-            reason = "manual_lock"
-        elif renamed_closed or (getattr(after, "name", "") or "").lower().startswith("closed-"):
-            reason = "closed_rename"
+        thread_id = getattr(after, "id", None)
+        thread_name = getattr(after, "name", "")
+        try:
+            if not self._features_enabled():
+                return
+            phase = "ticket_thread_check"
+            if not self._is_ticket_thread(after):
+                return
 
-        if not reason:
-            return
+            phase = "context_resolve"
+            context = await self._ensure_context(after)
+            if context is None:
+                return
 
-        log.info("close_signal_detected", extra={"flow": "welcome", "trigger": reason, "thread_id": getattr(after, "id", None), "ticket": context.ticket_number})
-        await self._handle_manual_close(after, context, reason=reason)
+            phase = "parse_thread"
+            parsed = self._parse_thread(after.name)
+            if parsed:
+                context.ticket_number = parsed.ticket_code
+                context.username = parsed.username
+
+            if context.state == "awaiting_clan":
+                return
+
+            if getattr(after, "id", None) in self._auto_closed_threads:
+                context.state = "closed"
+                return
+
+            phase = "auto_close_session_check"
+            session_row = onboarding_sessions.get_by_thread_id(getattr(after, "id", None))
+            if session_row and session_row.get("auto_closed_at"):
+                context.state = "closed"
+                return
+
+            phase = "close_signal_detect"
+            parsed_state = parsed.state if parsed else "open"
+            archived_now = bool(getattr(after, "archived", False))
+            archived_before = bool(getattr(before, "archived", False))
+            locked_now = bool(getattr(after, "locked", False))
+            locked_before = bool(getattr(before, "locked", False))
+            renamed_closed = parsed_state == "closed" and (getattr(before, "name", "") != getattr(after, "name", ""))
+            if archived_now and not archived_before:
+                reason = "manual_archive"
+            elif locked_now and not locked_before:
+                reason = "manual_lock"
+            elif renamed_closed or (getattr(after, "name", "") or "").lower().startswith("closed-"):
+                reason = "closed_rename"
+
+            if not reason:
+                return
+
+            log.info("close_signal_detected", extra={"flow": "welcome", "trigger": reason, "thread_id": thread_id, "ticket": context.ticket_number})
+            phase = "manual_close_prompt"
+            await self._handle_manual_close(after, context, reason=reason)
+        except Exception:
+            log.exception(
+                "welcome on_thread_update close handler failed",
+                extra={
+                    "flow": "welcome",
+                    "phase": phase,
+                    "trigger": reason or None,
+                    "ticket": getattr(context, "ticket_number", None),
+                    "thread_id": thread_id,
+                    "thread_name": thread_name,
+                },
+            )
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -4143,9 +4166,15 @@ class WelcomeTicketWatcher(commands.Cog):
                 clan_value = (row_values[clan_idx] or "").strip()
 
         if clan_value:
-            context.state = "awaiting_clan"
-            await self._finalize_clan_tag(thread, context, clan_value, actor=None, source=reason, prompt_message=None, view=None, notify=False)
-            return
+            log.info(
+                "welcome close has existing sheet clan; prompting for explicit selection",
+                extra={
+                    "flow": "welcome",
+                    "trigger": reason,
+                    "thread_id": getattr(thread, "id", None),
+                    "ticket": context.ticket_number,
+                },
+            )
 
         await self._handle_ticket_closed(thread, context, manual=True)
         log.warning(
