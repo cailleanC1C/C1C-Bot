@@ -34,6 +34,10 @@ def _sample_rows():
     ]
 
 
+def _field_text(embeds):
+    return "\n".join(field.value for embed in embeds for field in embed.fields)
+
+
 def test_build_embeds_from_rows_filters_and_groups():
     rows = _sample_rows()
     headers = dru._headers_map(rows[0])
@@ -362,7 +366,7 @@ def test_post_daily_recruiter_update_sends_pager(monkeypatch):
 
     monkeypatch.setattr(dru, "_fetch_report_rows", fake_fetch)
     monkeypatch.setattr(dru, "get_report_destination_id", lambda: 123)
-    monkeypatch.setattr(dru, "_role_mentions", lambda: ())
+    monkeypatch.setattr(dru, "_role_mentions", lambda: ("<@&1>", "<@&2>"))
     monkeypatch.setattr(dru.discord, "TextChannel", DummyChannel)
 
     ok, error = asyncio.run(dru.post_daily_recruiter_update(bot))
@@ -373,6 +377,366 @@ def test_post_daily_recruiter_update_sends_pager(monkeypatch):
     sent_kwargs = channel.sent[0]
     assert len(sent_kwargs["embeds"]) == 1
     assert isinstance(sent_kwargs["view"], dru.OpenSpotsPager)
+    assert sent_kwargs["content"].startswith("# Update ")
+    assert "<@&1>" in sent_kwargs["content"]
+    assert "<@&2>" in sent_kwargs["content"]
+    assert sent_kwargs["embeds"][0].title == "Summary Open Spots"
+
+
+def test_post_daily_recruiter_update_logs_missing_headers(monkeypatch, caplog):
+    rows = [["bad", "schema"], ["General Overview", ""]]
+    headers = dru._headers_map(rows[0])
+
+    async def fake_fetch():
+        dru._REPORT_CONTEXT_CACHE = dru._report_fetch_context(
+            tab_name="Statistics", rows=rows, data_source="test"
+        )
+        return rows, headers
+
+    class DummyChannel:
+        guild = None
+
+        async def send(self, **kwargs):
+            raise AssertionError("send should not be called")
+
+    bot = MagicMock()
+    bot.get_channel.return_value = DummyChannel()
+    bot.fetch_channel = AsyncMock()
+    bot.wait_until_ready = AsyncMock()
+
+    monkeypatch.setattr(dru, "_fetch_report_rows", fake_fetch)
+    monkeypatch.setattr(dru, "get_report_destination_id", lambda: 123)
+    monkeypatch.setattr(dru.discord, "TextChannel", DummyChannel)
+
+    with caplog.at_level("WARNING", logger="c1c.recruitment.reporting.daily"):
+        ok, error = asyncio.run(dru.post_daily_recruiter_update(bot))
+
+    assert ok is False
+    assert "missing required header" in error
+    assert "summary/bracket section" in caplog.text
+    assert "required=" in caplog.text
+    assert "config_key=REPORTS_TAB" in caplog.text
+
+
+def test_run_full_recruiter_reports_posts_open_tickets_after_summary_failure(monkeypatch):
+    async def fake_report(bot):
+        return False, "summary failed"
+
+    async def fake_audit(bot, *, actor, dry_run):
+        return True, "-"
+
+    async def fake_tickets(bot):
+        return True, "-"
+
+    log_calls = []
+
+    async def fake_log_event(**kwargs):
+        log_calls.append(kwargs)
+
+    monkeypatch.setattr(dru, "post_daily_recruiter_update", fake_report)
+    monkeypatch.setattr(dru, "run_role_and_visitor_audit", fake_audit)
+    monkeypatch.setattr(dru, "send_currently_open_tickets_report", fake_tickets)
+    monkeypatch.setattr(dru, "resolve_audit_destination", lambda: (123, "REPORT_RECRUITERS_DEST_ID"))
+    monkeypatch.setattr(dru, "_log_event", fake_log_event)
+
+    results = asyncio.run(dru.run_full_recruiter_reports(MagicMock(), actor="scheduled"))
+
+    assert results["report"] == (False, "summary failed")
+    assert results["open_tickets"] == (True, "-")
+    assert any(call.get("note") == "open-tickets" and call["result"] == "ok" for call in log_calls)
+    assert any(call.get("note") is None and call["result"] == "fail" for call in log_calls)
+
+
+def test_run_full_recruiter_reports_posts_normal_report_and_open_tickets(monkeypatch):
+    async def fake_report(bot):
+        return True, "-"
+
+    async def fake_audit(bot, *, actor, dry_run):
+        return True, "-"
+
+    async def fake_tickets(bot):
+        return True, "-"
+
+    log_calls = []
+
+    async def fake_log_event(**kwargs):
+        log_calls.append(kwargs)
+
+    monkeypatch.setattr(dru, "post_daily_recruiter_update", fake_report)
+    monkeypatch.setattr(dru, "run_role_and_visitor_audit", fake_audit)
+    monkeypatch.setattr(dru, "send_currently_open_tickets_report", fake_tickets)
+    monkeypatch.setattr(dru, "resolve_audit_destination", lambda: (123, "REPORT_RECRUITERS_DEST_ID"))
+    monkeypatch.setattr(dru, "_log_event", fake_log_event)
+
+    results = asyncio.run(dru.run_full_recruiter_reports(MagicMock(), actor="scheduled"))
+
+    assert results["report"] == (True, "-")
+    assert results["open_tickets"] == (True, "-")
+    assert any(call.get("note") is None and call["result"] == "ok" for call in log_calls)
+    assert any(call.get("note") == "open-tickets" and call["result"] == "ok" for call in log_calls)
+
+
+def test_summary_embed_splits_long_field_values_without_dropping_lines():
+    rows = _sample_rows()
+    rows[2:2] = [["", "", f"Long Clan {idx}", "1", "0", "0"] for idx in range(40)]
+    headers = dru._headers_map(rows[0])
+
+    sections = dru._extract_report_sections(rows, headers)
+    summary_embeds = dru._build_summary_embeds(sections)
+    details_embeds = dru._build_details_embeds(sections)
+
+    dru._validate_summary_section(sections, summary_embeds, details_embeds)
+    combined = _field_text(summary_embeds)
+    for idx in range(40):
+        assert f"Long Clan {idx}" in combined
+    assert all(
+        len(field.value) <= dru.DISCORD_FIELD_VALUE_LIMIT
+        for embed in summary_embeds
+        for field in embed.fields
+    )
+
+
+def test_details_embed_continues_into_additional_embeds_without_dropping_fields():
+    rows = [
+        [
+            "H1_Headline",
+            "H2_Headline",
+            "Key",
+            "open_spots",
+            "inactives",
+            "reserved_spots",
+        ],
+        ["General Overview", "", "", "", "", ""],
+        ["", "", "Ops Summary", "3", "1", "0"],
+        ["Bracket Details", "", "", "", "", ""],
+    ]
+    for idx in range(dru.DISCORD_EMBED_FIELD_LIMIT + 5):
+        rows.extend(
+            [
+                ["", f"Bracket {idx}", "", "", "", ""],
+                ["", "", f"Clan {idx}", "1", "0", "0"],
+            ]
+        )
+    headers = dru._headers_map(rows[0])
+
+    sections = dru._extract_report_sections(rows, headers)
+    details_embeds = dru._build_details_embeds(sections)
+
+    assert len(details_embeds) > 1
+    combined = _field_text(details_embeds)
+    for idx in range(dru.DISCORD_EMBED_FIELD_LIMIT + 5):
+        assert f"Clan {idx}" in combined
+    assert all(len(embed.fields) <= dru.DISCORD_EMBED_FIELD_LIMIT for embed in details_embeds)
+
+
+def test_single_extremely_long_line_is_split_without_ellipsis_or_data_loss():
+    long_label = "Clan " + ("A" * (dru.DISCORD_FIELD_VALUE_LIMIT * 2 + 100))
+    sections = dru.ReportSections(
+        general_lines=[f"🔹 **{long_label}:** open 1 | inactives 0 | reserved 0"],
+        per_bracket_lines=[],
+        detail_blocks=[],
+    )
+
+    summary_embeds = dru._build_summary_embeds(sections)
+    combined = _field_text(summary_embeds)
+
+    assert "…" not in combined
+    assert long_label in combined.replace("\n", "")
+    assert all(
+        len(field.value) <= dru.DISCORD_FIELD_VALUE_LIMIT
+        for embed in summary_embeds
+        for field in embed.fields
+    )
+
+
+def test_report_exceeding_embed_total_length_splits_safely():
+    lines = [
+        f"🔹 **Clan {idx:03d}:** open 1 | inactives 0 | reserved 0 " + ("x" * 180)
+        for idx in range(45)
+    ]
+    sections = dru.ReportSections(
+        general_lines=lines,
+        per_bracket_lines=[],
+        detail_blocks=[],
+    )
+
+    summary_embeds = dru._build_summary_embeds(sections)
+
+    assert len(summary_embeds) > 1
+    combined = _field_text(summary_embeds)
+    for idx in range(45):
+        assert f"Clan {idx:03d}" in combined
+    assert all(len(embed) <= dru.DISCORD_EMBED_TOTAL_LIMIT for embed in summary_embeds)
+
+
+def test_summary_exceeding_message_embed_budget_sends_multiple_safe_messages(monkeypatch):
+    rows = _sample_rows()
+    rows[2:2] = [
+        ["", "", f"Long Summary Clan {idx} " + ("x" * 900), "1", "0", "0"]
+        for idx in range(10)
+    ]
+    headers = dru._headers_map(rows[0])
+
+    async def fake_fetch():
+        return rows, headers
+
+    class DummyChannel:
+        def __init__(self):
+            self.sent = []
+            self.guild = None
+
+        async def send(self, **kwargs):
+            self.sent.append(kwargs)
+
+    channel = DummyChannel()
+    bot = MagicMock()
+    bot.get_channel.return_value = channel
+    bot.fetch_channel = AsyncMock()
+    bot.wait_until_ready = AsyncMock()
+
+    monkeypatch.setattr(dru, "_fetch_report_rows", fake_fetch)
+    monkeypatch.setattr(dru, "get_report_destination_id", lambda: 123)
+    monkeypatch.setattr(dru, "_role_mentions", lambda: ("<@&1>",))
+    monkeypatch.setattr(dru.discord, "TextChannel", DummyChannel)
+
+    ok, error = asyncio.run(dru.post_daily_recruiter_update(bot))
+
+    assert ok is True
+    assert error == "-"
+    assert len(channel.sent) > 1
+    assert isinstance(channel.sent[0]["view"], dru.OpenSpotsPager)
+    assert channel.sent[0]["content"].startswith("# Update ")
+    assert "<@&1>" in channel.sent[0]["content"]
+    for sent in channel.sent:
+        assert sum(len(embed) for embed in sent["embeds"]) <= dru.DISCORD_MESSAGE_EMBED_TOTAL_LIMIT
+
+
+def test_summary_more_than_ten_generated_embeds_posts_multiple_safe_messages(monkeypatch):
+    rows = _sample_rows()
+    generated_count = dru.DISCORD_EMBEDS_PER_MESSAGE_LIMIT * 8
+    rows[2:2] = [
+        ["", "", f"Huge Summary Clan {idx:03d} " + ("x" * 900), "1", "0", "0"]
+        for idx in range(generated_count)
+    ]
+    headers = dru._headers_map(rows[0])
+
+    async def fake_fetch():
+        return rows, headers
+
+    class DummyChannel:
+        def __init__(self):
+            self.sent = []
+            self.guild = None
+
+        async def send(self, **kwargs):
+            self.sent.append(kwargs)
+
+    channel = DummyChannel()
+    bot = MagicMock()
+    bot.get_channel.return_value = channel
+    bot.fetch_channel = AsyncMock()
+    bot.wait_until_ready = AsyncMock()
+
+    monkeypatch.setattr(dru, "_fetch_report_rows", fake_fetch)
+    monkeypatch.setattr(dru, "get_report_destination_id", lambda: 123)
+    monkeypatch.setattr(dru, "_role_mentions", lambda: ())
+    monkeypatch.setattr(dru.discord, "TextChannel", DummyChannel)
+
+    ok, error = asyncio.run(dru.post_daily_recruiter_update(bot))
+
+    assert ok is True
+    assert error == "-"
+    total_embeds = sum(len(sent["embeds"]) for sent in channel.sent)
+    assert total_embeds > dru.DISCORD_EMBEDS_PER_MESSAGE_LIMIT
+    combined = "\n".join(
+        field.value
+        for sent in channel.sent
+        for embed in sent["embeds"]
+        for field in embed.fields
+    )
+    for idx in range(generated_count):
+        assert f"Huge Summary Clan {idx:03d}" in combined
+    for sent in channel.sent:
+        assert len(sent["embeds"]) <= dru.DISCORD_EMBEDS_PER_MESSAGE_LIMIT
+        assert sum(len(embed) for embed in sent["embeds"]) <= dru.DISCORD_MESSAGE_EMBED_TOTAL_LIMIT
+
+
+def test_report_too_large_for_details_button_fails_loudly(monkeypatch, caplog):
+    rows = [
+        [
+            "H1_Headline",
+            "H2_Headline",
+            "Key",
+            "open_spots",
+            "inactives",
+            "reserved_spots",
+        ],
+        ["General Overview", "", "", "", "", ""],
+        ["", "", "Ops Summary", "3", "1", "0"],
+        ["Bracket Details", "", "", "", "", ""],
+    ]
+    for idx in range(10):
+        rows.extend(
+            [
+                ["", f"Bracket {idx}", "", "", "", ""],
+                ["", "", f"Clan {idx} " + ("x" * 900), "1", "0", "0"],
+            ]
+        )
+    headers = dru._headers_map(rows[0])
+
+    async def fake_fetch():
+        dru._REPORT_CONTEXT_CACHE = dru._report_fetch_context(
+            tab_name="Statistics", rows=rows, data_source="test"
+        )
+        return rows, headers
+
+    class DummyChannel:
+        guild = None
+
+        async def send(self, **kwargs):
+            raise AssertionError("partial report should not be sent")
+
+    bot = MagicMock()
+    bot.get_channel.return_value = DummyChannel()
+    bot.fetch_channel = AsyncMock()
+    bot.wait_until_ready = AsyncMock()
+
+    monkeypatch.setattr(dru, "_fetch_report_rows", fake_fetch)
+    monkeypatch.setattr(dru, "get_report_destination_id", lambda: 123)
+    monkeypatch.setattr(dru.discord, "TextChannel", DummyChannel)
+
+    with caplog.at_level("WARNING", logger="c1c.recruitment.reporting.daily"):
+        ok, error = asyncio.run(dru.post_daily_recruiter_update(bot))
+
+    assert ok is False
+    assert "Bracket Details button would require multiple Discord edit payloads" in error
+    assert "phase=pagination" in caplog.text
+    assert "row_count=" in caplog.text
+
+
+def test_bracket_details_button_cannot_generate_oversized_edit_payload():
+    sections = dru.ReportSections(
+        general_lines=["🔹 **Ops Summary:** open 3 | inactives 1 | reserved 0"],
+        per_bracket_lines=[],
+        detail_blocks=[
+            (
+                f"Bracket {idx}",
+                [f"🔹 **Clan {idx} " + ("x" * 900) + ":** open 1 | inactives 0 | reserved 0"],
+            )
+            for idx in range(10)
+        ],
+    )
+
+    async def runner():
+        pager = dru.OpenSpotsPager(sections)
+        interaction = MagicMock()
+        interaction.response = AsyncMock()
+        interaction.response.edit_message = AsyncMock()
+        with pytest.raises(dru.DailyReportSectionError):
+            await pager.set_details(interaction)
+        interaction.response.edit_message.assert_not_awaited()
+
+    asyncio.run(runner())
 
 
 def test_parse_utc_time_returns_aware_time():

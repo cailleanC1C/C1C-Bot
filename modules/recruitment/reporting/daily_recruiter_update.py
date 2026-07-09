@@ -40,6 +40,22 @@ _BOT_REFERENCE: Optional[discord.Client] = None
 _PERSISTENT_VIEW_REGISTERED = False
 _PERSISTENT_VIEW_ATTR = "_c1c_open_spots_pager_registered"
 
+DISCORD_FIELD_VALUE_LIMIT = 1024
+DISCORD_FIELD_NAME_LIMIT = 256
+DISCORD_EMBED_FIELD_LIMIT = 25
+DISCORD_EMBED_TOTAL_LIMIT = 6000
+DISCORD_MESSAGE_EMBED_TOTAL_LIMIT = 6000
+DISCORD_EMBEDS_PER_MESSAGE_LIMIT = 10
+
+
+class DailyReportSectionError(RuntimeError):
+    """Raised when the summary/bracket section cannot be built or sent safely."""
+
+    def __init__(self, section: str, phase: str, message: str) -> None:
+        super().__init__(message)
+        self.section = section
+        self.phase = phase
+
 
 def feature_enabled() -> bool:
     """Return True when the recruitment_reports feature toggle is enabled."""
@@ -358,10 +374,91 @@ def add_fullwidth_field(embed: discord.Embed, *, name: str, value: str) -> None:
     embed.add_field(name=name, value=value, inline=False)
 
 
-def _add_block_divider(embed: discord.Embed) -> None:
-    """Insert the spacer/divider sequence between logical blocks."""
+def _split_text_losslessly(text: str, *, limit: int = DISCORD_FIELD_VALUE_LIMIT) -> List[str]:
+    """Split text into Discord-sized chunks without dropping or rewriting characters."""
 
-    add_fullwidth_field(embed, name="\n", value="\u25AB\u25AA\u25AB\u25AA\u25AB\u25AA\u25AB")
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+    value = str(text)
+    if not value:
+        return [""]
+    return [value[index : index + limit] for index in range(0, len(value), limit)]
+
+
+def _chunk_lines_for_field(lines: Sequence[str], *, limit: int = DISCORD_FIELD_VALUE_LIMIT) -> List[str]:
+    """Split lines into field values while preserving every report character."""
+
+    chunks: List[str] = []
+    current = ""
+    for raw_line in lines:
+        line = str(raw_line)
+        candidate = line if not current else f"{current}\n{line}"
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+            current = ""
+        if len(line) <= limit:
+            current = line
+            continue
+        chunks.extend(_split_text_losslessly(line, limit=limit))
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _new_report_embed(
+    *,
+    title: str,
+    footer: Optional[str] = None,
+    page: int = 1,
+) -> discord.Embed:
+    embed_title = title if page == 1 else f"{title} (cont. {page})"
+    embed = discord.Embed(title=embed_title, colour=discord.Colour.dark_teal())
+    if footer:
+        embed.set_footer(text=footer)
+    return embed
+
+
+def _append_field_paginated(
+    embeds: List[discord.Embed],
+    *,
+    title: str,
+    footer: Optional[str],
+    field_name: str,
+    lines: Sequence[str],
+    section: str,
+) -> None:
+    """Append full-width fields, opening new embeds whenever Discord limits require it."""
+
+    chunks = _chunk_lines_for_field(lines)
+    if not chunks:
+        return
+    if not embeds:
+        embeds.append(_new_report_embed(title=title, footer=footer))
+    for index, chunk in enumerate(chunks):
+        name = field_name if index == 0 else f"{field_name} (cont.)"
+        if len(name) > DISCORD_FIELD_NAME_LIMIT:
+            raise DailyReportSectionError(
+                section,
+                "pagination",
+                f"field name {field_name!r} exceeds Discord field name limit",
+            )
+        if len(chunk) > DISCORD_FIELD_VALUE_LIMIT:
+            raise DailyReportSectionError(
+                section,
+                "pagination",
+                f"field {field_name!r} could not be split within Discord field value limit",
+            )
+        embed = embeds[-1]
+        if (
+            len(getattr(embed, "fields", [])) >= DISCORD_EMBED_FIELD_LIMIT
+            or len(embed) + len(name) + len(chunk) > DISCORD_EMBED_TOTAL_LIMIT
+        ):
+            embed = _new_report_embed(title=title, footer=footer, page=len(embeds) + 1)
+            embeds.append(embed)
+        add_fullwidth_field(embed, name=name, value=chunk)
 
 
 class ReportSections(NamedTuple):
@@ -544,68 +641,254 @@ def _extract_report_sections(
     )
 
 
-def _build_summary_embed(sections: ReportSections) -> discord.Embed:
-    embed = discord.Embed(
-        title="Summary Open Spots",
-        colour=discord.Colour.dark_teal(),
+def _summary_footer() -> str:
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    return (
+        "last updated "
+        f"{timestamp} • daily snapshot, for most accurate numbers use `!clanmatch`"
     )
 
-    timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
-    embed.set_footer(
-        text=(
-            "last updated "
-            f"{timestamp} • daily snapshot, for most accurate numbers use `!clanmatch`"
-        )
-    )
+
+def _finalize_embeds(embeds: Sequence[discord.Embed]) -> None:
+    for embed in embeds:
+        for field in getattr(embed, "fields", []):
+            try:
+                field.inline = False
+            except Exception:
+                pass
+
+
+def _build_summary_embeds(sections: ReportSections) -> List[discord.Embed]:
+    title = "Summary Open Spots"
+    footer = _summary_footer()
+    embeds = [_new_report_embed(title=title, footer=footer)]
 
     if sections.general_lines:
-        add_fullwidth_field(
-            embed,
-            name="General Overview",
-            value="\n".join(sections.general_lines),
+        _append_field_paginated(
+            embeds,
+            title=title,
+            footer=footer,
+            field_name="General Overview",
+            lines=sections.general_lines,
+            section="summary_bracket",
         )
 
     if sections.general_lines and sections.per_bracket_lines:
-        _add_block_divider(embed)
-
-    if sections.per_bracket_lines:
-        add_fullwidth_field(
-            embed,
-            name="Per Bracket",
-            value="\n".join(sections.per_bracket_lines),
+        _append_field_paginated(
+            embeds,
+            title=title,
+            footer=footer,
+            field_name="\n",
+            lines=["\u25AB\u25AA\u25AB\u25AA\u25AB\u25AA\u25AB"],
+            section="summary_bracket",
         )
 
-    for field in getattr(embed, "fields", []):
-        try:
-            field.inline = False
-        except Exception:
-            pass
+    if sections.per_bracket_lines:
+        _append_field_paginated(
+            embeds,
+            title=title,
+            footer=footer,
+            field_name="Per Bracket",
+            lines=sections.per_bracket_lines,
+            section="summary_bracket",
+        )
 
-    return embed
+    _finalize_embeds(embeds)
+    return embeds
+
+
+def _build_summary_embed(sections: ReportSections) -> discord.Embed:
+    return _build_summary_embeds(sections)[0]
+
+
+def _build_details_embeds(sections: ReportSections) -> List[discord.Embed]:
+    title = "Bracket Details"
+    embeds = [_new_report_embed(title=title, footer=DETAILS_FILTER_FOOTER)]
+    for key, formatted in sections.detail_blocks:
+        _append_field_paginated(
+            embeds,
+            title=title,
+            footer=DETAILS_FILTER_FOOTER,
+            field_name=key.title(),
+            lines=formatted,
+            section="bracket_details",
+        )
+
+    _finalize_embeds(embeds)
+    return embeds
 
 
 def _build_details_embed(sections: ReportSections) -> discord.Embed:
-    embed = discord.Embed(
-        title="Bracket Details",
-        colour=discord.Colour.dark_teal(),
-    )
+    return _build_details_embeds(sections)[0]
 
-    for key, formatted in sections.detail_blocks:
-        add_fullwidth_field(
-            embed,
-            name=key.title(),
-            value="\n".join(formatted),
+
+def _validate_embed_for_send(embed: discord.Embed, *, section: str) -> None:
+    fields = list(getattr(embed, "fields", []))
+    if len(fields) > DISCORD_EMBED_FIELD_LIMIT:
+        raise DailyReportSectionError(
+            section,
+            "validation",
+            f"{section} embed has {len(fields)} fields; Discord limit is {DISCORD_EMBED_FIELD_LIMIT}",
+        )
+    for field in fields:
+        if len(str(getattr(field, "name", ""))) > DISCORD_FIELD_NAME_LIMIT:
+            raise DailyReportSectionError(
+                section,
+                "validation",
+                f"{section} embed field name exceeds Discord field name limit",
+            )
+        if len(str(getattr(field, "value", ""))) > DISCORD_FIELD_VALUE_LIMIT:
+            raise DailyReportSectionError(
+                section,
+                "validation",
+                f"{section} embed field {getattr(field, 'name', '-')!r} exceeds Discord field value limit",
+            )
+    try:
+        embed_len = len(embed)
+    except Exception:
+        embed_len = 0
+    if embed_len > DISCORD_EMBED_TOTAL_LIMIT:
+        raise DailyReportSectionError(
+            section,
+            "validation",
+            f"{section} embed length {embed_len} exceeds Discord limit {DISCORD_EMBED_TOTAL_LIMIT}",
         )
 
-    embed.set_footer(text=DETAILS_FILTER_FOOTER)
 
-    for field in getattr(embed, "fields", []):
+def _validate_embed_message_payload(
+    embeds: Sequence[discord.Embed], *, section: str
+) -> None:
+    if len(embeds) > DISCORD_EMBEDS_PER_MESSAGE_LIMIT:
+        raise DailyReportSectionError(
+            section,
+            "validation",
+            f"{section} message has {len(embeds)} embeds; Discord limit is {DISCORD_EMBEDS_PER_MESSAGE_LIMIT}",
+        )
+    total = 0
+    for embed in embeds:
+        _validate_embed_for_send(embed, section=section)
         try:
-            field.inline = False
+            total += len(embed)
         except Exception:
             pass
+    if total > DISCORD_MESSAGE_EMBED_TOTAL_LIMIT:
+        raise DailyReportSectionError(
+            section,
+            "validation",
+            f"{section} message embed payload length {total} exceeds Discord limit {DISCORD_MESSAGE_EMBED_TOTAL_LIMIT}",
+        )
 
-    return embed
+
+def _group_embeds_for_message_payloads(
+    embeds: Sequence[discord.Embed], *, section: str
+) -> List[List[discord.Embed]]:
+    payloads: List[List[discord.Embed]] = []
+    current: List[discord.Embed] = []
+    current_len = 0
+    for embed in embeds:
+        _validate_embed_for_send(embed, section=section)
+        try:
+            embed_len = len(embed)
+        except Exception:
+            embed_len = 0
+        if embed_len > DISCORD_MESSAGE_EMBED_TOTAL_LIMIT:
+            raise DailyReportSectionError(
+                section,
+                "pagination",
+                f"{section} embed length {embed_len} cannot fit in one Discord message",
+            )
+        if (
+            current
+            and (
+                len(current) >= DISCORD_EMBEDS_PER_MESSAGE_LIMIT
+                or current_len + embed_len > DISCORD_MESSAGE_EMBED_TOTAL_LIMIT
+            )
+        ):
+            _validate_embed_message_payload(current, section=section)
+            payloads.append(current)
+            current = []
+            current_len = 0
+        current.append(embed)
+        current_len += embed_len
+    if current:
+        _validate_embed_message_payload(current, section=section)
+        payloads.append(current)
+    return payloads
+
+
+def _validate_summary_section(
+    sections: ReportSections,
+    summary_embeds: Sequence[discord.Embed],
+    details_embeds: Sequence[discord.Embed],
+) -> None:
+    if not (
+        sections.general_lines
+        or sections.per_bracket_lines
+        or sections.detail_blocks
+    ):
+        raise DailyReportSectionError(
+            "summary_bracket",
+            "build",
+            "summary/bracket builder returned no rows after applying sheet hide rules",
+        )
+    if not summary_embeds:
+        raise DailyReportSectionError(
+            "summary_bracket",
+            "pagination",
+            "summary/bracket pagination produced no summary embeds",
+        )
+    if not details_embeds:
+        raise DailyReportSectionError(
+            "bracket_details",
+            "pagination",
+            "summary/bracket pagination produced no bracket details embeds",
+        )
+    _group_embeds_for_message_payloads(summary_embeds, section="summary_bracket")
+    details_payloads = _group_embeds_for_message_payloads(
+        details_embeds, section="bracket_details"
+    )
+    if len(details_payloads) > 1:
+        raise DailyReportSectionError(
+            "bracket_details",
+            "pagination",
+            "Bracket Details button would require multiple Discord edit payloads",
+        )
+
+
+def _log_summary_section_failure(
+    message: str,
+    exc: BaseException,
+    *,
+    phase: str,
+    context: Optional[ReportFetchContext] = None,
+) -> None:
+    section = getattr(exc, "section", "summary_bracket")
+    failure_phase = getattr(exc, "phase", phase)
+    if context is not None:
+        log.warning(
+            "%s; section=%s phase=%s config_key=%s tab=%r sheet_id_source=%s row_count=%s "
+            "data_source=%s clans_cache=%s error=%s",
+            message,
+            section,
+            failure_phase,
+            context.config_key,
+            context.tab_name,
+            context.sheet_id_source,
+            context.row_count,
+            context.data_source,
+            context.clans_cache_state,
+            _format_error(exc),
+            exc_info=True,
+        )
+        return
+    log.warning(
+        "%s; section=%s phase=%s error=%s",
+        message,
+        section,
+        failure_phase,
+        _format_error(exc),
+        exc_info=True,
+    )
 
 
 async def _load_report_sections() -> ReportSections:
@@ -641,14 +924,22 @@ class OpenSpotsPager(discord.ui.View):
     async def set_summary(self, interaction: discord.Interaction) -> None:
         sections = await self._resolve_sections()
         self._set_page_state("summary")
-        embed = _build_summary_embed(sections)
-        await interaction.response.edit_message(embeds=[embed], view=self)
+        embeds = _build_summary_embeds(sections)
+        payloads = _group_embeds_for_message_payloads(embeds, section="summary_bracket")
+        await interaction.response.edit_message(embeds=payloads[0], view=self)
 
     async def set_details(self, interaction: discord.Interaction) -> None:
         sections = await self._resolve_sections()
         self._set_page_state("details")
-        embed = _build_details_embed(sections)
-        await interaction.response.edit_message(embeds=[embed], view=self)
+        embeds = _build_details_embeds(sections)
+        payloads = _group_embeds_for_message_payloads(embeds, section="bracket_details")
+        if len(payloads) > 1:
+            raise DailyReportSectionError(
+                "bracket_details",
+                "pagination",
+                "Bracket Details button would require multiple Discord edit payloads",
+            )
+        await interaction.response.edit_message(embeds=payloads[0], view=self)
 
     @discord.ui.button(
         label="Summary",
@@ -787,33 +1078,50 @@ async def post_daily_recruiter_update(bot: discord.Client) -> Tuple[bool, str]:
 
     try:
         sections = _extract_report_sections(rows, headers, _REPORT_CONTEXT_CACHE)
-        summary_embed = _build_summary_embed(sections)
+        summary_embeds = _build_summary_embeds(sections)
+        details_embeds = _build_details_embeds(sections)
         pager_view = OpenSpotsPager(sections)
+        _validate_summary_section(sections, summary_embeds, details_embeds)
+        summary_payloads = _group_embeds_for_message_payloads(
+            summary_embeds, section="summary_bracket"
+        )
     except Exception as exc:
         if isinstance(exc, ReportSchemaError):
             _log_report_diagnostics(
-                "failed to build recruiter report: missing Statistics headers",
+                "failed to build daily recruiter report summary/bracket section: missing Statistics headers",
                 context=exc.context,
                 required=exc.required,
                 exc_info=True,
             )
         elif isinstance(exc, ReportFetchError):
             _log_report_diagnostics(
-                "failed to build recruiter report: Statistics fetch/read failure",
+                "failed to build daily recruiter report summary/bracket section: Statistics fetch/read failure",
                 context=exc.context,
                 exc_info=True,
             )
         else:
-            log.warning("failed to build recruiter report", exc_info=True)
+            _log_summary_section_failure(
+                "failed to build daily recruiter report summary/bracket section",
+                exc,
+                phase="build",
+                context=_REPORT_CONTEXT_CACHE,
+            )
         return False, _format_error(exc)
 
     today = datetime.now(UTC).strftime("%Y-%m-%d")
     content = _report_content(today)
 
     try:
-        await channel.send(content=content, embeds=[summary_embed], view=pager_view)
+        await channel.send(content=content, embeds=summary_payloads[0], view=pager_view)
+        for payload in summary_payloads[1:]:
+            await channel.send(content="Summary Open Spots (continued)", embeds=payload)
     except Exception as exc:
-        log.warning("failed to send recruiter report", exc_info=True)
+        _log_summary_section_failure(
+            "Discord rejected daily recruiter report summary/bracket section send",
+            exc,
+            phase="send",
+            context=_REPORT_CONTEXT_CACHE,
+        )
         return False, _format_error(exc)
 
     return True, "-"
