@@ -3359,6 +3359,24 @@ class _ClanSelect(discord.ui.Select):
         await self._parent_view.handle_selection(interaction, self.values[0])
 
 
+def _truthful_close_failure_message(exc: Exception) -> str:
+    """Return a staff-facing close failure reason without hiding the root cause."""
+
+    message = str(exc).strip()
+    lowered = message.lower()
+    if "finalization row not found" in lowered or "row not found" in lowered:
+        return f"the close finalization row is missing ({message})."
+    if "missing configured" in lowered or "config missing" in lowered or "missing required" in lowered:
+        return f"a required sheet/config header is missing ({message})."
+    if "sheet write" in lowered or "quota" in lowered or "rate limit" in lowered:
+        return f"the sheet write failed ({message})."
+    if "already finalized" in lowered or "already done" in lowered:
+        return "the ticket was already finalized; no additional action was needed."
+    if message:
+        return f"{message}."
+    return f"{type(exc).__name__}."
+
+
 class ClanSelectView(discord.ui.View):
     def __init__(
         self,
@@ -3448,14 +3466,23 @@ class ClanSelectView(discord.ui.View):
                 self.context, tag, interaction, self
             )
         except Exception as exc:
+            thread_id = getattr(getattr(interaction, "channel", None), "id", None)
+            error_message = str(exc)
+            error_repr = repr(exc)
+            finalization_phase = getattr(
+                self.watcher, "_welcome_finalization_phase", None
+            ) or "clan_select_callback"
             log.exception(
                 "welcome close clan select callback failed",
                 extra={
                     "ticket": self.context.ticket_number,
-                    "thread_id": getattr(getattr(interaction, "channel", None), "id", None),
+                    "thread_id": thread_id,
                     "clan_tag": tag,
-                    "phase": "clan_select_callback",
+                    "phase": finalization_phase,
+                    "finalization_phase": finalization_phase,
                     "error_type": type(exc).__name__,
+                    "error_message": error_message,
+                    "error_repr": error_repr,
                 },
             )
             failed_marker_written = False
@@ -3466,7 +3493,7 @@ class ClanSelectView(discord.ui.View):
                     ticket=self.context.ticket_number,
                     thread_id=getattr(getattr(interaction, "channel", None), "id", None),
                     finalization_status="failed",
-                    finalization_note=f"clan select callback failed: {type(exc).__name__}",
+                    finalization_note=f"clan select callback failed: {type(exc).__name__}: {error_message}",
                 )
                 failed_marker_written = True
             except Exception:
@@ -3482,8 +3509,9 @@ class ClanSelectView(discord.ui.View):
                     if failed_marker_written
                     else "I also could not mark the ticket failed in the sheet; please escalate for manual repair."
                 )
+                failure_text = _truthful_close_failure_message(exc)
                 await send(
-                    "⚠️ I couldn't complete the welcome close because the sheet/config update failed. "
+                    f"⚠️ I couldn't complete the welcome close: {failure_text} "
                     f"{marker_text}",
                     ephemeral=True,
                 )
@@ -4441,17 +4469,20 @@ class WelcomeTicketWatcher(commands.Cog):
         rename_thread: bool = True,
         sheet_phase: str | None = None,
     ) -> None:
+        self._welcome_finalization_phase = "start"
         if context.state == "closed":
             return
 
         final_tag = (final_tag or "").strip().upper() or _NO_PLACEMENT_TAG
         if final_tag != _NO_PLACEMENT_TAG:
+            self._welcome_finalization_phase = "load_clan_tags"
             await self._load_clan_tags()
             if not self._tag_known(final_tag):
                 await self._send_invalid_tag_notice(thread, actor, final_tag)
                 return
 
         try:
+            self._welcome_finalization_phase = "finalization_state_preflight"
             existing_for_state = await asyncio.to_thread(onboarding_sheets.find_welcome_row, context.ticket_number)
             if not existing_for_state:
                 raise RuntimeError(f"welcome finalization row not found for ticket={context.ticket_number}")
@@ -4474,6 +4505,7 @@ class WelcomeTicketWatcher(commands.Cog):
 
         previous_final = ""
         try:
+            self._welcome_finalization_phase = "fetch_existing_welcome_row"
             existing_row = await asyncio.to_thread(
                 onboarding_sheets.find_welcome_row, context.ticket_number
             )
@@ -4515,8 +4547,10 @@ class WelcomeTicketWatcher(commands.Cog):
         decision_open_deltas: Dict[str, int] = {}
         applied_open_deltas: Dict[str, int] = {}
         delta_failure_reason: str | None = None
+        decision = ReservationDecision("none", None, {}, [])
 
         matches: List[reservations_sheets.ReservationRow] = []
+        self._welcome_finalization_phase = "refresh_clan_cache"
         clans_fresh = await _ensure_fresh_clans_for_placement(
             actor="welcome_placement",
             ticket=context.ticket_number,
@@ -4546,6 +4580,7 @@ class WelcomeTicketWatcher(commands.Cog):
             final_is_real = final_entry is not None
 
             try:
+                self._welcome_finalization_phase = "lookup_active_reservations"
                 matches = (
                     await reservations_sheets.find_active_reservations_for_recruit(
                         context.recruit_id,
@@ -4593,6 +4628,7 @@ class WelcomeTicketWatcher(commands.Cog):
                 preflight_targets.setdefault(tag, 0)
             for tag, delta in preflight_targets.items():
                 try:
+                    self._welcome_finalization_phase = "preflight_clan_availability"
                     await availability.preflight_clan_availability_update(
                         tag, delta=delta
                     )
@@ -4651,6 +4687,22 @@ class WelcomeTicketWatcher(commands.Cog):
                     await thread.send(
                         "⚠️ I could not verify the open spot sheet update, so no Discord/member actions were applied. Please fix the clan sheet configuration/value and try again."
                     )
+                try:
+                    await asyncio.to_thread(
+                        onboarding_sheets.update_ticket_finalization_state,
+                        "welcome",
+                        ticket=context.ticket_number,
+                        thread_id=getattr(thread, "id", None),
+                        finalization_status="failed",
+                        clan_update_status="failed",
+                        finalization_note=delta_failure_reason
+                        or "open_delta_preflight_failed",
+                    )
+                except Exception:
+                    log.exception(
+                        "welcome finalization failed marker update failed after availability preflight error",
+                        extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)},
+                    )
                 return
 
             target_tags = _clan_tags_for_logging(
@@ -4675,6 +4727,7 @@ class WelcomeTicketWatcher(commands.Cog):
                     )
 
         try:
+            self._welcome_finalization_phase = "write_welcome_closed_row"
             result = await log_sheet_write(
                 flow="welcome",
                 phase=sheet_phase or source,
@@ -4828,6 +4881,7 @@ class WelcomeTicketWatcher(commands.Cog):
         if notify:
             if prompt_message is not None:
                 try:
+                    self._welcome_finalization_phase = "edit_clan_select_prompt"
                     await prompt_message.edit(content=confirmation, view=None)
                 except Exception:
                     await thread.send(confirmation)
@@ -4839,6 +4893,7 @@ class WelcomeTicketWatcher(commands.Cog):
 
         if rename_thread:
             try:
+                self._welcome_finalization_phase = "rename_closed_thread"
                 new_name = build_closed_thread_name(
                     context.ticket_number, context.username, final_display
                 )
@@ -4918,6 +4973,7 @@ class WelcomeTicketWatcher(commands.Cog):
         clan_update_status = "done" if actions_ok else "partial"
         finalization_note = "finalized by close handler" if log_result == "ok" else "reservation/clan update partially failed"
         try:
+            self._welcome_finalization_phase = "mark_finalization_complete"
             await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "welcome", ticket=context.ticket_number, thread_id=getattr(thread, "id", None), finalization_status=finalization_status, reservation_status=reservation_status, clan_update_status=clan_update_status, finalization_note=finalization_note)
         except Exception:
             finalization_status = "partial"
@@ -4925,6 +4981,7 @@ class WelcomeTicketWatcher(commands.Cog):
         outcome = "success" if finalization_status == "done" else "partial"
         await _send_placement_log_line(flow="welcome", outcome=outcome, ticket=context.ticket_number, player=context.username, destination=final_display, trigger=source, reservation=reservation_status, clan_update=clan_update_status, finalization_status=finalization_status, action=(None if outcome == "success" else "manual_check"))
         log.info("close_finalization_completed", extra={"flow": "welcome", "trigger": source, "thread_id": getattr(thread, "id", None), "ticket": context.ticket_number, "finalization_status": finalization_status, "reservation_status": reservation_status, "clan_update_status": clan_update_status})
+        self._welcome_finalization_phase = "done"
         _log_finalize_summary(
             context,
             thread,
