@@ -583,6 +583,65 @@ def test_clan_select_failure_marker_failure_message_is_truthful(monkeypatch) -> 
     assert "ticket was marked failed" not in interaction.followup.messages[0]
 
 
+def test_clan_select_failure_message_is_truthful(monkeypatch, caplog) -> None:
+    class _Response:
+        async def defer(self) -> None:
+            return None
+
+    class _Followup:
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+
+        async def send(self, content: str, **_kwargs) -> None:
+            self.messages.append(content)
+
+    class _Interaction:
+        def __init__(self) -> None:
+            self.channel = SimpleNamespace(id=888)
+            self.message = None
+            self.response = _Response()
+            self.followup = _Followup()
+
+    async def fail_finalize(*_args, **_kwargs):
+        raise RuntimeError("welcome finalization row not found for ticket=W0888")
+
+    marker_updates: list[dict[str, object]] = []
+    watcher = SimpleNamespace(
+        finalize_from_interaction=fail_finalize,
+        _welcome_finalization_phase="finalization_state_preflight",
+    )
+    context = TicketContext(thread_id=888, ticket_number="W0888", username="MissingRow")
+    view = ClanSelectView(watcher, context, ["C1CD"])
+    interaction = _Interaction()
+
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.onboarding_sheets.update_ticket_finalization_state",
+        lambda *a, **k: marker_updates.append(k) or "updated",
+    )
+
+    with caplog.at_level(logging.ERROR, logger="c1c.onboarding.welcome_watcher"):
+        asyncio.run(view.handle_selection(interaction, "C1CD"))
+
+    assert interaction.followup.messages
+    assert "close finalization row is missing" in interaction.followup.messages[0]
+    assert "ticket was marked failed" in interaction.followup.messages[0]
+    assert marker_updates[-1]["finalization_status"] == "failed"
+    assert "RuntimeError" in caplog.text
+    assert "welcome finalization row not found for ticket=W0888" in caplog.text
+    record = next(
+        record
+        for record in caplog.records
+        if record.message == "welcome close clan select callback failed"
+    )
+    assert record.error_type == "RuntimeError"
+    assert record.error_message == "welcome finalization row not found for ticket=W0888"
+    assert record.error_repr == "RuntimeError('welcome finalization row not found for ticket=W0888')"
+    assert record.ticket == "W0888"
+    assert record.thread_id == 888
+    assert record.clan_tag == "C1CD"
+    assert record.finalization_phase == "finalization_state_preflight"
+
+
 def test_finalize_reconciles_when_row_inserted(monkeypatch) -> None:
     async def fake_to_thread(func, *args, **kwargs):  # type: ignore[no-untyped-def]
         return func(*args, **kwargs)
