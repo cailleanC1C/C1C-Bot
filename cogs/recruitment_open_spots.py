@@ -70,8 +70,19 @@ def _caller_source(ctx: commands.Context) -> str:
 
 def _operation_phase(exc: BaseException) -> str:
     phase = str(getattr(exc, "phase", "") or "").strip().lower().replace("_", "-")
-    if phase in {"preflight", "worksheet-lookup", "worksheet-update", "cache-refresh", "post-write verification", "post-write-verification"}:
-        return "post_write_verification" if phase in {"post-write verification", "post-write-verification"} else phase.replace("-", "_")
+    if phase in {
+        "preflight",
+        "worksheet-lookup",
+        "worksheet-update",
+        "cache-refresh",
+        "post-write verification",
+        "post-write-verification",
+    }:
+        return (
+            "post_write_verification"
+            if phase in {"post-write verification", "post-write-verification"}
+            else phase.replace("-", "_")
+        )
     text = str(exc).lower()
     if "post-write" in text or "cache refresh failed" in text or "verification" in text:
         return "post_write_verification"
@@ -80,6 +91,26 @@ def _operation_phase(exc: BaseException) -> str:
     if "update" in text or "write" in text:
         return "worksheet_update"
     return "preflight"
+
+
+def _log_quota_summary(summary: availability.AvailabilityQuotaSummary | None) -> None:
+    if summary is None:
+        return
+    log.info(
+        "setopenspots quota summary",
+        extra={
+            "command": summary.command,
+            "clan_tag": summary.clan_tag,
+            "operation": summary.operation,
+            "sheet_reads_count": summary.sheet_reads_count,
+            "sheet_writes_count": summary.sheet_writes_count,
+            "cache_hit": summary.cache_hit,
+            "cache_miss": summary.cache_miss,
+            "refreshed_clans_cache": summary.refreshed_clans_cache,
+            "used_cached_header": summary.used_cached_header,
+            "used_cached_row": summary.used_cached_row,
+        },
+    )
 
 
 def _failure_message_for(exc: BaseException) -> str:
@@ -143,22 +174,44 @@ class RecruitmentOpenSpotsCog(commands.Cog):
             return
 
         caller_source = _caller_source(ctx)
+        quota_token = availability.begin_quota_summary(clan_tag_or_name)
         try:
-            old_value, corrected_value, resolved_clan = (
-                await availability.set_manual_open_spots(clan_tag_or_name, new_value)
-            )
-        except ValueError as exc:
-            if _is_ambiguous_clan_error(exc):
-                await ctx.reply(
-                    "That clan input matches multiple clans; please use the clan tag.",
-                    mention_author=False,
+            try:
+                old_value, corrected_value, resolved_clan = (
+                    await availability.set_manual_open_spots(
+                        clan_tag_or_name, new_value
+                    )
                 )
-                return
-            if _is_clan_not_found_error(exc):
-                await ctx.reply(CLAN_NOT_FOUND_MESSAGE, mention_author=False)
-                return
-            phase = _operation_phase(exc)
-            if _is_config_or_preflight_error(exc):
+            except ValueError as exc:
+                if _is_ambiguous_clan_error(exc):
+                    await ctx.reply(
+                        "That clan input matches multiple clans; please use the clan tag.",
+                        mention_author=False,
+                    )
+                    return
+                if _is_clan_not_found_error(exc):
+                    await ctx.reply(CLAN_NOT_FOUND_MESSAGE, mention_author=False)
+                    return
+                phase = _operation_phase(exc)
+                if _is_config_or_preflight_error(exc):
+                    log.error(
+                        "setopenspots failed",
+                        exc_info=True,
+                        extra={
+                            "clan_tag": clan_tag_or_name,
+                            "requested_open_spots": new_value,
+                            "caller_source": caller_source,
+                            "operation_phase": phase,
+                            "exception_type": type(exc).__name__,
+                            "exception_message": str(exc),
+                            "quota_exhausted": availability.is_rate_limited_error(exc),
+                        },
+                    )
+                    await runtime_helpers.send_log_message(
+                        f"⚠️ Open spots correction failed during {phase}: recruitment sheet configuration invalid for {clan_tag_or_name}."
+                    )
+                    await ctx.reply(CONFIG_FAILURE_MESSAGE, mention_author=False)
+                    return
                 log.error(
                     "setopenspots failed",
                     exc_info=True,
@@ -173,50 +226,37 @@ class RecruitmentOpenSpotsCog(commands.Cog):
                     },
                 )
                 await runtime_helpers.send_log_message(
-                    f"⚠️ Open spots correction failed during {phase}: recruitment sheet configuration invalid for {clan_tag_or_name}."
+                    f"⚠️ Open spots correction failed during {phase} for {clan_tag_or_name}: {type(exc).__name__}: {exc}"
                 )
-                await ctx.reply(CONFIG_FAILURE_MESSAGE, mention_author=False)
+                await ctx.reply(_failure_message_for(exc), mention_author=False)
                 return
-            log.error(
-                "setopenspots failed",
-                exc_info=True,
-                extra={
-                    "clan_tag": clan_tag_or_name,
-                    "requested_open_spots": new_value,
-                    "caller_source": caller_source,
-                    "operation_phase": phase,
-                    "exception_type": type(exc).__name__,
-                    "exception_message": str(exc),
-                    "quota_exhausted": availability.is_rate_limited_error(exc),
-                },
-            )
-            await runtime_helpers.send_log_message(
-                f"⚠️ Open spots correction failed during {phase} for {clan_tag_or_name}: {type(exc).__name__}: {exc}"
-            )
-            await ctx.reply(_failure_message_for(exc), mention_author=False)
-            return
-        except Exception as exc:
-            phase = _operation_phase(exc)
-            quota = availability.is_rate_limited_error(exc)
-            log.error(
-                "setopenspots failed",
-                exc_info=True,
-                extra={
-                    "clan_tag": clan_tag_or_name,
-                    "requested_open_spots": new_value,
-                    "caller_source": caller_source,
-                    "operation_phase": phase,
-                    "exception_type": type(exc).__name__,
-                    "exception_message": str(exc),
-                    "quota_exhausted": quota,
-                },
-            )
-            reason = "quota_exhausted" if quota else f"{type(exc).__name__}: {exc}"
-            await runtime_helpers.send_log_message(
-                f"⚠️ Open spots correction failed during {phase} for {clan_tag_or_name}: {reason}"
-            )
-            await ctx.reply(_failure_message_for(exc), mention_author=False)
-            return
+            except Exception as exc:
+                phase = _operation_phase(exc)
+                quota = availability.is_rate_limited_error(exc)
+                log.error(
+                    "setopenspots failed",
+                    exc_info=True,
+                    extra={
+                        "clan_tag": clan_tag_or_name,
+                        "requested_open_spots": new_value,
+                        "caller_source": caller_source,
+                        "operation_phase": phase,
+                        "exception_type": type(exc).__name__,
+                        "exception_message": str(exc),
+                        "quota_exhausted": quota,
+                    },
+                )
+                failure_reason = (
+                    "quota_exhausted" if quota else f"{type(exc).__name__}: {exc}"
+                )
+                await runtime_helpers.send_log_message(
+                    f"⚠️ Open spots correction failed during {phase} for {clan_tag_or_name}: {failure_reason}"
+                )
+                await ctx.reply(_failure_message_for(exc), mention_author=False)
+                return
+        finally:
+            quota_summary = availability.end_quota_summary(quota_token)
+            _log_quota_summary(quota_summary)
 
         actor = _display_name(ctx.author)
         actor_id = getattr(ctx.author, "id", None)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import logging
 import re
 from dataclasses import dataclass
@@ -31,6 +33,58 @@ NUMERIC_AVAILABILITY_FIELDS = (
     "reservation_count",
     "manual_open_spots_seen",
 )
+
+
+@dataclass(slots=True)
+class AvailabilityQuotaSummary:
+    command: str = "setopenspots"
+    clan_tag: str = ""
+    operation: str = "manual_open_spots_correction"
+    sheet_reads_count: int = 0
+    sheet_writes_count: int = 0
+    cache_hit: bool = False
+    cache_miss: bool = False
+    refreshed_clans_cache: bool = False
+    used_cached_header: bool = False
+    used_cached_row: bool = False
+
+
+_QUOTA_SUMMARY: contextvars.ContextVar[AvailabilityQuotaSummary | None] = (
+    contextvars.ContextVar("availability_quota_summary", default=None)
+)
+
+
+def begin_quota_summary(
+    clan_tag: str, *, operation: str = "manual_open_spots_correction"
+) -> contextvars.Token:
+    return _QUOTA_SUMMARY.set(
+        AvailabilityQuotaSummary(clan_tag=clan_tag, operation=operation)
+    )
+
+
+def end_quota_summary(token: contextvars.Token) -> AvailabilityQuotaSummary | None:
+    summary = _QUOTA_SUMMARY.get()
+    _QUOTA_SUMMARY.reset(token)
+    return summary
+
+
+def current_quota_summary() -> AvailabilityQuotaSummary | None:
+    return _QUOTA_SUMMARY.get()
+
+
+def _quota_note_read(*, refreshed: bool = False) -> None:
+    summary = _QUOTA_SUMMARY.get()
+    if summary is None:
+        return
+    summary.sheet_reads_count += 1
+    if refreshed:
+        summary.refreshed_clans_cache = True
+
+
+def _quota_note_write(count: int = 1) -> None:
+    summary = _QUOTA_SUMMARY.get()
+    if summary is not None:
+        summary.sheet_writes_count += count
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +139,7 @@ class ManualOpenSpotAdjustmentPlan:
     seen_range: str
     combined_range: str | None
     resolved_clan_tag: str
+    preflight_plan: AvailabilityPreflightPlan | None = None
 
 
 class AvailabilityOperationError(RuntimeError):
@@ -219,7 +274,7 @@ def _resolve_availability_headers() -> AvailabilityHeaderResolution:
     header_row_getter = getattr(recruitment, "get_clan_header_row", None)
     if callable(header_row_getter):
         try:
-            header_row = list(header_row_getter(force=True))
+            header_row = list(header_row_getter(force=False))
         except TypeError:
             header_row = list(header_row_getter())
     else:
@@ -288,27 +343,94 @@ def _resolve_availability_headers() -> AvailabilityHeaderResolution:
 
 
 async def _aresolve_availability_headers() -> AvailabilityHeaderResolution:
-    tab_name = await recruitment.get_clans_tab_name_async()
+    async def _load_async_header() -> tuple[str, list[Any], dict[str, str]]:
+        tab = await recruitment.get_clans_tab_name_async()
+        row = list(await recruitment.aget_clan_header_row(force=False))
+        configured: dict[str, str] = {}
+        for field in AVAILABILITY_FIELDS:
+            config_key = f"clans_header_{field}"
+            value = await recruitment.get_config_value_async(
+                config_key, None, force=False
+            )
+            configured[field] = str(value).strip() if value is not None else ""
+        return tab, row, configured
+
+    async def _load_cached_header_with_async_config() -> (
+        tuple[str, list[Any], dict[str, str]]
+    ):
+        tab = await recruitment.get_clans_tab_name_async()
+        try:
+            row = list(recruitment.get_clan_header_row(force=False))
+        except TypeError:
+            row = list(recruitment.get_clan_header_row())
+        configured: dict[str, str] = {}
+        for field in AVAILABILITY_FIELDS:
+            config_key = f"clans_header_{field}"
+            value = await recruitment.get_config_value_async(
+                config_key, None, force=False
+            )
+            configured[field] = str(value).strip() if value is not None else ""
+        return tab, row, configured
+
+    def _load_sync_for_thread() -> tuple[str, list[Any], dict[str, str]]:
+        tab = recruitment.get_clans_tab_name()
+        try:
+            row = list(recruitment.get_clan_header_row(force=False))
+        except TypeError:
+            row = list(recruitment.get_clan_header_row())
+        configured: dict[str, str] = {}
+        for field in AVAILABILITY_FIELDS:
+            config_key = f"clans_header_{field}"
+            try:
+                value = recruitment.get_config_value(config_key, None, force=False)
+            except TypeError:
+                value = recruitment.get_config_value(config_key, None)
+            configured[field] = str(value).strip() if value is not None else ""
+        return tab, row, configured
+
     sheet_id = recruitment.get_recruitment_sheet_id()
-    header_row = list(await recruitment.aget_clan_header_row(force=True))
+    used_cached_header = bool(
+        getattr(recruitment, "clan_header_cache_ready", lambda: False)()
+    )
+    summary = _QUOTA_SUMMARY.get()
+
+    try:
+        if used_cached_header:
+            tab_name, header_row, configured_headers = (
+                await _load_cached_header_with_async_config()
+            )
+        else:
+            tab_name, header_row, configured_headers = await _load_async_header()
+    except Exception:
+        # Compatibility path for callers/tests that only provide sync helpers.
+        # Run it off the event loop so sync Sheets retry/backoff cannot execute
+        # in the Discord event loop.
+        tab_name, header_row, configured_headers = await asyncio.to_thread(
+            _load_sync_for_thread
+        )
+
+    if summary is not None:
+        summary.used_cached_header = used_cached_header
+        if used_cached_header:
+            summary.cache_hit = True
+        else:
+            summary.cache_miss = True
+            _quota_note_read(refreshed=True)
     header_row_index = 3
 
-    configured_headers: dict[str, str] = {}
     for field in AVAILABILITY_FIELDS:
-        config_key = f"clans_header_{field}"
-        value = await recruitment.get_config_value_async(config_key, None, force=True)
-        if value is None or not str(value).strip():
+        if not configured_headers.get(field):
+            config_key = f"clans_header_{field}"
             _log_availability_diagnostics(
                 reason="missing_required_config_key",
                 tab_name=tab_name,
                 sheet_id=sheet_id,
                 header_row_index=header_row_index,
                 header_row=header_row,
-                configured_headers=configured_headers,
+                configured_headers={k: v for k, v in configured_headers.items() if v},
                 missing_config_key=config_key,
             )
             raise ValueError(f"missing required Config key: {config_key}")
-        configured_headers[field] = str(value).strip()
 
     lookup: dict[str, int] = {}
     for index, cell in enumerate(header_row):
@@ -361,7 +483,7 @@ def _find_availability_clan_row(
     normalized_target = _normalize_tag(clan_tag)
     try:
         try:
-            clan_rows = recruitment.fetch_clans(force=True)
+            clan_rows = recruitment.fetch_clans(force=False)
         except TypeError:
             clan_rows = recruitment.fetch_clans()
     except Exception:
@@ -383,12 +505,49 @@ async def _afind_availability_clan_row(
 ) -> tuple[int, list[str]] | None:
     tag_index = headers.header_map["clan_tag"]
     normalized_target = _normalize_tag(clan_tag)
-    clan_rows = await recruitment.afetch_clans(force=True)
+    used_cached_row = bool(getattr(recruitment, "clan_cache_ready", lambda: False)())
+
+    def _sync_find_for_thread() -> tuple[int, list[str]] | None:
+        try:
+            return recruitment.find_clan_row(clan_tag, force=False)
+        except TypeError:
+            return recruitment.find_clan_row(clan_tag)
+
+    if used_cached_row:
+        try:
+            try:
+                clan_rows = recruitment.fetch_clans(force=False)
+            except TypeError:
+                clan_rows = recruitment.fetch_clans()
+        except Exception:
+            clan_rows = []
+    else:
+        try:
+            clan_rows = await recruitment.afetch_clans(force=False)
+        except Exception:
+            clan_rows = []
+
+    summary = _QUOTA_SUMMARY.get()
+    if summary is not None:
+        summary.used_cached_row = used_cached_row
+        if used_cached_row:
+            summary.cache_hit = True
+        else:
+            summary.cache_miss = True
+            if not summary.refreshed_clans_cache:
+                _quota_note_read(refreshed=True)
+
     for idx, row in enumerate(clan_rows):
         tag_value = row[tag_index] if tag_index < len(row) else ""
         if _normalize_tag(tag_value) == normalized_target:
             return idx + headers.header_row_index + 1, list(row)
-    return None
+
+    if used_cached_row:
+        return _sync_find_for_thread()
+
+    # Compatibility fallback for sync-only test doubles/legacy callers, without
+    # running sync Sheets retry/backoff in the event loop.
+    return await asyncio.to_thread(_sync_find_for_thread)
 
 
 async def aresolve_configured_clan_tag(clan_tag: str) -> str:
@@ -604,10 +763,15 @@ def _parse_required_int(
 
 
 async def preflight_manual_open_spots_adjustment(
-    clan_tag: str, delta: int
+    clan_tag: str,
+    delta: int,
+    *,
+    preflight_plan: AvailabilityPreflightPlan | None = None,
 ) -> ManualOpenSpotAdjustmentPlan:
     """Resolve and validate the row, configured headers, parseable cells, and writable worksheet."""
-    plan = await preflight_clan_availability_update(clan_tag, delta=delta)
+    plan = preflight_plan or await preflight_clan_availability_update(
+        clan_tag, delta=delta
+    )
     header_map = plan.headers.header_map
     row = plan.row
     sheet_row = plan.sheet_row
@@ -660,6 +824,7 @@ async def preflight_manual_open_spots_adjustment(
         seen_range=seen_range,
         combined_range=combined_range,
         resolved_clan_tag=resolved_clan_tag,
+        preflight_plan=plan,
     )
 
 
@@ -691,19 +856,35 @@ async def set_manual_open_spots(clan_tag: str, open_spots: int) -> tuple[int, in
 
     old_value = plan.current_available
     delta = open_spots - plan.new_value
-    new_value = await adjust_manual_open_spots(clan_tag, delta)
+    source_preflight_plan = getattr(plan, "preflight_plan", None)
+    try:
+        adjustment_plan = await preflight_manual_open_spots_adjustment(
+            clan_tag, delta, preflight_plan=source_preflight_plan
+        )
+    except TypeError:
+        adjustment_plan = await preflight_manual_open_spots_adjustment(clan_tag, delta)
+    new_value = await adjust_manual_open_spots(
+        clan_tag, delta, adjustment_plan=adjustment_plan
+    )
 
     return old_value, new_value, plan.resolved_clan_tag
 
 
-async def adjust_manual_open_spots(clan_tag: str, delta: int) -> int:
+async def adjust_manual_open_spots(
+    clan_tag: str,
+    delta: int,
+    *,
+    adjustment_plan: ManualOpenSpotAdjustmentPlan | None = None,
+) -> int:
     """Adjust manual open spots for ``clan_tag`` and return the new value."""
     plan: ManualOpenSpotAdjustmentPlan | None = None
     write_range = ""
     phase = "preflight"
     try:
         log.info("adjust_manual_open_spots:start clan_tag=%s delta=%s", clan_tag, delta)
-        plan = await preflight_manual_open_spots_adjustment(clan_tag, delta)
+        plan = adjustment_plan or await preflight_manual_open_spots_adjustment(
+            clan_tag, delta
+        )
         rebase_manual_open_spots = plan.manual_open != plan.seen_manual_open
         log.info(
             "adjust_manual_open_spots:resolved_row clan_tag=%s sheet_row=%s",
@@ -759,46 +940,72 @@ async def adjust_manual_open_spots(clan_tag: str, delta: int) -> int:
                 [[first_value, second_value]],
                 value_input_option="RAW",
             )
+            _quota_note_write(1)
             log.info(
                 "adjust_manual_open_spots:worksheet_update_result clan_tag=%s result=%r",
                 clan_tag,
                 update_result,
             )
         else:
-            write_range = plan.open_range
-            log.info(
-                "adjust_manual_open_spots:worksheet_update clan_tag=%s range=%s",
-                clan_tag,
-                write_range,
-            )
-            update_result = await async_core.acall_with_backoff(
-                worksheet.update,
-                write_range,
-                [[str(plan.new_value)]],
-                value_input_option="RAW",
-            )
-            log.info(
-                "adjust_manual_open_spots:worksheet_update_result clan_tag=%s result=%r",
-                clan_tag,
-                update_result,
-            )
-            write_range = plan.seen_range
-            log.info(
-                "adjust_manual_open_spots:worksheet_update clan_tag=%s range=%s",
-                clan_tag,
-                write_range,
-            )
-            seen_result = await async_core.acall_with_backoff(
-                worksheet.update,
-                write_range,
-                [[str(plan.manual_open)]],
-                value_input_option="RAW",
-            )
-            log.info(
-                "adjust_manual_open_spots:worksheet_update_result clan_tag=%s result=%r",
-                clan_tag,
-                seen_result,
-            )
+            batch_update = getattr(worksheet, "batch_update", None)
+            if callable(batch_update):
+                write_range = f"{plan.open_range},{plan.seen_range}"
+                log.info(
+                    "adjust_manual_open_spots:worksheet_batch_update clan_tag=%s ranges=%s",
+                    clan_tag,
+                    write_range,
+                )
+                batch_result = await async_core.acall_with_backoff(
+                    batch_update,
+                    [
+                        {"range": plan.open_range, "values": [[str(plan.new_value)]]},
+                        {"range": plan.seen_range, "values": [[str(plan.manual_open)]]},
+                    ],
+                    value_input_option="RAW",
+                )
+                _quota_note_write(1)
+                log.info(
+                    "adjust_manual_open_spots:worksheet_update_result clan_tag=%s result=%r",
+                    clan_tag,
+                    batch_result,
+                )
+            else:
+                write_range = plan.open_range
+                log.info(
+                    "adjust_manual_open_spots:worksheet_update clan_tag=%s range=%s",
+                    clan_tag,
+                    write_range,
+                )
+                update_result = await async_core.acall_with_backoff(
+                    worksheet.update,
+                    write_range,
+                    [[str(plan.new_value)]],
+                    value_input_option="RAW",
+                )
+                _quota_note_write(1)
+                log.info(
+                    "adjust_manual_open_spots:worksheet_update_result clan_tag=%s result=%r",
+                    clan_tag,
+                    update_result,
+                )
+                write_range = plan.seen_range
+                log.info(
+                    "adjust_manual_open_spots:worksheet_update clan_tag=%s range=%s",
+                    clan_tag,
+                    write_range,
+                )
+                seen_result = await async_core.acall_with_backoff(
+                    worksheet.update,
+                    write_range,
+                    [[str(plan.manual_open)]],
+                    value_input_option="RAW",
+                )
+                _quota_note_write(1)
+                log.info(
+                    "adjust_manual_open_spots:worksheet_update_result clan_tag=%s result=%r",
+                    clan_tag,
+                    seen_result,
+                )
 
         phase = "cache_refresh"
         cache_result = recruitment.update_cached_clan_row(plan.sheet_row, updated_row)
@@ -806,19 +1013,6 @@ async def adjust_manual_open_spots(clan_tag: str, delta: int) -> int:
             "adjust_manual_open_spots:cache_update_result clan_tag=%s result=%r",
             clan_tag,
             cache_result,
-        )
-        phase = "post-write verification"
-        refreshed = await recruitment.afind_clan_row(clan_tag, force=True)
-        if refreshed is None:
-            raise RuntimeError(f"clan cache refresh failed for {clan_tag}")
-        _, refreshed_row = refreshed
-        refreshed_after = _parse_manual_open_spots(
-            refreshed_row, open_index=plan.open_index
-        )
-        log.info(
-            "adjust_manual_open_spots:af_after_actual clan_tag=%s af_after_actual=%s",
-            clan_tag,
-            refreshed_after,
         )
         log.info(
             "adjusted clan availability",
@@ -972,8 +1166,8 @@ async def recompute_clan_availability(
             reservation_summary,
         ),
     ]
-    for field, write_range, value in writes:
-        try:
+    try:
+        for field, write_range, value in writes:
             log.info(
                 "recompute_clan_availability:worksheet_update clan_tag=%s field=%s range=%s",
                 clan_tag,
@@ -986,19 +1180,14 @@ async def recompute_clan_availability(
                 [[value]],
                 value_input_option="RAW",
             )
-        except Exception:
-            log.exception(
-                "recompute_clan_availability:worksheet_update_exception clan_tag=%s field=%s range=%s",
-                clan_tag,
-                field,
-                write_range,
-                extra={
-                    "clan_tag": _normalize_tag(clan_tag),
-                    "field": field,
-                    "write_range": write_range,
-                },
-            )
-            raise
+            _quota_note_write(1)
+    except Exception:
+        log.exception(
+            "recompute_clan_availability:worksheet_update_exception clan_tag=%s",
+            clan_tag,
+            extra={"clan_tag": _normalize_tag(clan_tag)},
+        )
+        raise
 
     cache_updated = recruitment.update_cached_clan_row(sheet_row, updated_row)
 
@@ -1077,7 +1266,11 @@ def _normalize_tag(tag: str | None) -> str:
 
 __all__ = [
     "AvailabilityOperationError",
+    "AvailabilityQuotaSummary",
     "AvailabilityRecomputeResult",
+    "begin_quota_summary",
+    "current_quota_summary",
+    "end_quota_summary",
     "aresolve_configured_clan_tag",
     "adjust_manual_open_spots",
     "is_rate_limited_error",
