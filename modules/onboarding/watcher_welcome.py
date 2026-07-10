@@ -2532,7 +2532,7 @@ async def _send_runtime(message: str) -> None:
 
 async def _send_welcome_repair_visibility() -> None:
     try:
-        message = onboarding_sheets.consume_welcome_repair_alert()
+        message = await asyncio.to_thread(onboarding_sheets.consume_welcome_repair_alert)
     except Exception:
         log.debug("failed to consume welcome repair alert", exc_info=True)
         return
@@ -4288,7 +4288,7 @@ class WelcomeTicketWatcher(commands.Cog):
 
         if clan_value:
             log.info(
-                "welcome close has existing sheet clan; prompting for explicit selection",
+                "welcome close has existing sheet clan; finalizing without prompt",
                 extra={
                     "flow": "welcome",
                     "trigger": reason,
@@ -4296,6 +4296,18 @@ class WelcomeTicketWatcher(commands.Cog):
                     "ticket": context.ticket_number,
                 },
             )
+            context.close_source = "manual_fallback"
+            await self._finalize_clan_tag(
+                thread,
+                context,
+                clan_value,
+                actor=None,
+                source="manual_fallback",
+                prompt_message=None,
+                view=None,
+                notify=False,
+            )
+            return
 
         await self._handle_ticket_closed(thread, context, manual=True)
         log.warning(
@@ -4573,7 +4585,12 @@ class WelcomeTicketWatcher(commands.Cog):
             final_is_real = False
         else:
             final_entry = (
-                _call_find_clan_row(recruitment_sheets.find_clan_row, final_tag, force=True)
+                await asyncio.to_thread(
+                    _call_find_clan_row,
+                    recruitment_sheets.find_clan_row,
+                    final_tag,
+                    force=True,
+                )
                 if final_tag != _NO_PLACEMENT_TAG
                 else None
             )
@@ -4714,9 +4731,9 @@ class WelcomeTicketWatcher(commands.Cog):
             if target_tags:
                 row_targets = _normalize_clan_math_targets(target_tags)
                 try:
-                    column_map = _clan_math_column_indices()
-                    before_snapshots = _capture_clan_snapshots(
-                        row_targets, column_map, force=True
+                    column_map = await asyncio.to_thread(_clan_math_column_indices)
+                    before_snapshots = await asyncio.to_thread(
+                        _capture_clan_snapshots, row_targets, column_map, force=True
                     )
                 except Exception:
                     column_map = None
@@ -4836,8 +4853,8 @@ class WelcomeTicketWatcher(commands.Cog):
                 )
 
         if not row_missing and row_targets and column_map is not None:
-            after_snapshots = _capture_clan_snapshots(
-                row_targets, column_map, force=True
+            after_snapshots = await asyncio.to_thread(
+                _capture_clan_snapshots, row_targets, column_map, force=True
             )
             row_change_lines = _build_clan_math_row_lines(
                 row_targets, before_snapshots, after_snapshots
