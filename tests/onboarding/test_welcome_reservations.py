@@ -436,8 +436,14 @@ def test_handle_ticket_open_preserves_existing_values(monkeypatch) -> None:
 
 
 def test_ticket_tool_close_prompt_select_completes_welcome_finalization(monkeypatch, caplog) -> None:
-    async def fake_to_thread(func, *args, **kwargs):  # type: ignore[no-untyped-def]
-        return func(*args, **kwargs)
+    def assert_not_in_event_loop(label: str) -> None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        raise RuntimeError(
+            f"{label} must not run inside an active event loop; use the async variant."
+        )
 
     class _PromptThread:
         def __init__(self) -> None:
@@ -487,19 +493,40 @@ def test_ticket_tool_close_prompt_select_completes_welcome_finalization(monkeypa
     placement_logs: list[dict[str, object]] = []
     written_rows: list[dict[str, object]] = []
 
-    monkeypatch.setattr("modules.onboarding.watcher_welcome.asyncio.to_thread", fake_to_thread)
     monkeypatch.setattr("modules.onboarding.watcher_welcome.discord.Thread", _PromptThread)
-    monkeypatch.setattr("modules.onboarding.watcher_welcome.onboarding_sheets.find_welcome_row", lambda ticket: (2, row))
+
+    def fake_find_welcome_row(ticket):  # type: ignore[no-untyped-def]
+        assert_not_in_event_loop("find_welcome_row")
+        return 2, row
+
+    monkeypatch.setattr("modules.onboarding.watcher_welcome.onboarding_sheets.find_welcome_row", fake_find_welcome_row)
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.onboarding_sheets.update_ticket_finalization_state",
-        lambda *a, **k: updates.append(k) or "updated",
+        lambda *a, **k: (assert_not_in_event_loop("update_ticket_finalization_state"), updates.append(k), "updated")[-1],
     )
     monkeypatch.setattr(
         "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
-        lambda *a, **k: written_rows.append(k) or "updated",
+        lambda *a, **k: (assert_not_in_event_loop("append_welcome_ticket_row"), written_rows.append(k), "updated")[-1],
     )
     monkeypatch.setattr("modules.onboarding.watcher_welcome._ensure_fresh_clans_for_placement", lambda **_: asyncio.sleep(0, result=True))
-    monkeypatch.setattr("modules.onboarding.watcher_welcome.recruitment_sheets.find_clan_row", lambda tag, force=False: (9, ["", "", tag]))
+    def fake_find_clan_row(tag, force=False):  # type: ignore[no-untyped-def]
+        assert_not_in_event_loop("find_clan_row")
+        return (9, ["", "", tag] + [""] * 40)
+
+    monkeypatch.setattr("modules.onboarding.watcher_welcome.recruitment_sheets.find_clan_row", fake_find_clan_row)
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.recruitment_sheets.get_clan_header_map",
+        lambda: (
+            assert_not_in_event_loop("get_clan_header_map"),
+            {
+                "clan_tag": 2,
+                "open_spots": 31,
+                "inactives": 32,
+                "reservation_count": 33,
+                "reservation_summary": 34,
+            },
+        )[-1],
+    )
     monkeypatch.setattr("modules.onboarding.watcher_welcome.reservations_sheets.find_active_reservations_for_recruit", lambda *a, **k: asyncio.sleep(0, result=[]))
     monkeypatch.setattr("modules.onboarding.watcher_welcome.availability.preflight_clan_availability_update", lambda *a, **k: asyncio.sleep(0, result=True))
     monkeypatch.setattr("modules.onboarding.watcher_welcome.availability.adjust_manual_open_spots", lambda *a, **k: asyncio.sleep(0))
@@ -508,8 +535,6 @@ def test_ticket_tool_close_prompt_select_completes_welcome_finalization(monkeypa
     monkeypatch.setattr("modules.onboarding.watcher_welcome._send_placement_log_line", lambda **kwargs: placement_logs.append(kwargs) or asyncio.sleep(0))
     monkeypatch.setattr("modules.onboarding.watcher_welcome._log_clan_math_event", lambda *a, **k: asyncio.sleep(0))
     monkeypatch.setattr("modules.onboarding.watcher_welcome._log_finalize_summary", lambda *a, **k: None)
-    monkeypatch.setattr("modules.onboarding.watcher_welcome._capture_clan_snapshots", lambda *a, **k: {})
-    monkeypatch.setattr("modules.onboarding.watcher_welcome._clan_math_column_indices", lambda: {})
 
     bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
     watcher = WelcomeTicketWatcher(bot)
@@ -537,6 +562,7 @@ def test_ticket_tool_close_prompt_select_completes_welcome_finalization(monkeypa
     assert updates[-1]["finalization_status"] == "done"
     assert context.state == "closed"
     assert thread.name == "Closed-W4242-CloseTester-C1CD"
+    assert "must not run inside an active event loop" not in caplog.text
     assert "welcome close clan select callback failed" not in caplog.text
     assert any(log.get("outcome") == "success" for log in placement_logs)
 
