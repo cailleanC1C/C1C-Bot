@@ -665,6 +665,25 @@ def _sanitize_clan_rows(
     return cleaned
 
 
+def clan_cache_ready() -> bool:
+    """Return whether clan rows/header are available in the in-memory cache."""
+
+    now = time.time()
+    return bool(
+        _CLAN_ROWS is not None
+        and _CLAN_HEADER_ROW is not None
+        and (now - _CLAN_ROWS_TS) < _CACHE_TTL
+        and (now - _CLAN_HEADER_TS) < _CACHE_TTL
+    )
+
+
+def clan_header_cache_ready() -> bool:
+    """Return whether the clan header row is available in the in-memory cache."""
+
+    now = time.time()
+    return bool(_CLAN_HEADER_ROW is not None and (now - _CLAN_HEADER_TS) < _CACHE_TTL)
+
+
 def fetch_clans(force: bool = False) -> List[List[str]]:
     """Fetch the recruitment clan matrix from Sheets."""
 
