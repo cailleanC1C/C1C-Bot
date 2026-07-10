@@ -19,6 +19,7 @@ from modules.common.logs import log as human_log
 from modules.recruitment import availability
 from modules.onboarding.watcher_welcome import (
     parse_welcome_thread_name,
+    rename_thread_from_reserved,
     rename_thread_to_reserved,
 )
 from shared.config import (
@@ -1022,26 +1023,6 @@ class ReservationCog(commands.Cog):
         ]
 
         try:
-            preflight_plan = await availability.preflight_clan_availability_update(
-                sheet_tag
-            )
-        except Exception as exc:
-            log.exception(
-                "reservation availability preflight failed before append",
-                extra={
-                    "clan_tag": _normalize_tag(sheet_tag),
-                    "thread_id": getattr(ctx.channel, "id", None),
-                    "ticket_user_id": details.ticket_user_id,
-                    "error_type": type(exc).__name__,
-                    "error": repr(exc),
-                },
-            )
-            await ctx.send(
-                "I could not verify the clan availability sheet configuration/value, so no reservation row was added. Please fix the sheet configuration/value and try again."
-            )
-            return
-
-        try:
             await reservations.append_reservation_row(row_values)
         except Exception:
             log.exception(
@@ -1353,6 +1334,22 @@ class ReservationCog(commands.Cog):
         await ctx.send(
             f"Released the reserved seat in `{sheet_tag}` for {display_member} and returned it to the open pool."
         )
+
+        if _is_ticket_thread(ctx.channel):
+            try:
+                await rename_thread_from_reserved(ctx.channel)
+            except Exception:
+                log.exception(
+                    "reservation release thread rename failed",
+                    extra={
+                        "command": "reserve release",
+                        "ticket": _reservation_ticket_id(ctx.channel),
+                        "clan_tag": normalized_tag,
+                        "phase": "thread_rename",
+                        "row_number": target.row_number,
+                        "sheet_writes": "completed",
+                    },
+                )
 
         human_log.human(
             "info",

@@ -7,7 +7,7 @@ import asyncio
 import time
 import io
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -51,6 +51,7 @@ _LOAD_RETRY_ATTEMPTS = 2
 _LOAD_RETRY_BACKOFF_SEC = 0.5
 _load_failure_state: dict[str, Any] = {"key": None, "last_alert": 0.0, "failures": 0, "alert_sent": False}
 _last_successful_load: dict[str, Any] = {"tab_name": None, "header_map": None, "records": None}
+_next_sheet_load_after_utc: dt.datetime | None = None
 _PROCESS_LOCK = asyncio.Lock()
 _REQUIRED_COLUMNS: tuple[str, ...] = (
     "reset_id",
@@ -78,6 +79,76 @@ _REQUIRED_COLUMNS: tuple[str, ...] = (
 class _ResetReminderRecord:
     row_number: int
     reminder: ResetReminder
+
+
+def _set_next_sheet_load_after_from_records(
+    records: list[_ResetReminderRecord], now_utc: dt.datetime
+) -> None:
+    """Refresh the next safe sheet-load time from current in-memory records."""
+
+    global _next_sheet_load_after_utc
+    future_due_times = [
+        record.reminder.next_scheduled_post_utc
+        for record in records
+        if record.reminder.next_scheduled_post_utc is not None
+        and record.reminder.next_scheduled_post_utc > now_utc
+    ]
+    if future_due_times:
+        _next_sheet_load_after_utc = min(future_due_times)
+    elif records:
+        _next_sheet_load_after_utc = now_utc + dt.timedelta(minutes=5)
+    else:
+        _next_sheet_load_after_utc = now_utc + dt.timedelta(minutes=15)
+
+
+def _replace_cached_record(
+    records: list[_ResetReminderRecord],
+    row_number: int,
+    reminder: ResetReminder,
+    *,
+    now_utc: dt.datetime,
+) -> list[_ResetReminderRecord]:
+    """Replace a mutated reminder in cache so due-cache ticks do not repeat work."""
+
+    updated: list[_ResetReminderRecord] = []
+    replaced = False
+    for record in records:
+        if record.row_number == row_number:
+            updated.append(_ResetReminderRecord(row_number=row_number, reminder=reminder))
+            replaced = True
+        else:
+            updated.append(record)
+    if not replaced:
+        updated = records
+    if _last_successful_load.get("records") is records or replaced:
+        _last_successful_load["records"] = updated
+    _set_next_sheet_load_after_from_records(updated, now_utc)
+    return updated
+
+
+def _record_reset_reminder_discord_send_in_memory(
+    records: list[_ResetReminderRecord],
+    record: _ResetReminderRecord,
+    *,
+    reset_time: dt.datetime,
+    following_reminder_time: dt.datetime,
+    message_id: int,
+    now_utc: dt.datetime,
+) -> list[_ResetReminderRecord]:
+    """Suppress duplicate sends immediately after Discord accepts a reminder."""
+
+    updated_reminder = replace(
+        record.reminder,
+        last_sent_for_reset_utc=reset_time,
+        next_scheduled_post_utc=following_reminder_time,
+        last_message_id=message_id,
+    )
+    return _replace_cached_record(
+        records,
+        record.row_number,
+        updated_reminder,
+        now_utc=now_utc,
+    )
 
 
 def _is_feature_enabled() -> bool:
@@ -702,6 +773,7 @@ async def _load_reset_reminder_records_resilient(*, active_only: bool) -> tuple[
 
 
 async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None = None) -> None:
+    global _next_sheet_load_after_utc
     if not _is_feature_enabled():
         log.debug("reset reminders disabled via feature toggle; skipping scheduler tick")
         return
@@ -721,12 +793,38 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
         now_utc = _utc_now(now)
 
         used_cached_rows = False
-        try:
-            tab_name, header_map, records, used_cached_rows = await _load_reset_reminder_records_resilient(active_only=True)
-        except Exception as exc:
-            await _record_load_failure(exc)
-            return
-        if used_cached_rows:
+        used_due_cache = False
+        cached_tab = _last_successful_load.get("tab_name")
+        cached_header = _last_successful_load.get("header_map")
+        cached_records = _last_successful_load.get("records")
+        if (
+            _next_sheet_load_after_utc is not None
+            and now_utc < _next_sheet_load_after_utc
+            and cached_tab
+            and isinstance(cached_header, dict)
+            and isinstance(cached_records, list)
+        ):
+            tab_name = str(cached_tab)
+            header_map = cached_header
+            records = cached_records
+            used_cached_rows = True
+            used_due_cache = True
+            log.debug(
+                "reset reminder scheduler using cached rows before next due load",
+                extra={
+                    "cached_rows": len(records),
+                    "next_sheet_load_after_utc": _next_sheet_load_after_utc.isoformat(),
+                },
+            )
+        else:
+            try:
+                tab_name, header_map, records, used_cached_rows = await _load_reset_reminder_records_resilient(active_only=True)
+            except Exception as exc:
+                await _record_load_failure(exc)
+                return
+            _set_next_sheet_load_after_from_records(records, now_utc)
+
+        if used_cached_rows and not used_due_cache:
             synthetic = TimeoutError("reset reminder sheet load failed; cached rows used")
             setattr(synthetic, "reset_reminder_stage", "sheet_fetch")
             setattr(synthetic, "reset_reminder_tab", tab_name)
@@ -735,7 +833,7 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                 "reset reminder scheduler continuing with cached rows",
                 extra={"cached_rows": len(records), "consecutive_failed_ticks": _load_failure_state.get("failures")},
             )
-        else:
+        elif not used_due_cache:
             await _record_load_success()
 
         if not records:
@@ -768,6 +866,16 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                         header_map=header_map,
                         row_number=record.row_number,
                         reminder_time=reminder_time,
+                    )
+                    updated_reminder = replace(
+                        reminder,
+                        next_scheduled_post_utc=reminder_time,
+                    )
+                    records = _replace_cached_record(
+                        records,
+                        record.row_number,
+                        updated_reminder,
+                        now_utc=now_utc,
                     )
                     # First write the authoritative schedule back to the sheet. A
                     # later tick will send only after that persisted time is due.
@@ -807,6 +915,16 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                         row_number=record.row_number,
                         reminder_time=advanced_reminder_time,
                     )
+                    updated_reminder = replace(
+                        reminder,
+                        next_scheduled_post_utc=advanced_reminder_time,
+                    )
+                    records = _replace_cached_record(
+                        records,
+                        record.row_number,
+                        updated_reminder,
+                        now_utc=now_utc,
+                    )
                 except Exception:
                     log.exception(
                         "reset reminder next scheduled update failed",
@@ -823,6 +941,16 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                             header_map=header_map,
                             row_number=record.row_number,
                             reminder_time=following_reminder_time,
+                        )
+                        updated_reminder = replace(
+                            reminder,
+                            next_scheduled_post_utc=following_reminder_time,
+                        )
+                        records = _replace_cached_record(
+                            records,
+                            record.row_number,
+                            updated_reminder,
+                            now_utc=now_utc,
                         )
                     except Exception:
                         log.exception(
@@ -909,6 +1037,14 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                 continue
 
             following_reminder_time = _following_reminder_time(reminder_time, reminder.cycle_days)
+            records = _record_reset_reminder_discord_send_in_memory(
+                records,
+                record,
+                reset_time=reset_time,
+                following_reminder_time=following_reminder_time,
+                message_id=message.id,
+                now_utc=now_utc,
+            )
             try:
                 await _update_row_after_send(
                     tab_name=tab_name,
@@ -918,8 +1054,23 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                     next_scheduled_post=following_reminder_time,
                     message_id=message.id,
                 )
-            except Exception:
-                log.exception("reset reminder sheet update failed", extra={"reset_id": reminder.reset_id})
+            except Exception as exc:
+                log.exception(
+                    "reset reminder Discord send succeeded but sheet update failed",
+                    extra={
+                        "reset_id": reminder.reset_id,
+                        "row_number": record.row_number,
+                        "reset_time": reset_time.isoformat(),
+                        "next_scheduled_post": following_reminder_time.isoformat(),
+                        "message_id": getattr(message, "id", None),
+                    },
+                )
+                await _send_ops_log(
+                    "⚠️ Reset reminder posted but sheet update failed "
+                    f"• reset_id={reminder.reset_id} • row={record.row_number} "
+                    f"• reset_time={reset_time.isoformat()} • message_id={getattr(message, 'id', '-')} "
+                    f"• error={type(exc).__name__} • action=manual_sheet_reconcile"
+                )
 
 
 def schedule_reset_reminder_jobs(runtime: "Runtime") -> None:

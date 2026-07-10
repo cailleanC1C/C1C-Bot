@@ -1594,6 +1594,58 @@ async def rename_thread_to_reserved(thread: discord.Thread, clan_tag: str) -> bo
     return True
 
 
+async def rename_thread_from_reserved(thread: discord.Thread) -> bool:
+    """Rename a reserved ticket thread back to its open ticket naming pattern."""
+
+    parts = _parse_reservable_ticket_thread_name(getattr(thread, "name", None))
+    if parts is None:
+        log.error(
+            "reservation release thread rename skipped",
+            extra={
+                "current_thread_name": getattr(thread, "name", "unknown"),
+                "reason": "parse_failed",
+            },
+        )
+        return False
+
+    if parts.state != "reserved":
+        log.info(
+            "reservation release thread rename skipped",
+            extra={
+                "ticket": parts.ticket_code,
+                "user": parts.username,
+                "state": parts.state,
+                "reason": "not_reserved",
+            },
+        )
+        return False
+
+    new_name = build_open_thread_name(parts.ticket_code, parts.username)
+    if getattr(thread, "name", None) == new_name:
+        return True
+
+    try:
+        await thread.edit(name=new_name)
+    except Exception:
+        log.exception(
+            "failed to rename reservation thread after release",
+            extra={
+                "thread_id": getattr(thread, "id", None),
+                "old_name": getattr(thread, "name", None),
+                "attempted_new_name": new_name,
+                "ticket": parts.ticket_code,
+            },
+        )
+        return False
+
+    log.info(
+        "✅ reservation_release_rename — ticket=%s • user=%s • result=renamed_to_open",
+        parts.ticket_code,
+        parts.username,
+    )
+    return True
+
+
 @dataclass(frozen=True)
 class ThreadNameParts:
     ticket_code: str
@@ -3391,9 +3443,50 @@ class ClanSelectView(discord.ui.View):
         self, interaction: discord.Interaction, tag: str
     ) -> None:
         await interaction.response.defer()
-        await self.watcher.finalize_from_interaction(
-            self.context, tag, interaction, self
-        )
+        try:
+            await self.watcher.finalize_from_interaction(
+                self.context, tag, interaction, self
+            )
+        except Exception as exc:
+            log.exception(
+                "welcome close clan select callback failed",
+                extra={
+                    "ticket": self.context.ticket_number,
+                    "thread_id": getattr(getattr(interaction, "channel", None), "id", None),
+                    "clan_tag": tag,
+                    "phase": "clan_select_callback",
+                    "error_type": type(exc).__name__,
+                },
+            )
+            failed_marker_written = False
+            try:
+                await asyncio.to_thread(
+                    onboarding_sheets.update_ticket_finalization_state,
+                    "welcome",
+                    ticket=self.context.ticket_number,
+                    thread_id=getattr(getattr(interaction, "channel", None), "id", None),
+                    finalization_status="failed",
+                    finalization_note=f"clan select callback failed: {type(exc).__name__}",
+                )
+                failed_marker_written = True
+            except Exception:
+                log.exception(
+                    "welcome finalization failed marker update failed after select callback error",
+                    extra={"ticket": self.context.ticket_number},
+                )
+            followup = getattr(interaction, "followup", None)
+            send = getattr(followup, "send", None)
+            if callable(send):
+                marker_text = (
+                    "The ticket was marked failed for admin follow-up."
+                    if failed_marker_written
+                    else "I also could not mark the ticket failed in the sheet; please escalate for manual repair."
+                )
+                await send(
+                    "⚠️ I couldn't complete the welcome close because the sheet/config update failed. "
+                    f"{marker_text}",
+                    ephemeral=True,
+                )
 
     async def on_timeout(self) -> None:  # pragma: no cover - timeout path
         if self.message is None:
@@ -4605,6 +4698,21 @@ class WelcomeTicketWatcher(commands.Cog):
             )
             await _send_welcome_repair_visibility()
         except Exception:
+            try:
+                await asyncio.to_thread(
+                    onboarding_sheets.update_ticket_finalization_state,
+                    "welcome",
+                    ticket=context.ticket_number,
+                    thread_id=getattr(thread, "id", None),
+                    finalization_status="failed",
+                    clan_update_status="skipped",
+                    finalization_note="sheet write failed after finalization started",
+                )
+            except Exception:
+                log.exception(
+                    "welcome finalization failed marker update failed after sheet write error",
+                    extra={"ticket": context.ticket_number, "thread_id": getattr(thread, "id", None)},
+                )
             log.exception(
                 "❌ welcome_close — ticket=%s • user=%s • final=%s • result=error • reason=sheet_write",
                 context.ticket_number,

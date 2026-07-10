@@ -75,6 +75,21 @@ class _DummyBot:
         return None
 
 
+@pytest.fixture(autouse=True)
+def _reset_scheduler_due_cache(monkeypatch):
+    monkeypatch.setattr(
+        scheduler,
+        "_last_successful_load",
+        {"tab_name": None, "header_map": None, "records": None},
+    )
+    monkeypatch.setattr(scheduler, "_next_sheet_load_after_utc", None)
+    monkeypatch.setattr(
+        scheduler,
+        "_load_failure_state",
+        {"key": None, "last_alert": 0.0, "failures": 0, "alert_sent": False},
+    )
+
+
 def test_schedule_reset_jobs_is_idempotent(monkeypatch) -> None:
     runtime = SimpleNamespace(bot=SimpleNamespace(), scheduler=_FakeScheduler())
     monkeypatch.setattr(scheduler, "_is_feature_enabled", lambda: True)
@@ -556,6 +571,190 @@ def test_next_scheduled_post_blank_computes_from_anchor_and_does_not_send_stale(
             "reminder_time": dt.datetime(2026, 7, 8, 3, 30, tzinfo=dt.timezone.utc),
         }
     ]
+
+
+def test_blank_next_scheduled_cached_tick_does_not_rewrite(monkeypatch) -> None:
+    now = dt.datetime(2026, 7, 1, 12, 0, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(
+        reset_id="doom_tower",
+        reference_date_utc=dt.datetime(2026, 6, 8, 7, 30, tzinfo=dt.timezone.utc),
+        cycle_days=30,
+        lead_minutes=240,
+        next_scheduled_post_utc=None,
+    )
+    record = scheduler._ResetReminderRecord(row_number=7, reminder=reminder)
+    updates = []
+    load_calls = {"count": 0}
+
+    async def _load(*, active_only: bool):
+        load_calls["count"] += 1
+        return (
+            "ResetTab",
+            {"last_sent_for_reset_utc": 14, "next_scheduled_post_utc": 15, "last_message_id": 16},
+            [record],
+        )
+
+    async def _update(**kwargs):
+        updates.append(kwargs)
+
+    monkeypatch.setattr(scheduler, "_is_feature_enabled", lambda: True)
+    monkeypatch.setattr(scheduler, "_load_reset_reminder_records", _load)
+    monkeypatch.setattr(scheduler, "_update_next_scheduled_post", _update)
+    monkeypatch.setattr(scheduler, "_update_row_after_send", _update)
+
+    bot = _DummyBot(_DummyChannel())
+    asyncio.run(scheduler.process_reset_reminders(bot, now=now))
+    asyncio.run(scheduler.process_reset_reminders(bot, now=now + dt.timedelta(minutes=1)))
+
+    assert load_calls["count"] == 1
+    assert len(updates) == 1
+    assert updates[0]["reminder_time"] == dt.datetime(2026, 7, 8, 3, 30, tzinfo=dt.timezone.utc)
+
+
+def test_due_reminder_cached_tick_does_not_resend(monkeypatch) -> None:
+    reminder_time = dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc)
+    reset_time = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(
+        reset_id="doom_tower",
+        reference_date_utc=reset_time,
+        cycle_days=28,
+        lead_minutes=60,
+        next_scheduled_post_utc=reminder_time,
+        last_sent_for_reset_utc=None,
+        last_message_id=111,
+    )
+    record = scheduler._ResetReminderRecord(row_number=7, reminder=reminder)
+    updates = []
+    load_calls = {"count": 0}
+    channel = _DummyChannel()
+
+    async def _load(*, active_only: bool):
+        load_calls["count"] += 1
+        return (
+            "ResetTab",
+            {"last_sent_for_reset_utc": 14, "next_scheduled_post_utc": 15, "last_message_id": 16},
+            [record],
+        )
+
+    async def _update(**kwargs):
+        updates.append(kwargs)
+
+    async def _resolve_target(_bot, _reminder):
+        return channel
+
+    monkeypatch.setattr(scheduler, "_is_feature_enabled", lambda: True)
+    monkeypatch.setattr(scheduler, "_load_reset_reminder_records", _load)
+    monkeypatch.setattr(scheduler, "_update_next_scheduled_post", _update)
+    monkeypatch.setattr(scheduler, "_update_row_after_send", _update)
+    monkeypatch.setattr(scheduler, "_resolve_target_channel", _resolve_target)
+
+    bot = _DummyBot(channel)
+    asyncio.run(scheduler.process_reset_reminders(bot, now=reminder_time))
+    asyncio.run(scheduler.process_reset_reminders(bot, now=reminder_time + dt.timedelta(minutes=1)))
+
+    assert load_calls["count"] == 1
+    assert len(channel.sent) == 1
+    assert len(updates) == 1
+    assert updates[0]["reset_time"] == reset_time
+    cached = scheduler._last_successful_load["records"][0].reminder
+    assert cached.last_sent_for_reset_utc == reset_time
+    assert cached.next_scheduled_post_utc == dt.datetime(2026, 6, 26, 9, 0, tzinfo=dt.timezone.utc)
+    assert cached.last_message_id == 222
+
+
+def test_due_reminder_sheet_update_failure_still_suppresses_cached_resend(monkeypatch) -> None:
+    reminder_time = dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc)
+    reset_time = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(
+        reset_id="doom_tower",
+        reference_date_utc=reset_time,
+        cycle_days=28,
+        lead_minutes=60,
+        next_scheduled_post_utc=reminder_time,
+        last_sent_for_reset_utc=None,
+        last_message_id=111,
+    )
+    record = scheduler._ResetReminderRecord(row_number=7, reminder=reminder)
+    load_calls = {"count": 0}
+    update_attempts = {"count": 0}
+    ops_logs: list[str] = []
+    channel = _DummyChannel()
+
+    async def _load(*, active_only: bool):
+        load_calls["count"] += 1
+        return (
+            "ResetTab",
+            {"last_sent_for_reset_utc": 14, "next_scheduled_post_utc": 15, "last_message_id": 16},
+            [record],
+        )
+
+    async def _update(**_kwargs):
+        update_attempts["count"] += 1
+        raise RuntimeError("sheet quota")
+
+    async def _resolve_target(_bot, _reminder):
+        return channel
+
+    async def _ops_log(message: str):
+        ops_logs.append(message)
+
+    monkeypatch.setattr(scheduler, "_is_feature_enabled", lambda: True)
+    monkeypatch.setattr(scheduler, "_load_reset_reminder_records", _load)
+    monkeypatch.setattr(scheduler, "_update_row_after_send", _update)
+    monkeypatch.setattr(scheduler, "_resolve_target_channel", _resolve_target)
+    monkeypatch.setattr(scheduler, "_send_ops_log", _ops_log)
+
+    bot = _DummyBot(channel)
+    asyncio.run(scheduler.process_reset_reminders(bot, now=reminder_time))
+    asyncio.run(scheduler.process_reset_reminders(bot, now=reminder_time + dt.timedelta(minutes=1)))
+
+    assert load_calls["count"] == 1
+    assert len(channel.sent) == 1
+    assert update_attempts["count"] == 1
+    cached = scheduler._last_successful_load["records"][0].reminder
+    assert cached.last_sent_for_reset_utc == reset_time
+    assert cached.next_scheduled_post_utc == dt.datetime(2026, 6, 26, 9, 0, tzinfo=dt.timezone.utc)
+    assert cached.last_message_id == 222
+    assert ops_logs and "posted but sheet update failed" in ops_logs[0]
+
+
+def test_same_last_sent_cached_tick_advances_once(monkeypatch) -> None:
+    reminder_time = dt.datetime(2026, 5, 29, 9, 0, tzinfo=dt.timezone.utc)
+    reset_time = dt.datetime(2026, 5, 29, 10, 0, tzinfo=dt.timezone.utc)
+    reminder = _make_reset_reminder(
+        reference_date_utc=reset_time,
+        cycle_days=28,
+        lead_minutes=60,
+        last_sent_for_reset_utc=reset_time,
+        next_scheduled_post_utc=reminder_time,
+    )
+    record = scheduler._ResetReminderRecord(row_number=7, reminder=reminder)
+    updates = []
+    load_calls = {"count": 0}
+
+    async def _load(*, active_only: bool):
+        load_calls["count"] += 1
+        return (
+            "ResetTab",
+            {"last_sent_for_reset_utc": 14, "next_scheduled_post_utc": 15, "last_message_id": 16},
+            [record],
+        )
+
+    async def _update(**kwargs):
+        updates.append(kwargs)
+
+    monkeypatch.setattr(scheduler, "_is_feature_enabled", lambda: True)
+    monkeypatch.setattr(scheduler, "_load_reset_reminder_records", _load)
+    monkeypatch.setattr(scheduler, "_update_next_scheduled_post", _update)
+    monkeypatch.setattr(scheduler, "_update_row_after_send", _update)
+
+    bot = _DummyBot(_DummyChannel())
+    asyncio.run(scheduler.process_reset_reminders(bot, now=reminder_time))
+    asyncio.run(scheduler.process_reset_reminders(bot, now=reminder_time + dt.timedelta(minutes=1)))
+
+    assert load_calls["count"] == 1
+    assert len(updates) == 1
+    assert updates[0]["reminder_time"] == dt.datetime(2026, 6, 26, 9, 0, tzinfo=dt.timezone.utc)
 
 
 def test_next_scheduled_post_due_but_reset_past_skips_and_advances(monkeypatch, caplog) -> None:

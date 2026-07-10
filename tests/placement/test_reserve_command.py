@@ -1628,7 +1628,7 @@ def test_reserve_release_global_success(monkeypatch):
 
     recomputed: list[str] = []
 
-    async def fake_recompute(tag: str, *, guild=None):
+    async def fake_recompute(tag: str, *, guild=None, **_kwargs):
         recomputed.append(tag)
 
     monkeypatch.setattr(
@@ -1712,7 +1712,7 @@ def test_reserve_release_allowed_outside_control(monkeypatch):
 
     recomputed: list[str] = []
 
-    async def fake_recompute(tag: str, *, guild=None):
+    async def fake_recompute(tag: str, *, guild=None, **_kwargs):
         recomputed.append(tag)
 
     monkeypatch.setattr(
@@ -1741,6 +1741,77 @@ def test_reserve_release_allowed_outside_control(monkeypatch):
     assert recomputed == ["C1CE"]
     assert thread.sent and "Released the reserved seat" in thread.sent[-1].content
     assert any("source=global" in entry and "result=ok" in entry for entry in logs)
+
+
+def test_reserve_release_renames_reserved_welcome_thread(monkeypatch):
+    _enable_feature(monkeypatch, enabled=True)
+    _setup_permissions(monkeypatch, recruiter=True)
+    _setup_parents(monkeypatch, parent_id=600)
+
+    recruit = FakeMember(950, "Caillean")
+    guild = FakeGuild([recruit])
+    thread = FakeThread(
+        thread_id=8100,
+        parent_id=600,
+        name="RES-W0974-Caillean-C1CD",
+        owner_id=recruit.id,
+        guild=guild,
+    )
+    author = FakeMember(951)
+    row = _reservation_row(28, clan_tag="C1CD", thread_id=thread.id, ticket_user_id=recruit.id, username_snapshot="Caillean")
+
+    async def fake_lookup(*_, **__):
+        return [row]
+
+    monkeypatch.setattr(reserve_module.reservations, "find_active_reservations_for_recruit", fake_lookup)
+    async def noop_async(*_, **__):
+        return None
+
+    monkeypatch.setattr(reserve_module.reservations, "update_reservation_status", noop_async)
+    monkeypatch.setattr(reserve_module.availability, "adjust_manual_open_spots", noop_async)
+    monkeypatch.setattr(reserve_module.availability, "recompute_clan_availability", noop_async)
+
+    ctx = FakeContext(FakeBot([]), guild=guild, channel=thread, author=author)
+    cog = _make_cog(ctx.bot)
+    asyncio.run(cog.reserve.callback(cog, ctx, "release", f"<@{recruit.id}>", "C1CD"))
+
+    assert thread.name == "W0974-Caillean"
+    assert thread.edited_names[-1] == "W0974-Caillean"
+
+
+def test_reserve_release_renames_reserved_promo_style_thread(monkeypatch):
+    _enable_feature(monkeypatch, enabled=True)
+    _setup_permissions(monkeypatch, recruiter=True)
+    _setup_parents(monkeypatch, parent_id=600)
+
+    recruit = FakeMember(960, "Promo Player")
+    guild = FakeGuild([recruit])
+    thread = FakeThread(
+        thread_id=8200,
+        parent_id=600,
+        name="Res-P0123-Promo Player-C1CD",
+        owner_id=recruit.id,
+        guild=guild,
+    )
+    author = FakeMember(961)
+    row = _reservation_row(29, clan_tag="C1CD", thread_id=thread.id, ticket_user_id=recruit.id, username_snapshot="Promo Player")
+
+    async def fake_lookup(*_, **__):
+        return [row]
+
+    monkeypatch.setattr(reserve_module.reservations, "find_active_reservations_for_recruit", fake_lookup)
+    async def noop_async(*_, **__):
+        return None
+
+    monkeypatch.setattr(reserve_module.reservations, "update_reservation_status", noop_async)
+    monkeypatch.setattr(reserve_module.availability, "adjust_manual_open_spots", noop_async)
+    monkeypatch.setattr(reserve_module.availability, "recompute_clan_availability", noop_async)
+
+    ctx = FakeContext(FakeBot([]), guild=guild, channel=thread, author=author)
+    cog = _make_cog(ctx.bot)
+    asyncio.run(cog.reserve.callback(cog, ctx, "release", f"<@{recruit.id}>", "C1CD"))
+
+    assert thread.name == "P0123-Promo Player"
 
 
 def test_reserve_release_global_not_found(monkeypatch):

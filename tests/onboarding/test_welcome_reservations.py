@@ -10,6 +10,7 @@ import pytest
 from modules.onboarding.watcher_welcome import (
     TicketContext,
     WelcomeTicketWatcher,
+    ClanSelectView,
     _NO_PLACEMENT_TAG,
     _determine_reservation_decision,
     cleanup_reservation_for_ticket_close,
@@ -432,6 +433,154 @@ def test_handle_ticket_open_preserves_existing_values(monkeypatch) -> None:
 
     row = recorded.get("row")
     assert row == ["W0123", "Tester", "MART", "2025-01-01 00:00:00"]
+
+
+def test_ticket_tool_close_prompt_select_completes_welcome_finalization(monkeypatch, caplog) -> None:
+    async def fake_to_thread(func, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return func(*args, **kwargs)
+
+    class _PromptThread:
+        def __init__(self) -> None:
+            self.id = 4242
+            self.name = "W4242-CloseTester"
+            self.guild = object()
+            self.sent_messages: list[_DummyMessage] = []
+            self.edited_names: list[str] = []
+
+        async def send(self, content: str | None = None, **kwargs):  # type: ignore[no-untyped-def]
+            message = _DummyMessage(self, len(self.sent_messages) + 1, content or "")
+            message.kwargs = kwargs
+            self.sent_messages.append(message)
+            return message
+
+        async def edit(self, *, name: str, **_kwargs) -> None:
+            self.name = name
+            self.edited_names.append(name)
+
+        async def fetch_message(self, message_id: int) -> _DummyMessage:
+            return self.sent_messages[message_id - 1]
+
+    class _Response:
+        def __init__(self) -> None:
+            self.deferred = False
+
+        async def defer(self) -> None:
+            self.deferred = True
+
+    class _Followup:
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+
+        async def send(self, content: str, **_kwargs) -> None:
+            self.messages.append(content)
+
+    class _Interaction:
+        def __init__(self, channel, message) -> None:
+            self.channel = channel
+            self.message = message
+            self.user = SimpleNamespace(id=99)
+            self.response = _Response()
+            self.followup = _Followup()
+
+    row = ["W4242", "CloseTester", "", "", "", "", "4242", "", "open", "", "", "", "pending", "pending", "pending", ""]
+    updates: list[dict[str, object]] = []
+    placement_logs: list[dict[str, object]] = []
+    written_rows: list[dict[str, object]] = []
+
+    monkeypatch.setattr("modules.onboarding.watcher_welcome.asyncio.to_thread", fake_to_thread)
+    monkeypatch.setattr("modules.onboarding.watcher_welcome.discord.Thread", _PromptThread)
+    monkeypatch.setattr("modules.onboarding.watcher_welcome.onboarding_sheets.find_welcome_row", lambda ticket: (2, row))
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.onboarding_sheets.update_ticket_finalization_state",
+        lambda *a, **k: updates.append(k) or "updated",
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.onboarding_sheets.append_welcome_ticket_row",
+        lambda *a, **k: written_rows.append(k) or "updated",
+    )
+    monkeypatch.setattr("modules.onboarding.watcher_welcome._ensure_fresh_clans_for_placement", lambda **_: asyncio.sleep(0, result=True))
+    monkeypatch.setattr("modules.onboarding.watcher_welcome.recruitment_sheets.find_clan_row", lambda tag, force=False: (9, ["", "", tag]))
+    monkeypatch.setattr("modules.onboarding.watcher_welcome.reservations_sheets.find_active_reservations_for_recruit", lambda *a, **k: asyncio.sleep(0, result=[]))
+    monkeypatch.setattr("modules.onboarding.watcher_welcome.availability.preflight_clan_availability_update", lambda *a, **k: asyncio.sleep(0, result=True))
+    monkeypatch.setattr("modules.onboarding.watcher_welcome.availability.adjust_manual_open_spots", lambda *a, **k: asyncio.sleep(0))
+    monkeypatch.setattr("modules.onboarding.watcher_welcome.availability.recompute_clan_availability", lambda *a, **k: asyncio.sleep(0))
+    monkeypatch.setattr("modules.onboarding.watcher_welcome._send_welcome_repair_visibility", lambda: asyncio.sleep(0))
+    monkeypatch.setattr("modules.onboarding.watcher_welcome._send_placement_log_line", lambda **kwargs: placement_logs.append(kwargs) or asyncio.sleep(0))
+    monkeypatch.setattr("modules.onboarding.watcher_welcome._log_clan_math_event", lambda *a, **k: asyncio.sleep(0))
+    monkeypatch.setattr("modules.onboarding.watcher_welcome._log_finalize_summary", lambda *a, **k: None)
+    monkeypatch.setattr("modules.onboarding.watcher_welcome._capture_clan_snapshots", lambda *a, **k: {})
+    monkeypatch.setattr("modules.onboarding.watcher_welcome._clan_math_column_indices", lambda: {})
+
+    bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+    watcher = WelcomeTicketWatcher(bot)
+    watcher._clan_tags = ["C1CD"]
+    watcher._clan_tag_set = {"C1CD"}
+    context = TicketContext(thread_id=4242, ticket_number="W4242", username="CloseTester")
+    thread = _PromptThread()
+
+    async def runner() -> None:
+        await watcher._handle_ticket_closed(thread, context, manual=False)
+        assert thread.sent_messages
+        prompt = thread.sent_messages[-1]
+        view = prompt.kwargs["view"]
+        interaction = _Interaction(thread, prompt)
+        with caplog.at_level(logging.ERROR, logger="c1c.onboarding.welcome_watcher"):
+            await view.handle_selection(interaction, "C1CD")
+        await bot.close()
+
+    asyncio.run(runner())
+
+    assert "Which clan tag for CloseTester" in thread.sent_messages[0]._content
+    assert written_rows and written_rows[0]["status"] == "closed"
+    assert updates[0]["finalization_status"] == "prompt_required"
+    assert updates[1]["finalization_status"] == "in_progress"
+    assert updates[-1]["finalization_status"] == "done"
+    assert context.state == "closed"
+    assert thread.name == "Closed-W4242-CloseTester-C1CD"
+    assert "welcome close clan select callback failed" not in caplog.text
+    assert any(log.get("outcome") == "success" for log in placement_logs)
+
+
+def test_clan_select_failure_marker_failure_message_is_truthful(monkeypatch) -> None:
+    class _Response:
+        async def defer(self) -> None:
+            return None
+
+    class _Followup:
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+
+        async def send(self, content: str, **_kwargs) -> None:
+            self.messages.append(content)
+
+    class _Interaction:
+        def __init__(self) -> None:
+            self.channel = SimpleNamespace(id=777)
+            self.message = None
+            self.response = _Response()
+            self.followup = _Followup()
+
+    async def fail_finalize(*_args, **_kwargs):
+        raise RuntimeError("quota")
+
+    def fail_marker(*_args, **_kwargs):
+        raise RuntimeError("marker write failed")
+
+    watcher = SimpleNamespace(finalize_from_interaction=fail_finalize)
+    context = TicketContext(thread_id=777, ticket_number="W0777", username="QuotaFail")
+    view = ClanSelectView(watcher, context, ["C1CD"])
+    interaction = _Interaction()
+
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_welcome.onboarding_sheets.update_ticket_finalization_state",
+        fail_marker,
+    )
+
+    asyncio.run(view.handle_selection(interaction, "C1CD"))
+
+    assert interaction.followup.messages
+    assert "could not mark the ticket failed" in interaction.followup.messages[0]
+    assert "ticket was marked failed" not in interaction.followup.messages[0]
 
 
 def test_finalize_reconciles_when_row_inserted(monkeypatch) -> None:
