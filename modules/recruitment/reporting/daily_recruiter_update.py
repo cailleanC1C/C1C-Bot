@@ -19,7 +19,7 @@ from shared.config import (
 from shared.logfmt import LogTemplates, channel_label, guild_label, human_reason, user_label
 from shared.sheets.recruitment import (
     afetch_reports_tab,
-    get_reports_tab_name,
+    get_reports_tab_name_async,
 )
 from modules.recruitment.reporting.destinations import get_report_destination_id
 from modules.recruitment.reporting.open_ticket_report import (
@@ -35,6 +35,8 @@ UTC = timezone.utc
 DETAILS_FILTER_FOOTER = (
     "Clans with 0 openings, 0 inactives, and 0 reserved seats are hidden here."
 )
+
+DEFAULT_REPORTS_TAB_NAME = "Statistics"
 
 _BOT_REFERENCE: Optional[discord.Client] = None
 _PERSISTENT_VIEW_REGISTERED = False
@@ -333,7 +335,7 @@ def _require_report_headers(
         if _resolve_index(headers, name) is None
     ]
     if missing:
-        ctx = context or _report_fetch_context(tab_name=get_reports_tab_name("Statistics"))
+        ctx = context or _report_fetch_context(tab_name=DEFAULT_REPORTS_TAB_NAME)
         raise ReportSchemaError(
             f"Statistics report missing required header(s): {', '.join(missing)}",
             required=_REPORT_REQUIRED_HEADERS,
@@ -471,11 +473,11 @@ async def _fetch_report_rows() -> Tuple[List[List[str]], HeadersMap]:
     sheet_id = get_recruitment_sheet_id().strip()
     if not sheet_id:
         context = _report_fetch_context(
-            tab_name=get_reports_tab_name("Statistics"),
+            tab_name=DEFAULT_REPORTS_TAB_NAME,
             underlying_exception_type="RuntimeError",
         )
         raise ReportFetchError("RECRUITMENT_SHEET_ID is not configured", context=context)
-    tab_name = get_reports_tab_name("Statistics")
+    tab_name = await get_reports_tab_name_async(DEFAULT_REPORTS_TAB_NAME)
     try:
         rows = await afetch_reports_tab(tab_name)
     except asyncio.TimeoutError as exc:
@@ -561,7 +563,7 @@ def _extract_report_sections(
     rows: Sequence[Sequence[str]], headers: HeadersMap, context: Optional[ReportFetchContext] = None
 ) -> ReportSections:
     if not rows:
-        ctx = context or _report_fetch_context(tab_name=get_reports_tab_name("Statistics"), rows=rows)
+        ctx = context or _report_fetch_context(tab_name=DEFAULT_REPORTS_TAB_NAME, rows=rows)
         raise ReportFetchError(
             "Recruiter report skipped because the Statistics sheet returned no rows.",
             context=ctx,
@@ -966,7 +968,7 @@ def _build_embeds_from_rows(
     rows: Sequence[Sequence[str]], headers: HeadersMap
 ) -> Tuple[discord.Embed, discord.Embed]:
     context = _report_fetch_context(
-        tab_name="Statistics",
+        tab_name=DEFAULT_REPORTS_TAB_NAME,
         rows=rows,
         data_source="test" if rows else "direct",
     )
