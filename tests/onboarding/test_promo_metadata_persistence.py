@@ -380,7 +380,7 @@ def test_patch_promo_metadata_missing_required_header_skips_without_header_rewri
     assert worksheet.header_updates == []
 
 
-def test_promo_close_backfill_is_deferred_on_startup(monkeypatch):
+def test_promo_close_backfill_is_not_scheduled_on_startup(monkeypatch):
     calls = []
     created = []
     monkeypatch.setattr(watcher_promo, "get_promo_channel_id", lambda: 1)
@@ -405,7 +405,7 @@ def test_promo_close_backfill_is_deferred_on_startup(monkeypatch):
     asyncio.run(watcher.on_ready())
 
     assert calls == []
-    assert created == ["promo_close_backfill_startup"]
+    assert created == []
 
 
 def test_startup_backfill_includes_recent_unresolved_closed_promo(monkeypatch):
@@ -437,7 +437,7 @@ def test_startup_backfill_includes_recent_unresolved_closed_promo(monkeypatch):
     assert summary["scanned"] == 1
     assert summary["unresolved"] == 1
     assert updates and updates[0]["finalization_status"] == "skipped_unresolved"
-    assert logs and logs[0]["trigger"] == "startup_backfill"
+    assert logs == []
 
 
 def test_startup_backfill_skips_closed_promo_older_than_48_hours(monkeypatch):
@@ -681,6 +681,7 @@ def test_promo_startup_backfill_loader_error_logs_reason(monkeypatch, caplog):
     summary = asyncio.run(watcher.run_close_backfill())
 
     assert summary["scanned"] == 0
+    assert summary["error"] == 1
     errors = [record for record in caplog.records if record.name == "c1c.onboarding.promo_watcher" and record.levelname == "ERROR"]
     assert errors
     assert "RuntimeError: Promo backfill missing required header(s): finalization_status" == errors[-1].reason

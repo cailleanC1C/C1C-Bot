@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -12,7 +13,7 @@ import discord
 from discord.ext import commands
 
 from c1c_coreops.helpers import help_metadata, tier
-from c1c_coreops.rbac import is_admin_member, is_recruiter, is_staff_member
+from c1c_coreops.rbac import admin_only, is_admin_member, is_recruiter, is_staff_member
 from modules.onboarding import thread_scopes
 from modules.onboarding.watcher_welcome import (
     TicketContext,
@@ -26,6 +27,48 @@ from shared.sheets import onboarding as onboarding_sheets
 from shared.sheets import onboarding_sessions
 
 log = logging.getLogger("c1c.onboarding.finishplacement")
+_TICKET_BACKFILL_LOCK: asyncio.Lock | None = None
+
+
+def _ticket_backfill_lock() -> asyncio.Lock:
+    global _TICKET_BACKFILL_LOCK
+    if _TICKET_BACKFILL_LOCK is None:
+        _TICKET_BACKFILL_LOCK = asyncio.Lock()
+    return _TICKET_BACKFILL_LOCK
+
+
+def _parse_backfill_window(value: str | None) -> tuple[int | None, str | None]:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None, "Missing window. Usage: `!ticketbackfill <welcome|promo|all> <1h|6h|24h|3d|7d>` (max 7d)."
+    match = re.fullmatch(r"(\d+)([hd])", text)
+    if not match:
+        return None, "Invalid window. Use hours or days such as `1h`, `6h`, `24h`, `3d`, or `7d` (max 7d)."
+    amount = int(match.group(1))
+    unit = match.group(2)
+    hours = amount if unit == "h" else amount * 24
+    if hours <= 0:
+        return None, "Invalid window. Window must be greater than zero."
+    if hours > 7 * 24:
+        return None, "Window too large. Normal ticket backfill is capped at 7d; rerun with a smaller explicit window."
+    return hours, None
+
+
+def _format_backfill_summary(flow: str, window: str, summary: dict[str, int]) -> str:
+    keys = (
+        "scanned",
+        "finalized",
+        "prompt_required",
+        "already_done",
+        "unresolved",
+        "skipped_old",
+        "skipped_no_timestamp",
+        "error",
+    )
+    parts = [f"flow={flow}", f"window={window}"]
+    parts.extend(f"{key}={int(summary.get(key, 0))}" for key in keys)
+    return " • ".join(parts)
+
 
 Flow = Literal["welcome", "promo"]
 
@@ -594,6 +637,65 @@ class FinishPlacementCog(commands.Cog):
                     "flow": flow,
                 },
             )
+
+    @tier("admin")
+    @help_metadata(function_group="operational", section="onboarding", access_tier="admin")
+    @commands.command(
+        name="ticketbackfill",
+        usage="<welcome|promo|all> <1h|6h|24h|3d|7d>",
+        help="Admin repair: manually run welcome/promo ticket close backfill for an explicit bounded window.",
+        brief="Manually run bounded ticket close backfill.",
+    )
+    @admin_only()
+    async def ticketbackfill(
+        self, ctx: commands.Context, flow: str | None = None, window: str | None = None
+    ) -> None:
+        requested_flow = str(flow or "").strip().lower()
+        if requested_flow not in {"welcome", "promo", "all"}:
+            await ctx.reply(
+                "Invalid flow. Usage: `!ticketbackfill <welcome|promo|all> <1h|6h|24h|3d|7d>`.",
+                mention_author=False,
+            )
+            return
+        window_hours, error = _parse_backfill_window(window)
+        if error or window_hours is None:
+            await ctx.reply(error, mention_author=False)
+            return
+
+        lock = _ticket_backfill_lock()
+        if lock.locked():
+            await ctx.reply(
+                "A ticket close backfill is already running. Wait for it to finish before starting another.",
+                mention_author=False,
+            )
+            return
+
+        flows = ["welcome", "promo"] if requested_flow == "all" else [requested_flow]
+        summaries: list[str] = []
+        async with lock:
+            for item in flows:
+                watcher_name = "WelcomeTicketWatcher" if item == "welcome" else "PromoTicketWatcher"
+                watcher = self.bot.get_cog(watcher_name)
+                if watcher is None or not hasattr(watcher, "run_close_backfill"):
+                    summaries.append(
+                        _format_backfill_summary(item, str(window), {"error": 1}) + " • reason=watcher_not_loaded"
+                    )
+                    continue
+                try:
+                    summary = await watcher.run_close_backfill(window_hours=window_hours)
+                except Exception as exc:
+                    log.exception("manual_ticket_backfill_failed", extra={"flow": item, "window_hours": window_hours})
+                    summaries.append(
+                        _format_backfill_summary(item, str(window), {"error": 1})
+                        + f" • reason={type(exc).__name__}"
+                    )
+                    continue
+                summaries.append(_format_backfill_summary(item, str(window), summary))
+
+        await ctx.reply(
+            "Ticket close backfill complete:\n" + "\n".join(f"• {line}" for line in summaries),
+            mention_author=False,
+        )
 
 
 async def setup(bot: commands.Bot) -> None:

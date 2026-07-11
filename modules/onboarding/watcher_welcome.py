@@ -50,6 +50,14 @@ from shared.cache import telemetry as cache_telemetry
 
 log = logging.getLogger("c1c.onboarding.welcome_watcher")
 STARTUP_CLOSE_BACKFILL_DELAY_SEC = 90
+_WELCOME_BACKFILL_TIMESTAMP_HEADERS = (
+    "date closed",
+    "date_closed",
+    "updated_at",
+    "created_at",
+    "thread created",
+    "thread_created",
+)
 
 
 _REMINDER_JOB_NAME = "welcome_incomplete_scan"
@@ -1710,6 +1718,37 @@ class TicketContext:
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     ticket_tool_close_detected: bool = False
     row_created_during_close: bool = False
+
+
+def _parse_welcome_backfill_timestamp(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    candidates = [text]
+    if " " in text and "T" not in text:
+        candidates.append(text.replace(" ", "T", 1))
+    if len(text) >= 10:
+        candidates.append(text[:10])
+    for candidate in candidates:
+        try:
+            if len(candidate) == 10 and candidate[4] == "-" and candidate[7] == "-":
+                parsed = datetime.combine(datetime.fromisoformat(candidate).date(), datetime.min.time())
+            else:
+                parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    return None
+
+
+def _welcome_backfill_row_timestamp(values: dict[str, str]) -> tuple[datetime | None, str | None]:
+    for header in _WELCOME_BACKFILL_TIMESTAMP_HEADERS:
+        parsed = _parse_welcome_backfill_timestamp(values.get(header))
+        if parsed is not None:
+            return parsed, header
+    return None, None
 
 
 def _finalization_state_from_welcome_row(row_values: object) -> dict[str, str]:
@@ -5023,37 +5062,33 @@ class WelcomeTicketWatcher(commands.Cog):
                 extra={"ticket": context.ticket_number, "result": log_result},
             )
 
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
-        if getattr(self, "_close_backfill_done", False):
-            return
-        self._close_backfill_done = True
-        if not self._features_enabled():
-            return
-        asyncio.create_task(
-            self._run_close_backfill_after_startup_delay(),
-            name="welcome_close_backfill_startup",
-        )
-
-    async def _run_close_backfill_after_startup_delay(self) -> dict[str, int]:
-        await asyncio.sleep(STARTUP_CLOSE_BACKFILL_DELAY_SEC)
-        return await self.run_close_backfill()
-
-    async def run_close_backfill(self) -> dict[str, int]:
-        summary = {"scanned": 0, "finalized": 0, "prompt_required": 0, "already_done": 0, "unresolved": 0, "error": 0}
+    async def run_close_backfill(self, *, window_hours: int = 48) -> dict[str, int]:
+        summary = {"scanned": 0, "finalized": 0, "prompt_required": 0, "already_done": 0, "unresolved": 0, "error": 0, "skipped_old": 0, "skipped_no_timestamp": 0}
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
         try:
             rows = await asyncio.to_thread(onboarding_sheets.list_ticket_rows_for_finalization_backfill, "welcome")
         except Exception:
+            summary["error"] += 1
             log.exception("close_backfill_summary", extra={"flow": "welcome", **summary, "result": "error"})
             return summary
         for _, values in rows:
+            status = str(values.get("status") or "").strip().lower()
+            thread_id = str(values.get("thread_id") or values.get("thread") or "").strip()
+            ticket = values.get("ticket_number") or values.get("ticket number") or values.get("ticket")
+            if status != "closed" and not thread_id:
+                continue
+            stamp, stamp_source = _welcome_backfill_row_timestamp(values)
+            if stamp is None:
+                summary["skipped_no_timestamp"] += 1
+                log.info("close_backfill_skip_no_timestamp", extra={"flow": "welcome", "thread_id": thread_id, "ticket": ticket})
+                continue
+            if stamp < cutoff:
+                summary["skipped_old"] += 1
+                log.debug("close_backfill_skip_old", extra={"flow": "welcome", "thread_id": thread_id, "ticket": ticket, "timestamp_source": stamp_source, "window_hours": window_hours})
+                continue
             state = _finalization_state_from_welcome_row(values)
             if (state.get("finalization_status") or "").lower() == "done":
                 summary["already_done"] += 1
-                continue
-            status = str(values.get("status") or "").strip().lower()
-            thread_id = str(values.get("thread_id") or values.get("thread") or "").strip()
-            if status != "closed" and not thread_id:
                 continue
             summary["scanned"] += 1
             thread = None
@@ -5065,7 +5100,6 @@ class WelcomeTicketWatcher(commands.Cog):
                         thread = await self.bot.fetch_channel(tid)
                 except Exception:
                     thread = None
-            ticket = values.get("ticket_number") or values.get("ticket number") or values.get("ticket")
             player = values.get("username") or "unknown"
             sheet_closed = status == "closed"
             thread_closed = False
@@ -5081,11 +5115,11 @@ class WelcomeTicketWatcher(commands.Cog):
                     continue
                 summary["unresolved"] += 1
                 try:
-                    await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "welcome", ticket=ticket, thread_id=thread_id, finalization_status="skipped_unresolved", finalization_note="context unresolved during startup/backfill")
+                    await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "welcome", ticket=ticket, thread_id=thread_id, finalization_status="skipped_unresolved", finalization_note="context unresolved during manual backfill")
                 except Exception:
                     summary["error"] += 1
-                    log.exception("close_context_unresolved", extra={"flow": "welcome", "trigger": "startup_backfill", "thread_id": thread_id, "ticket": ticket})
-                await _send_placement_log_line(flow="welcome", outcome="unresolved", ticket=ticket, player=player, trigger="startup_backfill", reason="context_not_found", action="skipped", thread=values.get("thread_name"))
+                    log.exception("close_context_unresolved", extra={"flow": "welcome", "trigger": "manual_backfill", "thread_id": thread_id, "ticket": ticket})
+                log.info("close_context_unresolved", extra={"flow": "welcome", "trigger": "manual_backfill", "thread_id": thread_id, "ticket": ticket})
                 continue
             if not sheet_closed and not thread_closed:
                 log.debug(
@@ -5097,17 +5131,17 @@ class WelcomeTicketWatcher(commands.Cog):
             if context is None:
                 summary["unresolved"] += 1
                 try:
-                    await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "welcome", ticket=ticket, thread_id=thread_id, finalization_status="skipped_unresolved", finalization_note="context unresolved during startup/backfill")
+                    await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "welcome", ticket=ticket, thread_id=thread_id, finalization_status="skipped_unresolved", finalization_note="context unresolved during manual backfill")
                 except Exception:
                     summary["error"] += 1
-                    log.exception("close_context_unresolved", extra={"flow": "welcome", "trigger": "startup_backfill", "thread_id": thread_id, "ticket": ticket})
-                await _send_placement_log_line(flow="welcome", outcome="unresolved", ticket=ticket, player=player, trigger="startup_backfill", reason="context_not_found", action="skipped", thread=getattr(thread, "name", None))
+                    log.exception("close_context_unresolved", extra={"flow": "welcome", "trigger": "manual_backfill", "thread_id": thread_id, "ticket": ticket})
+                log.info("close_context_unresolved", extra={"flow": "welcome", "trigger": "manual_backfill", "thread_id": thread_id, "ticket": ticket})
                 continue
             final_clan = values.get("clantag") or values.get("clan_tag") or ""
             try:
                 if final_clan:
                     context.state = "awaiting_clan"
-                    await self._finalize_clan_tag(thread, context, final_clan, actor=None, source="startup_backfill", prompt_message=None, view=None, notify=False)
+                    await self._finalize_clan_tag(thread, context, final_clan, actor=None, source="manual_backfill", prompt_message=None, view=None, notify=False)
                     summary["finalized"] += 1
                 else:
                     await self._handle_ticket_closed(thread, context, manual=True)
