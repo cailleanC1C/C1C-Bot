@@ -9,6 +9,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from shared.config import get_onboarding_sheet_id
 from shared.sheets import core
 from shared.sheets.async_core import afetch_records, afetch_values
 from shared.sheets.cache_service import cache
@@ -25,6 +26,7 @@ _CLAN_TAG_TS: float = 0.0
 _WELCOME_REPAIR_LAST_RUN: float = 0.0
 _WELCOME_REPAIR_ALERT_LAST_TS: float = 0.0
 _WELCOME_REPAIR_ALERT_PENDING: str | None = None
+_LAST_INFO_LOGGED_SHEET_ID: str | None = None
 
 
 log = logging.getLogger(__name__)
@@ -180,15 +182,23 @@ _CURRENT_TICKET_CUTOFF = datetime(2026, 4, 1, tzinfo=timezone.utc)
 
 
 def _sheet_id() -> str:
-    """Resolve the onboarding sheet id – no legacy fallbacks."""
+    """Resolve the onboarding sheet id from runtime Config – no legacy fallbacks."""
 
-    sheet_id = os.getenv("ONBOARDING_SHEET_ID", "").strip()
+    global _LAST_INFO_LOGGED_SHEET_ID
+
+    sheet_id = get_onboarding_sheet_id().strip()
     if not sheet_id:
         raise RuntimeError("ONBOARDING_SHEET_ID not set")
-    # Log tail only, never the full id
+    # Log tail only, never the full id. Repeated resolver calls are expected
+    # during ticket finalization, so keep a single INFO breadcrumb per resolved
+    # id and move repeated resolver traces to DEBUG.
     tail = sheet_id[-6:] if len(sheet_id) >= 6 else sheet_id
     redacted = f"…{tail}" if len(sheet_id) > len(tail) else tail
-    log.info("📄 Onboarding sheet resolved • id_tail=%s", redacted)
+    if _LAST_INFO_LOGGED_SHEET_ID != sheet_id:
+        log.info("📄 Onboarding sheet resolved • id_tail=%s", redacted)
+        _LAST_INFO_LOGGED_SHEET_ID = sheet_id
+    else:
+        log.debug("📄 Onboarding sheet resolved • id_tail=%s", redacted)
     return sheet_id
 
 
