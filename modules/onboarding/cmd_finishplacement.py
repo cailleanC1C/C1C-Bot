@@ -99,7 +99,7 @@ def _upper_tag(value: str | None) -> str:
     return str(value or "").strip().upper()
 
 
-def _is_none_source(value: str | None) -> bool:
+def _is_no_clan_tag(value: str | None) -> bool:
     return _upper_tag(value) in {"", _NO_PLACEMENT_TAG}
 
 
@@ -385,7 +385,7 @@ class FinishPlacementCog(commands.Cog):
     )
     @commands.command(
         name="finishplacement",
-        usage="<source_clan_tag|NONE> <destination_clan_tag>",
+        usage="<source_clan_tag|NONE> <destination_clan_tag|NONE>",
         help="Staff fallback: manually finish a welcome or promo placement in the current ticket thread.",
         brief="Manually finish placement for the current onboarding ticket.",
     )
@@ -412,7 +412,7 @@ class FinishPlacementCog(commands.Cog):
 
         if source_clan_tag is None or destination_clan_tag is None:
             await ctx.reply(
-                "Usage: `!finishplacement <source_clan_tag|NONE> <destination_clan_tag>`",
+                "Usage: `!finishplacement <source_clan_tag|NONE> <destination_clan_tag|NONE>`",
                 mention_author=False,
             )
             return
@@ -452,21 +452,25 @@ class FinishPlacementCog(commands.Cog):
 
         source_tag = _upper_tag(source_clan_tag)
         destination_tag = _upper_tag(destination_clan_tag)
-        if not destination_tag or destination_tag == _NO_PLACEMENT_TAG:
+        if not destination_tag:
             await ctx.reply("Destination clan tag is required.", mention_author=False)
             return
 
-        valid_tags = await self._valid_tags()
-        if destination_tag not in valid_tags or (
-            not _is_none_source(source_tag) and source_tag not in valid_tags
-        ):
-            await ctx.reply(
-                "Unknown clan tag. Please use configured clan tags or `NONE` for source.",
-                mention_author=False,
-            )
-            return
+        tags_to_validate = {
+            tag
+            for tag in (source_tag, destination_tag)
+            if not _is_no_clan_tag(tag)
+        }
+        if tags_to_validate:
+            valid_tags = await self._valid_tags()
+            if any(tag not in valid_tags for tag in tags_to_validate):
+                await ctx.reply(
+                    "Unknown clan tag. Please use configured clan tags or `NONE`.",
+                    mention_author=False,
+                )
+                return
 
-        if flow == "welcome" and not _is_none_source(source_tag):
+        if flow == "welcome" and not _is_no_clan_tag(source_tag):
             log.warning(
                 "finishplacement_wrong_thread_type welcome_source_rejected",
                 extra={
@@ -611,7 +615,7 @@ class FinishPlacementCog(commands.Cog):
         promo_context.ticket_number = context.ticket_id
         promo_context.username = context.username
         promo_context.source_clan_tag = (
-            _NO_PLACEMENT_TAG if _is_none_source(source_tag) else source_tag
+            _NO_PLACEMENT_TAG if _is_no_clan_tag(source_tag) else source_tag
         )
         promo_context.clan_tag = destination_tag
         promo_context.state = "awaiting_destination_clan"
