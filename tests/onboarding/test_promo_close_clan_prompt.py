@@ -253,6 +253,69 @@ def test_finalize_never_enters_awaiting_details(monkeypatch):
     assert ctx.state == "closed"
 
 
+def test_promo_close_none_destination_skips_clan_math_and_reservation_updates(monkeypatch):
+    watcher = _setup_watcher(monkeypatch)
+    ctx = _context(
+        state="awaiting_destination_clan", clan_tag="NONE", source_clan_tag="NONE"
+    )
+    ctx.user_id = 4242
+    updates = AsyncMock(
+        side_effect=AssertionError(
+            "destination NONE should not update reservations without a real reservation"
+        )
+    )
+    adjust = AsyncMock(
+        side_effect=AssertionError("destination NONE should not adjust open spots")
+    )
+    recompute = AsyncMock(
+        side_effect=AssertionError("destination NONE should not recompute clans")
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_promo._ensure_fresh_clans_for_placement",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_promo.recruitment_sheets.find_clan_row",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("destination NONE should not be looked up as a clan")
+        ),
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_promo.reservations_sheets.update_reservation_status",
+        updates,
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_promo.availability.adjust_manual_open_spots",
+        adjust,
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_promo.availability.recompute_clan_availability",
+        recompute,
+    )
+    watcher._load_clan_tags = AsyncMock(
+        side_effect=AssertionError("destination NONE should not load clan tags")
+    )
+    thread = DummyThread(10, "closed-R1111-user")
+    thread.edit = AsyncMock()
+
+    asyncio.run(
+        watcher._complete_close(
+            thread,
+            ctx,
+            progression=ctx.progression,
+            clan_name=ctx.clan_name,
+            phase="finishplacement",
+            previous_final="NONE",
+        )
+    )
+
+    assert ctx.state == "closed"
+    assert ctx.clan_tag == "NONE"
+    updates.assert_not_awaited()
+    adjust.assert_not_awaited()
+    recompute.assert_not_awaited()
+
+
 def test_promo_close_with_no_active_reservation_skips_cleanup(monkeypatch, caplog):
     watcher = _setup_watcher(monkeypatch)
     ctx = _context(state="awaiting_clan")

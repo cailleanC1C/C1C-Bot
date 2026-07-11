@@ -9,7 +9,7 @@ import pytest
 
 from modules.onboarding import cmd_finishplacement as fp
 from modules.onboarding.watcher_promo import PromoTicketContext, PromoTicketWatcher
-from modules.onboarding.watcher_welcome import TicketContext, WelcomeTicketWatcher
+from modules.onboarding.watcher_welcome import WelcomeTicketWatcher
 
 
 class DummyThread:
@@ -97,6 +97,92 @@ def test_staff_can_finish_welcome_ticket(monkeypatch):
     assert called_context.username == "player"
     assert watcher._finalize_clan_tag.await_args.args[2] == "C1CD"
     assert ctx.replies[-1][0] == "Placement finalized: **C1CD**."
+
+
+def test_staff_can_finish_welcome_ticket_with_none_destination(monkeypatch):
+    monkeypatch.setattr(
+        fp.onboarding_sheets,
+        "load_clan_tags",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("should not validate NONE as a clan tag")
+        ),
+    )
+    watcher = WelcomeTicketWatcher(SimpleNamespace())
+    watcher._finalize_clan_tag = AsyncMock(
+        side_effect=lambda _thread, context, *_args, **_kwargs: setattr(
+            context, "state", "closed"
+        )
+    )
+    cog = fp.FinishPlacementCog(DummyBot(WelcomeTicketWatcher=watcher))
+    thread = DummyThread(name="W0919-player", parent_id=10)
+    ctx = DummyCtx(thread)
+
+    asyncio.run(
+        fp.FinishPlacementCog.finishplacement.callback(cog, ctx, "NONE", "NONE")
+    )
+
+    watcher._finalize_clan_tag.assert_awaited_once()
+    assert watcher._finalize_clan_tag.await_args.args[2] == "NONE"
+    assert ctx.replies[-1][0] == "Placement finalized: **NONE**."
+    assert all(
+        "Destination clan tag is required." not in reply[0] for reply in ctx.replies
+    )
+
+
+def test_staff_can_finish_promo_ticket_with_lowercase_none_destination(monkeypatch):
+    monkeypatch.setattr(
+        fp.onboarding_sheets,
+        "load_clan_tags",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("should not validate NONE as a clan tag")
+        ),
+    )
+    watcher = PromoTicketWatcher(SimpleNamespace())
+    watcher._complete_close = AsyncMock(
+        side_effect=lambda _thread, context, *_args, **_kwargs: setattr(
+            context, "state", "closed"
+        )
+    )
+    cog = fp.FinishPlacementCog(DummyBot(PromoTicketWatcher=watcher))
+    thread = DummyThread(name="M0354-player", parent_id=20)
+    ctx = DummyCtx(thread)
+
+    asyncio.run(
+        fp.FinishPlacementCog.finishplacement.callback(cog, ctx, "none", "none")
+    )
+
+    watcher._complete_close.assert_awaited_once()
+    promo_context = watcher._complete_close.await_args.args[1]
+    assert promo_context.source_clan_tag == "NONE"
+    assert promo_context.clan_tag == "NONE"
+    assert watcher._complete_close.await_args.kwargs["previous_final"] == "NONE"
+    assert ctx.replies[-1][0] == "Placement finalized: **NONE** → **NONE**."
+    assert all(
+        "Destination clan tag is required." not in reply[0] for reply in ctx.replies
+    )
+
+
+def test_destination_none_does_not_update_open_spots_or_reservations_in_command(monkeypatch):
+    watcher = PromoTicketWatcher(SimpleNamespace())
+
+    async def fake_complete_close(_thread, context, *_args, **_kwargs):
+        if context.clan_tag != "NONE":
+            raise AssertionError("destination NONE was not preserved for finalizer")
+        context.state = "closed"
+
+    watcher._complete_close = AsyncMock(side_effect=fake_complete_close)
+    cog = fp.FinishPlacementCog(DummyBot(PromoTicketWatcher=watcher))
+    thread = DummyThread(name="M0354-player", parent_id=20)
+    ctx = DummyCtx(thread)
+
+    asyncio.run(
+        fp.FinishPlacementCog.finishplacement.callback(cog, ctx, "NONE", "NONE")
+    )
+
+    watcher._complete_close.assert_awaited_once()
+    promo_context = watcher._complete_close.await_args.args[1]
+    assert promo_context.source_clan_tag == "NONE"
+    assert promo_context.clan_tag == "NONE"
 
 
 def test_staff_can_finish_promo_move_ticket(monkeypatch):
