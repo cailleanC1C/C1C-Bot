@@ -2,7 +2,7 @@ import asyncio
 import datetime as dt
 from types import SimpleNamespace
 
-from modules.onboarding import watcher_promo, watcher_welcome
+from modules.onboarding import cmd_finishplacement, watcher_promo, watcher_welcome
 from shared.sheets import onboarding as onboarding_sheets
 
 
@@ -275,7 +275,7 @@ def test_welcome_backfill_closed_row_fetch_fails_marks_skipped_unresolved(monkey
     summary = asyncio.run(watcher.run_close_backfill())
 
     assert updates and updates[0][1]["finalization_status"] == "skipped_unresolved"
-    assert discord_logs and discord_logs[0]["outcome"] == "unresolved"
+    assert discord_logs == []
     assert summary["unresolved"] == 1
 
 
@@ -301,7 +301,7 @@ def test_promo_backfill_closed_row_fetch_fails_marks_skipped_unresolved(monkeypa
     summary = asyncio.run(watcher.run_close_backfill())
 
     assert updates and updates[0][1]["finalization_status"] == "skipped_unresolved"
-    assert discord_logs and discord_logs[0]["outcome"] == "unresolved"
+    assert discord_logs == []
     assert summary["unresolved"] == 1
 
 
@@ -311,6 +311,7 @@ def test_welcome_backfill_open_row_fetched_archived_thread_triggers_prompt(monke
         "username": "ArchivedUser",
         "thread_id": "123",
         "status": "open",
+        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "finalization_status": "pending",
     }
     prompted = []
@@ -339,12 +340,152 @@ def test_promo_backfill_open_row_fetched_archived_thread_triggers_prompt(monkeyp
     watcher = watcher_promo.PromoTicketWatcher(_BackfillBot(channel=_BackfillThread(archived=True, name="M1003-ArchivedUser")))
     context = watcher_promo.PromoTicketContext(thread_id=123, ticket_number="M1003", username="ArchivedUser", promo_type="move", thread_created="", year="2026", month="June")
     monkeypatch.setattr(watcher, "_ensure_context", lambda thread: asyncio.sleep(0, result=context))
-    monkeypatch.setattr(watcher, "_begin_clan_prompt", lambda thread, context, trigger="startup_backfill": prompted.append((thread, context, trigger)) or asyncio.sleep(0))
+    monkeypatch.setattr(watcher, "_begin_clan_prompt", lambda thread, context, trigger="manual_backfill": prompted.append((thread, context, trigger)) or asyncio.sleep(0))
 
     summary = asyncio.run(watcher.run_close_backfill())
 
-    assert prompted and prompted[0][2] == "startup_backfill"
+    assert prompted and prompted[0][2] == "manual_backfill"
     assert summary["prompt_required"] == 1
+
+
+def test_welcome_startup_does_not_schedule_close_backfill(monkeypatch):
+    created = []
+    monkeypatch.setattr(watcher_welcome.asyncio, "create_task", lambda coro, *, name=None: created.append(name))
+    watcher = watcher_welcome.WelcomeTicketWatcher(SimpleNamespace())
+
+    assert watcher is not None
+    assert "welcome_close_backfill_startup" not in created
+
+
+def test_welcome_backfill_loader_error_counts_error(monkeypatch):
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "list_ticket_rows_for_finalization_backfill",
+        lambda flow: (_ for _ in ()).throw(RuntimeError("loader failed")),
+    )
+    watcher = watcher_welcome.WelcomeTicketWatcher(SimpleNamespace())
+
+    summary = asyncio.run(watcher.run_close_backfill(window_hours=24))
+
+    assert summary["scanned"] == 0
+    assert summary["error"] == 1
+
+
+def test_promo_backfill_loader_error_counts_error(monkeypatch):
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets,
+        "list_ticket_rows_for_finalization_backfill",
+        lambda flow: (_ for _ in ()).throw(RuntimeError("loader failed")),
+    )
+    watcher = watcher_promo.PromoTicketWatcher(SimpleNamespace(get_channel=lambda tid: None))
+
+    summary = asyncio.run(watcher.run_close_backfill(window_hours=24))
+
+    assert summary["scanned"] == 0
+    assert summary["error"] == 1
+
+
+def test_old_finalized_rows_outside_window_are_skipped_not_already_done(monkeypatch):
+    old = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=10)
+    rows = [
+        (
+            2,
+            {
+                "ticket number": "M9999",
+                "username": "OldDone",
+                "status": "closed",
+                "thread_id": "9999",
+                "updated_at": old.isoformat(),
+                "finalization_status": "done",
+            },
+        )
+    ]
+    _patch_backfill_rows(monkeypatch, watcher_promo, rows)
+    watcher = watcher_promo.PromoTicketWatcher(SimpleNamespace(get_channel=lambda tid: None))
+
+    summary = asyncio.run(watcher.run_close_backfill(window_hours=24))
+
+    assert summary["already_done"] == 0
+    assert summary["skipped_old"] == 1
+
+
+class _BackfillCtx:
+    def __init__(self):
+        self.replies = []
+
+    async def reply(self, message, **kwargs):
+        self.replies.append((message, kwargs))
+
+
+class _CommandWatcher:
+    def __init__(self):
+        self.calls = []
+
+    async def run_close_backfill(self, *, window_hours):
+        self.calls.append(window_hours)
+        return {
+            "scanned": 1,
+            "finalized": 0,
+            "prompt_required": 0,
+            "already_done": 0,
+            "unresolved": 0,
+            "error": 0,
+            "skipped_old": 0,
+            "skipped_no_timestamp": 0,
+        }
+
+
+def test_ticketbackfill_rejects_invalid_flow():
+    ctx = _BackfillCtx()
+    cog = cmd_finishplacement.FinishPlacementCog(SimpleNamespace(get_cog=lambda name: None))
+
+    asyncio.run(cmd_finishplacement.FinishPlacementCog.ticketbackfill.callback(cog, ctx, "bad", "1h"))
+
+    assert ctx.replies
+    assert "Invalid flow" in ctx.replies[0][0]
+
+
+def test_ticketbackfill_rejects_missing_invalid_and_too_large_windows():
+    cog = cmd_finishplacement.FinishPlacementCog(SimpleNamespace(get_cog=lambda name: None))
+
+    for window, expected in [(None, "Missing window"), ("bad", "Invalid window"), ("8d", "Window too large")]:
+        ctx = _BackfillCtx()
+        asyncio.run(cmd_finishplacement.FinishPlacementCog.ticketbackfill.callback(cog, ctx, "welcome", window))
+        assert ctx.replies
+        assert expected in ctx.replies[0][0]
+
+
+def test_ticketbackfill_valid_window_calls_watcher_with_window_hours():
+    watcher = _CommandWatcher()
+    ctx = _BackfillCtx()
+    cog = cmd_finishplacement.FinishPlacementCog(
+        SimpleNamespace(get_cog=lambda name: watcher if name == "WelcomeTicketWatcher" else None)
+    )
+
+    asyncio.run(cmd_finishplacement.FinishPlacementCog.ticketbackfill.callback(cog, ctx, "welcome", "3d"))
+
+    assert watcher.calls == [72]
+    assert "flow=welcome" in ctx.replies[0][0]
+    assert "window=3d" in ctx.replies[0][0]
+
+
+def test_ticketbackfill_rejects_overlap(monkeypatch):
+    lock = asyncio.Lock()
+    asyncio.run(lock.acquire())
+    monkeypatch.setattr(cmd_finishplacement, "_TICKET_BACKFILL_LOCK", lock)
+    watcher = _CommandWatcher()
+    ctx = _BackfillCtx()
+    cog = cmd_finishplacement.FinishPlacementCog(SimpleNamespace(get_cog=lambda name: watcher))
+
+    try:
+        asyncio.run(cmd_finishplacement.FinishPlacementCog.ticketbackfill.callback(cog, ctx, "all", "1h"))
+    finally:
+        lock.release()
+        monkeypatch.setattr(cmd_finishplacement, "_TICKET_BACKFILL_LOCK", None)
+
+    assert watcher.calls == []
+    assert ctx.replies
+    assert "already running" in ctx.replies[0][0]
 
 
 def test_welcome_finalization_state_read_failure_blocks_side_effects(monkeypatch):

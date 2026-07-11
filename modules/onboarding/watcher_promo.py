@@ -1886,17 +1886,9 @@ class PromoTicketWatcher(commands.Cog):
             channel_id=channel_id_int,
             triggers=len(_PROMO_TRIGGER_MAP),
         )
-        asyncio.create_task(
-            self._run_close_backfill_after_startup_delay(),
-            name="promo_close_backfill_startup",
-        )
         # Startup watcher status is included in the global startup summary.
 
-    async def _run_close_backfill_after_startup_delay(self) -> dict[str, int]:
-        await asyncio.sleep(STARTUP_CLOSE_BACKFILL_DELAY_SEC)
-        return await self.run_close_backfill()
-
-    async def run_close_backfill(self) -> dict[str, int]:
+    async def run_close_backfill(self, *, window_hours: int = 48) -> dict[str, int]:
         summary = {
             "scanned": 0,
             "finalized": 0,
@@ -1907,24 +1899,21 @@ class PromoTicketWatcher(commands.Cog):
             "skipped_old": 0,
             "skipped_no_timestamp": 0,
         }
-        cutoff = dt.datetime.now(UTC) - dt.timedelta(hours=PROMO_CLOSE_BACKFILL_LOOKBACK_HOURS)
+        cutoff = dt.datetime.now(UTC) - dt.timedelta(hours=window_hours)
         try:
             rows = await asyncio.to_thread(onboarding_sheets.list_ticket_rows_for_finalization_backfill, "promo")
         except Exception as exc:
+            summary["error"] += 1
             reason = f"{type(exc).__name__}: {exc}"
             log.exception("close_backfill_summary", extra={"flow": "promo", **summary, "result": "error", "reason": reason})
             return summary
         for _, values in rows:
-            state = _promo_finalization_state(values)
-            if (state.get("finalization_status") or "").lower() == "done":
-                summary["already_done"] += 1
-                continue
             status = str(values.get("status") or "").strip().lower()
             thread_id = str(values.get("thread_id") or values.get("thread") or "").strip()
-            if status != "closed" and not thread_id:
-                continue
             stamp, stamp_source = _backfill_row_timestamp(values)
             ticket = values.get("ticket number") or values.get("ticket_number") or values.get("ticket")
+            if status != "closed" and not thread_id:
+                continue
             if stamp is None:
                 summary["skipped_no_timestamp"] += 1
                 log.info(
@@ -1941,9 +1930,13 @@ class PromoTicketWatcher(commands.Cog):
                         "thread_id": thread_id,
                         "ticket": ticket,
                         "timestamp_source": stamp_source,
-                        "lookback_hours": PROMO_CLOSE_BACKFILL_LOOKBACK_HOURS,
+                        "window_hours": window_hours,
                     },
                 )
+                continue
+            state = _promo_finalization_state(values)
+            if (state.get("finalization_status") or "").lower() == "done":
+                summary["already_done"] += 1
                 continue
             summary["scanned"] += 1
             thread = None
@@ -1967,17 +1960,10 @@ class PromoTicketWatcher(commands.Cog):
                     continue
                 summary["unresolved"] += 1
                 try:
-                    await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "promo", ticket=ticket, thread_id=thread_id, finalization_status="skipped_unresolved", finalization_note="context unresolved during startup/backfill")
+                    await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "promo", ticket=ticket, thread_id=thread_id, finalization_status="skipped_unresolved", finalization_note="context unresolved during manual backfill")
                 except Exception:
                     summary["error"] += 1
-                log.warning("close_context_unresolved", extra={"flow": "promo", "trigger": "startup_backfill", "thread_id": thread_id, "ticket": ticket})
-                await _log_promo_failure_row(
-                    reason="close_context_unresolved",
-                    source="message",
-                    thread=SimpleNamespace(id=thread_id, name=values.get("thread_name")),
-                    ticket_code=ticket,
-                )
-                await _send_placement_log_line(flow="promo", outcome="unresolved", ticket=ticket, player=player, trigger="startup_backfill", reason="context_not_found", action="skipped", thread=values.get("thread_name"))
+                log.info("close_context_unresolved", extra={"flow": "promo", "trigger": "manual_backfill", "thread_id": thread_id, "ticket": ticket})
                 continue
             if not sheet_closed and not thread_closed:
                 log.debug(
@@ -1989,19 +1975,13 @@ class PromoTicketWatcher(commands.Cog):
             if context is None:
                 summary["unresolved"] += 1
                 try:
-                    await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "promo", ticket=ticket, thread_id=thread_id, finalization_status="skipped_unresolved", finalization_note="context unresolved during startup/backfill")
+                    await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "promo", ticket=ticket, thread_id=thread_id, finalization_status="skipped_unresolved", finalization_note="context unresolved during manual backfill")
                 except Exception:
                     summary["error"] += 1
-                await _log_promo_failure_row(
-                    reason="close_context_unresolved",
-                    source="message",
-                    thread=thread,
-                    ticket_code=ticket,
-                )
-                await _send_placement_log_line(flow="promo", outcome="unresolved", ticket=ticket, player=player, trigger="startup_backfill", reason="context_not_found", action="skipped", thread=getattr(thread, "name", None))
+                log.info("close_context_unresolved", extra={"flow": "promo", "trigger": "manual_backfill", "thread_id": thread_id, "ticket": ticket})
                 continue
             try:
-                await self._begin_clan_prompt(thread, context, trigger="startup_backfill")
+                await self._begin_clan_prompt(thread, context, trigger="manual_backfill")
                 if context.state == "closed":
                     summary["finalized"] += 1
                 else:
