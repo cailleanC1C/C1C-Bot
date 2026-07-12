@@ -12,32 +12,31 @@ from shared.sheets.export_utils import ImageExportError, export_pdf_as_png, get_
 
 log = logging.getLogger("c1c.housekeeping.achievements")
 
-REQUIRED_CONFIG_KEYS: tuple[str, ...] = (
+BASE_CONFIG_KEYS: tuple[str, ...] = (
     "achievement_tab",
-    "achievement_range",
-    "achievement_champion_range",
     "achievement_post_channel_id",
-    "achievement_post_message_id_1",
-    "achievement_post_message_id_2",
+    "achievement_range_count",
 )
 
-RANGE_CONFIG_KEYS: tuple[tuple[str, str, str], ...] = (
-    ("achievement_range", "achievements.png", "achievement_post_message_id_1"),
-    (
-        "achievement_champion_range",
-        "achievement_champions.png",
-        "achievement_post_message_id_2",
-    ),
-)
+
+@dataclass(frozen=True)
+class AchievementRangeConfig:
+    index: int
+    range_key: str
+    message_id_key: str
+    cell_range: str
+    message_id: int | None
 
 
 @dataclass(frozen=True)
 class AchievementsConfig:
     tab: str
-    achievement_range: str
-    champion_range: str
     channel_id: int
-    message_ids: tuple[int | None, int | None]
+    ranges: tuple[AchievementRangeConfig, ...]
+
+    @property
+    def message_ids(self) -> tuple[int | None, ...]:
+        return tuple(item.message_id for item in self.ranges)
 
 
 @dataclass(frozen=True)
@@ -113,52 +112,83 @@ async def _write_config_value(key: str, value: str) -> None:
     )
 
 
+def _require_config_key(entries: dict[str, tuple[str, int, int]], key: str) -> str:
+    if key not in entries:
+        raise AchievementsConfigError(f"Missing required Config key(s): {key}")
+    return entries[key][0]
+
+
 async def resolve_config(*, require_message_id: bool) -> AchievementsConfig:
     entries, _, _ = await _read_config_entries()
-    missing_keys = [key for key in REQUIRED_CONFIG_KEYS if key not in entries]
+    missing_keys = [key for key in BASE_CONFIG_KEYS if key not in entries]
     if missing_keys:
         raise AchievementsConfigError(
             "Missing required Config key(s): " + ", ".join(missing_keys)
         )
-    values = {key: entries[key][0] for key in REQUIRED_CONFIG_KEYS}
-    message_id_keys = {"achievement_post_message_id_1", "achievement_post_message_id_2"}
-    blank = [
-        key for key, value in values.items() if not value and key not in message_id_keys
+
+    tab = entries["achievement_tab"][0]
+    channel_value = entries["achievement_post_channel_id"][0]
+    count_value = entries["achievement_range_count"][0]
+    blank_base = [
+        key
+        for key, value in (
+            ("achievement_tab", tab),
+            ("achievement_post_channel_id", channel_value),
+            ("achievement_range_count", count_value),
+        )
+        if not value
     ]
-    if blank:
+    if blank_base:
         raise AchievementsConfigError(
-            "Blank required Config key(s): " + ", ".join(blank)
+            "Blank required Config key(s): " + ", ".join(blank_base)
         )
     try:
-        channel_id = int(values["achievement_post_channel_id"])
+        channel_id = int(channel_value)
     except ValueError as exc:
         raise AchievementsConfigError(
             "Config key achievement_post_channel_id must be a Discord snowflake ID."
         ) from exc
+    try:
+        range_count = int(count_value)
+    except ValueError as exc:
+        raise AchievementsConfigError(
+            "Config key achievement_range_count must be a positive integer."
+        ) from exc
+    if range_count <= 0:
+        raise AchievementsConfigError(
+            "Config key achievement_range_count must be a positive integer."
+        )
 
-    message_ids: list[int | None] = []
-    for key in ("achievement_post_message_id_1", "achievement_post_message_id_2"):
-        value = values[key]
-        if value:
+    ranges: list[AchievementRangeConfig] = []
+    for index in range(1, range_count + 1):
+        range_key = f"achievement_range_{index}"
+        message_id_key = f"achievement_post_message_id_{index}"
+        cell_range = _require_config_key(entries, range_key)
+        message_value = _require_config_key(entries, message_id_key)
+        if not cell_range:
+            raise AchievementsConfigError(f"Config key {range_key} must not be blank.")
+        message_id: int | None = None
+        if message_value:
             try:
-                message_ids.append(int(value))
+                message_id = int(message_value)
             except ValueError as exc:
                 raise AchievementsConfigError(
-                    f"Config key {key} is invalid. Run !achievements publish."
+                    f"Config key {message_id_key} is invalid. Run !achievements publish."
                 ) from exc
         elif require_message_id:
             raise AchievementsConfigError(
-                f"{key} is missing. Run !achievements publish."
+                f"{message_id_key} is missing. Run !achievements publish."
             )
-        else:
-            message_ids.append(None)
-    return AchievementsConfig(
-        tab=values["achievement_tab"],
-        achievement_range=values["achievement_range"],
-        champion_range=values["achievement_champion_range"],
-        channel_id=channel_id,
-        message_ids=(message_ids[0], message_ids[1]),
-    )
+        ranges.append(
+            AchievementRangeConfig(
+                index=index,
+                range_key=range_key,
+                message_id_key=message_id_key,
+                cell_range=cell_range,
+                message_id=message_id,
+            )
+        )
+    return AchievementsConfig(tab=tab, channel_id=channel_id, ranges=tuple(ranges))
 
 
 async def resolve_message_target(
@@ -187,22 +217,21 @@ async def render_achievement_files(config: AchievementsConfig) -> list[discord.F
         )
 
     files: list[discord.File] = []
-    ranges = {
-        "achievement_range": config.achievement_range,
-        "achievement_champion_range": config.champion_range,
-    }
-    for key, filename, _message_id_key in RANGE_CONFIG_KEYS:
-        cell_range = ranges[key]
-        if ":" not in cell_range:
+    for item in config.ranges:
+        if ":" not in item.cell_range:
             raise AchievementsConfigError(
-                f"Config key {key} must be an A1 range like A1:Z99."
+                f"Config key {item.range_key} must be an A1 range like A1:Z99."
             )
         try:
             png = await export_pdf_as_png(
                 sheet_id,
                 gid,
-                cell_range,
-                log_context={"label": key, "tab": config.tab, "range": cell_range},
+                item.cell_range,
+                log_context={
+                    "label": item.range_key,
+                    "tab": config.tab,
+                    "range": item.cell_range,
+                },
                 fit_range_to_one_page=True,
                 fail_on_multi_page=True,
                 crop_to_content=True,
@@ -211,13 +240,17 @@ async def render_achievement_files(config: AchievementsConfig) -> list[discord.F
             raise AchievementsConfigError(str(exc)) from exc
         if not png:
             raise AchievementsConfigError(
-                f"Failed to render {key} as a one-page image."
+                f"Failed to render {item.range_key} as a one-page image."
             )
-        files.append(discord.File(io.BytesIO(png), filename=filename))
+        files.append(
+            discord.File(io.BytesIO(png), filename=f"achievements_{item.index}.png")
+        )
     return files
 
 
-def build_message_content() -> str:
+def build_message_content(index: int) -> str:
+    if index != 1:
+        return ""
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     return f"# Achievements\n-# Last updated {stamp}"
 
@@ -232,15 +265,16 @@ async def publish_achievements(bot: discord.Client) -> AchievementsResult:
         )
     files = await render_achievement_files(config)
     messages = []
-    for file in files:
+    for item, file in zip(config.ranges, files, strict=True):
         messages.append(
-            await channel.send(content=build_message_content(), files=[file])  # type: ignore[attr-defined]
+            await channel.send(content=build_message_content(item.index), files=[file])  # type: ignore[attr-defined]
         )
     try:
-        for message, (_range_key, _filename, message_id_key) in zip(
-            messages, RANGE_CONFIG_KEYS, strict=True
-        ):
-            await _write_config_value(message_id_key, str(message.id))
+        for message, item in zip(messages, config.ranges, strict=True):
+            try:
+                await _write_config_value(item.message_id_key, str(message.id))
+            except Exception as exc:
+                raise AchievementsConfigError(f"{item.message_id_key}: {exc}") from exc
     except Exception as exc:
         ids = tuple(message.id for message in messages)
         log.exception(
@@ -255,7 +289,7 @@ async def publish_achievements(bot: discord.Client) -> AchievementsResult:
     ids = tuple(message.id for message in messages)
     return AchievementsResult(
         "success",
-        f"Published achievements messages {ids[0]} and {ids[1]}.",
+        f"Published achievements messages {', '.join(str(i) for i in ids)}.",
         message_ids=ids,
     )
 
@@ -269,28 +303,29 @@ async def refresh_achievements(bot: discord.Client) -> AchievementsResult:
             "Configured achievement_post_channel_id is not fetchable. Run !achievements publish.",
         )
     messages = []
-    for message_id, (_range_key, _filename, message_id_key) in zip(
-        config.message_ids, RANGE_CONFIG_KEYS, strict=True
-    ):
+    for item in config.ranges:
         try:
-            messages.append(await channel.fetch_message(message_id))  # type: ignore[attr-defined,arg-type]
+            messages.append(await channel.fetch_message(item.message_id))  # type: ignore[attr-defined,arg-type]
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             return AchievementsResult(
                 "error",
-                f"{message_id_key} is missing, invalid, deleted, or not fetchable. Run !achievements publish.",
+                f"{item.message_id_key} is missing, invalid, deleted, or not fetchable. Run !achievements publish.",
             )
     files = await render_achievement_files(config)
-    for message, file in zip(messages, files, strict=True):
-        await message.edit(content=build_message_content(), attachments=[file])
+    for item, message, file in zip(config.ranges, messages, files, strict=True):
+        await message.edit(
+            content=build_message_content(item.index), attachments=[file]
+        )
     ids = tuple(message.id for message in messages)
     return AchievementsResult(
         "success",
-        f"Refreshed achievements messages {ids[0]} and {ids[1]}.",
+        f"Refreshed achievements messages {', '.join(str(i) for i in ids)}.",
         ids,
     )
 
 
 __all__ = [
+    "AchievementRangeConfig",
     "AchievementsConfig",
     "AchievementsConfigError",
     "AchievementsResult",
