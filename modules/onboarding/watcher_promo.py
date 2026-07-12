@@ -1395,10 +1395,20 @@ class PromoTicketWatcher(commands.Cog):
                 )
 
         logging_channel_result = "skip"
-        reservation_status = "released" if cleanup.reservation_row is not None and cleanup.ok else ("failed" if not cleanup.ok else "none")
-        clan_update_status = "done" if cleanup.ok else "partial"
-        finalization_status = "done" if cleanup.ok else "partial"
-        finalization_note = "finalized by close handler" if cleanup.ok else (cleanup.reason or "reservation/clan update partially failed")
+        reservation_ok = getattr(cleanup, "reservation_ok", cleanup.ok)
+        clan_update_ok = getattr(cleanup, "clan_update_ok", cleanup.ok)
+        reservation_status = (
+            "released"
+            if cleanup.reservation_row is not None and reservation_ok
+            else ("failed" if not reservation_ok else "none")
+        )
+        clan_update_status = "done" if clan_update_ok else "partial"
+        finalization_status = "done" if clan_update_ok else "partial"
+        finalization_note = (
+            "finalized by close handler"
+            if clan_update_ok
+            else (cleanup.reason or "clan open spot reconciliation partially failed")
+        )
         try:
             await asyncio.to_thread(onboarding_sheets.update_ticket_finalization_state, "promo", ticket=ticket_id_final, thread_id=getattr(thread, "id", None), finalization_status=finalization_status, reservation_status=reservation_status, clan_update_status=clan_update_status, finalization_note=finalization_note)
             _promo_log_transition("success" if finalization_status == "done" else "failure", thread=thread, context=context, metadata_row_number=(found_state[0] if found_state else None), status_after="closed", finalization_status_after=finalization_status, reason=finalization_note)
