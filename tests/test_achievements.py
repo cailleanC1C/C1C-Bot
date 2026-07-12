@@ -19,7 +19,11 @@ class DummyMessage:
 class DummyChannel:
     def __init__(self):
         self.sent = []
-        self.messages = {55: DummyMessage(55), 56: DummyMessage(56)}
+        self.messages = {
+            55: DummyMessage(55),
+            56: DummyMessage(56),
+            57: DummyMessage(57),
+        }
 
     async def send(self, **kwargs):
         msg = DummyMessage(100 + len(self.sent))
@@ -49,11 +53,14 @@ class DummyBot:
 def harness(monkeypatch):
     config = {
         "achievement_tab": "Achievements",
-        "achievement_range": "A1:H20",
-        "achievement_champion_range": "J1:Q20",
         "achievement_post_channel_id": "123",
+        "achievement_range_count": "3",
+        "achievement_range_1": "A1:H20",
+        "achievement_range_2": "A22:H40",
+        "achievement_range_3": "A42:H60",
         "achievement_post_message_id_1": "55",
         "achievement_post_message_id_2": "56",
+        "achievement_post_message_id_3": "57",
     }
     writes = []
     channel = DummyChannel()
@@ -99,18 +106,37 @@ def harness(monkeypatch):
     )
 
 
-def test_publish_writes_achievement_post_message_ids(harness):
+def test_publish_sends_configured_messages_and_writes_ids(harness):
     result = asyncio.run(achievements.publish_achievements(harness.bot))
 
     assert result.status == "success"
-    assert result.message_ids == (100, 101)
+    assert result.message_ids == (100, 101, 102)
     assert harness.writes == [
-        ("B6", [["100"]], {"value_input_option": "RAW"}),
-        ("B7", [["101"]], {"value_input_option": "RAW"}),
+        ("B8", [["100"]], {"value_input_option": "RAW"}),
+        ("B9", [["101"]], {"value_input_option": "RAW"}),
+        ("B10", [["102"]], {"value_input_option": "RAW"}),
     ]
-    assert len(harness.channel.sent) == 2
-    assert len(harness.channel.sent[0]["files"]) == 1
-    assert len(harness.channel.sent[1]["files"]) == 1
+    assert len(harness.channel.sent) == 3
+    assert [len(sent["files"]) for sent in harness.channel.sent] == [1, 1, 1]
+    assert harness.channel.sent[0]["files"][0].filename == "achievements_1.png"
+    assert harness.channel.sent[1]["files"][0].filename == "achievements_2.png"
+    assert harness.channel.sent[2]["files"][0].filename == "achievements_3.png"
+    assert harness.channel.sent[0]["content"].startswith(
+        "# Achievements\n-# Last updated "
+    )
+    assert harness.channel.sent[1]["content"] == ""
+    assert harness.channel.sent[2]["content"] == ""
+
+
+def test_publish_allows_blank_message_ids_when_rows_exist(harness):
+    harness.config["achievement_post_message_id_1"] = ""
+    harness.config["achievement_post_message_id_2"] = ""
+    harness.config["achievement_post_message_id_3"] = ""
+
+    result = asyncio.run(achievements.publish_achievements(harness.bot))
+
+    assert result.status == "success"
+    assert result.message_ids == (100, 101, 102)
 
 
 def test_publish_requires_existing_message_id_config_rows(harness):
@@ -124,27 +150,63 @@ def test_publish_requires_existing_message_id_config_rows(harness):
     assert harness.writes == []
 
 
+def test_missing_range_key_fails_clearly(harness):
+    del harness.config["achievement_range_2"]
+
+    with pytest.raises(achievements.AchievementsConfigError) as exc:
+        asyncio.run(achievements.publish_achievements(harness.bot))
+
+    assert "achievement_range_2" in str(exc.value)
+    assert harness.channel.sent == []
+
+
+def test_blank_range_key_fails_clearly(harness):
+    harness.config["achievement_range_2"] = ""
+
+    with pytest.raises(achievements.AchievementsConfigError) as exc:
+        asyncio.run(achievements.publish_achievements(harness.bot))
+
+    assert "achievement_range_2" in str(exc.value)
+    assert "must not be blank" in str(exc.value)
+
+
 def test_refresh_edits_configured_messages_and_does_not_send(harness):
     result = asyncio.run(achievements.refresh_achievements(harness.bot))
 
     assert result.status == "success"
-    assert result.message_ids == (55, 56)
+    assert result.message_ids == (55, 56, 57)
     assert harness.channel.sent == []
-    assert len(harness.channel.messages[55].edits) == 1
-    assert len(harness.channel.messages[56].edits) == 1
-    assert len(harness.channel.messages[55].edits[0]["attachments"]) == 1
-    assert len(harness.channel.messages[56].edits[0]["attachments"]) == 1
-    assert "files" not in harness.channel.messages[55].edits[0]
-    assert "files" not in harness.channel.messages[56].edits[0]
+    for message_id in (55, 56, 57):
+        assert len(harness.channel.messages[message_id].edits) == 1
+        edit = harness.channel.messages[message_id].edits[0]
+        assert len(edit["attachments"]) == 1
+        assert "files" not in edit
+    assert (
+        harness.channel.messages[55]
+        .edits[0]["content"]
+        .startswith("# Achievements\n-# Last updated ")
+    )
+    assert harness.channel.messages[56].edits[0]["content"] == ""
+    assert harness.channel.messages[57].edits[0]["content"] == ""
 
 
-def test_refresh_missing_message_id_tells_admin_to_publish(harness):
+def test_refresh_blank_message_id_tells_admin_to_publish(harness):
     harness.config["achievement_post_message_id_1"] = ""
 
     with pytest.raises(achievements.AchievementsConfigError) as exc:
         asyncio.run(achievements.refresh_achievements(harness.bot))
 
     assert "Run !achievements publish" in str(exc.value)
+    assert harness.channel.sent == []
+
+
+def test_refresh_missing_message_id_config_row_fails_clearly(harness):
+    del harness.config["achievement_post_message_id_3"]
+
+    with pytest.raises(achievements.AchievementsConfigError) as exc:
+        asyncio.run(achievements.refresh_achievements(harness.bot))
+
+    assert "achievement_post_message_id_3" in str(exc.value)
     assert harness.channel.sent == []
 
 
@@ -156,6 +218,15 @@ def test_refresh_invalid_existing_message_does_not_send(harness):
     assert result.status == "error"
     assert "Run !achievements publish" in result.message
     assert harness.channel.sent == []
+
+
+def test_range_count_must_be_positive_integer(harness):
+    harness.config["achievement_range_count"] = "0"
+
+    with pytest.raises(achievements.AchievementsConfigError) as exc:
+        asyncio.run(achievements.publish_achievements(harness.bot))
+
+    assert "achievement_range_count must be a positive integer" in str(exc.value)
 
 
 def test_render_uses_one_page_export_options(monkeypatch, harness):
@@ -170,9 +241,10 @@ def test_render_uses_one_page_export_options(monkeypatch, harness):
 
     files = asyncio.run(achievements.render_achievement_files(config))
 
-    assert len(files) == 2
-    assert [call[1]["fit_range_to_one_page"] for call in calls] == [True, True]
-    assert [call[1]["fail_on_multi_page"] for call in calls] == [True, True]
+    assert len(files) == 3
+    assert [call[1]["fit_range_to_one_page"] for call in calls] == [True, True, True]
+    assert [call[1]["fail_on_multi_page"] for call in calls] == [True, True, True]
+    assert [call[1]["crop_to_content"] for call in calls] == [True, True, True]
 
 
 def test_multi_page_export_fails_clearly(monkeypatch, harness):
