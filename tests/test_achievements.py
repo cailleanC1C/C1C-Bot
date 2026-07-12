@@ -19,7 +19,7 @@ class DummyMessage:
 class DummyChannel:
     def __init__(self):
         self.sent = []
-        self.messages = {55: DummyMessage(55)}
+        self.messages = {55: DummyMessage(55), 56: DummyMessage(56)}
 
     async def send(self, **kwargs):
         msg = DummyMessage(100 + len(self.sent))
@@ -52,7 +52,8 @@ def harness(monkeypatch):
         "achievement_range": "A1:H20",
         "achievement_champion_range": "J1:Q20",
         "achievement_post_channel_id": "123",
-        "achievement_post_message_id": "55",
+        "achievement_post_message_id_1": "55",
+        "achievement_post_message_id_2": "56",
     }
     writes = []
     channel = DummyChannel()
@@ -98,38 +99,47 @@ def harness(monkeypatch):
     )
 
 
-def test_publish_writes_achievement_post_message_id(harness):
+def test_publish_writes_achievement_post_message_ids(harness):
     result = asyncio.run(achievements.publish_achievements(harness.bot))
 
     assert result.status == "success"
-    assert result.message_id == 100
-    assert harness.writes == [("B6", [["100"]], {"value_input_option": "RAW"})]
-    assert len(harness.channel.sent) == 1
-    assert len(harness.channel.sent[0]["files"]) == 2
+    assert result.message_ids == (100, 101)
+    assert harness.writes == [
+        ("B6", [["100"]], {"value_input_option": "RAW"}),
+        ("B7", [["101"]], {"value_input_option": "RAW"}),
+    ]
+    assert len(harness.channel.sent) == 2
+    assert len(harness.channel.sent[0]["files"]) == 1
+    assert len(harness.channel.sent[1]["files"]) == 1
 
 
-def test_publish_requires_existing_message_id_config_row(harness):
-    del harness.config["achievement_post_message_id"]
+def test_publish_requires_existing_message_id_config_rows(harness):
+    del harness.config["achievement_post_message_id_2"]
 
     with pytest.raises(achievements.AchievementsConfigError) as exc:
         asyncio.run(achievements.publish_achievements(harness.bot))
 
-    assert "achievement_post_message_id" in str(exc.value)
+    assert "achievement_post_message_id_2" in str(exc.value)
     assert harness.channel.sent == []
     assert harness.writes == []
 
 
-def test_refresh_edits_configured_message_and_does_not_send(harness):
+def test_refresh_edits_configured_messages_and_does_not_send(harness):
     result = asyncio.run(achievements.refresh_achievements(harness.bot))
 
     assert result.status == "success"
+    assert result.message_ids == (55, 56)
     assert harness.channel.sent == []
     assert len(harness.channel.messages[55].edits) == 1
-    assert len(harness.channel.messages[55].edits[0]["attachments"]) == 2
+    assert len(harness.channel.messages[56].edits) == 1
+    assert len(harness.channel.messages[55].edits[0]["attachments"]) == 1
+    assert len(harness.channel.messages[56].edits[0]["attachments"]) == 1
+    assert "files" not in harness.channel.messages[55].edits[0]
+    assert "files" not in harness.channel.messages[56].edits[0]
 
 
 def test_refresh_missing_message_id_tells_admin_to_publish(harness):
-    harness.config["achievement_post_message_id"] = ""
+    harness.config["achievement_post_message_id_1"] = ""
 
     with pytest.raises(achievements.AchievementsConfigError) as exc:
         asyncio.run(achievements.refresh_achievements(harness.bot))
@@ -139,7 +149,7 @@ def test_refresh_missing_message_id_tells_admin_to_publish(harness):
 
 
 def test_refresh_invalid_existing_message_does_not_send(harness):
-    harness.config["achievement_post_message_id"] = "999"
+    harness.config["achievement_post_message_id_2"] = "999"
 
     result = asyncio.run(achievements.refresh_achievements(harness.bot))
 
