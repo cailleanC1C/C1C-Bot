@@ -1215,6 +1215,7 @@ class Runtime:
         from c1c_coreops import cog as coreops_cog
         from cogs import app_admin
         from cogs import housekeeping_mirralith
+        from cogs import housekeeping_achievements
         from cogs import housekeeping_c1c_ad
         from cogs import recruitment_clan_ads
         from modules.housekeeping import cleanup as housekeeping_cleanup_commands
@@ -1253,6 +1254,9 @@ class Runtime:
             log.info("modules: mirralith_overview enabled")
         else:
             log.info("modules: mirralith_overview disabled")
+
+        await housekeeping_achievements.setup(self.bot)
+        log.info("modules: achievements command registered")
 
         await housekeeping_c1c_ad.setup(self.bot)
         log.info("modules: c1c_ad command registered")
