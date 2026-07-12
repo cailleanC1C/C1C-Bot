@@ -1948,6 +1948,8 @@ class ReservationCleanupResult:
     skipped: bool
     reason: str | None
     decision_line: str
+    reservation_ok: bool = True
+    clan_update_ok: bool = True
     source_clan_lookup_key: str = ""
     source_clan_row_found: bool = False
     source_clan_row_number: int | None = None
@@ -2001,25 +2003,23 @@ async def cleanup_reservation_for_ticket_close(
     recomputed_tags: List[str] = []
     reason: str | None = None
     ok = True
+    reservation_ok = True
+    clan_update_ok = True
+    reservation_lookup_failed = False
 
     try:
         matches = await find_active_reservations(
             user_id, user_label
         )
     except Exception:
+        matches = []
+        reservation_lookup_failed = True
+        reservation_ok = False
+        ok = False
         reason = "reservation_lookup_failed"
         event_log.exception(
-            "reservation_cleanup — scope=%s • ticket=%s • user=%s • user_id=%s • clan_tag=%s • result=skip • reason=%s",
+            "reservation_cleanup — scope=%s • ticket=%s • user=%s • user_id=%s • clan_tag=%s • reservation=lookup_failed • result=failed • reason=%s • open_spot_reconcile=continue",
             normalized_scope, ticket, user_label or "-", user_id or "-", normalized_final or "-", reason,
-        )
-        decision_line = (
-            "decision: "
-            f"final_tag={normalized_final or '-'} • previous_final={normalized_previous or '-'} • "
-            "reservation=lookup_failed • consume_open_spot=False • final_is_real=False • "
-            "decision_result=skipped_open_delta • skip_reason=reservation_lookup_failed"
-        )
-        return ReservationCleanupResult(
-            None, "lookup_failed", None, None, False, False, {}, {}, [], [], True, False, True, reason, decision_line
         )
 
     if matches:
@@ -2079,7 +2079,7 @@ async def cleanup_reservation_for_ticket_close(
             normalized_scope, ticket, user_label or "-", user_id or "-", normalized_final or "-", reason,
         )
         return ReservationCleanupResult(
-            None, "none", None, None, False, False, {}, {}, [], [], False, False, True, reason, decision_line
+            None, "none", None, None, False, False, {}, {}, [], [], False, False, True, reason, decision_line, True, False
         )
 
     try:
@@ -2090,6 +2090,9 @@ async def cleanup_reservation_for_ticket_close(
         )
         final_is_real = final_entry is not None
     except Exception:
+        reason = "final_clan_lookup_failed"
+        ok = False
+        clan_update_ok = False
         event_log.exception(
             "reservation_cleanup — scope=%s • ticket=%s • user=%s • user_id=%s • clan_tag=%s • result=partial • reason=final_clan_lookup_failed",
             normalized_scope, ticket, user_label or "-", user_id or "-", normalized_final or "-",
@@ -2127,6 +2130,9 @@ async def cleanup_reservation_for_ticket_close(
                 source_clan_not_real_reason = "source_clan_row_not_found"
         except Exception:
             source_clan_not_real_reason = "source_clan_lookup_exception"
+            reason = "source_clan_lookup_failed"
+            ok = False
+            clan_update_ok = False
             event_log.exception(
                 "reservation_cleanup — scope=%s • ticket=%s • user=%s • user_id=%s • source_clan_tag=%s • result=partial • reason=source_clan_lookup_failed",
                 normalized_scope, ticket, user_label or "-", user_id or "-", normalized_previous or "-",
@@ -2195,6 +2201,7 @@ async def cleanup_reservation_for_ticket_close(
             )
         except Exception:
             ok = False
+            reservation_ok = False
             reason = "reservation_status_update_failed"
             event_log.exception(
                 "reservation_cleanup — scope=%s • ticket=%s • user=%s • user_id=%s • clan_tag=%s • reservation=row%s • old_status=%s • new_status=%s • result=partial • reason=%s",
@@ -2207,6 +2214,7 @@ async def cleanup_reservation_for_ticket_close(
             applied_open_deltas[tag] = applied_open_deltas.get(tag, 0) + delta
         except Exception:
             ok = False
+            clan_update_ok = False
             reason = f"adjust_manual_open_spots_failed:{tag}:{delta}"
             event_log.exception(
                 "reservation_cleanup — scope=%s • ticket=%s • user=%s • user_id=%s • clan_tag=%s • affected_clan=%s • delta=%s • result=partial • reason=adjust_manual_open_spots_failed",
@@ -2219,6 +2227,7 @@ async def cleanup_reservation_for_ticket_close(
             recomputed_tags.append(tag)
         except Exception:
             ok = False
+            clan_update_ok = False
             reason = f"recompute_clan_availability_failed:{tag}"
             event_log.exception(
                 "reservation_cleanup — scope=%s • ticket=%s • user=%s • user_id=%s • clan_tag=%s • affected_clan=%s • result=partial • reason=recompute_clan_availability_failed • missing_tag=%s • lookup_path=%s",
@@ -2242,6 +2251,7 @@ async def cleanup_reservation_for_ticket_close(
         open_deltas=applied_open_deltas,
     )
     if decision.open_deltas and not applied_open_deltas:
+        clan_update_ok = False
         failed_bits = ", ".join(
             f"{tag}:{delta:+d}" for tag, delta in sorted(decision.open_deltas.items())
         )
@@ -2260,7 +2270,7 @@ async def cleanup_reservation_for_ticket_close(
         user_label or "-",
         user_id or "-",
         normalized_final or "-",
-        f"row{reservation_row.row_number}" if reservation_row is not None else "none",
+        "lookup_failed" if reservation_lookup_failed else (f"row{reservation_row.row_number}" if reservation_row is not None else "none"),
         old_status or "-",
         new_status or "-",
         f"recomputed:{','.join(recomputed_tags) if recomputed_tags else 'none'}",
@@ -2285,6 +2295,8 @@ async def cleanup_reservation_for_ticket_close(
         False,
         reason,
         decision_line,
+        reservation_ok,
+        clan_update_ok,
         source_clan_lookup_key,
         source_clan_row_found,
         source_clan_row_number,
