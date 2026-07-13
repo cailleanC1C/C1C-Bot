@@ -808,14 +808,167 @@ def test_traditional_prep_modal_save_edits_original_panel(monkeypatch):
 
         await modal.on_submit(interaction)
 
-        interaction.response.defer.assert_awaited_once_with(thinking=False)
-        interaction.edit_original_response.assert_awaited_once()
-        interaction.response.edit_message.assert_not_awaited()
+        interaction.response.defer.assert_not_awaited()
+        interaction.response.edit_message.assert_awaited_once()
+        interaction.edit_original_response.assert_not_awaited()
         interaction.followup.send.assert_not_awaited()
         assert panel.prep.epics_ascended == 4
 
     asyncio.run(_run())
 
+
+def test_traditional_prep_modal_save_acknowledges_when_panel_refresh_fails(monkeypatch):
+    async def _run() -> None:
+        member = _Member(role=None)
+        guild = _Guild(role=None, member=member)
+        interaction = _interaction(guild, member)
+        interaction.response.edit_message.side_effect = RuntimeError("edit failed")
+        target = _fusion_row(opt_in_role_id=777, fusion_type="traditional")
+        events = [_event_row("e1", reward_type="rare", reward_amount=16)]
+        progress_by_event = {"e1": "done"}
+        prep = fusion_sheets.FusionTraditionalUserProgressRow(fusion_id="f-1", user_id=str(member.id), rares_owned=16)
+        panel = opt_in_view.TraditionalPrepPanelView(
+            user_id=member.id,
+            target=target,
+            events=events,
+            progress_by_event=progress_by_event,
+            prep=prep,
+        )
+        modal = opt_in_view._TraditionalPrepModal(view=panel)
+        for item, value in (
+            (modal.rares_level_40, "16"),
+            (modal.rares_ascended, "16"),
+            (modal.epics_fused, "4"),
+            (modal.epics_level_50, "4"),
+            (modal.epics_ascended, "4"),
+        ):
+            item._value = value
+
+        saved = fusion_sheets.FusionTraditionalUserProgressRow(
+            fusion_id="f-1",
+            user_id=str(member.id),
+            rares_owned=16,
+            rares_level_40=16,
+            rares_ascended=16,
+            epics_fused=4,
+            epics_level_50=4,
+            epics_ascended=4,
+            target_ready=True,
+        )
+        monkeypatch.setattr(fusion_sheets, "upsert_user_traditional_progress", AsyncMock(return_value=saved))
+        monkeypatch.setattr(opt_in_view.fusion_logs, "send_ops_alert", AsyncMock())
+
+        await modal.on_submit(interaction)
+
+        interaction.response.edit_message.assert_awaited_once()
+        interaction.response.send_message.assert_awaited_once()
+        message = interaction.response.send_message.await_args.args[0]
+        assert "was saved" in message
+        assert panel.prep.epics_ascended == 4
+
+    asyncio.run(_run())
+
+
+def test_traditional_prep_modal_save_still_notifies_when_refresh_and_ops_alert_fail(monkeypatch):
+    async def _run() -> None:
+        member = _Member(role=None)
+        guild = _Guild(role=None, member=member)
+        interaction = _interaction(guild, member)
+        interaction.response.edit_message.side_effect = RuntimeError("edit failed")
+        target = _fusion_row(opt_in_role_id=777, fusion_type="traditional")
+        events = [_event_row("e1", reward_type="rare", reward_amount=16)]
+        progress_by_event = {"e1": "done"}
+        prep = fusion_sheets.FusionTraditionalUserProgressRow(fusion_id="f-1", user_id=str(member.id), rares_owned=16)
+        panel = opt_in_view.TraditionalPrepPanelView(
+            user_id=member.id,
+            target=target,
+            events=events,
+            progress_by_event=progress_by_event,
+            prep=prep,
+        )
+        modal = opt_in_view._TraditionalPrepModal(view=panel)
+        for item, value in (
+            (modal.rares_level_40, "16"),
+            (modal.rares_ascended, "16"),
+            (modal.epics_fused, "4"),
+            (modal.epics_level_50, "4"),
+            (modal.epics_ascended, "4"),
+        ):
+            item._value = value
+
+        saved = fusion_sheets.FusionTraditionalUserProgressRow(
+            fusion_id="f-1",
+            user_id=str(member.id),
+            rares_owned=16,
+            rares_level_40=16,
+            rares_ascended=16,
+            epics_fused=4,
+            epics_level_50=4,
+            epics_ascended=4,
+            target_ready=True,
+        )
+        monkeypatch.setattr(fusion_sheets, "upsert_user_traditional_progress", AsyncMock(return_value=saved))
+        monkeypatch.setattr(opt_in_view.fusion_logs, "send_ops_alert", AsyncMock(side_effect=RuntimeError("alert failed")))
+
+        await modal.on_submit(interaction)
+
+        interaction.response.edit_message.assert_awaited_once()
+        interaction.response.send_message.assert_awaited_once()
+        message = interaction.response.send_message.await_args.args[0]
+        assert "was saved" in message
+        assert panel.prep.epics_ascended == 4
+
+    asyncio.run(_run())
+
+def test_traditional_prep_modal_save_does_not_raise_when_refresh_and_fallback_notification_fail(monkeypatch):
+    async def _run() -> None:
+        member = _Member(role=None)
+        guild = _Guild(role=None, member=member)
+        interaction = _interaction(guild, member)
+        interaction.response.edit_message.side_effect = RuntimeError("edit failed")
+        interaction.response.send_message.side_effect = RuntimeError("notification failed")
+        target = _fusion_row(opt_in_role_id=777, fusion_type="traditional")
+        events = [_event_row("e1", reward_type="rare", reward_amount=16)]
+        progress_by_event = {"e1": "done"}
+        prep = fusion_sheets.FusionTraditionalUserProgressRow(fusion_id="f-1", user_id=str(member.id), rares_owned=16)
+        panel = opt_in_view.TraditionalPrepPanelView(
+            user_id=member.id,
+            target=target,
+            events=events,
+            progress_by_event=progress_by_event,
+            prep=prep,
+        )
+        modal = opt_in_view._TraditionalPrepModal(view=panel)
+        for item, value in (
+            (modal.rares_level_40, "16"),
+            (modal.rares_ascended, "16"),
+            (modal.epics_fused, "4"),
+            (modal.epics_level_50, "4"),
+            (modal.epics_ascended, "4"),
+        ):
+            item._value = value
+
+        saved = fusion_sheets.FusionTraditionalUserProgressRow(
+            fusion_id="f-1",
+            user_id=str(member.id),
+            rares_owned=16,
+            rares_level_40=16,
+            rares_ascended=16,
+            epics_fused=4,
+            epics_level_50=4,
+            epics_ascended=4,
+            target_ready=True,
+        )
+        monkeypatch.setattr(fusion_sheets, "upsert_user_traditional_progress", AsyncMock(return_value=saved))
+        monkeypatch.setattr(opt_in_view.fusion_logs, "send_ops_alert", AsyncMock())
+
+        await modal.on_submit(interaction)
+
+        interaction.response.edit_message.assert_awaited_once()
+        interaction.response.send_message.assert_awaited_once()
+        assert panel.prep.epics_ascended == 4
+
+    asyncio.run(_run())
 
 def _button_by_label(view, label: str):
     for child in view.children:

@@ -1120,7 +1120,51 @@ class _TraditionalPrepModal(discord.ui.Modal, title="Champion Preparation"):
             await _send_ephemeral(interaction, "Couldn’t save champion preparation right now. Try again in a moment.")
             return
         self.panel_view.prep = prep
-        await _edit_traditional_prep_message(interaction, view=self.panel_view)
+        try:
+            await _edit_traditional_prep_message(interaction, view=self.panel_view)
+        except Exception as exc:
+            log.exception(
+                "fusion traditional prep post-save panel refresh failed",
+                extra={
+                    "fusion_id": self.panel_view.target.fusion_id,
+                    "user_id": self.panel_view.user_id,
+                    "response_done_after_failure": interaction.response.is_done(),
+                },
+                exc_info=True,
+            )
+            try:
+                await fusion_logs.send_ops_alert(
+                    component="traditional_prep",
+                    summary="post_save_refresh_failed",
+                    dedupe_key=f"fusion:traditional_prep:refresh:{self.panel_view.target.fusion_id}",
+                    error=exc,
+                    fields={"fusion_id": self.panel_view.target.fusion_id, "save_success": True},
+                )
+            except Exception:
+                log.exception(
+                    "fusion traditional prep post-save ops alert failed",
+                    extra={
+                        "fusion_id": self.panel_view.target.fusion_id,
+                        "user_id": self.panel_view.user_id,
+                        "save_success": True,
+                    },
+                    exc_info=True,
+                )
+            try:
+                await _send_ephemeral(
+                    interaction,
+                    "Champion preparation was saved, but I couldn’t refresh the panel. Reopen My Progress to see the latest values.",
+                )
+            except Exception:
+                log.exception(
+                    "fusion traditional prep post-save fallback notification failed",
+                    extra={
+                        "fusion_id": self.panel_view.target.fusion_id,
+                        "user_id": self.panel_view.user_id,
+                        "response_done_after_notification_failure": interaction.response.is_done(),
+                    },
+                    exc_info=True,
+                )
 
 async def _edit_traditional_prep_message(interaction: discord.Interaction, *, view: "TraditionalPrepPanelView") -> None:
     context = fusion_logs.interaction_context(interaction, custom_id=_FUSION_TRAD_PREP_UPDATE_CUSTOM_ID)
@@ -1130,15 +1174,15 @@ async def _edit_traditional_prep_message(interaction: discord.Interaction, *, vi
         "response_done_before_send": interaction.response.is_done(),
     })
     log.info("fusion traditional prep panel edit path selected", extra=context)
-    await _safe_defer_progress_interaction(interaction)
+    embed = view.build_embed()
+    if not interaction.response.is_done():
+        await interaction.response.edit_message(embed=embed, view=view)
+        return
     edit_original = getattr(interaction, "edit_original_response", None)
     if callable(edit_original):
-        await edit_original(embed=view.build_embed(), view=view)
+        await edit_original(embed=embed, view=view)
         return
-    if not interaction.response.is_done():
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
-        return
-    await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 class FusionProgressPanelView(discord.ui.View):
