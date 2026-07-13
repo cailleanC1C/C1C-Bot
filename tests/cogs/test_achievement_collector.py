@@ -231,14 +231,22 @@ def test_report_collector_failure_logs_passed_permission_error_explicit_exc_info
     assert kwargs["exc_info"][0] is PermissionError
     assert kwargs["exc_info"][1] is passed_exc
     assert kwargs["exc_info"][2] is passed_exc.__traceback__
-    assert kwargs["extra"] == {
-        "achievement_collector_command": "preview",
-        "guild_id": 456,
-        "channel_id": 789,
-        "actor_id": 1234,
-        "provided_limit": 25,
-        "target_member_id": None,
-        "exception_type": "PermissionError",
+    extra = kwargs["extra"]
+    assert extra["achievement_collector_command"] == "preview"
+    assert extra["guild_id"] == 456
+    assert extra["channel_id"] == 789
+    assert extra["actor_id"] == 1234
+    assert extra["provided_limit"] == 25
+    assert extra["target_member_id"] is None
+    assert extra["exception_type"] == "PermissionError"
+    assert extra["exception_origin_file"].endswith("tests/cogs/test_achievement_collector.py")
+    assert isinstance(extra["exception_origin_line"], int)
+    assert extra["exception_origin_function"] == "_raise_permission_error_with_traceback"
+    assert extra["exception_trace_frames"]
+    assert extra["exception_trace_frames"][-1] == {
+        "file": extra["exception_origin_file"],
+        "line": extra["exception_origin_line"],
+        "function": "_raise_permission_error_with_traceback",
     }
     assert ops_logs
     ops_message = ops_logs[-1]
@@ -246,6 +254,8 @@ def test_report_collector_failure_logs_passed_permission_error_explicit_exc_info
     assert "command=preview" in ops_message
     assert "exception_type=PermissionError" in ops_message
     assert "exception=-" in ops_message
+    assert "origin=tests/cogs/test_achievement_collector.py:" in ops_message
+    assert "_raise_permission_error_with_traceback" in ops_message
     assert "secret-sheet-id" not in ops_message
     assert "ACHIEVEMENTS_SHEET_ID" not in ops_message
     assert "sheet contents" not in ops_message
@@ -303,6 +313,8 @@ def test_collector_permission_error_empty_message_ops_notification_and_embed(mon
     assert f"command={command_name}" in ops_message
     assert "exception_type=PermissionError" in ops_message
     assert "exception=-" in ops_message
+    assert "origin=tests/cogs/test_achievement_collector.py:" in ops_message
+    assert " boom" in ops_message
     assert "secret-sheet-id" not in ops_message
     assert "ACHIEVEMENTS_SHEET_ID" not in ops_message
     assert "sheet contents" not in ops_message
@@ -353,6 +365,10 @@ def test_collector_unexpected_exception_logs_traceback_and_ops_notification(monk
     record = next(rec for rec in caplog.records if rec.message == f"achievement collector {command_name} failed")
     assert record.exc_info is not None
     assert record.exc_info[0] is RuntimeError
+    assert record.exception_origin_file.endswith("tests/cogs/test_achievement_collector.py")
+    assert isinstance(record.exception_origin_line, int)
+    assert record.exception_origin_function == "boom"
+    assert record.exception_trace_frames[-1]["function"] == "boom"
     assert ctx.sent[-1]["embed"].title == "Achievement Collector"
     assert ops_logs
     ops_message = ops_logs[-1]
@@ -362,6 +378,8 @@ def test_collector_unexpected_exception_logs_traceback_and_ops_notification(monk
     assert "channel_id=789" in ops_message
     assert "actor_id=1234" in ops_message
     assert "exception_type=RuntimeError" in ops_message
+    assert "origin=tests/cogs/test_achievement_collector.py:" in ops_message
+    assert " boom" in ops_message
     if limit is not None:
         assert f"limit={limit}" in ops_message
     if target_member_id is not None:
