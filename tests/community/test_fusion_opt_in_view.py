@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock
 
 from modules.community.fusion import opt_in_view
 from modules.community.fusion.progress_share import build_share_snapshot
-from modules.community.fusion.traditional_progress import calculate_traditional_rare_progress
+from modules.community.fusion.traditional_progress import TraditionalRareProgress, calculate_traditional_rare_progress
 from shared.sheets import fusion as fusion_sheets
 
 
@@ -714,6 +714,7 @@ def test_non_traditional_my_progress_uses_followup_when_interaction_already_ackn
 def test_traditional_prep_validation_blocks_impossible_counts():
     message = opt_in_view._validate_traditional_prep_counts(
         needed_total=16,
+        required_epics=4,
         rares_acquired=8,
         rares_level_40=8,
         rares_ascended=4,
@@ -804,7 +805,13 @@ def test_traditional_prep_modal_save_edits_original_panel(monkeypatch):
             epics_ascended=4,
             target_ready=True,
         )
-        monkeypatch.setattr(fusion_sheets, "upsert_user_traditional_progress", AsyncMock(return_value=saved))
+        upsert = AsyncMock(return_value=saved)
+        monkeypatch.setattr(fusion_sheets, "upsert_user_traditional_progress", upsert)
+        monkeypatch.setattr(
+            opt_in_view,
+            "calculate_traditional_rare_progress",
+            lambda **_kwargs: TraditionalRareProgress(required=16, available_sources=16, acquired=16, skipped=0, missed=0, to_go=0),
+        )
 
         await modal.on_submit(interaction)
 
@@ -812,6 +819,7 @@ def test_traditional_prep_modal_save_edits_original_panel(monkeypatch):
         interaction.response.edit_message.assert_awaited_once()
         interaction.edit_original_response.assert_not_awaited()
         interaction.followup.send.assert_not_awaited()
+        assert upsert.await_args.kwargs["target_ready"] is True
         assert panel.prep.epics_ascended == 4
 
     asyncio.run(_run())
@@ -1195,6 +1203,21 @@ def test_traditional_prep_embed_separates_manual_inventory_from_event_acquired()
 
 
 
+def test_traditional_prep_embed_recalculates_ready_and_omits_zero_missing():
+    target = replace(_fusion_row(opt_in_role_id=777, fusion_type="traditional"), champion="Haggibah the Nestmaid", needed=16, available=16, reward_type="rares")
+    prep = fusion_sheets.FusionTraditionalUserProgressRow(
+        fusion_id="f-1", user_id="42", rares_owned=16, rares_level_40=16, rares_ascended=16, epics_fused=4, epics_level_50=4, epics_ascended=4, target_ready=False
+    )
+
+    embed = opt_in_view._build_traditional_prep_embed(
+        target=target, events=[_event_row("rare", reward_type="rare", reward_amount=16.0)], progress_by_event={"rare": "done"}, prep=prep
+    )
+
+    final_field = next(field for field in embed.fields if field.name == "Final Fusion")
+    assert "Ready to fuse Haggibah the Nestmaid: Yes" in final_field.value
+    assert "Missing:" not in final_field.value
+
+
 def test_traditional_rare_progress_counts_effectively_missed_events():
     target = replace(_fusion_row(opt_in_role_id=777, fusion_type="traditional"), needed=16, available=17, reward_type="rares")
     now = dt.datetime(2026, 7, 4, tzinfo=dt.timezone.utc)
@@ -1264,6 +1287,7 @@ def test_traditional_rare_progress_in_progress_without_partial_counts_zero():
 def test_traditional_prep_validation_uses_event_acquired_rares():
     assert opt_in_view._validate_traditional_prep_counts(
         needed_total=16,
+        required_epics=4,
         rares_acquired=max(0, 4),
         rares_level_40=2,
         rares_ascended=0,
@@ -1273,6 +1297,7 @@ def test_traditional_prep_validation_uses_event_acquired_rares():
     ) is None
     assert opt_in_view._validate_traditional_prep_counts(
         needed_total=16,
+        required_epics=4,
         rares_acquired=max(0, 0),
         rares_level_40=2,
         rares_ascended=0,

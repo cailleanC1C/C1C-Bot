@@ -69,9 +69,20 @@ def _is_traditional_fusion(target: fusion_sheets.FusionRow) -> bool:
     return str(target.fusion_type or "").strip().casefold() == "traditional"
 
 
+def _required_traditional_epics(needed_total: int) -> int:
+    """Return the final Epic count needed for a traditional fusion target."""
+
+    return min(4, max(0, (max(0, int(needed_total)) + 3) // 4))
+
+
+def _traditional_target_ready(*, epics_ascended: int, required_epics: int) -> bool:
+    return max(0, int(epics_ascended)) >= max(0, int(required_epics))
+
+
 def _validate_traditional_prep_counts(
     *,
     needed_total: int,
+    required_epics: int,
     rares_acquired: int,
     rares_level_40: int,
     rares_ascended: int,
@@ -90,8 +101,8 @@ def _validate_traditional_prep_counts(
         return "All champion preparation counts must be non-negative integers."
     if rares_level_40 > needed_total or rares_ascended > needed_total:
         return f"Rare prep counts cannot be higher than {needed_total}."
-    if epics_fused > 4 or epics_level_50 > 4 or epics_ascended > 4:
-        return "Epic prep counts cannot be higher than 4."
+    if epics_fused > required_epics or epics_level_50 > required_epics or epics_ascended > required_epics:
+        return f"Epic prep counts cannot be higher than {required_epics}."
     if rares_level_40 > rares_acquired:
         return "Rares level 40 cannot be higher than Rares acquired from event rewards."
     if rares_ascended > rares_level_40:
@@ -123,8 +134,9 @@ def _build_traditional_prep_embed(
     )
     needed_total = rare_progress.required
     rares_still_needed = rare_progress.to_go
-    ready = prep.target_ready
-    missing = "Nothing, the target champion is ready to fuse." if ready else f"{max(0, 4 - prep.epics_ascended)} fully ascended Epics"
+    required_epics = _required_traditional_epics(needed_total)
+    missing_epics = max(0, required_epics - prep.epics_ascended)
+    ready = _traditional_target_ready(epics_ascended=prep.epics_ascended, required_epics=required_epics)
     embed = discord.Embed(
         title=f"Champion Preparation: {target.champion or target.fusion_name}",
         description="Traditional fusion prep tracker.",
@@ -140,8 +152,11 @@ def _build_traditional_prep_embed(
         inline=False,
     )
     embed.add_field(name="Rare Prep", value=f"Rares level 40: {prep.rares_level_40} / {needed_total}\nRares fully ascended: {prep.rares_ascended} / {needed_total}", inline=False)
-    embed.add_field(name="Epic Prep", value=f"Epics fused: {prep.epics_fused} / 4\nEpics level 50: {prep.epics_level_50} / 4\nEpics fully ascended: {prep.epics_ascended} / 4", inline=False)
-    embed.add_field(name="Final Fusion", value=f"Ready to fuse {target.champion or target.fusion_name}: {'Yes' if ready else 'No'}\nMissing: {missing}", inline=False)
+    embed.add_field(name="Epic Prep", value=f"Epics fused: {prep.epics_fused} / {required_epics}\nEpics level 50: {prep.epics_level_50} / {required_epics}\nEpics fully ascended: {prep.epics_ascended} / {required_epics}", inline=False)
+    final_fusion_lines = [f"Ready to fuse {target.champion or target.fusion_name}: {'Yes' if ready else 'No'}"]
+    if missing_epics > 0:
+        final_fusion_lines.append(f"Missing: {missing_epics} fully ascended Epics")
+    embed.add_field(name="Final Fusion", value="\n".join(final_fusion_lines), inline=False)
     return embed
 
 def _supports_partial_fragments(event: fusion_sheets.FusionEventRow | None, *, status: str | None) -> bool:
@@ -1095,7 +1110,6 @@ class _TraditionalPrepModal(discord.ui.Modal, title="Champion Preparation"):
         except ValueError:
             await _send_ephemeral(interaction, "Champion preparation counts must be whole numbers.")
             return
-        needed_total = max(0, int(self.panel_view.target.needed))
         rare_progress = calculate_traditional_rare_progress(
             target=self.panel_view.target,
             events=self.panel_view.events,
@@ -1107,13 +1121,15 @@ class _TraditionalPrepModal(discord.ui.Modal, title="Champion Preparation"):
             ).display_status_by_event,
             partial_by_event=self.panel_view.partial_by_event,
         )
+        needed_total = rare_progress.required
         rares_acquired = rare_progress.acquired
-        error = _validate_traditional_prep_counts(needed_total=needed_total, rares_acquired=rares_acquired, rares_level_40=values[0], rares_ascended=values[1], epics_fused=values[2], epics_level_50=values[3], epics_ascended=values[4])
+        required_epics = _required_traditional_epics(needed_total)
+        error = _validate_traditional_prep_counts(needed_total=needed_total, required_epics=required_epics, rares_acquired=rares_acquired, rares_level_40=values[0], rares_ascended=values[1], epics_fused=values[2], epics_level_50=values[3], epics_ascended=values[4])
         if error:
             await _send_ephemeral(interaction, error)
             return
         try:
-            prep = await fusion_sheets.upsert_user_traditional_progress(self.panel_view.target.fusion_id, str(self.panel_view.user_id), rares_owned=self.panel_view.prep.rares_owned, rares_level_40=values[0], rares_ascended=values[1], epics_fused=values[2], epics_level_50=values[3], epics_ascended=values[4], target_ready=self.panel_view.prep.target_ready, updated_at=dt.datetime.now(dt.timezone.utc))
+            prep = await fusion_sheets.upsert_user_traditional_progress(self.panel_view.target.fusion_id, str(self.panel_view.user_id), rares_owned=self.panel_view.prep.rares_owned, rares_level_40=values[0], rares_ascended=values[1], epics_fused=values[2], epics_level_50=values[3], epics_ascended=values[4], target_ready=_traditional_target_ready(epics_ascended=values[4], required_epics=required_epics), updated_at=dt.datetime.now(dt.timezone.utc))
         except Exception as exc:
             log.exception("fusion traditional prep save failed", extra={"fusion_id": self.panel_view.target.fusion_id, "user_id": self.panel_view.user_id})
             await fusion_logs.send_ops_alert(component="traditional_prep", summary="save_failed", dedupe_key=f"fusion:traditional_prep:save:{self.panel_view.target.fusion_id}", error=exc, fields={"fusion_id": self.panel_view.target.fusion_id})

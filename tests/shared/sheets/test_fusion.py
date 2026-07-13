@@ -501,6 +501,27 @@ def test_get_user_traditional_progress_resolves_headers(monkeypatch: pytest.Monk
     assert row.target_ready is True
 
 
+def test_traditional_progress_resolves_human_readable_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _resolve_tab_name(_key: str) -> str:
+        return "fusion_traditional_user_prog"
+
+    async def _afetch_values(_sheet_id: str, _tab_name: str):
+        return [
+            ["User ID", "Fusion ID", "Epics fully ascended", "Rares owned", "Rares level 40", "Rares fully ascended", "Epics fused", "Epics level 50", "Target ready", "Updated At UTC"],
+            ["42", "f-1", "4", "16", "16", "16", "4", "4", "TRUE", "2026-07-01T00:00:00+00:00"],
+        ]
+
+    monkeypatch.setattr(fusion, "_resolve_tab_name", _resolve_tab_name)
+    monkeypatch.setattr(fusion, "_sheet_id", lambda: "sheet-id")
+    monkeypatch.setattr(fusion, "afetch_values", _afetch_values)
+
+    row = asyncio.run(fusion.get_user_traditional_progress("f-1", "42"))
+
+    assert row.rares_level_40 == 16
+    assert row.epics_ascended == 4
+    assert row.target_ready is True
+
+
 def test_upsert_user_traditional_progress_updates_existing_row_by_headers(monkeypatch: pytest.MonkeyPatch) -> None:
     worksheet = AsyncMock()
 

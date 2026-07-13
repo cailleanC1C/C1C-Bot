@@ -45,15 +45,15 @@ _FUSION_REMINDER_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "sent_at_utc": ("sent_at_utc",),
 }
 _FUSION_TRADITIONAL_PROGRESS_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
-    "fusion_id": ("fusion_id",),
-    "user_id": ("user_id",),
-    "rares_owned": ("rares_owned",),
-    "rares_level_40": ("rares_level_40",),
-    "rares_ascended": ("rares_ascended",),
-    "epics_fused": ("epics_fused",),
-    "epics_level_50": ("epics_level_50",),
-    "epics_ascended": ("epics_ascended",),
-    "target_ready": ("target_ready",),
+    "fusion_id": ("fusion_id", "fusion id", "fusion"),
+    "user_id": ("user_id", "user id", "user"),
+    "rares_owned": ("rares_owned", "rares owned"),
+    "rares_level_40": ("rares_level_40", "rares level 40", "rare level 40"),
+    "rares_ascended": ("rares_ascended", "rares fully ascended", "rare fully ascended"),
+    "epics_fused": ("epics_fused", "epics fused", "epic fused"),
+    "epics_level_50": ("epics_level_50", "epics level 50", "epic level 50"),
+    "epics_ascended": ("epics_ascended", "epics fully ascended", "epic fully ascended"),
+    "target_ready": ("target_ready", "target ready", "ready to fuse"),
     "updated_at_utc": ("updated_at_utc", "updated at utc", "updatedat", "updated_at"),
 }
 _FUSION_PROGRESS_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
