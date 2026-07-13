@@ -9,16 +9,20 @@ import discord
 from shared import config
 from shared.theme import colors
 
-ACTIVITY_FOOTER = "Last activity and message count are based on tracked bot-visible activity only."
+ACTIVITY_FOOTER = "Message stats are based on bot-visible channel history scanned for this command."
 UNKNOWN = "unknown"
 MAX_EMBED_DESCRIPTION = 3900
+DEFAULT_SCAN_DAYS = 90
+MIN_SCAN_DAYS = 1
+MAX_SCAN_DAYS = 180
 
 
 @dataclass(frozen=True)
 class InvestigationEntry:
     member: Any
-    last_activity: dt.datetime | None = None
-    message_count: int | None = None
+    last_message_at: dt.datetime | None = None
+    scanned_message_count: int = 0
+    last_message_channel: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -26,6 +30,18 @@ class InvestigationResult:
     total_wandering: int
     excluded: int
     entries: tuple[InvestigationEntry, ...]
+    scan_days: int = DEFAULT_SCAN_DAYS
+    scan_warning_count: int = 0
+
+
+def parse_scan_days(value: str | None) -> tuple[int | None, str | None]:
+    if value is None:
+        return DEFAULT_SCAN_DAYS, None
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        return None, "Accepted syntax: `!wanderingsouls investigate` or `!wanderingsouls investigate <days>` where `<days>` is a whole number from 1 to 180."
+    return max(MIN_SCAN_DAYS, min(MAX_SCAN_DAYS, days)), None
 
 
 def _role_ids(member: Any) -> set[int]:
@@ -57,7 +73,7 @@ def resolve_investigation_roles(guild: Any) -> tuple[Any | None, Any | None, str
     return wandering_role, exclude_role, None
 
 
-def collect_wandering_souls(guild: Any, wandering_role_id: int, exclude_role_id: int) -> InvestigationResult:
+def collect_wandering_souls(guild: Any, wandering_role_id: int, exclude_role_id: int, *, scan_days: int = DEFAULT_SCAN_DAYS) -> InvestigationResult:
     wandering: list[Any] = []
     entries: list[InvestigationEntry] = []
     excluded = 0
@@ -70,13 +86,75 @@ def collect_wandering_souls(guild: Any, wandering_role_id: int, exclude_role_id:
             excluded += 1
             continue
         entries.append(InvestigationEntry(member=member))
-    entries.sort(key=lambda entry: (entry.last_activity is None, entry.last_activity or dt.datetime.max.replace(tzinfo=dt.timezone.utc), getattr(entry.member, "display_name", "")))
-    return InvestigationResult(total_wandering=len(wandering), excluded=excluded, entries=tuple(entries))
+    entries = _sort_entries(entries)
+    return InvestigationResult(total_wandering=len(wandering), excluded=excluded, entries=tuple(entries), scan_days=scan_days)
 
 
-def _format_date(value: Any) -> str:
+def _sort_entries(entries: list[InvestigationEntry]) -> list[InvestigationEntry]:
+    return sorted(
+        entries,
+        key=lambda entry: (
+            entry.last_message_at is None,
+            entry.last_message_at or dt.datetime.max.replace(tzinfo=dt.timezone.utc),
+            getattr(entry.member, "joined_at", None) or dt.datetime.max.replace(tzinfo=dt.timezone.utc),
+            (getattr(entry.member, "display_name", None) or "").casefold(),
+        ),
+    )
+
+
+def _scan_channels(guild: Any) -> list[Any]:
+    channels = list(getattr(guild, "text_channels", ()) or ())
+    channels.extend(getattr(guild, "threads", ()) or ())
+    return channels
+
+
+async def scan_recent_messages(guild: Any, result: InvestigationResult, *, now: dt.datetime | None = None) -> InvestigationResult:
+    if now is None:
+        now = dt.datetime.now(dt.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=dt.timezone.utc)
+    cutoff = now - dt.timedelta(days=result.scan_days)
+    candidate_ids = {int(getattr(entry.member, "id")) for entry in result.entries}
+    stats: dict[int, dict[str, Any]] = {member_id: {"count": 0, "last_at": None, "channel": None} for member_id in candidate_ids}
+    warnings = 0
+    for channel in _scan_channels(guild):
+        history = getattr(channel, "history", None)
+        if history is None:
+            continue
+        try:
+            async for message in history(limit=None, after=cutoff, oldest_first=False):
+                created_at = getattr(message, "created_at", None)
+                if isinstance(created_at, dt.datetime):
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=dt.timezone.utc)
+                    if created_at < cutoff:
+                        break
+                author_id = getattr(getattr(message, "author", None), "id", None)
+                if author_id not in candidate_ids:
+                    continue
+                item = stats[int(author_id)]
+                item["count"] += 1
+                if created_at is not None and (item["last_at"] is None or created_at > item["last_at"]):
+                    item["last_at"] = created_at
+                    item["channel"] = channel
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            warnings += 1
+            continue
+    entries = [
+        InvestigationEntry(
+            member=entry.member,
+            last_message_at=stats[int(getattr(entry.member, "id"))]["last_at"],
+            scanned_message_count=stats[int(getattr(entry.member, "id"))]["count"],
+            last_message_channel=stats[int(getattr(entry.member, "id"))]["channel"],
+        )
+        for entry in result.entries
+    ]
+    return InvestigationResult(result.total_wandering, result.excluded, tuple(_sort_entries(entries)), result.scan_days, warnings)
+
+
+def _format_date(value: Any, *, none_text: str = UNKNOWN) -> str:
     if value is None:
-        return UNKNOWN
+        return none_text
     if isinstance(value, dt.datetime):
         if value.tzinfo is None:
             value = value.replace(tzinfo=dt.timezone.utc)
@@ -84,21 +162,38 @@ def _format_date(value: Any) -> str:
     return str(value)
 
 
+def _channel_reference(channel: Any | None) -> str:
+    if channel is None:
+        return UNKNOWN
+    return getattr(channel, "mention", None) or getattr(channel, "name", None) or UNKNOWN
+
+
 def _entry_block(entry: InvestigationEntry) -> str:
     member = entry.member
-    display_name = getattr(member, "display_name", None) or getattr(member, "name", None) or str(getattr(member, "id", "unknown"))
+    member_id = getattr(member, "id", "unknown")
+    display_name = getattr(member, "display_name", None) or getattr(member, "name", None) or str(member_id)
     joined = _format_date(getattr(member, "joined_at", None))
-    activity = _format_date(entry.last_activity)
-    messages = UNKNOWN if entry.message_count is None else str(entry.message_count)
-    return f"Player: {display_name}\nJoined: {joined}\nLast activity: {activity}\nMessages: {messages}"
+    last_message = _format_date(entry.last_message_at, none_text="none found in scan window")
+    return (
+        f"Profile: <@{member_id}>\n"
+        f"Name: {display_name}\n"
+        f"ID: {member_id}\n"
+        f"Joined: {joined}\n"
+        f"Last message: {last_message}\n"
+        f"Messages in scan window: {entry.scanned_message_count}\n"
+        f"Last seen channel: {_channel_reference(entry.last_message_channel)}"
+    )
 
 
 def build_investigation_embeds(result: InvestigationResult) -> list[discord.Embed]:
     summary = (
         f"Total members with Wandering Souls role: {result.total_wandering}\n"
         f"Excluded members count: {result.excluded}\n"
-        f"Final listed members count: {len(result.entries)}"
+        f"Final listed members count: {len(result.entries)}\n"
+        f"Message scan window: last {result.scan_days} days"
     )
+    if result.scan_warning_count:
+        summary += f"\nScan warning count: {result.scan_warning_count} channel(s) could not be read"
     embeds: list[discord.Embed] = []
     current = summary
     page_entries = 0
