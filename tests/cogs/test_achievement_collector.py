@@ -4,6 +4,7 @@ import datetime as dt
 import os
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -194,6 +195,120 @@ def test_command_access_gates():
     assert any(getattr(chk, "__qualname__", "").endswith("admin_only.<locals>.predicate") for chk in AchievementCollectorCog.preview.checks)
     assert any(getattr(chk, "__qualname__", "").endswith("admin_only.<locals>.predicate") for chk in AchievementCollectorCog.publish.checks)
     assert not any(getattr(chk, "__qualname__", "").endswith("admin_only.<locals>.predicate") for chk in AchievementCollectorCog.rank.checks)
+
+
+def _raise_permission_error_with_traceback():
+    raise PermissionError()
+
+
+def test_report_collector_failure_logs_passed_permission_error_explicit_exc_info(monkeypatch):
+    monkeypatch.setenv("ACHIEVEMENTS_SHEET_ID", "secret-sheet-id")
+    guild = Guild([], [Member(1, "Actor", [])])
+    guild.id = 456
+    channel = Channel()
+    channel.id = 789
+    ctx = Ctx(guild, guild.members[0], channel)
+    ctx.author.id = 1234
+    cog = AchievementCollectorCog(SimpleNamespace())
+    ops_logs = []
+
+    async def fake_send_log_message(message):
+        ops_logs.append(message)
+
+    monkeypatch.setattr("cogs.housekeeping_achievement_collector.runtime_helpers.send_log_message", fake_send_log_message)
+
+    try:
+        _raise_permission_error_with_traceback()
+    except PermissionError as exc:
+        passed_exc = exc
+
+    with patch("cogs.housekeeping_achievement_collector.log.error") as log_error:
+        run(cog._report_collector_failure(ctx, "preview", passed_exc, limit=25))
+
+    log_error.assert_called_once()
+    _, kwargs = log_error.call_args
+    assert kwargs["exc_info"] == (type(passed_exc), passed_exc, passed_exc.__traceback__)
+    assert kwargs["exc_info"][0] is PermissionError
+    assert kwargs["exc_info"][1] is passed_exc
+    assert kwargs["exc_info"][2] is passed_exc.__traceback__
+    assert kwargs["extra"] == {
+        "achievement_collector_command": "preview",
+        "guild_id": 456,
+        "channel_id": 789,
+        "actor_id": 1234,
+        "provided_limit": 25,
+        "target_member_id": None,
+        "exception_type": "PermissionError",
+    }
+    assert ops_logs
+    ops_message = ops_logs[-1]
+    assert "feature=achievement collector" in ops_message
+    assert "command=preview" in ops_message
+    assert "exception_type=PermissionError" in ops_message
+    assert "exception=-" in ops_message
+    assert "secret-sheet-id" not in ops_message
+    assert "ACHIEVEMENTS_SHEET_ID" not in ops_message
+    assert "sheet contents" not in ops_message
+    assert "message content" not in ops_message
+    assert "credentials" not in ops_message
+    assert "token" not in ops_message
+
+
+@pytest.mark.parametrize("command_name,limit,target_member_id", [
+    ("preview", 25, None),
+    ("publish", 26, None),
+    ("rank", None, 2),
+])
+def test_collector_permission_error_empty_message_ops_notification_and_embed(monkeypatch, command_name, limit, target_member_id):
+    monkeypatch.setenv("ACHIEVEMENTS_SHEET_ID", "secret-sheet-id")
+    guild = Guild([], [Member(1, "Actor", []), Member(2, "Target", [])])
+    guild.id = 456
+    channel = Channel()
+    channel.id = 789
+    ctx = Ctx(guild, guild.members[0], channel)
+    ctx.author.id = 1234
+    cog = AchievementCollectorCog(SimpleNamespace(get_channel=lambda cid: None, fetch_channel=None))
+    ops_logs = []
+
+    async def fake_send_log_message(message):
+        ops_logs.append(message)
+
+    async def boom(*_args, **_kwargs):
+        raise PermissionError()
+
+    monkeypatch.setattr("cogs.housekeeping_achievement_collector.runtime_helpers.send_log_message", fake_send_log_message)
+    if command_name in {"preview", "publish"}:
+        monkeypatch.setattr(cog, "_rebuild", boom)
+    else:
+        monkeypatch.setattr(cog, "_get_or_build_cache", boom)
+
+    target = guild.members[1] if target_member_id is not None else None
+    with patch("cogs.housekeeping_achievement_collector.log.error") as log_error:
+        if command_name == "preview":
+            run(cog.preview.callback(cog, ctx, limit))
+        elif command_name == "publish":
+            run(cog.publish.callback(cog, ctx, limit))
+        else:
+            run(cog.rank.callback(cog, ctx, target))
+
+    _, kwargs = log_error.call_args
+    exc_info = kwargs["exc_info"]
+    assert exc_info is not None
+    assert exc_info[0] is PermissionError
+    assert isinstance(exc_info[1], PermissionError)
+    assert exc_info[2] is exc_info[1].__traceback__
+    assert ctx.sent[-1]["embed"].title == "Achievement Collector"
+    ops_message = ops_logs[-1]
+    assert "feature=achievement collector" in ops_message
+    assert f"command={command_name}" in ops_message
+    assert "exception_type=PermissionError" in ops_message
+    assert "exception=-" in ops_message
+    assert "secret-sheet-id" not in ops_message
+    assert "ACHIEVEMENTS_SHEET_ID" not in ops_message
+    assert "sheet contents" not in ops_message
+    assert "message content" not in ops_message
+    assert "credentials" not in ops_message
+    assert "token" not in ops_message
 
 @pytest.mark.parametrize("command_name,limit,target_member_id", [
     ("preview", 7, None),
