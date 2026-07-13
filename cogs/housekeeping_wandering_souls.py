@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import discord
@@ -17,6 +18,15 @@ MEMBER_LOAD_ERROR = "The investigation could not safely run because the full mem
 class WanderingSoulsCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self._scan_locks: dict[int, asyncio.Lock] = {}
+
+    def _scan_lock_for(self, guild: discord.Guild) -> asyncio.Lock:
+        guild_id = int(getattr(guild, "id", id(guild)))
+        lock = self._scan_locks.get(guild_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._scan_locks[guild_id] = lock
+        return lock
 
     @tier("admin")
     @help_metadata(function_group="operational", section="utilities", access_tier="admin")
@@ -47,26 +57,34 @@ class WanderingSoulsCog(commands.Cog):
         if guild is None:
             await ctx.send(embed=ws.build_error_embed(MEMBER_LOAD_ERROR))
             return
-        if not getattr(guild, "chunked", False):
-            try:
-                await guild.chunk(cache=True)
-            except Exception:
-                log.exception("wandering souls investigation failed to chunk guild members")
-                await ctx.send(embed=ws.build_error_embed(MEMBER_LOAD_ERROR))
-                return
-        if getattr(guild, "members", None) is None:
-            await ctx.send(embed=ws.build_error_embed(MEMBER_LOAD_ERROR))
+
+        lock = self._scan_lock_for(guild)
+        if lock.locked():
+            await ctx.send(embed=ws.build_error_embed(ws.SCAN_ALREADY_RUNNING_ERROR))
             return
 
-        wandering_role, exclude_role, error = ws.resolve_investigation_roles(guild)
-        if error:
-            await ctx.send(embed=ws.build_error_embed(error))
-            return
-        result = ws.collect_wandering_souls(guild, int(wandering_role.id), int(exclude_role.id), scan_days=int(scan_days))
-        result = await ws.scan_recent_messages(guild, result)
-        allowed_mentions = discord.AllowedMentions.none()
-        for embed in ws.build_investigation_embeds(result):
-            await ctx.send(embed=embed, allowed_mentions=allowed_mentions)
+        async with lock:
+            await ctx.send(embed=ws.build_ack_embed(int(scan_days)))
+            if not getattr(guild, "chunked", False):
+                try:
+                    await guild.chunk(cache=True)
+                except Exception:
+                    log.exception("wandering souls investigation failed to chunk guild members")
+                    await ctx.send(embed=ws.build_error_embed(MEMBER_LOAD_ERROR))
+                    return
+            if getattr(guild, "members", None) is None:
+                await ctx.send(embed=ws.build_error_embed(MEMBER_LOAD_ERROR))
+                return
+
+            wandering_role, exclude_role, error = ws.resolve_investigation_roles(guild)
+            if error:
+                await ctx.send(embed=ws.build_error_embed(error))
+                return
+            result = ws.collect_wandering_souls(guild, int(wandering_role.id), int(exclude_role.id), scan_days=int(scan_days))
+            result = await ws.scan_recent_messages(guild, result)
+            allowed_mentions = discord.AllowedMentions.none()
+            for embed in ws.build_investigation_embeds(result):
+                await ctx.send(embed=embed, allowed_mentions=allowed_mentions)
 
 
 async def setup(bot: commands.Bot):

@@ -119,7 +119,7 @@ def test_bare_wandering_souls_group_response_is_embed():
     assert ctx.sent
     embed = ctx.sent[0]["embed"]
     assert embed.title == "Wandering Souls Diagnostics"
-    assert embed.description == "Use `!wanderingsouls investigate` to list current Wandering Souls members."
+    assert embed.description == "Use `!wanderingsouls investigate <days>` to scan Wandering Souls message activity."
 
 
 def test_command_chunks_guild_before_collecting_when_cache_is_incomplete(monkeypatch):
@@ -131,11 +131,12 @@ def test_command_chunks_guild_before_collecting_when_cache_is_incomplete(monkeyp
     ctx = Ctx(guild)
     cog = WanderingSoulsCog(SimpleNamespace())
 
-    run(cog.investigate.callback(cog, ctx))
+    run(cog.investigate.callback(cog, ctx, "30"))
 
     assert guild.chunk_calls == [{"cache": True}]
     assert ctx.sent[0]["embed"].title == "Wandering Souls Investigation"
-    assert "Name: Included" in ctx.sent[0]["embed"].description
+    assert ctx.sent[0]["embed"].description == "Scanning Wandering Souls activity for the last 30 days…"
+    assert "Name: Included" in ctx.sent[1]["embed"].description
 
 
 def test_command_returns_error_embed_when_chunking_fails(monkeypatch):
@@ -147,11 +148,12 @@ def test_command_returns_error_embed_when_chunking_fails(monkeypatch):
     ctx = Ctx(guild)
     cog = WanderingSoulsCog(SimpleNamespace())
 
-    run(cog.investigate.callback(cog, ctx))
+    run(cog.investigate.callback(cog, ctx, "30"))
 
     assert guild.chunk_calls == [{"cache": True}]
-    assert len(ctx.sent) == 1
-    embed = ctx.sent[0]["embed"]
+    assert len(ctx.sent) == 2
+    assert ctx.sent[0]["embed"].description == "Scanning Wandering Souls activity for the last 30 days…"
+    embed = ctx.sent[1]["embed"]
     assert embed.title == "Wandering Souls Investigation Error"
     assert "full member list could not be loaded" in embed.description
     assert "Partial" not in embed.description
@@ -166,7 +168,7 @@ def test_command_is_read_only_and_does_not_call_role_mutation_methods(monkeypatc
     ctx = Ctx(guild)
     cog = WanderingSoulsCog(SimpleNamespace())
 
-    run(cog.investigate.callback(cog, ctx))
+    run(cog.investigate.callback(cog, ctx, "30"))
 
     assert ctx.sent
     assert ctx.sent[0]["embed"].title == "Wandering Souls Investigation"
@@ -220,10 +222,13 @@ class Channel:
         return self._history(limit=limit, after=after, oldest_first=oldest_first)
 
 
-def test_default_scan_window_is_90_days():
-    assert ws.parse_scan_days(None) == (90, None)
-    result = ws.collect_wandering_souls(Guild([Role(10), Role(20)], [Member(1, "A", [Role(10)])]), 10, 20)
-    assert result.scan_days == 90
+def test_missing_scan_window_returns_embed_error():
+    days, error = ws.parse_scan_days(None)
+    embed = ws.build_error_embed(error)
+
+    assert days is None
+    assert embed.title == "Wandering Souls Investigation Error"
+    assert embed.description == "Missing scan window.\nUse: !wanderingsouls investigate 30\nAllowed range: 1-180 days."
 
 
 def test_invalid_day_argument_returns_embed_error():
@@ -232,7 +237,7 @@ def test_invalid_day_argument_returns_embed_error():
 
     assert days is None
     assert embed.title == "Wandering Souls Investigation Error"
-    assert "!wanderingsouls investigate <days>" in embed.description
+    assert "Use: !wanderingsouls investigate 30" in embed.description
 
 
 def test_day_argument_is_clamped_to_max_180():
@@ -315,3 +320,50 @@ def test_scan_populates_last_message_count_and_channel():
     assert "Last message: 2026-07-13 12:00 UTC" in description
     assert "Messages in scan window: 2" in description
     assert "Last seen channel: <#100>" in description
+
+
+def test_bare_investigate_returns_missing_window_without_collecting_or_scanning(monkeypatch):
+    guild = Guild([Role(10), Role(20)], [Member(1, "Included", [Role(10)])])
+    ctx = Ctx(guild)
+    cog = WanderingSoulsCog(SimpleNamespace())
+    monkeypatch.setattr(ws, "collect_wandering_souls", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not collect")))
+    monkeypatch.setattr(ws, "scan_recent_messages", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not scan")))
+
+    run(cog.investigate.callback(cog, ctx))
+
+    assert len(ctx.sent) == 1
+    embed = ctx.sent[0]["embed"]
+    assert embed.title == "Wandering Souls Investigation Error"
+    assert embed.description == "Missing scan window.\nUse: !wanderingsouls investigate 30\nAllowed range: 1-180 days."
+
+
+def test_command_rejects_concurrent_scans(monkeypatch):
+    wandering = Role(10)
+    exclude = Role(20)
+    guild = Guild([wandering, exclude], [Member(1, "Included", [wandering])])
+    monkeypatch.setattr(ws.config, "get_wandering_souls_role_id", lambda: wandering.id)
+    monkeypatch.setattr(ws.config, "get_wandering_souls_exclude_role_id", lambda: exclude.id)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_scan(guild, result):
+        started.set()
+        await release.wait()
+        return result
+
+    monkeypatch.setattr(ws, "scan_recent_messages", slow_scan)
+    cog = WanderingSoulsCog(SimpleNamespace())
+    first = Ctx(guild)
+    second = Ctx(guild)
+
+    async def exercise():
+        first_task = asyncio.create_task(cog.investigate.callback(cog, first, "30"))
+        await started.wait()
+        await cog.investigate.callback(cog, second, "30")
+        release.set()
+        await first_task
+
+    run(exercise())
+
+    assert second.sent[0]["embed"].title == "Wandering Souls Investigation Error"
+    assert second.sent[0]["embed"].description == ws.SCAN_ALREADY_RUNNING_ERROR
