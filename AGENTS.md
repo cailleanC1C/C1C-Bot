@@ -28,6 +28,7 @@ docs/ops/.env.example
 - `ONBOARDING_SHEET_ID`
 - `REMINDER_SHEET_ID`
 - `MILESTONES_SHEET_ID`
+- `ACHIEVEMENTS_SHEET_ID`
 - *(other sheet IDs live in env.example — keep doc updates in sync with env.example when adding new sheets)*
 
 **Logging / Telemetry (ENV var names — exact):**
@@ -66,7 +67,7 @@ docs/ops/.env.example
 - `GSPREAD_CREDENTIALS`
 
 **Access**
-- Read/Write: recruitment/config/milestones/reminders (sheet IDs above)
+- Read/Write: recruitment/config/milestones/reminders and read achievement definitions (sheet IDs above)
 - Principle: No hard-coded tab names; resolve tab names and IDs from your Sheet Config tabs.
 
 ---

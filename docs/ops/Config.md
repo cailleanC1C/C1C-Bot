@@ -61,6 +61,7 @@ Missing any **Required** key causes the bot to exit with an error at startup. If
 | `ONBOARDING_SHEET_ID` | string | — | Google Sheet ID for onboarding trackers. |
 | `REMINDER_SHEET_ID` | string | — | Google Sheet ID for reminders (service-specific). |
 | `MILESTONES_SHEET_ID` | string | — | Google Sheet ID for Milestones (claims, appreciation, shard & mercy, missions) (service-specific). |
+| `ACHIEVEMENTS_SHEET_ID` | string | — | Google Sheet ID for achievement definitions used by the Achievement Collector role source. |
 | `MILESTONES_CONFIG_TAB` | string | required | Deployment checklist: set `MILESTONES_CONFIG_TAB=Config` in Render for prod before deploy if it is not already configured. |
 | `RECRUITMENT_CONFIG_TAB` | string | `Config` | Worksheet name containing recruitment config. |
 | `ONBOARDING_CONFIG_TAB` | string | `Config` | Worksheet name containing onboarding config. |
@@ -123,6 +124,19 @@ sync modules remain available for non-async scripts and cache warmers.
 | `LEAGUE_ADMIN_IDS` | csv | — | Discord user IDs allowed to confirm Wednesday reminders via 👍 and to trigger manual posts. |
 | `LEAGUES_REMINDER_MONDAY_UTC` | HH:MM | `13:00` | UTC time for the Monday reminder asking admins to update the Leagues sheet. |
 | `LEAGUES_REMINDER_WEDNESDAY_UTC` | HH:MM | `13:00` | UTC time for the Wednesday reminder + reaction check that triggers posting. |
+
+
+### Achievement Collector Config keys
+
+The Achievement Collector reads its role definitions from `ACHIEVEMENTS_SHEET_ID`, but these scheduling and display keys live in the existing Woadkeeper Config sheet:
+
+- `achievement_collector_channel_id` — Discord channel/thread ID for published and scheduled leaderboard posts.
+- `achievement_collector_default_limit` — default number of leaderboard rows when no command limit is supplied.
+- `achievement_collector_max_limit` — maximum allowed leaderboard rows; command limits are capped to this value.
+- `achievement_collector_min_count` — minimum counted active achievement roles required to appear on the leaderboard.
+- `achievement_collector_schedule_rrule` — iCalendar RRULE syntax used to compute monthly scheduled posts.
+- `achievement_collector_schedule_time_utc` — `HH:MM` UTC time applied to scheduled posts.
+- `achievement_collector_roles_tab` — tab name in the achievement definitions sheet containing dynamic `role_id` and `Active` headers.
 
 ### Runtime flags
 | Key | Type | Default | Notes |
