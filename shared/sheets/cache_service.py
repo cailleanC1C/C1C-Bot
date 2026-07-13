@@ -6,6 +6,8 @@ import logging
 from types import ModuleType
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
+from shared.sheets import audit as sheets_audit
+
 UTC = dt.timezone.utc
 log = logging.getLogger(__name__)
 
@@ -120,10 +122,28 @@ class CacheService:
         # Fast-path: fresh enough
         age = b.age_sec()
         if age is not None and age < b.ttl_sec and b.value is not None:
-            return b.value
+            with sheets_audit.log_read(
+                component="cache_service",
+                operation="get",
+                sheet_source="cache",
+                cache_bucket=name,
+                trigger="runtime",
+                cache_status="hit",
+            ) as audit_fields:
+                audit_fields["result"] = b.value
+                return b.value
         # Otherwise trigger background refresh (debounced) and return stale ASAP
         await self._ensure_background_refresh(name)
-        return b.value
+        with sheets_audit.log_read(
+            component="cache_service",
+            operation="get",
+            sheet_source="cache",
+            cache_bucket=name,
+            trigger="runtime",
+            cache_status="miss_stale_returned",
+        ) as audit_fields:
+            audit_fields["result"] = b.value
+            return b.value
 
     async def invalidate(self, name: str) -> None:
         b = self._buckets[name]
@@ -162,7 +182,16 @@ class CacheService:
         try:
             # run loader with async backoff (single retry on failure)
             try:
-                new_val = await b.loader()
+                with sheets_audit.log_read(
+                    component="cache_service",
+                    operation="refresh",
+                    sheet_source="loader",
+                    cache_bucket=name,
+                    trigger=trigger,
+                    cache_status="refresh",
+                ) as audit_fields:
+                    new_val = await b.loader()
+                    audit_fields["result"] = new_val
                 success = True
             except asyncio.CancelledError:
                 # Propagate cancellation so shutdown isn't blocked
@@ -176,7 +205,16 @@ class CacheService:
                 b.last_error = first_err
                 await asyncio.sleep(300)  # 5 minutes
                 try:
-                    new_val = await b.loader()
+                    with sheets_audit.log_read(
+                        component="cache_service",
+                        operation="refresh_retry",
+                        sheet_source="loader",
+                        cache_bucket=name,
+                        trigger=trigger,
+                        cache_status="refresh_retry",
+                    ) as audit_fields:
+                        new_val = await b.loader()
+                        audit_fields["result"] = new_val
                     success = True
                     result = "retry_ok"
                 except asyncio.CancelledError:

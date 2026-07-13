@@ -21,6 +21,7 @@ else:
     _IMPORT_ERROR = None
 
 import shared.sheets.async_adapter as async_adapter
+from shared.sheets import audit as sheets_audit
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -257,8 +258,16 @@ async def aget_worksheet(
 
 
 def fetch_records(sheet_id: str, worksheet: str):
-    ws = get_worksheet(sheet_id, worksheet)
-    return _retry_with_backoff(async_adapter.worksheet_records_all, ws)
+    with sheets_audit.log_read(
+        component="core",
+        operation="fetch_records",
+        sheet_source="explicit_sheet_id",
+        tab_config_key=worksheet,
+    ) as audit_fields:
+        ws = get_worksheet(sheet_id, worksheet)
+        result = _retry_with_backoff(async_adapter.worksheet_records_all, ws)
+        audit_fields["result"] = result
+        return result
 
 
 async def afetch_records(
@@ -266,18 +275,34 @@ async def afetch_records(
 ) -> list[dict[str, Any]]:
     """Async wrapper around :func:`fetch_records`."""
 
-    ws = await aget_worksheet(sheet_id, worksheet, timeout=timeout)
-    kwargs: dict[str, Any] = {}
-    if timeout is not None:
-        kwargs["timeout"] = timeout
-    return await _retry_with_backoff_async(
-        async_adapter.aworksheet_records_all, ws, **kwargs
-    )
+    with sheets_audit.log_read(
+        component="core",
+        operation="afetch_records",
+        sheet_source="explicit_sheet_id",
+        tab_config_key=worksheet,
+    ) as audit_fields:
+        ws = await aget_worksheet(sheet_id, worksheet, timeout=timeout)
+        kwargs: dict[str, Any] = {}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        result = await _retry_with_backoff_async(
+            async_adapter.aworksheet_records_all, ws, **kwargs
+        )
+        audit_fields["result"] = result
+        return result
 
 
 def fetch_values(sheet_id: str, worksheet: str):
-    ws = get_worksheet(sheet_id, worksheet)
-    return _retry_with_backoff(async_adapter.worksheet_values_all, ws)
+    with sheets_audit.log_read(
+        component="core",
+        operation="fetch_values",
+        sheet_source="explicit_sheet_id",
+        tab_config_key=worksheet,
+    ) as audit_fields:
+        ws = get_worksheet(sheet_id, worksheet)
+        result = _retry_with_backoff(async_adapter.worksheet_values_all, ws)
+        audit_fields["result"] = result
+        return result
 
 
 async def afetch_values(
@@ -285,13 +310,21 @@ async def afetch_values(
 ) -> list[list[Any]]:
     """Async wrapper around :func:`fetch_values`."""
 
-    ws = await aget_worksheet(sheet_id, worksheet, timeout=timeout)
-    kwargs: dict[str, Any] = {}
-    if timeout is not None:
-        kwargs["timeout"] = timeout
-    return await _retry_with_backoff_async(
-        async_adapter.aworksheet_values_all, ws, **kwargs
-    )
+    with sheets_audit.log_read(
+        component="core",
+        operation="afetch_values",
+        sheet_source="explicit_sheet_id",
+        tab_config_key=worksheet,
+    ) as audit_fields:
+        ws = await aget_worksheet(sheet_id, worksheet, timeout=timeout)
+        kwargs: dict[str, Any] = {}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        result = await _retry_with_backoff_async(
+            async_adapter.aworksheet_values_all, ws, **kwargs
+        )
+        audit_fields["result"] = result
+        return result
 
 
 def sheets_read(sheet_id: str, a1_range: str):
