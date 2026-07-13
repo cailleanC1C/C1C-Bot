@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
 
 import discord
 from discord.ext import commands
 
 from c1c_coreops.helpers import help_metadata, tier
 from c1c_coreops.rbac import admin_only
+from modules.common import runtime as runtime_helpers
 from modules.housekeeping.achievement_collector import (
     AchievementCollectorError,
     AchievementCollectorScheduler,
@@ -21,6 +24,24 @@ from modules.housekeeping.achievement_collector import (
 
 log = logging.getLogger("c1c.housekeeping.achievement_collector.cog")
 _ALLOWED_NONE = discord.AllowedMentions.none()
+
+
+_SENSITIVE_EXCEPTION_DETAIL_RE = re.compile(r"\b(sheet contents?|message content|credentials?|token)\s*:", re.IGNORECASE)
+
+
+def _short_exception_message(exc: BaseException) -> str:
+    message = " ".join(str(exc).split()) or "-"
+    sheet_id = os.getenv("ACHIEVEMENTS_SHEET_ID")
+    if sheet_id:
+        message = message.replace(sheet_id, "[redacted_sheet_id]")
+    sensitive_match = _SENSITIVE_EXCEPTION_DETAIL_RE.search(message)
+    if sensitive_match:
+        message = message[: sensitive_match.start()].rstrip(" -:;•") or "[redacted]"
+    return message[:180]
+
+
+def _context_id(obj: object, attr: str) -> int | None:
+    return getattr(getattr(obj, attr, None), "id", None)
 
 
 def _error_embed(message: str) -> discord.Embed:
@@ -44,6 +65,46 @@ class AchievementCollectorCog(commands.Cog):
             await ctx.send(embed=_error_embed("Limit must be a positive integer."), allowed_mentions=_ALLOWED_NONE)
             return
         raise error
+
+    async def _report_collector_failure(
+        self,
+        ctx: commands.Context,
+        command_name: str,
+        exc: BaseException,
+        *,
+        limit: int | None = None,
+        target_member: discord.Member | None = None,
+    ) -> None:
+        log.exception(
+            "achievement collector %s failed",
+            command_name,
+            extra={
+                "achievement_collector_command": command_name,
+                "guild_id": _context_id(ctx, "guild"),
+                "channel_id": _context_id(ctx, "channel"),
+                "actor_id": _context_id(ctx, "author"),
+                "provided_limit": limit,
+                "target_member_id": getattr(target_member, "id", None),
+                "exception_type": type(exc).__name__,
+            },
+        )
+        fields = [
+            "feature=achievement collector",
+            f"command={command_name}",
+            f"guild_id={_context_id(ctx, 'guild')}",
+            f"channel_id={_context_id(ctx, 'channel')}",
+            f"actor_id={_context_id(ctx, 'author')}",
+            f"exception_type={type(exc).__name__}",
+            f"exception={_short_exception_message(exc)}",
+        ]
+        if limit is not None:
+            fields.append(f"limit={limit}")
+        if target_member is not None:
+            fields.append(f"target_member_id={getattr(target_member, 'id', None)}")
+        try:
+            await runtime_helpers.send_log_message("❌ " + " • ".join(fields))
+        except Exception:
+            log.warning("failed to send achievement collector ops failure report", exc_info=True)
 
     async def _get_or_build_cache(self, guild: discord.Guild) -> LeaderboardCache:
         if self._cache is not None and self._cache.guild_id == guild.id:
@@ -92,10 +153,11 @@ class AchievementCollectorCog(commands.Cog):
             config, cache = await self._rebuild(ctx.guild)
             resolved_limit = effective_limit(limit, config)  # type: ignore[arg-type]
         except AchievementCollectorError as exc:
+            await self._report_collector_failure(ctx, "preview", exc, limit=limit)
             await ctx.send(embed=_error_embed(str(exc)), allowed_mentions=_ALLOWED_NONE)
             return
-        except Exception:
-            log.exception("achievement collector preview failed")
+        except Exception as exc:
+            await self._report_collector_failure(ctx, "preview", exc, limit=limit)
             await ctx.send(embed=_error_embed("Achievement Collector preview failed. Check the bot logs."), allowed_mentions=_ALLOWED_NONE)
             return
         await ctx.send(embed=leaderboard_embed(cache, resolved_limit, preview=True), allowed_mentions=_ALLOWED_NONE)
@@ -116,10 +178,11 @@ class AchievementCollectorCog(commands.Cog):
                 raise AchievementCollectorError("Invalid achievement_collector_channel_id.")
             await channel.send(embed=leaderboard_embed(cache, resolved_limit), allowed_mentions=_ALLOWED_NONE)
         except AchievementCollectorError as exc:
+            await self._report_collector_failure(ctx, "publish", exc, limit=limit)
             await ctx.send(embed=_error_embed(str(exc)), allowed_mentions=_ALLOWED_NONE)
             return
-        except Exception:
-            log.exception("achievement collector publish failed")
+        except Exception as exc:
+            await self._report_collector_failure(ctx, "publish", exc, limit=limit)
             await ctx.send(embed=_error_embed("Achievement Collector publish failed. Check the bot logs."), allowed_mentions=_ALLOWED_NONE)
             return
         await ctx.send(embed=discord.Embed(title="Achievement Collector", description="Published Achievement Collectors leaderboard.", colour=discord.Colour.green()), allowed_mentions=_ALLOWED_NONE)
@@ -135,10 +198,11 @@ class AchievementCollectorCog(commands.Cog):
         try:
             cache = await self._get_or_build_cache(ctx.guild)
         except AchievementCollectorError as exc:
+            await self._report_collector_failure(ctx, "rank", exc, target_member=member)
             await ctx.send(embed=_error_embed(str(exc)), allowed_mentions=_ALLOWED_NONE)
             return
-        except Exception:
-            log.exception("achievement collector rank failed")
+        except Exception as exc:
+            await self._report_collector_failure(ctx, "rank", exc, target_member=member)
             await ctx.send(embed=_error_embed("Achievement Collector rank failed. Check the bot logs."), allowed_mentions=_ALLOWED_NONE)
             return
         await ctx.send(embed=rank_embed(target, cache), allowed_mentions=_ALLOWED_NONE)
