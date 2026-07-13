@@ -18,8 +18,11 @@ from modules.housekeeping.achievement_collector import (
     build_leaderboard,
     effective_limit,
     leaderboard_embed,
+    member_has_role,
+    non_raid_rank_embed,
     rank_embed,
     resolve_config,
+    resolve_raid_role_id,
     resolve_messageable,
 )
 
@@ -249,6 +252,7 @@ class AchievementCollectorCog(commands.Cog):
             return
         target = member or ctx.author
         try:
+            raid_role_id = resolve_raid_role_id(ctx.guild)
             cache = await self._get_or_build_cache(ctx.guild)
         except AchievementCollectorError as exc:
             await self._report_collector_failure(ctx, "rank", exc, target_member=member)
@@ -257,6 +261,9 @@ class AchievementCollectorCog(commands.Cog):
         except Exception as exc:
             await self._report_collector_failure(ctx, "rank", exc, target_member=member)
             await ctx.send(embed=_error_embed("Achievement Collector rank failed. Check the bot logs."), allowed_mentions=_ALLOWED_NONE)
+            return
+        if not member_has_role(target, raid_role_id):
+            await ctx.send(embed=non_raid_rank_embed(target), allowed_mentions=_ALLOWED_NONE)
             return
         await ctx.send(embed=rank_embed(target, cache), allowed_mentions=_ALLOWED_NONE)
 
