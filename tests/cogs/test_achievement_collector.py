@@ -194,3 +194,63 @@ def test_command_access_gates():
     assert any(getattr(chk, "__qualname__", "").endswith("admin_only.<locals>.predicate") for chk in AchievementCollectorCog.preview.checks)
     assert any(getattr(chk, "__qualname__", "").endswith("admin_only.<locals>.predicate") for chk in AchievementCollectorCog.publish.checks)
     assert not any(getattr(chk, "__qualname__", "").endswith("admin_only.<locals>.predicate") for chk in AchievementCollectorCog.rank.checks)
+
+@pytest.mark.parametrize("command_name,limit,target_member_id", [
+    ("preview", 7, None),
+    ("publish", 8, None),
+    ("rank", None, 2),
+])
+def test_collector_unexpected_exception_logs_traceback_and_ops_notification(monkeypatch, caplog, command_name, limit, target_member_id):
+    monkeypatch.setenv("ACHIEVEMENTS_SHEET_ID", "secret-sheet-id")
+    r = Role(1)
+    guild = Guild([r], [Member(1, "Actor", [r]), Member(2, "Target", [])])
+    guild.id = 456
+    current = Channel()
+    current.id = 789
+    bot = SimpleNamespace(get_channel=lambda cid: None, fetch_channel=None, wait_until_ready=lambda: None, is_closed=lambda: True)
+    cog = AchievementCollectorCog(bot)
+    ops_logs = []
+
+    async def fake_send_log_message(message):
+        ops_logs.append(message)
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("boom secret-sheet-id sheet contents: shiny row message content: !achievementcollector preview")
+
+    monkeypatch.setattr("cogs.housekeeping_achievement_collector.runtime_helpers.send_log_message", fake_send_log_message)
+    if command_name in {"preview", "publish"}:
+        monkeypatch.setattr(cog, "_rebuild", boom)
+    else:
+        monkeypatch.setattr(cog, "_get_or_build_cache", boom)
+
+    ctx = Ctx(guild, guild.members[0], current)
+    ctx.author.id = 1234
+    target = guild.members[1] if target_member_id is not None else None
+
+    with caplog.at_level("ERROR", logger="c1c.housekeeping.achievement_collector.cog"):
+        if command_name == "preview":
+            run(cog.preview.callback(cog, ctx, limit))
+        elif command_name == "publish":
+            run(cog.publish.callback(cog, ctx, limit))
+        else:
+            run(cog.rank.callback(cog, ctx, target))
+
+    record = next(rec for rec in caplog.records if rec.message == f"achievement collector {command_name} failed")
+    assert record.exc_info is not None
+    assert record.exc_info[0] is RuntimeError
+    assert ctx.sent[-1]["embed"].title == "Achievement Collector"
+    assert ops_logs
+    ops_message = ops_logs[-1]
+    assert "feature=achievement collector" in ops_message
+    assert f"command={command_name}" in ops_message
+    assert "guild_id=456" in ops_message
+    assert "channel_id=789" in ops_message
+    assert "actor_id=1234" in ops_message
+    assert "exception_type=RuntimeError" in ops_message
+    if limit is not None:
+        assert f"limit={limit}" in ops_message
+    if target_member_id is not None:
+        assert f"target_member_id={target_member_id}" in ops_message
+    assert "secret-sheet-id" not in ops_message
+    assert "shiny row" not in ops_message
+    assert "!achievementcollector preview" not in ops_message
