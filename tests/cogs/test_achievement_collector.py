@@ -92,8 +92,9 @@ def test_missing_headers_fail(monkeypatch):
 def test_stale_roles_bots_min_count_and_sorting(monkeypatch):
     async def fake_roles(config): return {1, 2, 999}
     monkeypatch.setattr(ac, "load_active_role_ids", fake_roles)
-    r1, r2, stale = Role(1), Role(2), Role(999)
-    guild = Guild([r1, r2], [Member(1,"Zed",[r1,r2]), Member(2,"Amy",[r1,r2]), Member(3,"Low",[r1]), Member(4,"Bot",[r1,r2], bot=True), Member(5,"Stale",[stale])])
+    raid, r1, r2, stale = Role(10), Role(1), Role(2), Role(999)
+    monkeypatch.setenv("RAID_ROLE_ID", str(raid.id))
+    guild = Guild([raid, r1, r2], [Member(1,"Zed",[raid,r1,r2]), Member(2,"Amy",[raid,r1,r2]), Member(3,"Low",[raid,r1]), Member(4,"Bot",[raid,r1,r2], bot=True), Member(5,"Stale",[raid,stale])])
     cache = run(ac.build_leaderboard(guild, cfg(min_count=2)))
     assert [(e.display_name, e.count, e.rank) for e in cache.entries] == [("Amy",2,1),("Zed",2,2)]
     assert 4 not in cache.counts
@@ -167,7 +168,8 @@ def test_scheduler_config_invalid_rrule_and_time_fail():
 
 
 def test_preview_publish_rank_routing_embeds_allowed_mentions_and_cache(monkeypatch):
-    r=Role(1); guild=Guild([r],[Member(1,"A",[r]), Member(2,"B",[])])
+    raid=Role(10); r=Role(1); guild=Guild([raid,r],[Member(1,"A",[raid,r]), Member(2,"B",[raid])])
+    monkeypatch.setenv("RAID_ROLE_ID", str(raid.id))
     current=Channel(); publish_ch=Channel(); bot=SimpleNamespace(get_channel=lambda cid: publish_ch, fetch_channel=None, wait_until_ready=lambda: None, is_closed=lambda: True)
     cog = AchievementCollectorCog(bot)
     cog._scheduler.start = lambda: None
@@ -271,7 +273,9 @@ def test_report_collector_failure_logs_passed_permission_error_explicit_exc_info
 ])
 def test_collector_permission_error_empty_message_ops_notification_and_embed(monkeypatch, command_name, limit, target_member_id):
     monkeypatch.setenv("ACHIEVEMENTS_SHEET_ID", "secret-sheet-id")
-    guild = Guild([], [Member(1, "Actor", []), Member(2, "Target", [])])
+    raid = Role(10)
+    guild = Guild([raid], [Member(1, "Actor", [raid]), Member(2, "Target", [raid])])
+    monkeypatch.setenv("RAID_ROLE_ID", str(raid.id))
     guild.id = 456
     channel = Channel()
     channel.id = 789
@@ -329,8 +333,10 @@ def test_collector_permission_error_empty_message_ops_notification_and_embed(mon
 ])
 def test_collector_unexpected_exception_logs_traceback_and_ops_notification(monkeypatch, caplog, command_name, limit, target_member_id):
     monkeypatch.setenv("ACHIEVEMENTS_SHEET_ID", "secret-sheet-id")
+    raid = Role(10)
     r = Role(1)
-    guild = Guild([r], [Member(1, "Actor", [r]), Member(2, "Target", [])])
+    guild = Guild([raid, r], [Member(1, "Actor", [raid, r]), Member(2, "Target", [raid])])
+    monkeypatch.setenv("RAID_ROLE_ID", str(raid.id))
     guild.id = 456
     current = Channel()
     current.id = 789
@@ -387,3 +393,110 @@ def test_collector_unexpected_exception_logs_traceback_and_ops_notification(monk
     assert "secret-sheet-id" not in ops_message
     assert "shiny row" not in ops_message
     assert "!achievementcollector preview" not in ops_message
+
+
+def test_raid_role_eligibility_filters_members_bots_and_min_count(monkeypatch):
+    async def fake_roles(config): return {1, 2}
+    monkeypatch.setattr(ac, "load_active_role_ids", fake_roles)
+    raid, ach1, ach2 = Role(10), Role(1), Role(2)
+    monkeypatch.setenv("RAID_ROLE_ID", str(raid.id))
+    guild = Guild(
+        [raid, ach1, ach2],
+        [
+            Member(1, "Included", [raid, ach1, ach2]),
+            Member(2, "NoRaid", [ach1, ach2]),
+            Member(3, "Bot", [raid, ach1, ach2], bot=True),
+            Member(4, "BelowMin", [raid, ach1]),
+        ],
+    )
+
+    cache = run(ac.build_leaderboard(guild, cfg(min_count=2)))
+
+    assert [(entry.member_id, entry.display_name, entry.count) for entry in cache.entries] == [(1, "Included", 2)]
+    assert cache.counts == {1: 2, 4: 1}
+
+
+def test_rank_member_without_raid_role_returns_non_raid_copy(monkeypatch):
+    raid, ach = Role(10), Role(1)
+    guild = Guild([raid, ach], [Member(1, "Actor", [raid, ach]), Member(2, "NoRaid", [ach])])
+    monkeypatch.setenv("RAID_ROLE_ID", str(raid.id))
+    ctx = Ctx(guild, guild.members[0], Channel())
+    cog = AchievementCollectorCog(SimpleNamespace())
+
+    async def fake_cache(_guild):
+        return ac.LeaderboardCache(_guild.id, dt.datetime.now(dt.timezone.utc), (), {})
+
+    monkeypatch.setattr(cog, "_get_or_build_cache", fake_cache)
+
+    run(cog.rank.callback(cog, ctx, guild.members[1]))
+
+    assert ctx.sent[-1]["embed"].description == "<@2> is not on the collector board right now. No raid badge, no shiny leaderboard nonsense."
+
+
+def test_preview_and_publish_leaderboards_only_contain_raid_members(monkeypatch):
+    async def fake_roles(config): return {1}
+    monkeypatch.setattr(ac, "load_active_role_ids", fake_roles)
+    raid, ach = Role(10), Role(1)
+    monkeypatch.setenv("RAID_ROLE_ID", str(raid.id))
+    guild = Guild([raid, ach], [Member(1, "Raid", [raid, ach]), Member(2, "NoRaid", [ach])])
+    current, publish_ch = Channel(), Channel()
+    bot = SimpleNamespace(get_channel=lambda cid: publish_ch, fetch_channel=None, wait_until_ready=lambda: None, is_closed=lambda: True)
+    cog = AchievementCollectorCog(bot)
+
+    async def fake_config(): return cfg(channel_id=555, default_limit=5, max_limit=5, min_count=1)
+
+    monkeypatch.setattr("cogs.housekeeping_achievement_collector.resolve_config", fake_config)
+    ctx = Ctx(guild, guild.members[0], current)
+
+    run(cog.preview.callback(cog, ctx, None))
+    run(cog.publish.callback(cog, ctx, None))
+
+    assert "<@1>" in ctx.sent[0]["embed"].description
+    assert "<@2>" not in ctx.sent[0]["embed"].description
+    assert "<@1>" in publish_ch.sent[-1]["embed"].description
+    assert "<@2>" not in publish_ch.sent[-1]["embed"].description
+
+
+@pytest.mark.parametrize(
+    "env_value,roles,message",
+    [
+        (None, [Role(10)], "Missing RAID_ROLE_ID"),
+        ("not-a-role", [Role(10)], "RAID_ROLE_ID must be a valid Discord role ID integer"),
+        ("10", [], "RAID_ROLE_ID could not be resolved in this guild"),
+    ],
+)
+def test_raid_role_id_validation_fails_clearly(monkeypatch, env_value, roles, message):
+    if env_value is None:
+        monkeypatch.delenv("RAID_ROLE_ID", raising=False)
+    else:
+        monkeypatch.setenv("RAID_ROLE_ID", env_value)
+    guild = Guild(roles, [])
+
+    with pytest.raises(ac.AchievementCollectorError, match=message):
+        ac.resolve_raid_role_id(guild)
+
+
+def test_missing_raid_role_id_command_reports_ops_without_sheet_read(monkeypatch):
+    monkeypatch.delenv("RAID_ROLE_ID", raising=False)
+    sheet_reads = {"n": 0}
+    ops_logs = []
+    ach = Role(1)
+    guild = Guild([ach], [Member(1, "Actor", [ach])])
+    ctx = Ctx(guild, guild.members[0], Channel())
+    cog = AchievementCollectorCog(SimpleNamespace())
+
+    async def fake_roles(_config):
+        sheet_reads["n"] += 1
+        return {ach.id}
+
+    async def fake_send_log_message(message):
+        ops_logs.append(message)
+
+    monkeypatch.setattr(ac, "load_active_role_ids", fake_roles)
+    monkeypatch.setattr("cogs.housekeeping_achievement_collector.runtime_helpers.send_log_message", fake_send_log_message)
+
+    run(cog.rank.callback(cog, ctx, None))
+
+    assert sheet_reads["n"] == 0
+    assert ctx.sent[-1]["embed"].description.startswith("Missing RAID_ROLE_ID")
+    assert ops_logs and "feature=achievement collector" in ops_logs[-1]
