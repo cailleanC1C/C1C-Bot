@@ -75,9 +75,10 @@ class AchievementCollectorCog(commands.Cog):
         limit: int | None = None,
         target_member: discord.Member | None = None,
     ) -> None:
-        log.exception(
+        log.error(
             "achievement collector %s failed",
             command_name,
+            exc_info=(type(exc), exc, exc.__traceback__),
             extra={
                 "achievement_collector_command": command_name,
                 "guild_id": _context_id(ctx, "guild"),
