@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+import discord
 from discord.ext import commands
 
 from c1c_coreops.helpers import help_metadata, tier
@@ -36,7 +37,12 @@ class WanderingSoulsCog(commands.Cog):
     @wandering_souls_group.command(name="investigate")
     @commands.guild_only()
     @admin_only()
-    async def investigate(self, ctx: commands.Context) -> None:
+    async def investigate(self, ctx: commands.Context, days: str | None = None) -> None:
+        scan_days, parse_error = ws.parse_scan_days(days)
+        if parse_error:
+            await ctx.send(embed=ws.build_error_embed(parse_error))
+            return
+
         guild = ctx.guild
         if guild is None:
             await ctx.send(embed=ws.build_error_embed(MEMBER_LOAD_ERROR))
@@ -56,9 +62,11 @@ class WanderingSoulsCog(commands.Cog):
         if error:
             await ctx.send(embed=ws.build_error_embed(error))
             return
-        result = ws.collect_wandering_souls(guild, int(wandering_role.id), int(exclude_role.id))
+        result = ws.collect_wandering_souls(guild, int(wandering_role.id), int(exclude_role.id), scan_days=int(scan_days))
+        result = await ws.scan_recent_messages(guild, result)
+        allowed_mentions = discord.AllowedMentions.none()
         for embed in ws.build_investigation_embeds(result):
-            await ctx.send(embed=embed)
+            await ctx.send(embed=embed, allowed_mentions=allowed_mentions)
 
 
 async def setup(bot: commands.Bot):
