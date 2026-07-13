@@ -49,6 +49,7 @@ docs/ops/.env.example
 
 **RBAC / Access Lists**
 - Permissions UI blacklists: `PERMS_BLACKLIST_CHANNEL_IDS`, `PERMS_BLACKLIST_CATEGORY_IDS` — **IDs only**; numeric; comma-separated if needed.
+- Wandering Souls diagnostics use `WANDERING_SOULS_ROLE_ID` and `WANDERING_SOULS_EXCLUDE_ROLE_ID` to identify included/excluded roles.
 - `GUILD_IDS` env var exists for allowed guilds.
 
 **Deploy / Runtime**

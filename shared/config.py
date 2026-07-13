@@ -53,6 +53,7 @@ __all__ = [
     "get_clan_role_ids",
     "get_raid_role_id",
     "get_wandering_souls_role_id",
+    "get_wandering_souls_exclude_role_id",
     "get_visitor_role_id",
     "get_recruitment_coordinator_role_ids",
     "get_guardian_knight_role_ids",
@@ -538,6 +539,7 @@ def _load_config() -> Dict[str, object]:
         "CLAN_ROLE_IDS": _int_set(os.getenv("CLAN_ROLE_IDS")),
         "RAID_ROLE_ID": _first_int(os.getenv("RAID_ROLE_ID")),
         "WANDERING_SOULS_ROLE_ID": _first_int(os.getenv("WANDERING_SOULS_ROLE_ID")),
+        "WANDERING_SOULS_EXCLUDE_ROLE_ID": _first_int(os.getenv("WANDERING_SOULS_EXCLUDE_ROLE_ID")),
         "VISITOR_ROLE_ID": _first_int(os.getenv("VISITOR_ROLE_ID")),
         "LEAD_ROLE_IDS": _int_set(os.getenv("LEAD_ROLE_IDS")),
         "CLAN_LEAD_IDS": _int_set(os.getenv("CLAN_LEAD_IDS")),
@@ -1004,6 +1006,10 @@ def get_raid_role_id() -> Optional[int]:
 
 def get_wandering_souls_role_id() -> Optional[int]:
     return _optional_id("WANDERING_SOULS_ROLE_ID")
+
+
+def get_wandering_souls_exclude_role_id() -> Optional[int]:
+    return _optional_id("WANDERING_SOULS_EXCLUDE_ROLE_ID")
 
 
 def get_visitor_role_id() -> Optional[int]:

@@ -1217,6 +1217,7 @@ class Runtime:
         from cogs import housekeeping_mirralith
         from cogs import housekeeping_achievements
         from cogs import housekeeping_achievement_collector
+        from cogs import housekeeping_wandering_souls
         from cogs import housekeeping_c1c_ad
         from cogs import recruitment_clan_ads
         from modules.housekeeping import cleanup as housekeeping_cleanup_commands
@@ -1261,6 +1262,9 @@ class Runtime:
 
         await housekeeping_achievement_collector.setup(self.bot)
         log.info("modules: achievement_collector command registered")
+
+        await housekeeping_wandering_souls.setup(self.bot)
+        log.info("modules: wandering_souls command registered")
 
         await housekeeping_c1c_ad.setup(self.bot)
         log.info("modules: c1c_ad command registered")
