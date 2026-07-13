@@ -12,7 +12,6 @@ from shared.theme import colors
 ACTIVITY_FOOTER = "Message stats are based on bot-visible channel history scanned for this command."
 UNKNOWN = "unknown"
 MAX_EMBED_DESCRIPTION = 3900
-DEFAULT_SCAN_DAYS = 90
 MIN_SCAN_DAYS = 1
 MAX_SCAN_DAYS = 180
 
@@ -30,17 +29,22 @@ class InvestigationResult:
     total_wandering: int
     excluded: int
     entries: tuple[InvestigationEntry, ...]
-    scan_days: int = DEFAULT_SCAN_DAYS
+    scan_days: int = MIN_SCAN_DAYS
     scan_warning_count: int = 0
+
+
+MISSING_SCAN_WINDOW_ERROR = "Missing scan window.\nUse: !wanderingsouls investigate 30\nAllowed range: 1-180 days."
+INVALID_SCAN_WINDOW_ERROR = "Invalid scan window.\nUse: !wanderingsouls investigate 30\nAllowed range: 1-180 days."
+SCAN_ALREADY_RUNNING_ERROR = "A Wandering Souls investigation scan is already running. Wait for it to finish before starting another."
 
 
 def parse_scan_days(value: str | None) -> tuple[int | None, str | None]:
     if value is None:
-        return DEFAULT_SCAN_DAYS, None
+        return None, MISSING_SCAN_WINDOW_ERROR
     try:
         days = int(value)
     except (TypeError, ValueError):
-        return None, "Accepted syntax: `!wanderingsouls investigate` or `!wanderingsouls investigate <days>` where `<days>` is a whole number from 1 to 180."
+        return None, INVALID_SCAN_WINDOW_ERROR
     return max(MIN_SCAN_DAYS, min(MAX_SCAN_DAYS, days)), None
 
 
@@ -73,7 +77,7 @@ def resolve_investigation_roles(guild: Any) -> tuple[Any | None, Any | None, str
     return wandering_role, exclude_role, None
 
 
-def collect_wandering_souls(guild: Any, wandering_role_id: int, exclude_role_id: int, *, scan_days: int = DEFAULT_SCAN_DAYS) -> InvestigationResult:
+def collect_wandering_souls(guild: Any, wandering_role_id: int, exclude_role_id: int, *, scan_days: int = MIN_SCAN_DAYS) -> InvestigationResult:
     wandering: list[Any] = []
     entries: list[InvestigationEntry] = []
     excluded = 0
@@ -220,7 +224,15 @@ def build_investigation_embeds(result: InvestigationResult) -> list[discord.Embe
 def build_diagnostics_embed() -> discord.Embed:
     return discord.Embed(
         title="Wandering Souls Diagnostics",
-        description="Use `!wanderingsouls investigate` to list current Wandering Souls members.",
+        description="Use `!wanderingsouls investigate <days>` to scan Wandering Souls message activity.",
+        colour=colors.admin,
+    )
+
+
+def build_ack_embed(scan_days: int) -> discord.Embed:
+    return discord.Embed(
+        title="Wandering Souls Investigation",
+        description=f"Scanning Wandering Souls activity for the last {scan_days} days…",
         colour=colors.admin,
     )
 
