@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import traceback
 
 import discord
 from discord.ext import commands
@@ -48,6 +49,52 @@ def _error_embed(message: str) -> discord.Embed:
     return discord.Embed(title="Achievement Collector", description=message, colour=discord.Colour.red())
 
 
+def _traceback_file_label(filename: str) -> str:
+    try:
+        return os.path.relpath(filename)
+    except ValueError:
+        return filename
+
+
+def _exception_traceback_metadata(exc: BaseException) -> dict[str, object]:
+    frames = traceback.extract_tb(exc.__traceback__)
+    if not frames:
+        return {
+            "exception_origin_file": None,
+            "exception_origin_line": None,
+            "exception_origin_function": None,
+            "exception_trace_frames": [],
+        }
+
+    recent_frames = frames[-8:]
+    trace_frames = [
+        {
+            "file": _traceback_file_label(frame.filename),
+            "line": frame.lineno,
+            "function": frame.name,
+        }
+        for frame in recent_frames
+    ]
+    origin = trace_frames[-1]
+    return {
+        "exception_origin_file": origin["file"],
+        "exception_origin_line": origin["line"],
+        "exception_origin_function": origin["function"],
+        "exception_trace_frames": trace_frames,
+    }
+
+
+def _exception_origin_marker(traceback_metadata: dict[str, object]) -> str | None:
+    origin_file = traceback_metadata.get("exception_origin_file")
+    origin_line = traceback_metadata.get("exception_origin_line")
+    origin_function = traceback_metadata.get("exception_origin_function")
+    if not origin_file or not origin_line:
+        return None
+    if origin_function:
+        return f"{origin_file}:{origin_line} {origin_function}"
+    return f"{origin_file}:{origin_line}"
+
+
 class AchievementCollectorCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -75,6 +122,7 @@ class AchievementCollectorCog(commands.Cog):
         limit: int | None = None,
         target_member: discord.Member | None = None,
     ) -> None:
+        traceback_metadata = _exception_traceback_metadata(exc)
         log.error(
             "achievement collector %s failed",
             command_name,
@@ -87,6 +135,7 @@ class AchievementCollectorCog(commands.Cog):
                 "provided_limit": limit,
                 "target_member_id": getattr(target_member, "id", None),
                 "exception_type": type(exc).__name__,
+                **traceback_metadata,
             },
         )
         fields = [
@@ -98,6 +147,9 @@ class AchievementCollectorCog(commands.Cog):
             f"exception_type={type(exc).__name__}",
             f"exception={_short_exception_message(exc)}",
         ]
+        origin_marker = _exception_origin_marker(traceback_metadata)
+        if origin_marker:
+            fields.append(f"origin={origin_marker}")
         if limit is not None:
             fields.append(f"limit={limit}")
         if target_member is not None:
