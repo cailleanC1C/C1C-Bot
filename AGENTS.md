@@ -41,6 +41,9 @@ docs/ops/.env.example
 **Feature Toggles / Config (from Sheets, not ENV)**
 - Feature toggles must be served from your sheet config tabs (per contract). Do **not** move runtime toggles to ENV unless you explicitly add them to `env.example` and document the reason.
 
+**Async runtime Sheets rule**
+- Discord commands, listeners, views, modals, scheduler jobs, and async startup/on_ready code must never call synchronous Google Sheets helpers. Use async helpers only (`afetch_records`, `afetch_values`, `asheets_read`, `acall_with_backoff`, `get_config_value_async`, and async tab/header helpers). If no async helper exists, add one instead of calling the sync helper.
+
 **Gateway Intents / Permissions (operational guidance)**
 - Maintain minimum necessary intents in both portal and code. Any change to intents or OAuth scopes must be:
   1. Listed here,

@@ -72,7 +72,7 @@ from shared.sheets.async_core import (
     acall_with_backoff,
     afetch_records,
 )
-from shared.sheets.recruitment import get_config_value_async, get_reports_tab_name
+from shared.sheets.recruitment import get_config_value_async, get_reports_tab_name_async
 import shared.sheets.core as sheets_core
 from modules.common.config_sheets import SHEET_TARGETS, SheetTarget
 
@@ -2569,7 +2569,7 @@ class CoreOpsCog(commands.Cog):
 
         if target.sheet_id_key == "RECRUITMENT_SHEET_ID":
             reports_config = discovery.tab_map.get("REPORTS_TAB")
-            reports_default = get_reports_tab_name("Statistics")
+            reports_default = await get_reports_tab_name_async("Statistics")
             reports_tab = (reports_config or reports_default or "").strip()
             if reports_tab:
                 normalized_reports = reports_tab.lower()

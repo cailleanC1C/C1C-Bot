@@ -594,10 +594,24 @@ def get_reservations_tab_name(default: str = "Reservations") -> str:
     return text or default
 
 
+async def get_reservations_tab_name_async(default: str = "Reservations") -> str:
+    value = await _aconfig_lookup("reservations_tab", default) or default
+    text = str(value or "").strip()
+    return text or default
+
+
 def get_role_map_tab_name(default: str = "WhoWeAre") -> str:
     """Return the configured role map worksheet name."""
 
     value = _config_lookup("rolemap_tab", default) or default
+    text = str(value or "").strip()
+    return text or default
+
+
+async def get_role_map_tab_name_async(default: str = "WhoWeAre") -> str:
+    """Async return of the configured role map worksheet name."""
+
+    value = await _aconfig_lookup("rolemap_tab", default) or default
     text = str(value or "").strip()
     return text or default
 

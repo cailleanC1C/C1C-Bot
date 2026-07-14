@@ -230,7 +230,7 @@ def test_whoweare_command_reports_sheet_errors(monkeypatch):
         ctx.reply = AsyncMock()
 
         monkeypatch.setattr(feature_flags, "is_enabled", lambda key: True)
-        monkeypatch.setattr(recruitment_sheet, "get_role_map_tab_name", lambda: "WhoWeAre")
+        monkeypatch.setattr(recruitment_sheet, "get_role_map_tab_name_async", AsyncMock(return_value="WhoWeAre"))
 
         async def raise_error(*_args, **_kwargs):
             raise cluster_role_map.RoleMapLoadError("sheet offline")
@@ -290,7 +290,7 @@ def test_whoweare_command_cleans_old_map_messages(monkeypatch):
         monkeypatch.setattr(runtime_helpers.discord, "TextChannel", FakeChannel)
 
         monkeypatch.setattr(feature_flags, "is_enabled", lambda key: True)
-        monkeypatch.setattr(recruitment_sheet, "get_role_map_tab_name", lambda: "WhoWeAre")
+        monkeypatch.setattr(recruitment_sheet, "get_role_map_tab_name_async", AsyncMock(return_value="WhoWeAre"))
 
         async def fake_fetch(*_args, **_kwargs):
             return []
@@ -353,7 +353,7 @@ def test_whoweare_command_posts_multi_message_map(monkeypatch):
         monkeypatch.setattr(runtime_helpers.discord, "TextChannel", FakeChannel)
 
         monkeypatch.setattr(feature_flags, "is_enabled", lambda key: True)
-        monkeypatch.setattr(recruitment_sheet, "get_role_map_tab_name", lambda: "WhoWeAre")
+        monkeypatch.setattr(recruitment_sheet, "get_role_map_tab_name_async", AsyncMock(return_value="WhoWeAre"))
 
         async def fake_fetch(*_args, **_kwargs):
             return []
@@ -433,7 +433,7 @@ def test_whoweare_command_marks_unassigned_with_blue_diamond(monkeypatch):
         monkeypatch.setattr(runtime_helpers.discord, "TextChannel", FakeChannel)
 
         monkeypatch.setattr(feature_flags, "is_enabled", lambda key: True)
-        monkeypatch.setattr(recruitment_sheet, "get_role_map_tab_name", lambda: "WhoWeAre")
+        monkeypatch.setattr(recruitment_sheet, "get_role_map_tab_name_async", AsyncMock(return_value="WhoWeAre"))
 
         async def fake_fetch(*_args, **_kwargs):
             return []
@@ -490,7 +490,7 @@ def test_whoweare_command_handles_empty_categories(monkeypatch):
         monkeypatch.setattr(runtime_helpers.discord, "TextChannel", FakeChannel)
 
         monkeypatch.setattr(feature_flags, "is_enabled", lambda key: True)
-        monkeypatch.setattr(recruitment_sheet, "get_role_map_tab_name", lambda: "WhoWeAre")
+        monkeypatch.setattr(recruitment_sheet, "get_role_map_tab_name_async", AsyncMock(return_value="WhoWeAre"))
 
         async def fake_fetch(*_args, **_kwargs):
             return []
@@ -542,7 +542,7 @@ def test_whoweare_command_logs_channel_fallback(monkeypatch):
         monkeypatch.setattr(runtime_helpers.discord, "TextChannel", FakeChannel)
 
         monkeypatch.setattr(feature_flags, "is_enabled", lambda key: True)
-        monkeypatch.setattr(recruitment_sheet, "get_role_map_tab_name", lambda: "WhoWeAre")
+        monkeypatch.setattr(recruitment_sheet, "get_role_map_tab_name_async", AsyncMock(return_value="WhoWeAre"))
 
         async def fake_fetch(*_args, **_kwargs):
             return []
@@ -611,7 +611,7 @@ def test_whoweare_command_falls_back_for_non_messageable_channel(monkeypatch):
         monkeypatch.setattr(runtime_helpers.discord, "TextChannel", FakeChannel)
 
         monkeypatch.setattr(feature_flags, "is_enabled", lambda key: True)
-        monkeypatch.setattr(recruitment_sheet, "get_role_map_tab_name", lambda: "WhoWeAre")
+        monkeypatch.setattr(recruitment_sheet, "get_role_map_tab_name_async", AsyncMock(return_value="WhoWeAre"))
 
         async def fake_fetch(*_args, **_kwargs):
             return []
@@ -681,7 +681,7 @@ def test_whoweare_command_falls_back_for_foreign_channel(monkeypatch):
         monkeypatch.setattr(runtime_helpers.discord, "TextChannel", FakeChannel)
 
         monkeypatch.setattr(feature_flags, "is_enabled", lambda key: True)
-        monkeypatch.setattr(recruitment_sheet, "get_role_map_tab_name", lambda: "WhoWeAre")
+        monkeypatch.setattr(recruitment_sheet, "get_role_map_tab_name_async", AsyncMock(return_value="WhoWeAre"))
 
         async def fake_fetch(*_args, **_kwargs):
             return []
@@ -798,3 +798,35 @@ def test_build_role_map_render_hides_real_empty_role_without_fallback_members():
     assert render.unassigned_roles == 1
     assert render.missing_roles == 0
     assert render.empty_roles == 1
+
+
+def test_whoweare_does_not_call_sync_sheets_lookup_in_event_loop(monkeypatch):
+    async def _run() -> None:
+        bot = object()
+        cog = AppAdmin(bot)
+        ctx = SimpleNamespace(guild=SimpleNamespace(name="Guild"), reply=AsyncMock())
+
+        monkeypatch.setattr(feature_flags, "is_enabled", lambda key: True)
+
+        def fail_sync_lookup(*_args, **_kwargs):
+            raise AssertionError("sync role map tab lookup must not run in !whoweare")
+
+        monkeypatch.setattr(recruitment_sheet, "get_role_map_tab_name", fail_sync_lookup)
+        monkeypatch.setattr(
+            recruitment_sheet,
+            "get_role_map_tab_name_async",
+            AsyncMock(return_value="WhoWeAre"),
+        )
+
+        async def raise_error(*_args, **_kwargs):
+            raise cluster_role_map.RoleMapLoadError("stop after async lookup")
+
+        monkeypatch.setattr(cluster_role_map, "fetch_role_map_rows", raise_error)
+        monkeypatch.setattr(runtime_helpers, "send_log_message", AsyncMock())
+
+        await cog.whoweare.callback(cog, ctx)
+
+        recruitment_sheet.get_role_map_tab_name_async.assert_awaited_once_with()
+        ctx.reply.assert_awaited_once()
+
+    asyncio.run(_run())

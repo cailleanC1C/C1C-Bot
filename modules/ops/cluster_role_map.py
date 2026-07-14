@@ -149,7 +149,9 @@ async def fetch_role_map_rows(tab_name: str | None = None) -> List[RoleMapRow]:
     if not sheet_id:
         raise RoleMapLoadError("Recruitment sheet ID is missing")
 
-    rolemap_tab = _normalize_text(tab_name) or recruitment.get_role_map_tab_name()
+    rolemap_tab = (
+        _normalize_text(tab_name) or await recruitment.get_role_map_tab_name_async()
+    )
     if not rolemap_tab:
         raise RoleMapLoadError("Role map tab name missing")
 
