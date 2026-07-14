@@ -352,7 +352,7 @@ class AppAdmin(commands.Cog):
             )
             return
 
-        tab_name = recruitment_sheet.get_role_map_tab_name()
+        tab_name = await recruitment_sheet.get_role_map_tab_name_async()
         try:
             entries = await cluster_role_map.fetch_role_map_rows(tab_name=tab_name)
         except cluster_role_map.RoleMapLoadError as exc:

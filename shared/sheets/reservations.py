@@ -103,7 +103,7 @@ async def append_reservation_row(row_values: Sequence[Any]) -> None:
 
     recruitment.ensure_service_account_credentials()
     sheet_id = recruitment.get_recruitment_sheet_id()
-    tab_name = recruitment.get_reservations_tab_name()
+    tab_name = await recruitment.get_reservations_tab_name_async()
     worksheet = await async_core.aget_worksheet(sheet_id, tab_name)
     payload = [str(value) if value is not None else "" for value in row_values]
     await async_core.acall_with_backoff(
@@ -122,7 +122,7 @@ async def load_reservation_ledger() -> ReservationLedger:
 
     header = [_normalize_schema_cell(cell) for cell in matrix[0]]
     if header != RESERVATIONS_HEADERS:
-        tab_name = recruitment.get_reservations_tab_name()
+        tab_name = await recruitment.get_reservations_tab_name_async()
         log.error(
             "reservations header mismatch",
             extra={
@@ -322,7 +322,7 @@ async def update_reservation_status(
 
     recruitment.ensure_service_account_credentials()
     sheet_id = recruitment.get_recruitment_sheet_id()
-    tab_name = recruitment.get_reservations_tab_name()
+    tab_name = await recruitment.get_reservations_tab_name_async()
     worksheet = await async_core.aget_worksheet(sheet_id, tab_name)
 
     cell = f"{_column_label(column_index)}{row_number}"
@@ -342,7 +342,7 @@ async def update_reservation_expiry(row_number: int, reserved_until: dt.date) ->
 
     recruitment.ensure_service_account_credentials()
     sheet_id = recruitment.get_recruitment_sheet_id()
-    tab_name = recruitment.get_reservations_tab_name()
+    tab_name = await recruitment.get_reservations_tab_name_async()
     worksheet = await async_core.aget_worksheet(sheet_id, tab_name)
 
     cell = f"{_column_label(RESERVED_UNTIL_COL)}{row_number}"
@@ -357,7 +357,7 @@ async def update_reservation_expiry(row_number: int, reserved_until: dt.date) ->
 async def _fetch_reservations_matrix() -> List[List[str]]:
     recruitment.ensure_service_account_credentials()
     sheet_id = recruitment.get_recruitment_sheet_id()
-    tab_name = recruitment.get_reservations_tab_name()
+    tab_name = await recruitment.get_reservations_tab_name_async()
     return await async_core.afetch_values(sheet_id, tab_name)
 
 
