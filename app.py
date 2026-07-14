@@ -5,7 +5,9 @@ import datetime as dt
 import logging
 import os
 import signal
+import sys
 import time
+import traceback
 from typing import Optional
 
 import discord
@@ -48,6 +50,117 @@ logging.basicConfig(
 log = logging.getLogger("c1c.app")
 
 LOG_MESSAGE_CONTENT_MAX_LEN = 200
+
+
+def _traceback_file_label(filename: str) -> str:
+    try:
+        return os.path.relpath(filename)
+    except ValueError:
+        return filename
+
+
+def _exception_traceback_metadata(exc: BaseException) -> dict[str, object]:
+    frames = traceback.extract_tb(exc.__traceback__)
+    if not frames:
+        return {
+            "exception_origin_file": None,
+            "exception_origin_line": None,
+            "exception_origin_function": None,
+            "exception_trace_frames": [],
+        }
+
+    trace_frames = [
+        {
+            "file": _traceback_file_label(frame.filename),
+            "line": frame.lineno,
+            "function": frame.name,
+        }
+        for frame in frames[-8:]
+    ]
+    origin = trace_frames[-1]
+    return {
+        "exception_origin_file": origin["file"],
+        "exception_origin_line": origin["line"],
+        "exception_origin_function": origin["function"],
+        "exception_trace_frames": trace_frames,
+    }
+
+
+def _exception_origin_marker(traceback_metadata: dict[str, object]) -> str:
+    origin_file = traceback_metadata.get("exception_origin_file") or "-"
+    origin_line = traceback_metadata.get("exception_origin_line") or "-"
+    origin_function = traceback_metadata.get("exception_origin_function") or "-"
+    return f"{origin_file}:{origin_line} {origin_function}"
+
+
+def _safe_id(obj: object | None) -> int | None:
+    return getattr(obj, "id", None)
+
+
+def _first_present(*values: object) -> object | None:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _find_custom_id(payload: object) -> object | None:
+    if not isinstance(payload, dict):
+        return None
+    custom_id = payload.get("custom_id")
+    if custom_id is not None:
+        return custom_id
+    for key in ("components", "children"):
+        components = payload.get(key)
+        if isinstance(components, list):
+            for component in components:
+                found = _find_custom_id(component)
+                if found is not None:
+                    return found
+    return None
+
+
+def _interaction_diagnostics(interaction: object | None) -> dict[str, object]:
+    data = getattr(interaction, "data", None)
+    command = getattr(interaction, "command", None)
+    guild = getattr(interaction, "guild", None)
+    channel = getattr(interaction, "channel", None)
+    user = getattr(interaction, "user", None)
+    message = getattr(interaction, "message", None)
+    interaction_type = getattr(getattr(interaction, "type", None), "name", None) or str(getattr(interaction, "type", "-"))
+    return {
+        "interaction_type": interaction_type,
+        "interaction_id": _safe_id(interaction),
+        "interaction_user_id": _safe_id(user),
+        "guild_id": _safe_id(guild) or getattr(interaction, "guild_id", None),
+        "channel_id": _safe_id(channel) or getattr(interaction, "channel_id", None),
+        "message_id": _safe_id(message),
+        "command_name": _first_present(
+            getattr(command, "qualified_name", None),
+            getattr(command, "name", None),
+            data.get("name") if isinstance(data, dict) else None,
+        ),
+        "custom_id": _find_custom_id(data),
+        "component_type": data.get("component_type") if isinstance(data, dict) else None,
+    }
+
+
+async def _send_interaction_error_ops_message(metadata: dict[str, object]) -> None:
+    runtime_obj = globals().get("runtime")
+    if runtime_obj is None:
+        return
+    try:
+        await runtime_obj.send_log_message(
+            "⚠️ Interaction error — "
+            f"type={metadata.get('interaction_type') or '-'} "
+            f"custom_id={metadata.get('custom_id') or '-'} "
+            f"user={metadata.get('interaction_user_id') or '-'} "
+            f"channel={metadata.get('channel_id') or '-'} "
+            f"origin={_exception_origin_marker(metadata)} "
+            f"exception={metadata.get('exception_type') or '-'}"
+        )
+    except Exception:
+        log.warning("failed to send interaction error to log channel", exc_info=True)
 
 INTENTS = discord.Intents.default()
 INTENTS.message_content = True
@@ -439,7 +552,25 @@ async def on_resumed():
 
 @bot.event
 async def on_error(event: str, *_args, **_kwargs) -> None:
-    log.exception("Unhandled exception in %s", event)
+    exc_type, exc, tb = sys.exc_info()
+    if exc is None:
+        log.exception("Unhandled exception in %s", event)
+        return
+
+    traceback_metadata = _exception_traceback_metadata(exc)
+    extra = {
+        "exception_type": exc_type.__name__ if exc_type else type(exc).__name__,
+        "exception_message": str(exc) or None,
+        **traceback_metadata,
+    }
+    if event == "on_interaction":
+        interaction = _args[0] if _args else None
+        extra.update(_interaction_diagnostics(interaction))
+        log.error("Unhandled exception in %s", event, exc_info=(exc_type, exc, tb), extra=extra)
+        await _send_interaction_error_ops_message(extra)
+        return
+
+    log.error("Unhandled exception in %s", event, exc_info=(exc_type, exc, tb), extra=extra)
 
 
 @bot.event
