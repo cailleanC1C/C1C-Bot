@@ -1363,9 +1363,7 @@ class _FakeLoop:
         coro.close()
 
 
-def test_global_housekeeping_disabled_prevents_cleanup_resolution_and_startup_validation(
-    monkeypatch, caplog
-):
+def test_global_housekeeping_disabled_prevents_cleanup_resolution(monkeypatch, caplog):
     caplog.set_level("INFO", logger="c1c.housekeeping.cleanup")
     rt = object.__new__(runtime.Runtime)
     rt.scheduler = _FakeScheduler()
@@ -1377,7 +1375,7 @@ def test_global_housekeeping_disabled_prevents_cleanup_resolution_and_startup_va
     cleanup_module = SimpleNamespace(
         resolve_cleanup_config_async=fail_resolve,
         run_cleanup=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("startup validation must not run")
+            AssertionError("cleanup must not run during registration")
         ),
     )
 
@@ -1443,9 +1441,12 @@ def test_cleanup_schedules_only_when_global_and_cleanup_toggles_enabled(
         {"hours": 6.0, "tag": "cleanup", "name": "cleanup_watcher"}
     ]
     assert [task["name"] for task in rt.scheduler.spawned] == [
-        "cleanup_startup_validation",
         "cleanup_registration_notice",
     ]
+    assert "cleanup_startup_validation" not in [
+        task["name"] for task in rt.scheduler.spawned
+    ]
+    assert run_cleanup_calls == []
     assert rt.bot.loop.created == []
     assert rt.scheduler.jobs[0].runner is not None
     assert successes[0][0].bucket == "cleanup"
@@ -1453,13 +1454,6 @@ def test_cleanup_schedules_only_when_global_and_cleanup_toggles_enabled(
         "cleanup watcher scheduled: every=6h dry_run=true tab=CleanupRows "
         "next_run=2026-06-26T12:00:00Z"
     ) in caplog.text
-
-    startup_validation = rt.scheduler.spawned[0]["coro"]
-    asyncio.run(startup_validation)
-    assert run_cleanup_calls[-1][1] == {
-        "startup_validation": True,
-        "writeback": False,
-    }
 
     asyncio.run(rt.scheduler.jobs[0].runner())
 
@@ -1469,7 +1463,7 @@ def test_cleanup_schedules_only_when_global_and_cleanup_toggles_enabled(
         "writeback": True,
     }
 
-    registration_notice = rt.scheduler.spawned[1]["coro"]
+    registration_notice = rt.scheduler.spawned[0]["coro"]
     asyncio.run(registration_notice)
     assert sent_logs == [
         "🧹 cleanup watcher tick: startup_validation=false writeback=true",
