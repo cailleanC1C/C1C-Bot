@@ -993,12 +993,12 @@ def test_mission_rows_sort_skip_and_hide_internal_metadata():
     rows = [
         {
             "step_index": "2",
-            "mission_text": "Second https://source.example/x",
+            "description": "Second https://source.example/x",
             "source_url": "https://source.example",
             "system_tags": "secret",
         },
-        {"step_index": "", "mission_text": "Fallback order", "resource_tags": "hidden"},
-        {"step_index": "1", "mission_text": "First"},
+        {"step_index": "", "description": "Fallback order", "resource_tags": "hidden"},
+        {"step_index": "1", "description": "First", "mission_key": "internal-key"},
         {"step_index": "3", "mission_text": ""},
     ]
     missions = service._parse_mission_rows(rows)
@@ -1011,6 +1011,26 @@ def test_mission_rows_sort_skip_and_hide_internal_metadata():
     assert "source.example" not in rendered
     assert "secret" not in rendered
     assert "hidden" not in rendered
+    assert "internal-key" not in rendered
+
+
+def test_mission_rows_use_description_before_mission_text_fallback():
+    rows = [
+        {
+            "step_index": "1",
+            "description": "Description mission",
+            "mission_text": "Legacy text",
+        },
+        {"step_index": "2", "mission_text": "Fallback mission"},
+        {"step_index": "3", "title": "Missing text"},
+    ]
+
+    missions = service._parse_mission_rows(rows)
+
+    assert [(mission.number, mission.text) for mission in missions] == [
+        (1, "Description mission"),
+        (2, "Fallback mission"),
+    ]
 
 
 def test_first_mission_click_reads_only_configured_category_tab_and_caches(monkeypatch):

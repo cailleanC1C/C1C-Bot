@@ -285,7 +285,7 @@ def _is_quota_failure(exc: BaseException) -> bool:
 def _parse_mission_rows(rows: Sequence[Mapping[str, object]]) -> list[MissionRow]:
     parsed: list[MissionRow] = []
     for order, row in enumerate(rows, start=1):
-        text = _strip_visible_urls(row.get("mission_text"))
+        text = _strip_visible_urls(row.get("description") or row.get("mission_text"))
         if not text:
             continue
         number = _int_or_none(row.get("step_index")) or order
