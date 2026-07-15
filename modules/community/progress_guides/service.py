@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 import re
 from typing import Any, Mapping, Sequence
@@ -24,6 +25,7 @@ _GUIDES_KEY = "PROGRESS_GUIDES_TAB"
 _FAQ_KEY = "PROGRESS_FAQ_TAB"
 _ASSETS_KEY = "PROGRESS_ASSETS_TAB"
 _CATEGORIES_KEY = "PROGRESS_CATEGORIES_TAB"
+_USER_STATE_KEY = "PROGRESS_USER_STATE_TAB"
 _MESSAGE_ID_COLUMN = "guide_panel_message_id"
 _EMBED_LIMIT = 3900
 _EMBED_TITLE_LIMIT = 256
@@ -33,6 +35,8 @@ _BUTTON_LABEL_LIMIT = 80
 _URL_RE = re.compile(r"https?://\S+")
 _FAQ_CUSTOM_ID_PREFIX = "progressguides:faq:"
 _MISSIONS_CUSTOM_ID_PREFIX = "progressguides:missions:"
+_MY_PROGRESS_CUSTOM_ID_PREFIX = "progressguides:myprogress:"
+_SET_PROGRESS_CUSTOM_ID_PREFIX = "progressguides:setprogress:"
 _PERSISTENT_FAQ_CATEGORIES = ("ARB", "RAM", "MAR", "FW_N", "FW_H")
 _MISSION_CATEGORIES = ("ARB", "RAM", "MAR")
 _MISSIONS_PER_PAGE = 15
@@ -89,6 +93,18 @@ class ForumPost:
     help_button_label: str
     mission_list_button_label: str
     mission_list_title: str
+    my_progress_button_label: str
+    my_progress_title: str
+    my_progress_body_template: str
+    my_progress_empty_description: str
+    my_progress_set_button_label: str
+    my_progress_modal_title: str
+    my_progress_modal_step_label: str
+    my_progress_saved_description: str
+    my_progress_invalid_step_description: str
+    my_progress_missing_step_description: str
+    my_progress_unavailable_description: str
+    progress_tracking_enabled: bool
     guide_channel_id: int | None
     guide_thread_id: int | None
     guide_panel_message_id: int | None
@@ -111,6 +127,28 @@ class ForumPost:
             help_button_label=_text(row.get("help_button_label")),
             mission_list_button_label=_text(row.get("mission_list_button_label")),
             mission_list_title=_text(row.get("mission_list_title")),
+            my_progress_button_label=_text(row.get("my_progress_button_label")),
+            my_progress_title=_text(row.get("my_progress_title")),
+            my_progress_body_template=_text(row.get("my_progress_body_template")),
+            my_progress_empty_description=_text(
+                row.get("my_progress_empty_description")
+            ),
+            my_progress_set_button_label=_text(row.get("my_progress_set_button_label")),
+            my_progress_modal_title=_text(row.get("my_progress_modal_title")),
+            my_progress_modal_step_label=_text(row.get("my_progress_modal_step_label")),
+            my_progress_saved_description=_text(
+                row.get("my_progress_saved_description")
+            ),
+            my_progress_invalid_step_description=_text(
+                row.get("my_progress_invalid_step_description")
+            ),
+            my_progress_missing_step_description=_text(
+                row.get("my_progress_missing_step_description")
+            ),
+            my_progress_unavailable_description=_text(
+                row.get("my_progress_unavailable_description")
+            ),
+            progress_tracking_enabled=_truthy(row.get("progress_tracking_enabled")),
             guide_channel_id=_int_or_none(row.get("guide_channel_id")),
             guide_thread_id=_int_or_none(row.get("guide_thread_id")),
             guide_panel_message_id=_int_or_none(row.get("guide_panel_message_id")),
@@ -126,6 +164,7 @@ class ForumPost:
 class MissionRow:
     number: int
     text: str
+    key: str = ""
 
 
 @dataclass(slots=True)
@@ -268,6 +307,14 @@ def _supports_missions(post: ForumPost) -> bool:
     )
 
 
+def _supports_my_progress(post: ForumPost) -> bool:
+    return (
+        post.category in _MISSION_CATEGORIES
+        and post.progress_tracking_enabled
+        and bool(post.my_progress_button_label)
+    )
+
+
 def _mission_unavailable_embed(description: str) -> discord.Embed:
     return discord.Embed(
         title="Mission list unavailable",
@@ -289,7 +336,9 @@ def _parse_mission_rows(rows: Sequence[Mapping[str, object]]) -> list[MissionRow
         if not text:
             continue
         number = _int_or_none(row.get("step_index")) or order
-        parsed.append(MissionRow(number=number, text=text))
+        parsed.append(
+            MissionRow(number=number, text=text, key=_text(row.get("mission_key")))
+        )
     return sorted(parsed, key=lambda mission: mission.number)
 
 
@@ -489,6 +538,314 @@ class ProgressGuideMissionButton(discord.ui.Button):
         )
 
 
+@dataclass(slots=True)
+class ProgressCategory:
+    category: str
+    label: str
+    total_steps: int | None
+    mission_tab_config_key: str
+
+
+async def _progress_category(category: str) -> ProgressCategory | None:
+    sheet_id = get_milestones_sheet_id().strip()
+    categories_tab = await milestones_config.arequire_value(_CATEGORIES_KEY)
+    rows = await afetch_records(sheet_id, categories_tab)
+    for row in rows:
+        if _text(row.get("category")) == category:
+            return ProgressCategory(
+                category=category,
+                label=_text(row.get("label")) or category,
+                total_steps=_int_or_none(row.get("total_steps")),
+                mission_tab_config_key=_text(row.get("mission_tab_config_key")),
+            )
+    return None
+
+
+async def _user_state_rows() -> tuple[str, list[dict[str, Any]]]:
+    sheet_id = get_milestones_sheet_id().strip()
+    tab = await milestones_config.arequire_value(_USER_STATE_KEY)
+    return tab, await afetch_records(sheet_id, tab)
+
+
+def _find_user_state(
+    rows: Sequence[Mapping[str, object]], user_id: int, category: str
+) -> tuple[int, Mapping[str, object]] | None:
+    user = str(user_id)
+    for index, row in enumerate(rows, start=2):
+        if _text(row.get("user_id")) == user and _text(row.get("category")) == category:
+            return index, row
+    return None
+
+
+def _format_percent(current: int | None, total: int | None) -> str:
+    if not current or not total:
+        return ""
+    value = current / total * 100
+    return f"{int(value)}" if value.is_integer() else f"{value:.1f}"
+
+
+def _mission_for_state(
+    state: Mapping[str, object], missions: Sequence[MissionRow]
+) -> MissionRow | None:
+    key = _text(state.get("current_mission_key"))
+    if key:
+        found = next((m for m in missions if m.key == key), None)
+        if found:
+            return found
+    step = _int_or_none(state.get("current_step_index"))
+    return (
+        next((m for m in missions if m.number == step), None)
+        if step is not None
+        else None
+    )
+
+
+def build_my_progress_embed(
+    post: ForumPost,
+    category_info: ProgressCategory | None,
+    state: Mapping[str, object] | None,
+    missions: Sequence[MissionRow],
+) -> discord.Embed:
+    title = _embed_title(
+        post.my_progress_title or f"{post.label or post.category} Progress"
+    )
+    if state is None:
+        return discord.Embed(
+            title=title,
+            description=_embed_description(post.my_progress_empty_description),
+            color=discord.Color.blurple(),
+        )
+    mission = _mission_for_state(state, missions)
+    current = (
+        mission.number if mission else _int_or_none(state.get("current_step_index"))
+    )
+    total = category_info.total_steps if category_info else None
+    values = {
+        "category_label": (
+            category_info.label if category_info else (post.label or post.category)
+        ),
+        "current_step_index": str(current) if current is not None else "",
+        "total_steps": str(total) if total is not None else "",
+        "mission_description": mission.text if mission else "",
+        "percent_complete": _format_percent(current, total),
+        "remaining_steps": (
+            str(max(total - current, 0))
+            if total is not None and current is not None
+            else ""
+        ),
+        "status": _text(state.get("status")),
+    }
+    body = (
+        post.my_progress_body_template
+        or "Current mission: {current_step_index} / {total_steps}\n\nMission: {mission_description}\n\nProgress: {percent_complete}% complete\n{remaining_steps} missions remaining"
+    )
+    for key, value in values.items():
+        body = body.replace("{" + key + "}", value)
+    return discord.Embed(
+        title=title, description=_embed_description(body), color=discord.Color.blurple()
+    )
+
+
+class SetProgressButton(discord.ui.Button):
+    def __init__(self, category: str, label: str) -> None:
+        self.category = category
+        super().__init__(
+            label=_button_label(label),
+            style=discord.ButtonStyle.primary,
+            custom_id=f"{_SET_PROGRESS_CUSTOM_ID_PREFIX}{category}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        data = await get_or_load_progress_guide_data()
+        post = _post_for_category(self.category, data)
+        if post is None:
+            await interaction.response.send_message(
+                embed=_progress_unavailable_embed(None), ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(SetProgressModal(self.category, post))
+
+
+class MyProgressView(discord.ui.View):
+    def __init__(self, post: ForumPost) -> None:
+        super().__init__(timeout=900)
+        if post.my_progress_set_button_label:
+            self.add_item(
+                SetProgressButton(post.category, post.my_progress_set_button_label)
+            )
+
+
+class SetProgressModal(discord.ui.Modal):
+    def __init__(self, category: str, post: ForumPost) -> None:
+        super().__init__(
+            title=_embed_title(post.my_progress_modal_title or post.my_progress_title)
+        )
+        self.category = category
+        self.post = post
+        self.step = discord.ui.TextInput(
+            label=_button_label(post.my_progress_modal_step_label),
+            required=True,
+        )
+        self.add_item(self.step)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        post = self.post
+        raw = str(self.step.value).strip()
+        if not raw.isdigit():
+            await interaction.response.send_message(
+                embed=_progress_notice_embed(
+                    self.post, self.post.my_progress_invalid_step_description
+                ),
+                ephemeral=True,
+            )
+            return
+        selected = int(raw)
+        try:
+            data = await get_or_load_progress_guide_data()
+            post = _post_for_category(self.category, data) or self.post
+            category_info = await _progress_category(self.category)
+            missions = await get_or_load_missions(self.category)
+            mission = next((m for m in missions if m.number == selected), None)
+            if mission is None:
+                await interaction.response.send_message(
+                    embed=_progress_notice_embed(
+                        self.post, self.post.my_progress_missing_step_description
+                    ),
+                    ephemeral=True,
+                )
+                return
+            await upsert_progress_user_state(
+                interaction.user.id, self.category, mission
+            )
+            state = {
+                "current_step_index": str(mission.number),
+                "current_mission_key": mission.key,
+                "status": "in_progress",
+            }
+            embed = build_my_progress_embed(post, category_info, state, missions)
+            if post.my_progress_saved_description:
+                embed.set_footer(text=post.my_progress_saved_description)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception as exc:
+            if _is_quota_failure(exc):
+                await interaction.response.send_message(
+                    embed=_progress_unavailable_embed(post), ephemeral=True
+                )
+                return
+            raise
+
+
+async def upsert_progress_user_state(
+    user_id: int, category: str, mission: MissionRow
+) -> None:
+    sheet_id = get_milestones_sheet_id().strip()
+    tab, rows = await _user_state_rows()
+    found = _find_user_state(rows, user_id, category)
+    worksheet = await aget_worksheet(sheet_id, tab)
+    header = await _load_header(sheet_id, tab)
+    now = datetime.now(timezone.utc).isoformat()
+    values = {
+        "user_id": str(user_id),
+        "category": category,
+        "current_step_index": str(mission.number),
+        "current_mission_key": mission.key,
+        "status": "in_progress",
+        "notify_plan_ahead": "",
+        "private_thread_id": "",
+        "last_panel_message_id": "",
+        "notes": "",
+        "updated_at_utc": now,
+    }
+    if found is None:
+        row = [values.get(name, "") for name in header]
+        await acall_with_backoff(worksheet.append_row, row, value_input_option="RAW")
+        return
+    row_number, existing = found
+    preserve = {
+        "notify_plan_ahead",
+        "private_thread_id",
+        "last_panel_message_id",
+        "notes",
+    }
+    full_row = [
+        _text(existing.get(name)) if name in preserve else values.get(name, "")
+        for name in header
+    ]
+    start_col = _column_label(0)
+    end_col = _column_label(len(header) - 1)
+    await acall_with_backoff(
+        worksheet.update,
+        f"{start_col}{row_number}:{end_col}{row_number}",
+        [full_row],
+        value_input_option="RAW",
+    )
+
+
+def _progress_notice_embed(post: ForumPost | None, description: str) -> discord.Embed:
+    title = post.my_progress_title if post else "My Progress"
+    return discord.Embed(
+        title=_embed_title(title),
+        description=_embed_description(description or "Unavailable."),
+        color=discord.Color.red(),
+    )
+
+
+def _progress_unavailable_embed(post: ForumPost | None = None) -> discord.Embed:
+    description = post.my_progress_unavailable_description if post else "Unavailable."
+    return _progress_notice_embed(post, description)
+
+
+class ProgressGuideMyProgressButton(discord.ui.Button):
+    def __init__(self, category: str, label: str = "My Progress") -> None:
+        self.category = category
+        super().__init__(
+            label=_button_label(label or "My Progress"),
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"{_MY_PROGRESS_CUSTOM_ID_PREFIX}{category}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        post: ForumPost | None = None
+        if self.category not in _MISSION_CATEGORIES:
+            await interaction.followup.send(
+                embed=_progress_unavailable_embed(post), ephemeral=True
+            )
+            return
+        try:
+            data = await get_or_load_progress_guide_data()
+            post = _post_for_category(self.category, data)
+            if post is None:
+                await interaction.followup.send(
+                    embed=_progress_unavailable_embed(post), ephemeral=True
+                )
+                return
+            category_info = await _progress_category(self.category)
+            _tab, rows = await _user_state_rows()
+            found = _find_user_state(rows, interaction.user.id, self.category)
+            missions = await get_or_load_missions(self.category) if found else []
+            state = found[1] if found else None
+            await interaction.followup.send(
+                embed=build_my_progress_embed(post, category_info, state, missions),
+                view=MyProgressView(post),
+                ephemeral=True,
+            )
+        except Exception as exc:
+            if _is_quota_failure(exc):
+                await interaction.followup.send(
+                    embed=_progress_unavailable_embed(post), ephemeral=True
+                )
+                return
+            raise
+
+
+class ProgressGuideMyProgressPersistentView(discord.ui.View):
+    def __init__(self, categories: Sequence[str] = _MISSION_CATEGORIES) -> None:
+        super().__init__(timeout=None)
+        for category in categories:
+            self.add_item(ProgressGuideMyProgressButton(category))
+
+
 class ProgressGuideMissionPersistentView(discord.ui.View):
     def __init__(self, categories: Sequence[str] = _MISSION_CATEGORIES) -> None:
         super().__init__(timeout=None)
@@ -539,16 +896,21 @@ def build_guide_view(
     view = discord.ui.View(timeout=None)
     added = False
     help_url = _safe_url(post.help_post_url)
-    if data.faq_by_category.get(post.category):
-        view.add_item(
-            ProgressGuideFAQButton(post.category, post.faq_button_label or "FAQ")
-        )
-        added = True
     if _supports_missions(post):
         view.add_item(
             ProgressGuideMissionButton(
                 post.category, post.mission_list_button_label or "Mission List"
             )
+        )
+        added = True
+    if _supports_my_progress(post):
+        view.add_item(
+            ProgressGuideMyProgressButton(post.category, post.my_progress_button_label)
+        )
+        added = True
+    if data.faq_by_category.get(post.category):
+        view.add_item(
+            ProgressGuideFAQButton(post.category, post.faq_button_label or "FAQ")
         )
         added = True
     if post.questions_enabled and help_url:

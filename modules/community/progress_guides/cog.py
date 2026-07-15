@@ -10,6 +10,7 @@ from shared.sheets.core import is_rate_limited_error
 from modules.community.progress_guides.service import (
     ProgressGuideFAQPersistentView,
     ProgressGuideMissionPersistentView,
+    ProgressGuideMyProgressPersistentView,
     PublishSummary,
     publish_or_refresh,
 )
@@ -73,6 +74,7 @@ class ProgressGuidesCog(commands.Cog):
         self.bot = bot
         bot.add_view(ProgressGuideFAQPersistentView())
         bot.add_view(ProgressGuideMissionPersistentView())
+        bot.add_view(ProgressGuideMyProgressPersistentView())
 
     @tier("admin")
     @help_metadata(
