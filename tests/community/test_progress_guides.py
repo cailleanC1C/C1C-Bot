@@ -38,7 +38,9 @@ class FakeMessage:
 
 
 class FakeChannel:
-    def __init__(self, *, existing=None, missing=False, fetch_error=None, send_message=None):
+    def __init__(
+        self, *, existing=None, missing=False, fetch_error=None, send_message=None
+    ):
         self.existing = existing
         self.missing = missing
         self.fetch_error = fetch_error
@@ -656,7 +658,9 @@ def test_refresh_existing_stored_message_does_not_read_worksheet_or_header(monke
     assert guide.sent == []
 
 
-def test_refresh_existing_stored_message_does_not_write_guide_panel_message_id(monkeypatch):
+def test_refresh_existing_stored_message_does_not_write_guide_panel_message_id(
+    monkeypatch,
+):
     worksheet = FakeWorksheet()
     message = FakeMessage(777)
     guide = FakeChannel(existing=message)
@@ -699,7 +703,9 @@ def test_quota_config_load_failure_produces_clean_admin_embed(monkeypatch):
     ctx = FakeCtx()
     monkeypatch.setattr(cog, "publish_or_refresh", fail)
 
-    asyncio.run(cog._send_publish_result(ctx, FakeBot(), action="refresh", refresh=True))
+    asyncio.run(
+        cog._send_publish_result(ctx, FakeBot(), action="refresh", refresh=True)
+    )
 
     embed = ctx.sent[0]["embed"]
     assert embed.title == "Progress guides refresh unavailable"
@@ -716,7 +722,9 @@ def test_quota_error_does_not_expose_raw_commandinvokeerror_to_discord(monkeypat
     ctx = FakeCtx()
     monkeypatch.setattr(cog, "publish_or_refresh", fail)
 
-    asyncio.run(cog._send_publish_result(ctx, FakeBot(), action="refresh", refresh=True))
+    asyncio.run(
+        cog._send_publish_result(ctx, FakeBot(), action="refresh", refresh=True)
+    )
 
     embed = ctx.sent[0]["embed"]
     rendered = f"{embed.title}\n{embed.description}"
@@ -768,7 +776,9 @@ async def _run_refresh_command_with_lazy_write_failure(monkeypatch, *, fail_at):
     return ctx
 
 
-@pytest.mark.parametrize("fail_at", ["aget_worksheet", "_load_header", "acall_with_backoff"])
+@pytest.mark.parametrize(
+    "fail_at", ["aget_worksheet", "_load_header", "acall_with_backoff"]
+)
 def test_lazy_writeback_quota_errors_send_clean_embed_without_failure_details(
     monkeypatch, fail_at
 ):
@@ -806,7 +816,9 @@ def test_non_quota_lazy_writeback_failure_stays_in_summary_failures(monkeypatch)
     monkeypatch.setattr(service, "_resolve_messageable", resolve)
     monkeypatch.setattr(service, "aget_worksheet", get_ws)
 
-    asyncio.run(cog._send_publish_result(ctx, FakeBot(), action="refresh", refresh=True))
+    asyncio.run(
+        cog._send_publish_result(ctx, FakeBot(), action="refresh", refresh=True)
+    )
 
     embed = ctx.sent[0]["embed"]
     assert embed.title == "Progress guides refresh"
@@ -835,14 +847,20 @@ def test_quota_writeback_failure_deletes_untracked_sent_message(monkeypatch):
     monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
     monkeypatch.setattr(service, "_resolve_messageable", resolve)
     monkeypatch.setattr(service, "acall_with_backoff", call)
-    monkeypatch.setattr(service, "aget_worksheet", lambda *_args: asyncio.sleep(0, result=FakeWorksheet()))
+    monkeypatch.setattr(
+        service,
+        "aget_worksheet",
+        lambda *_args: asyncio.sleep(0, result=FakeWorksheet()),
+    )
     monkeypatch.setattr(
         service,
         "_load_header",
         lambda *_args: asyncio.sleep(0, result=["category", "guide_panel_message_id"]),
     )
 
-    asyncio.run(cog._send_publish_result(ctx, FakeBot(), action="refresh", refresh=True))
+    asyncio.run(
+        cog._send_publish_result(ctx, FakeBot(), action="refresh", refresh=True)
+    )
 
     assert sent_message.delete_attempted is True
     assert sent_message.deleted is True
@@ -853,7 +871,9 @@ def test_quota_writeback_failure_deletes_untracked_sent_message(monkeypatch):
     assert "RESOURCE_EXHAUSTED" not in rendered
 
 
-def test_quota_writeback_failure_still_clean_embed_when_rollback_delete_fails(monkeypatch):
+def test_quota_writeback_failure_still_clean_embed_when_rollback_delete_fails(
+    monkeypatch,
+):
     from modules.community.progress_guides import cog
 
     data = _data()
@@ -874,14 +894,20 @@ def test_quota_writeback_failure_still_clean_embed_when_rollback_delete_fails(mo
     monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
     monkeypatch.setattr(service, "_resolve_messageable", resolve)
     monkeypatch.setattr(service, "acall_with_backoff", call)
-    monkeypatch.setattr(service, "aget_worksheet", lambda *_args: asyncio.sleep(0, result=FakeWorksheet()))
+    monkeypatch.setattr(
+        service,
+        "aget_worksheet",
+        lambda *_args: asyncio.sleep(0, result=FakeWorksheet()),
+    )
     monkeypatch.setattr(
         service,
         "_load_header",
         lambda *_args: asyncio.sleep(0, result=["category", "guide_panel_message_id"]),
     )
 
-    asyncio.run(cog._send_publish_result(ctx, FakeBot(), action="refresh", refresh=True))
+    asyncio.run(
+        cog._send_publish_result(ctx, FakeBot(), action="refresh", refresh=True)
+    )
 
     assert sent_message.delete_attempted is True
     assert sent_message.deleted is False
@@ -912,7 +938,11 @@ def test_non_quota_writeback_failure_deletes_untracked_message_and_reports_failu
     monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
     monkeypatch.setattr(service, "_resolve_messageable", resolve)
     monkeypatch.setattr(service, "acall_with_backoff", call)
-    monkeypatch.setattr(service, "aget_worksheet", lambda *_args: asyncio.sleep(0, result=FakeWorksheet()))
+    monkeypatch.setattr(
+        service,
+        "aget_worksheet",
+        lambda *_args: asyncio.sleep(0, result=FakeWorksheet()),
+    )
     monkeypatch.setattr(
         service,
         "_load_header",
@@ -925,3 +955,238 @@ def test_non_quota_writeback_failure_deletes_untracked_message_and_reports_failu
     assert sent_message.deleted is True
     assert summary.created == 0
     assert "ordinary update failure" in summary.failures[0]
+
+
+def test_mission_button_appears_between_faq_and_help_with_sheet_label():
+    data = _data(
+        post_overrides={
+            "mission_list_button_label": "View Missions",
+            "mission_list_title": "Arbiter Mission List",
+        }
+    )
+    view = service.build_guide_view(data.posts[0], data)
+    assert [getattr(item, "label", "") for item in view.children] == [
+        "Read FAQ",
+        "View Missions",
+        "Ask the Helpers",
+    ]
+    assert view.children[1].custom_id == "progressguides:missions:ARB"
+
+
+@pytest.mark.parametrize("category", ["FW_N", "FW_H"])
+def test_fw_guides_do_not_get_mission_button(category):
+    data = _data(
+        post_overrides={
+            "category": category,
+            "mission_list_button_label": "Mission List",
+            "mission_list_title": "Faction Wars Mission List",
+        }
+    )
+    data.faq_by_category[category] = data.faq_by_category.pop("ARB")
+    view = service.build_guide_view(data.posts[0], data)
+    assert f"progressguides:missions:{category}" not in [
+        getattr(item, "custom_id", "") for item in view.children
+    ]
+
+
+def test_mission_rows_sort_skip_and_hide_internal_metadata():
+    rows = [
+        {
+            "step_index": "2",
+            "mission_text": "Second https://source.example/x",
+            "source_url": "https://source.example",
+            "system_tags": "secret",
+        },
+        {"step_index": "", "mission_text": "Fallback order", "resource_tags": "hidden"},
+        {"step_index": "1", "mission_text": "First"},
+        {"step_index": "3", "mission_text": ""},
+    ]
+    missions = service._parse_mission_rows(rows)
+    data = _data(post_overrides={"mission_list_title": "Arbiter Mission List"})
+    embed = service.build_mission_embed("ARB", data, missions, page=0)
+    rendered = embed.description
+    assert [m.number for m in missions] == [1, 2, 2]
+    assert "1. First" in rendered
+    assert "2. Second" in rendered
+    assert "source.example" not in rendered
+    assert "secret" not in rendered
+    assert "hidden" not in rendered
+
+
+def test_first_mission_click_reads_only_configured_category_tab_and_caches(monkeypatch):
+    data = _data(post_overrides={"mission_list_title": "Arbiter Mission List"})
+    service.set_progress_guide_cache(data)
+    calls = []
+
+    async def require_value(key):
+        calls.append(("config", key))
+        return {
+            "PROGRESS_CATEGORIES_TAB": "ProgressCategories",
+            "PROGRESS_MISSIONS_ARB_TAB": "Configured_ARB_Tab",
+        }[key]
+
+    async def fetch_records(_sheet, tab):
+        calls.append(("tab", tab))
+        if tab == "ProgressCategories":
+            return [
+                {
+                    "category": "ARB",
+                    "mission_tab_config_key": "PROGRESS_MISSIONS_ARB_TAB",
+                }
+            ]
+        if tab == "Configured_ARB_Tab":
+            return [
+                {
+                    "step_index": "1",
+                    "mission_text": "Do the first mission",
+                    "source_url": "https://hide.example",
+                }
+            ]
+        raise AssertionError(f"unexpected tab {tab}")
+
+    monkeypatch.setattr(service.milestones_config, "arequire_value", require_value)
+    monkeypatch.setattr(service, "afetch_records", fetch_records)
+    monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
+
+    first = FakeInteraction()
+    second = FakeInteraction()
+    asyncio.run(service.ProgressGuideMissionButton("ARB").callback(first))
+    asyncio.run(service.ProgressGuideMissionButton("ARB").callback(second))
+
+    assert first.response.deferred == [{"ephemeral": True, "thinking": True}]
+    assert calls == [
+        ("config", "PROGRESS_CATEGORIES_TAB"),
+        ("tab", "ProgressCategories"),
+        ("config", "PROGRESS_MISSIONS_ARB_TAB"),
+        ("tab", "Configured_ARB_Tab"),
+    ]
+    assert first.followup.sent[0]["embed"].title == "Arbiter Mission List"
+    assert "Do the first mission" in first.followup.sent[0]["embed"].description
+    assert "hide.example" not in first.followup.sent[0]["embed"].description
+    assert second.followup.sent[0]["embed"].title == "Arbiter Mission List"
+
+
+def test_concurrent_mission_clicks_share_one_mission_tab_load(monkeypatch):
+    data = _data(post_overrides={"mission_list_title": "Arbiter Mission List"})
+    service.set_progress_guide_cache(data)
+    tab_loads = 0
+
+    async def require_value(key):
+        return {
+            "PROGRESS_CATEGORIES_TAB": "ProgressCategories",
+            "PROGRESS_MISSIONS_ARB_TAB": "ARB_Tab",
+        }[key]
+
+    async def fetch_records(_sheet, tab):
+        nonlocal tab_loads
+        if tab == "ProgressCategories":
+            return [
+                {
+                    "category": "ARB",
+                    "mission_tab_config_key": "PROGRESS_MISSIONS_ARB_TAB",
+                }
+            ]
+        tab_loads += 1
+        await asyncio.sleep(0)
+        return [{"step_index": "1", "mission_text": "Only once"}]
+
+    monkeypatch.setattr(service.milestones_config, "arequire_value", require_value)
+    monkeypatch.setattr(service, "afetch_records", fetch_records)
+    monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
+
+    async def click_twice():
+        await asyncio.gather(
+            service.ProgressGuideMissionButton("ARB").callback(FakeInteraction()),
+            service.ProgressGuideMissionButton("ARB").callback(FakeInteraction()),
+        )
+
+    asyncio.run(click_twice())
+    assert tab_loads == 1
+
+
+def test_mission_pagination_emoji_only_and_disabled_states():
+    data = _data(post_overrides={"mission_list_title": "Arbiter Mission List"})
+    missions = [service.MissionRow(i, f"Mission {i}") for i in range(1, 17)]
+    first = service.MissionListPaginationView("ARB", data, missions, 0)
+    assert [item.emoji.name for item in first.children] == ["⏮️", "◀️", "▶️", "⏭️"]
+    assert [item.label for item in first.children] == [None, None, None, None]
+    assert [item.disabled for item in first.children] == [True, True, False, False]
+    final = service.MissionListPaginationView("ARB", data, missions, 1)
+    assert [item.disabled for item in final.children] == [False, False, True, True]
+    assert (
+        "Missions 1-15 of 16"
+        in service.build_mission_embed("ARB", data, missions, page=0).description
+    )
+    assert (
+        "Missions 16-16 of 16"
+        in service.build_mission_embed("ARB", data, missions, page=1).description
+    )
+
+
+def test_mission_click_quota_error_is_clean(monkeypatch):
+    service.clear_mission_cache()
+    data = _data(post_overrides={"mission_list_title": "Arbiter Mission List"})
+    service.set_progress_guide_cache(data)
+
+    async def fail(_key):
+        raise FakeRateLimitError("APIError 429 RESOURCE_EXHAUSTED traceback")
+
+    monkeypatch.setattr(service.milestones_config, "arequire_value", fail)
+    monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
+    interaction = FakeInteraction()
+    asyncio.run(service.ProgressGuideMissionButton("ARB").callback(interaction))
+    embed = interaction.followup.sent[0]["embed"]
+    rendered = str(embed.to_dict())
+    assert embed.title == "Mission list unavailable"
+    assert "Google Sheets read quota was temporarily exceeded" in embed.description
+    assert "APIError" not in rendered
+    assert "RESOURCE_EXHAUSTED" not in rendered
+    assert "traceback" not in rendered.casefold()
+
+
+def test_publish_refresh_clears_mission_cache_without_reading_mission_tabs(monkeypatch):
+    data = _data(post_overrides={"mission_list_title": "Arbiter Mission List"})
+    service.set_progress_guide_cache(data)
+    mission_tab_loads = 0
+    category_tab_loads = 0
+
+    async def require_value(key):
+        return {
+            "PROGRESS_CATEGORIES_TAB": "ProgressCategories",
+            "PROGRESS_MISSIONS_ARB_TAB": "Configured_ARB_Tab",
+        }[key]
+
+    async def fetch_records(_sheet, tab):
+        nonlocal category_tab_loads, mission_tab_loads
+        if tab == "ProgressCategories":
+            category_tab_loads += 1
+            return [
+                {
+                    "category": "ARB",
+                    "mission_tab_config_key": "PROGRESS_MISSIONS_ARB_TAB",
+                }
+            ]
+        if tab == "Configured_ARB_Tab":
+            mission_tab_loads += 1
+            return [{"step_index": "1", "mission_text": f"Loaded {mission_tab_loads}"}]
+        raise AssertionError(f"unexpected tab {tab}")
+
+    monkeypatch.setattr(service.milestones_config, "arequire_value", require_value)
+    monkeypatch.setattr(service, "afetch_records", fetch_records)
+    monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
+
+    first = FakeInteraction()
+    asyncio.run(service.ProgressGuideMissionButton("ARB").callback(first))
+    assert category_tab_loads == 1
+    assert mission_tab_loads == 1
+    assert "Loaded 1" in first.followup.sent[0]["embed"].description
+
+    worksheet = FakeWorksheet()
+    asyncio.run(_run(monkeypatch, data, {10: FakeChannel()}, worksheet))
+    assert category_tab_loads == 1
+    assert mission_tab_loads == 1
+
+    second = FakeInteraction()
+    asyncio.run(service.ProgressGuideMissionButton("ARB").callback(second))
+    assert mission_tab_loads == 2
+    assert "Loaded 2" in second.followup.sent[0]["embed"].description
