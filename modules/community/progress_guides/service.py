@@ -23,6 +23,7 @@ _FORUM_POSTS_KEY = "PROGRESS_FORUM_POSTS_TAB"
 _GUIDES_KEY = "PROGRESS_GUIDES_TAB"
 _FAQ_KEY = "PROGRESS_FAQ_TAB"
 _ASSETS_KEY = "PROGRESS_ASSETS_TAB"
+_CATEGORIES_KEY = "PROGRESS_CATEGORIES_TAB"
 _MESSAGE_ID_COLUMN = "guide_panel_message_id"
 _EMBED_LIMIT = 3900
 _EMBED_TITLE_LIMIT = 256
@@ -31,9 +32,14 @@ _FIELD_LIMIT = 900
 _BUTTON_LABEL_LIMIT = 80
 _URL_RE = re.compile(r"https?://\S+")
 _FAQ_CUSTOM_ID_PREFIX = "progressguides:faq:"
+_MISSIONS_CUSTOM_ID_PREFIX = "progressguides:missions:"
 _PERSISTENT_FAQ_CATEGORIES = ("ARB", "RAM", "MAR", "FW_N", "FW_H")
+_MISSION_CATEGORIES = ("ARB", "RAM", "MAR")
+_MISSIONS_PER_PAGE = 15
 _DATA_CACHE: "ProgressGuideData | None" = None
 _DATA_CACHE_LOCK = asyncio.Lock()
+_MISSION_CACHE: dict[str, list["MissionRow"]] = {}
+_MISSION_CACHE_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 def _text(value: object) -> str:
@@ -81,6 +87,8 @@ class ForumPost:
     faq_description: str
     faq_button_label: str
     help_button_label: str
+    mission_list_button_label: str
+    mission_list_title: str
     guide_channel_id: int | None
     guide_thread_id: int | None
     guide_panel_message_id: int | None
@@ -101,6 +109,8 @@ class ForumPost:
             faq_description=_text(row.get("faq_description")),
             faq_button_label=_text(row.get("faq_button_label")),
             help_button_label=_text(row.get("help_button_label")),
+            mission_list_button_label=_text(row.get("mission_list_button_label")),
+            mission_list_title=_text(row.get("mission_list_title")),
             guide_channel_id=_int_or_none(row.get("guide_channel_id")),
             guide_thread_id=_int_or_none(row.get("guide_thread_id")),
             guide_panel_message_id=_int_or_none(row.get("guide_panel_message_id")),
@@ -110,6 +120,12 @@ class ForumPost:
             sort_order=_sort_num(row.get("sort_order")),
             enabled=_truthy(row.get("enabled")),
         )
+
+
+@dataclass(slots=True)
+class MissionRow:
+    number: int
+    text: str
 
 
 @dataclass(slots=True)
@@ -141,6 +157,12 @@ def set_progress_guide_cache(data: ProgressGuideData) -> None:
 def clear_progress_guide_cache() -> None:
     global _DATA_CACHE
     _DATA_CACHE = None
+    clear_mission_cache()
+
+
+def clear_mission_cache() -> None:
+    _MISSION_CACHE.clear()
+    _MISSION_CACHE_LOCKS.clear()
 
 
 async def get_or_load_progress_guide_data() -> ProgressGuideData:
@@ -231,6 +253,146 @@ def _faq_title_for_category(category: str, data: ProgressGuideData) -> str:
     return _embed_title(post.faq_title or f"{base} FAQ")
 
 
+def _mission_title_for_category(category: str, data: ProgressGuideData) -> str:
+    post = _post_for_category(category, data)
+    if post is None:
+        return _embed_title(category)
+    return _embed_title(
+        post.mission_list_title or post.guide_title or post.label or post.category
+    )
+
+
+def _supports_missions(post: ForumPost) -> bool:
+    return post.category in _MISSION_CATEGORIES and bool(
+        post.mission_list_button_label or post.mission_list_title
+    )
+
+
+def _mission_unavailable_embed(description: str) -> discord.Embed:
+    return discord.Embed(
+        title="Mission list unavailable",
+        description=description,
+        color=discord.Color.red(),
+    )
+
+
+def _is_quota_failure(exc: BaseException) -> bool:
+    if isinstance(exc, milestones_config.MilestonesConfigLoadFailed):
+        return True
+    return is_rate_limited_error(exc)
+
+
+def _parse_mission_rows(rows: Sequence[Mapping[str, object]]) -> list[MissionRow]:
+    parsed: list[MissionRow] = []
+    for order, row in enumerate(rows, start=1):
+        text = _strip_visible_urls(row.get("mission_text"))
+        if not text:
+            continue
+        number = _int_or_none(row.get("step_index")) or order
+        parsed.append(MissionRow(number=number, text=text))
+    return sorted(parsed, key=lambda mission: mission.number)
+
+
+async def _mission_tab_for_category(category: str) -> str | None:
+    sheet_id = get_milestones_sheet_id().strip()
+    if not sheet_id:
+        raise RuntimeError("MILESTONES_SHEET_ID not set")
+    categories_tab = await milestones_config.arequire_value(_CATEGORIES_KEY)
+    rows = await afetch_records(sheet_id, categories_tab)
+    for row in rows:
+        if _text(row.get("category")) == category:
+            config_key = _text(row.get("mission_tab_config_key"))
+            if not config_key:
+                return None
+            return await milestones_config.arequire_value(config_key)
+    return None
+
+
+async def get_or_load_missions(category: str) -> list[MissionRow]:
+    if category in _MISSION_CACHE:
+        return _MISSION_CACHE[category]
+    lock = _MISSION_CACHE_LOCKS.setdefault(category, asyncio.Lock())
+    async with lock:
+        if category in _MISSION_CACHE:
+            return _MISSION_CACHE[category]
+        tab = await _mission_tab_for_category(category)
+        if not tab:
+            return []
+        rows = await afetch_records(get_milestones_sheet_id().strip(), tab)
+        missions = _parse_mission_rows(rows)
+        _MISSION_CACHE[category] = missions
+        return missions
+
+
+def build_mission_embed(
+    category: str, data: ProgressGuideData, missions: Sequence[MissionRow], *, page: int
+) -> discord.Embed:
+    total = len(missions)
+    total_pages = max(1, (total + _MISSIONS_PER_PAGE - 1) // _MISSIONS_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * _MISSIONS_PER_PAGE
+    shown = missions[start : start + _MISSIONS_PER_PAGE]
+    lines = [
+        f"Missions {start + 1}-{start + len(shown)} of {total}",
+        f"Page {page + 1} / {total_pages}",
+        "",
+    ]
+    for mission in shown:
+        lines.append(f"{mission.number}. {_limit_text(mission.text, 220)}")
+    return discord.Embed(
+        title=_mission_title_for_category(category, data),
+        description=_embed_description("\n".join(lines)),
+        color=discord.Color.blurple(),
+    )
+
+
+class MissionListPaginationView(discord.ui.View):
+    def __init__(
+        self,
+        category: str,
+        data: ProgressGuideData,
+        missions: Sequence[MissionRow],
+        page: int = 0,
+    ) -> None:
+        super().__init__(timeout=900)
+        self.category = category
+        self.data = data
+        self.missions = list(missions)
+        self.page = page
+        self.total_pages = max(
+            1, (len(self.missions) + _MISSIONS_PER_PAGE - 1) // _MISSIONS_PER_PAGE
+        )
+        for emoji, target, disabled in (
+            ("⏮️", 0, self.page <= 0),
+            ("◀️", self.page - 1, self.page <= 0),
+            ("▶️", self.page + 1, self.page >= self.total_pages - 1),
+            ("⏭️", self.total_pages - 1, self.page >= self.total_pages - 1),
+        ):
+            self.add_item(MissionPageButton(emoji, target, disabled))
+
+
+class MissionPageButton(discord.ui.Button):
+    def __init__(self, emoji: str, target_page: int, disabled: bool) -> None:
+        self.target_page = target_page
+        super().__init__(
+            emoji=emoji, style=discord.ButtonStyle.secondary, disabled=disabled
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, MissionListPaginationView):
+            return
+        next_view = MissionListPaginationView(
+            view.category, view.data, view.missions, self.target_page
+        )
+        await interaction.response.edit_message(
+            embed=build_mission_embed(
+                view.category, view.data, view.missions, page=self.target_page
+            ),
+            view=next_view,
+        )
+
+
 def build_faq_embed(category: str, data: ProgressGuideData) -> discord.Embed | None:
     rows = data.faq_by_category.get(category, [])
     if not rows:
@@ -282,6 +444,58 @@ class ProgressGuideFAQButton(discord.ui.Button):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 
+class ProgressGuideMissionButton(discord.ui.Button):
+    def __init__(self, category: str, label: str = "Mission List") -> None:
+        self.category = category
+        super().__init__(
+            label=_button_label(label or "Mission List"),
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"{_MISSIONS_CUSTOM_ID_PREFIX}{category}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if self.category not in _MISSION_CATEGORIES:
+            embed = _mission_unavailable_embed(
+                "No mission list is configured for this guide yet."
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+        try:
+            data = await get_or_load_progress_guide_data()
+            missions = await get_or_load_missions(self.category)
+        except Exception as exc:
+            if _is_quota_failure(exc):
+                embed = _mission_unavailable_embed(
+                    "Google Sheets read quota was temporarily exceeded. Please wait a minute and try again."
+                )
+            else:
+                embed = _mission_unavailable_embed(
+                    "No mission list is configured for this guide yet."
+                )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+        if not missions:
+            embed = _mission_unavailable_embed(
+                "No missions are currently available for this guide."
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+        view = MissionListPaginationView(self.category, data, missions, 0)
+        await interaction.followup.send(
+            embed=build_mission_embed(self.category, data, missions, page=0),
+            view=view,
+            ephemeral=True,
+        )
+
+
+class ProgressGuideMissionPersistentView(discord.ui.View):
+    def __init__(self, categories: Sequence[str] = _MISSION_CATEGORIES) -> None:
+        super().__init__(timeout=None)
+        for category in categories:
+            self.add_item(ProgressGuideMissionButton(category))
+
+
 class ProgressGuideFAQPersistentView(discord.ui.View):
     def __init__(self, categories: Sequence[str] = _PERSISTENT_FAQ_CATEGORIES) -> None:
         super().__init__(timeout=None)
@@ -330,6 +544,13 @@ def build_guide_view(
             ProgressGuideFAQButton(post.category, post.faq_button_label or "FAQ")
         )
         added = True
+    if _supports_missions(post):
+        view.add_item(
+            ProgressGuideMissionButton(
+                post.category, post.mission_list_button_label or "Mission List"
+            )
+        )
+        added = True
     if post.questions_enabled and help_url:
         view.add_item(
             discord.ui.Button(
@@ -360,6 +581,7 @@ async def publish_or_refresh(bot: commands.Bot, *, refresh: bool) -> PublishSumm
     """
 
     data = await load_progress_guide_data()
+    clear_mission_cache()
     set_progress_guide_cache(data)
     sheet_id = get_milestones_sheet_id().strip()
     worksheet = None

@@ -9,6 +9,7 @@ from shared.sheets import milestones_config
 from shared.sheets.core import is_rate_limited_error
 from modules.community.progress_guides.service import (
     ProgressGuideFAQPersistentView,
+    ProgressGuideMissionPersistentView,
     PublishSummary,
     publish_or_refresh,
 )
@@ -71,6 +72,7 @@ class ProgressGuidesCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         bot.add_view(ProgressGuideFAQPersistentView())
+        bot.add_view(ProgressGuideMissionPersistentView())
 
     @tier("admin")
     @help_metadata(
