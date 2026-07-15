@@ -17,6 +17,7 @@ from shared.sheets.async_core import (
     afetch_values,
     aget_worksheet,
 )
+from shared.sheets.core import is_rate_limited_error
 
 _FORUM_POSTS_KEY = "PROGRESS_FORUM_POSTS_TAB"
 _GUIDES_KEY = "PROGRESS_GUIDES_TAB"
@@ -342,12 +343,27 @@ def build_guide_view(
 
 
 async def publish_or_refresh(bot: commands.Bot, *, refresh: bool) -> PublishSummary:
+    """Publish or refresh progress guide panels within a fixed Sheets budget.
+
+    Read budget per command run:
+    - Config is read through the existing milestones config path.
+    - ProgressForumPosts, ProgressGuides, ProgressFAQ, and ProgressAssets are read
+      once by :func:`load_progress_guide_data`.
+    - Worksheet/header reads are lazy and only allowed when
+      ``guide_panel_message_id`` must actually be written back.
+
+    Write budget per command run:
+    - ``guide_panel_message_id`` is written only after a new panel message is
+      created or a stored/deleted message is recreated.
+    - Refreshing an existing stored message only edits Discord and must not read
+      worksheet/header data or write back to Sheets.
+    """
+
     data = await load_progress_guide_data()
     set_progress_guide_cache(data)
     sheet_id = get_milestones_sheet_id().strip()
-    worksheet = await aget_worksheet(sheet_id, data.forum_posts_tab)
-    header = await _load_header(sheet_id, data.forum_posts_tab)
-    col = _column_label(_header_index(header, _MESSAGE_ID_COLUMN))
+    worksheet = None
+    message_id_col: str | None = None
     summary = PublishSummary()
     for post in data.posts:
         label = post.label or post.category or f"row {post.row_number}"
@@ -386,16 +402,36 @@ async def publish_or_refresh(bot: commands.Bot, *, refresh: bool) -> PublishSumm
                     )
                     continue
             message = await channel.send(embed=embed, view=view)  # type: ignore[attr-defined]
-            await acall_with_backoff(
-                worksheet.update,
-                f"{col}{post.row_number}",
-                [[str(message.id)]],
-                value_input_option="RAW",
-            )
+            try:
+                if worksheet is None or message_id_col is None:
+                    worksheet = await aget_worksheet(sheet_id, data.forum_posts_tab)
+                    header = await _load_header(sheet_id, data.forum_posts_tab)
+                    message_id_col = _column_label(
+                        _header_index(header, _MESSAGE_ID_COLUMN)
+                    )
+                await acall_with_backoff(
+                    worksheet.update,
+                    f"{message_id_col}{post.row_number}",
+                    [[str(message.id)]],
+                    attempts=1,
+                    value_input_option="RAW",
+                )
+            except Exception:
+                await _delete_untracked_message(message)
+                raise
             summary.created += 1
         except Exception as exc:
+            if is_rate_limited_error(exc):
+                raise
             summary.failures.append(f"{label}: {type(exc).__name__}: {exc}")
     return summary
+
+
+async def _delete_untracked_message(message: discord.Message) -> None:
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 
 async def _load_header(sheet_id: str, tab: str) -> list[str]:

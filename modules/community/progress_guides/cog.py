@@ -5,11 +5,43 @@ from discord.ext import commands
 
 from c1c_coreops.helpers import help_metadata, tier
 from c1c_coreops.rbac import admin_only
+from shared.sheets import milestones_config
+from shared.sheets.core import is_rate_limited_error
 from modules.community.progress_guides.service import (
     ProgressGuideFAQPersistentView,
     PublishSummary,
     publish_or_refresh,
 )
+
+
+def _quota_unavailable_embed() -> discord.Embed:
+    return discord.Embed(
+        title="Progress guides refresh unavailable",
+        description=(
+            "Google Sheets read quota was temporarily exceeded. "
+            "Please wait a minute and run the command again."
+        ),
+        color=discord.Color.red(),
+    )
+
+
+def _is_quota_or_config_failure(exc: BaseException) -> bool:
+    if isinstance(exc, milestones_config.MilestonesConfigLoadFailed):
+        return True
+    return is_rate_limited_error(exc)
+
+
+async def _send_publish_result(
+    ctx: commands.Context, bot: commands.Bot, *, action: str, refresh: bool
+) -> None:
+    try:
+        summary = await publish_or_refresh(bot, refresh=refresh)
+    except Exception as exc:
+        if _is_quota_or_config_failure(exc):
+            await ctx.send(embed=_quota_unavailable_embed())
+            return
+        raise
+    await ctx.send(embed=_summary_embed(action, summary))
 
 
 def _summary_embed(action: str, summary: PublishSummary) -> discord.Embed:
@@ -57,14 +89,12 @@ class ProgressGuidesCog(commands.Cog):
     @progressguides.command(name="publish")
     @admin_only()
     async def publish(self, ctx: commands.Context) -> None:
-        summary = await publish_or_refresh(self.bot, refresh=False)
-        await ctx.send(embed=_summary_embed("publish", summary))
+        await _send_publish_result(ctx, self.bot, action="publish", refresh=False)
 
     @progressguides.command(name="refresh")
     @admin_only()
     async def refresh(self, ctx: commands.Context) -> None:
-        summary = await publish_or_refresh(self.bot, refresh=True)
-        await ctx.send(embed=_summary_embed("refresh", summary))
+        await _send_publish_result(ctx, self.bot, action="refresh", refresh=True)
 
 
 async def setup(bot: commands.Bot) -> None:
