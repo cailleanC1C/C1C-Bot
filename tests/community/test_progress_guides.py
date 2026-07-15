@@ -1050,9 +1050,11 @@ def test_mission_rows_sort_skip_and_hide_internal_metadata():
     data = _data(post_overrides={"mission_list_title": "Arbiter Mission List"})
     embed = service.build_mission_embed("ARB", data, missions, page=0)
     rendered = embed.description
-    assert [m.number for m in missions] == [1, 2, 2]
-    assert "1. First" in rendered
-    assert "2. Second" in rendered
+    assert [m.sequence_number for m in missions] == [1, 2, 3]
+    assert [m.step_index for m in missions] == [2, 2, 1]
+    assert "1. Second" in rendered
+    assert "2. Fallback order" in rendered
+    assert "3. First" in rendered
     assert "source.example" not in rendered
     assert "secret" not in rendered
     assert "hidden" not in rendered
@@ -1314,8 +1316,8 @@ def test_existing_progress_renders_template_prefers_mission_key_and_hides_metada
     embed = service.build_my_progress_embed(data.posts[0], category, state, missions)
     rendered = embed.description
     assert "145 / 286" in rendered
-    assert "50.7% complete" in rendered
-    assert "141 missions remaining" in rendered
+    assert "50.3% complete" in rendered
+    assert "142 missions remaining" in rendered
     assert "Clear Stage 20" in rendered
     assert "dragon-20" not in rendered
     assert "system_tags" not in rendered
@@ -1571,6 +1573,158 @@ def test_chapters_and_missions_paginate_after_25_options():
     mission_select = _select_from_view(mission_view, service.ProgressMissionSelect)
     assert len(mission_select.options) == 25
     assert any(getattr(item, "emoji", None) for item in mission_view.children)
+
+
+def test_marius_final_part_uses_sequence_not_local_step_index():
+    data = _data(
+        post_overrides={
+            "my_progress_body_template": "Current mission: {chapter_title}, {chapter_step_index} / {chapter_total_steps}\nOverall progress: {completed_steps} / {total_steps} complete\nProgress: {percent_complete}% complete\n{remaining_steps} mission remaining"
+        }
+    )
+    category = service.ProgressCategory("MAR", "Marius", 180, "TAB")
+    missions = [
+        service.MissionRow(
+            i,
+            f"Mission {i}",
+            f"mar_{i}",
+            f"Marius - Part {((i - 1) // 60) + 1}",
+            ((i - 1) % 60) + 1,
+        )
+        for i in range(1, 181)
+    ]
+    embed = service.build_my_progress_embed(
+        data.posts[0],
+        category,
+        {
+            "current_step_index": "60",
+            "current_mission_key": "mar_180",
+            "status": "in_progress",
+        },
+        missions,
+    )
+    assert "Current mission: Marius - Part 3, 60 / 60" in embed.description
+    assert "Overall progress: 179 / 180 complete" in embed.description
+    assert "Progress: 99.4% complete" in embed.description
+    assert "1 mission remaining" in embed.description
+
+
+def test_ramantu_style_part_progress_counts_global_completed_steps():
+    data = _data(
+        post_overrides={
+            "my_progress_body_template": "{completed_steps} / {total_steps} complete"
+        }
+    )
+    category = service.ProgressCategory("RAM", "Ramantu", 183, "TAB")
+    missions = [
+        service.MissionRow(i, f"Part 1 Mission {i}", f"ram_{i}", "Ramantu - Part 1", i)
+        for i in range(1, 61)
+    ] + [
+        service.MissionRow(
+            i, f"Part 2 Mission {i - 60}", f"ram_{i}", "Ramantu - Part 2", i - 60
+        )
+        for i in range(61, 184)
+    ]
+    embed = service.build_my_progress_embed(
+        data.posts[0],
+        category,
+        {
+            "current_step_index": "39",
+            "current_mission_key": "ram_99",
+            "status": "in_progress",
+        },
+        missions,
+    )
+    assert embed.description == "98 / 183 complete"
+
+
+def test_mark_mission_done_on_final_marius_sets_done_and_renders_100(monkeypatch):
+    worksheet = FakeWorksheet()
+    headers = [
+        "user_id",
+        "category",
+        "current_step_index",
+        "current_mission_key",
+        "status",
+        "notify_plan_ahead",
+        "private_thread_id",
+        "last_panel_message_id",
+        "notes",
+        "updated_at_utc",
+    ]
+    state = {
+        "user_id": "123456",
+        "category": "MAR",
+        "current_step_index": "60",
+        "current_mission_key": "mar_180",
+        "status": "in_progress",
+        "notify_plan_ahead": "yes",
+        "private_thread_id": "7",
+        "last_panel_message_id": "8",
+        "notes": "keep",
+    }
+
+    async def config_value(_key):
+        return "ProgressUserState"
+
+    async def fetch_records(_sheet, _tab):
+        return [state]
+
+    async def fetch_values(_sheet, _tab):
+        return [headers]
+
+    async def get_ws(_sheet, _tab):
+        return worksheet
+
+    async def call(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
+    monkeypatch.setattr(service.milestones_config, "arequire_value", config_value)
+    monkeypatch.setattr(service, "afetch_records", fetch_records)
+    monkeypatch.setattr(service, "afetch_values", fetch_values)
+    monkeypatch.setattr(service, "aget_worksheet", get_ws)
+    monkeypatch.setattr(service, "acall_with_backoff", call)
+    missions = [
+        service.MissionRow(
+            i,
+            f"Mission {i}",
+            f"mar_{i}",
+            f"Marius - Part {((i - 1) // 60) + 1}",
+            ((i - 1) % 60) + 1,
+        )
+        for i in range(1, 181)
+    ]
+    new_state = asyncio.run(
+        service.complete_current_mission(123456, "MAR", state, missions)
+    )
+    assert new_state["status"] == "done"
+    assert new_state["current_step_index"] == "60"
+    assert new_state["current_mission_key"] == "mar_180"
+    assert len(worksheet.updates) == 1
+    assert worksheet.updates[0][0] == "A2:J2"
+    assert worksheet.updates[0][1][0][5:9] == ["yes", "7", "8", "keep"]
+
+    data = _data(
+        post_overrides={
+            "my_progress_body_template": "{completed_steps} {remaining_steps} {percent_complete}"
+        }
+    )
+    category = service.ProgressCategory("MAR", "Marius", 180, "TAB")
+    embed = service.build_my_progress_embed(
+        data.posts[0], category, new_state, missions
+    )
+    assert embed.description == "180 0 100"
+
+
+def test_mission_dropdown_keeps_local_step_index_with_global_sequence():
+    data = _picker_post_data()
+    mission = service.MissionRow(
+        180, "Deal 30,000,000 damage", "mar_180", "Marius - Part 3", 60
+    )
+    view = service.ProgressMissionPickerView("MAR", data.posts[0], [mission], 0)
+    option = _select_from_view(view, service.ProgressMissionSelect).options[0]
+    assert option.label.startswith("60. Deal 30,000,000 damage")
+    assert option.value == "mar_180"
 
 
 def test_my_progress_unavailable_embed_uses_sheet_description():

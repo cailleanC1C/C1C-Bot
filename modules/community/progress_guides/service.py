@@ -111,6 +111,10 @@ class ForumPost:
     my_progress_chapter_select_placeholder: str
     my_progress_mission_select_placeholder: str
     my_progress_no_missions_description: str
+    my_progress_complete_button_label: str
+    my_progress_complete_saved_description: str
+    my_progress_next_mission_saved_description: str
+    my_progress_completed_template: str
     progress_tracking_enabled: bool
     guide_channel_id: int | None
     guide_thread_id: int | None
@@ -168,6 +172,18 @@ class ForumPost:
             my_progress_no_missions_description=_text(
                 row.get("my_progress_no_missions_description")
             ),
+            my_progress_complete_button_label=_text(
+                row.get("my_progress_complete_button_label")
+            ),
+            my_progress_complete_saved_description=_text(
+                row.get("my_progress_complete_saved_description")
+            ),
+            my_progress_next_mission_saved_description=_text(
+                row.get("my_progress_next_mission_saved_description")
+            ),
+            my_progress_completed_template=_text(
+                row.get("my_progress_completed_template")
+            ),
             progress_tracking_enabled=_truthy(row.get("progress_tracking_enabled")),
             guide_channel_id=_int_or_none(row.get("guide_channel_id")),
             guide_thread_id=_int_or_none(row.get("guide_thread_id")),
@@ -180,12 +196,31 @@ class ForumPost:
         )
 
 
-@dataclass(slots=True)
+@dataclass(init=False, slots=True)
 class MissionRow:
-    number: int
+    sequence_number: int
+    step_index: int
+    key: str
+    title: str
     text: str
-    key: str = ""
-    title: str = ""
+
+    def __init__(
+        self,
+        sequence_number: int,
+        text: str,
+        key: str = "",
+        title: str = "",
+        step_index: int | None = None,
+    ) -> None:
+        self.sequence_number = sequence_number
+        self.step_index = step_index if step_index is not None else sequence_number
+        self.key = key
+        self.title = title
+        self.text = text
+
+    @property
+    def number(self) -> int:
+        return self.sequence_number
 
 
 @dataclass(slots=True)
@@ -356,16 +391,17 @@ def _parse_mission_rows(rows: Sequence[Mapping[str, object]]) -> list[MissionRow
         text = _strip_visible_urls(row.get("description") or row.get("mission_text"))
         if not text:
             continue
-        number = _int_or_none(row.get("step_index")) or order
+        step_index = _int_or_none(row.get("step_index")) or order
         parsed.append(
             MissionRow(
-                number=number,
-                text=text,
+                sequence_number=len(parsed) + 1,
+                step_index=step_index,
                 key=_text(row.get("mission_key")),
                 title=_text(row.get("title")),
+                text=text,
             )
         )
-    return sorted(parsed, key=lambda mission: mission.number)
+    return parsed
 
 
 async def _mission_tab_for_category(category: str) -> str | None:
@@ -413,7 +449,7 @@ def build_mission_embed(
         "",
     ]
     for mission in shown:
-        lines.append(f"{mission.number}. {_limit_text(mission.text, 220)}")
+        lines.append(f"{mission.sequence_number}. {_limit_text(mission.text, 220)}")
     return discord.Embed(
         title=_mission_title_for_category(category, data),
         description=_embed_description("\n".join(lines)),
@@ -604,7 +640,7 @@ def _find_user_state(
 
 
 def _format_percent(current: int | None, total: int | None) -> str:
-    if not current or not total:
+    if current is None or not total:
         return ""
     value = current / total * 100
     return f"{int(value)}" if value.is_integer() else f"{value:.1f}"
@@ -620,7 +656,7 @@ def _mission_for_state(
             return found
     step = _int_or_none(state.get("current_step_index"))
     return (
-        next((m for m in missions if m.number == step), None)
+        next((m for m in missions if m.step_index == step), None)
         if step is not None
         else None
     )
@@ -642,27 +678,61 @@ def build_my_progress_embed(
             color=discord.Color.blurple(),
         )
     mission = _mission_for_state(state, missions)
-    current = (
-        mission.number if mission else _int_or_none(state.get("current_step_index"))
+    sequence = (
+        mission.sequence_number
+        if mission
+        else _int_or_none(state.get("current_step_index"))
+    )
+    local_step = (
+        mission.step_index if mission else _int_or_none(state.get("current_step_index"))
     )
     total = category_info.total_steps if category_info else None
+    status = _text(state.get("status"))
+    is_done = status.casefold() in {"done", "completed", "complete"}
+    completed_steps = (
+        sequence
+        if is_done and sequence is not None
+        else (max(sequence - 1, 0) if sequence is not None else None)
+    )
+    remaining_steps = (
+        max(total - completed_steps, 0)
+        if total is not None and completed_steps is not None
+        else None
+    )
+    chapter_title = mission.title if mission else ""
+    chapter_total_steps = (
+        sum(
+            1
+            for m in missions
+            if (m.title or "Missions") == (mission.title or "Missions")
+        )
+        if mission
+        else None
+    )
     values = {
         "category_label": (
             category_info.label if category_info else (post.label or post.category)
         ),
-        "current_step_index": str(current) if current is not None else "",
+        "current_step_index": str(local_step) if local_step is not None else "",
         "total_steps": str(total) if total is not None else "",
         "mission_description": mission.text if mission else "",
-        "percent_complete": _format_percent(current, total),
-        "remaining_steps": (
-            str(max(total - current, 0))
-            if total is not None and current is not None
-            else ""
+        "percent_complete": _format_percent(completed_steps, total),
+        "remaining_steps": str(remaining_steps) if remaining_steps is not None else "",
+        "status": status,
+        "current_sequence_number": str(sequence) if sequence is not None else "",
+        "completed_steps": str(completed_steps) if completed_steps is not None else "",
+        "chapter_title": chapter_title,
+        "chapter_step_index": str(local_step) if local_step is not None else "",
+        "chapter_total_steps": (
+            str(chapter_total_steps) if chapter_total_steps is not None else ""
         ),
-        "status": _text(state.get("status")),
     }
     body = (
-        post.my_progress_body_template
+        (
+            post.my_progress_completed_template
+            if is_done and post.my_progress_completed_template
+            else post.my_progress_body_template
+        )
         or "Current mission: {current_step_index} / {total_steps}\n\nMission: {mission_description}\n\nProgress: {percent_complete}% complete\n{remaining_steps} missions remaining"
     )
     for key, value in values.items():
@@ -711,12 +781,75 @@ class SetProgressButton(discord.ui.Button):
         )
 
 
+class MarkMissionDoneButton(discord.ui.Button):
+    def __init__(self, category: str, label: str) -> None:
+        self.category = category
+        super().__init__(
+            label=_button_label(label or "Mark Mission Done"),
+            style=discord.ButtonStyle.success,
+            custom_id=f"progressguides:complete:{category}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        post: ForumPost | None = None
+        try:
+            data = await get_or_load_progress_guide_data()
+            post = _post_for_category(self.category, data)
+            if post is None:
+                await interaction.followup.send(
+                    embed=_progress_unavailable_embed(post), ephemeral=True
+                )
+                return
+            category_info = await _progress_category(self.category)
+            _tab, rows = await _user_state_rows()
+            found = _find_user_state(rows, interaction.user.id, self.category)
+            if found is None:
+                await interaction.followup.send(
+                    embed=build_my_progress_embed(post, category_info, None, []),
+                    ephemeral=True,
+                )
+                return
+            missions = await get_or_load_missions(self.category)
+            old_state = found[1]
+            new_state = await complete_current_mission(
+                interaction.user.id, self.category, old_state, missions
+            )
+            embed = build_my_progress_embed(post, category_info, new_state, missions)
+            if _text(new_state.get("status")).casefold() in {
+                "done",
+                "completed",
+                "complete",
+            }:
+                footer = post.my_progress_complete_saved_description
+            else:
+                footer = post.my_progress_next_mission_saved_description
+            if footer:
+                embed.set_footer(text=footer)
+            await interaction.followup.send(
+                embed=embed, view=MyProgressView(post), ephemeral=True
+            )
+        except Exception as exc:
+            if _is_quota_failure(exc):
+                await interaction.followup.send(
+                    embed=_progress_unavailable_embed(post), ephemeral=True
+                )
+                return
+            raise
+
+
 class MyProgressView(discord.ui.View):
     def __init__(self, post: ForumPost) -> None:
         super().__init__(timeout=900)
         if post.my_progress_set_button_label:
             self.add_item(
                 SetProgressButton(post.category, post.my_progress_set_button_label)
+            )
+        if post.my_progress_complete_button_label:
+            self.add_item(
+                MarkMissionDoneButton(
+                    post.category, post.my_progress_complete_button_label
+                )
             )
 
 
@@ -752,10 +885,8 @@ def _chapter_groups(
     for mission in missions:
         chapter = mission.title or "Missions"
         grouped.setdefault(chapter, []).append(mission)
-    groups = [
-        (title, sorted(rows, key=lambda m: m.number)) for title, rows in grouped.items()
-    ]
-    return sorted(groups, key=lambda item: item[1][0].number if item[1] else 0)
+    groups = [(title, rows) for title, rows in grouped.items()]
+    return sorted(groups, key=lambda item: item[1][0].sequence_number if item[1] else 0)
 
 
 def _select_label(value: object) -> str:
@@ -764,11 +895,11 @@ def _select_label(value: object) -> str:
 
 
 def _mission_option_label(mission: MissionRow) -> str:
-    return _select_label(f"{mission.number}. {mission.text}")
+    return _select_label(f"{mission.step_index}. {mission.text}")
 
 
 def _mission_option_value(mission: MissionRow) -> str:
-    return mission.key or str(mission.number)
+    return mission.key or str(mission.sequence_number)
 
 
 class ProgressChapterSelect(discord.ui.Select):
@@ -855,7 +986,7 @@ class ProgressMissionSelect(discord.ui.Select):
                 interaction.user.id, view.category, mission
             )
             state = {
-                "current_step_index": str(mission.number),
+                "current_step_index": str(mission.step_index),
                 "current_mission_key": mission.key,
                 "status": "in_progress",
             }
@@ -991,7 +1122,7 @@ async def upsert_progress_user_state(
     values = {
         "user_id": str(user_id),
         "category": category,
-        "current_step_index": str(mission.number),
+        "current_step_index": str(mission.step_index),
         "current_mission_key": mission.key,
         "status": "in_progress",
         "notify_plan_ahead": "",
@@ -1023,6 +1154,68 @@ async def upsert_progress_user_state(
         [full_row],
         value_input_option="RAW",
     )
+
+
+async def complete_current_mission(
+    user_id: int,
+    category: str,
+    state: Mapping[str, object],
+    missions: Sequence[MissionRow],
+) -> Mapping[str, object]:
+    mission = _mission_for_state(state, missions)
+    if mission is None:
+        return state
+    next_mission = next(
+        (m for m in missions if m.sequence_number == mission.sequence_number + 1), None
+    )
+    status = "in_progress" if next_mission else "done"
+    target = next_mission or mission
+    sheet_id = get_milestones_sheet_id().strip()
+    tab, rows = await _user_state_rows()
+    found = _find_user_state(rows, user_id, category)
+    if found is None:
+        await upsert_progress_user_state(user_id, category, target)
+        return {
+            **dict(state),
+            "current_step_index": str(target.step_index),
+            "current_mission_key": target.key,
+            "status": status,
+        }
+    row_number, existing = found
+    worksheet = await aget_worksheet(sheet_id, tab)
+    header = await _load_header(sheet_id, tab)
+    now = datetime.now(timezone.utc).isoformat()
+    values = {
+        "user_id": str(user_id),
+        "category": category,
+        "current_step_index": str(target.step_index),
+        "current_mission_key": target.key,
+        "status": status,
+        "updated_at_utc": now,
+    }
+    preserve = {
+        "notify_plan_ahead",
+        "private_thread_id",
+        "last_panel_message_id",
+        "notes",
+    }
+    full_row = [
+        (
+            _text(existing.get(name))
+            if name in preserve
+            else values.get(name, _text(existing.get(name)))
+        )
+        for name in header
+    ]
+    start_col = _column_label(0)
+    end_col = _column_label(len(header) - 1)
+    await acall_with_backoff(
+        worksheet.update,
+        f"{start_col}{row_number}:{end_col}{row_number}",
+        [full_row],
+        value_input_option="RAW",
+    )
+    return {**dict(existing), **values}
 
 
 def _progress_notice_embed(post: ForumPost | None, description: str) -> discord.Embed:
