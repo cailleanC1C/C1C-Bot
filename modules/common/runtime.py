@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import inspect
 import logging
 import math
 import os
@@ -1675,33 +1674,7 @@ class Runtime:
                 except Exception:
                     cleanup_logger.exception("cleanup watcher failure notice failed")
 
-        async def startup_validation_runner() -> None:
-            try:
-                run_cleanup_kwargs: dict[str, Any] = {
-                    "startup_validation": True,
-                    "writeback": False,
-                }
-                try:
-                    if "resolved_config" in inspect.signature(
-                        housekeeping_cleanup.run_cleanup
-                    ).parameters:
-                        run_cleanup_kwargs["resolved_config"] = cleanup_config
-                except (TypeError, ValueError):
-                    run_cleanup_kwargs["resolved_config"] = cleanup_config
-                await housekeeping_cleanup.run_cleanup(
-                    self.bot, cleanup_logger, **run_cleanup_kwargs
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                cleanup_logger.exception(
-                    "cleanup startup validation failed; recurring cleanup remains scheduled"
-                )
-
         cleanup_job.do(cleanup_runner)
-        self.scheduler.spawn(
-            startup_validation_runner(), name="cleanup_startup_validation"
-        )
 
         next_run = getattr(cleanup_job, "next_run", None)
         next_run_text = (
