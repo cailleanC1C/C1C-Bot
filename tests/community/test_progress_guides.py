@@ -65,9 +65,13 @@ class FakeChannel:
 class FakeWorksheet:
     def __init__(self):
         self.updates = []
+        self.appended = []
 
     def update(self, cell, values, **kwargs):
         self.updates.append((cell, values, kwargs))
+
+    def append_row(self, row, **kwargs):
+        self.appended.append((row, kwargs))
 
 
 class FakeBot:
@@ -84,9 +88,17 @@ class FakeBot:
 class FakeInteractionResponse:
     def __init__(self):
         self.deferred = []
+        self.sent = []
+        self.modals = []
 
     async def defer(self, **kwargs):
         self.deferred.append(kwargs)
+
+    async def send_message(self, **kwargs):
+        self.sent.append(kwargs)
+
+    async def send_modal(self, modal):
+        self.modals.append(modal)
 
 
 class FakeFollowup:
@@ -97,10 +109,15 @@ class FakeFollowup:
         self.sent.append(kwargs)
 
 
+class FakeUser:
+    id = 123456
+
+
 class FakeInteraction:
     def __init__(self):
         self.response = FakeInteractionResponse()
         self.followup = FakeFollowup()
+        self.user = FakeUser()
 
 
 async def _run(monkeypatch, data, channels, worksheet, *, refresh=True):
@@ -146,6 +163,27 @@ def _data(*, post_overrides=None, guides=None, faq=None):
         "guide_panel_message_id": "",
         "help_post_url": "https://discord.com/channels/1/2/3",
         "guide_asset_key": "hero",
+        "guide_post_url": "",
+        "help_channel_id": "",
+        "help_thread_id": "",
+        "help_panel_message_id": "",
+        "progress_tracking_enabled": "TRUE",
+        "leaderboard_enabled": "FALSE",
+        "notes": "",
+        "updated_at_utc": "",
+        "mission_list_button_label": "",
+        "mission_list_title": "",
+        "my_progress_button_label": "",
+        "my_progress_title": "Arbiter Progress",
+        "my_progress_body_template": "Current mission: {current_step_index} / {total_steps}\n\nMission: {mission_description}\n\nProgress: {percent_complete}% complete\n{remaining_steps} missions remaining\nStatus: {status}",
+        "my_progress_empty_description": "No progress saved yet.",
+        "my_progress_set_button_label": "Set Progress",
+        "my_progress_modal_title": "Set Arbiter Progress",
+        "my_progress_modal_step_label": "Current mission number",
+        "my_progress_saved_description": "Progress saved.",
+        "my_progress_invalid_step_description": "Sheet says enter a valid mission number.",
+        "my_progress_missing_step_description": "Sheet says that mission is not available.",
+        "my_progress_unavailable_description": "Sheet says progress is temporarily unavailable.",
         "questions_enabled": "TRUE",
         "sort_order": "1",
         "enabled": "TRUE",
@@ -957,20 +995,23 @@ def test_non_quota_writeback_failure_deletes_untracked_message_and_reports_failu
     assert "ordinary update failure" in summary.failures[0]
 
 
-def test_mission_button_appears_between_faq_and_help_with_sheet_label():
+def test_guide_button_order_includes_my_progress_with_sheet_label():
     data = _data(
         post_overrides={
             "mission_list_button_label": "View Missions",
             "mission_list_title": "Arbiter Mission List",
+            "my_progress_button_label": "My Progress",
         }
     )
     view = service.build_guide_view(data.posts[0], data)
     assert [getattr(item, "label", "") for item in view.children] == [
-        "Read FAQ",
         "View Missions",
+        "My Progress",
+        "Read FAQ",
         "Ask the Helpers",
     ]
-    assert view.children[1].custom_id == "progressguides:missions:ARB"
+    assert view.children[0].custom_id == "progressguides:missions:ARB"
+    assert view.children[1].custom_id == "progressguides:myprogress:ARB"
 
 
 @pytest.mark.parametrize("category", ["FW_N", "FW_H"])
@@ -1210,3 +1251,279 @@ def test_publish_refresh_clears_mission_cache_without_reading_mission_tabs(monke
     asyncio.run(service.ProgressGuideMissionButton("ARB").callback(second))
     assert mission_tab_loads == 2
     assert "Loaded 2" in second.followup.sent[0]["embed"].description
+
+
+def test_my_progress_button_hides_when_label_blank_or_tracking_false():
+    data = _data(post_overrides={"my_progress_button_label": ""})
+    assert "progressguides:myprogress:ARB" not in [
+        getattr(i, "custom_id", "")
+        for i in service.build_guide_view(data.posts[0], data).children
+    ]
+    data = _data(post_overrides={"progress_tracking_enabled": "FALSE"})
+    assert "progressguides:myprogress:ARB" not in [
+        getattr(i, "custom_id", "")
+        for i in service.build_guide_view(data.posts[0], data).children
+    ]
+
+
+@pytest.mark.parametrize("category", ["FW_N", "FW_H"])
+def test_fw_guides_do_not_get_my_progress_button(category):
+    data = _data(
+        post_overrides={
+            "category": category,
+            "my_progress_button_label": "My Progress",
+            "progress_tracking_enabled": "TRUE",
+        }
+    )
+    data.faq_by_category[category] = data.faq_by_category.pop("ARB")
+    view = service.build_guide_view(data.posts[0], data)
+    assert f"progressguides:myprogress:{category}" not in [
+        getattr(item, "custom_id", "") for item in view.children
+    ]
+
+
+def test_my_progress_empty_state_uses_sheet_copy_and_set_button():
+    data = _data()
+    embed = service.build_my_progress_embed(data.posts[0], None, None, [])
+    assert embed.title == "Arbiter Progress"
+    assert embed.description == "No progress saved yet."
+    view = service.MyProgressView(data.posts[0])
+    assert [getattr(item, "label", "") for item in view.children] == ["Set Progress"]
+
+
+def test_existing_progress_renders_template_prefers_mission_key_and_hides_metadata():
+    data = _data()
+    category = service.ProgressCategory(
+        "ARB", "Arena Rush Basics", 286, "PROGRESS_MISSIONS_ARB_TAB"
+    )
+    missions = [
+        service.MissionRow(10, "Wrong fallback", "old"),
+        service.MissionRow(
+            145, "Clear Stage 20 of the Dragon’s Lair 10 times on Auto.", "dragon-20"
+        ),
+    ]
+    state = {
+        "current_step_index": "10",
+        "current_mission_key": "dragon-20",
+        "status": "in_progress",
+    }
+    embed = service.build_my_progress_embed(data.posts[0], category, state, missions)
+    rendered = embed.description
+    assert "145 / 286" in rendered
+    assert "50.7% complete" in rendered
+    assert "141 missions remaining" in rendered
+    assert "Clear Stage 20" in rendered
+    assert "dragon-20" not in rendered
+    assert "system_tags" not in rendered
+    assert "resource_tags" not in rendered
+    assert "source_url" not in rendered
+    assert "Wrong fallback" not in rendered
+
+
+def test_existing_progress_falls_back_to_step_index_and_description_column():
+    data = _data()
+    category = service.ProgressCategory(
+        "ARB", "Arena Rush Basics", 3, "PROGRESS_MISSIONS_ARB_TAB"
+    )
+    missions = service._parse_mission_rows(
+        [
+            {
+                "step_index": "2",
+                "mission_key": "two",
+                "description": "Description column text",
+                "mission_text": "Do not use",
+            }
+        ]
+    )
+    embed = service.build_my_progress_embed(
+        data.posts[0],
+        category,
+        {"current_step_index": "2", "current_mission_key": "", "status": "in_progress"},
+        missions,
+    )
+    assert "Description column text" in embed.description
+    assert "Do not use" not in embed.description
+
+
+def test_upsert_progress_user_state_appends_and_updates_with_exact_headers(monkeypatch):
+    worksheet = FakeWorksheet()
+    headers = [
+        "user_id",
+        "category",
+        "current_step_index",
+        "current_mission_key",
+        "status",
+        "notify_plan_ahead",
+        "private_thread_id",
+        "last_panel_message_id",
+        "notes",
+        "updated_at_utc",
+    ]
+
+    async def config_value(key):
+        assert key == "PROGRESS_USER_STATE_TAB"
+        return "ProgressUserState"
+
+    async def fetch_records(_sheet, _tab):
+        return []
+
+    async def fetch_values(_sheet, _tab):
+        return [headers]
+
+    async def get_ws(_sheet, _tab):
+        return worksheet
+
+    async def call(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
+    monkeypatch.setattr(service.milestones_config, "arequire_value", config_value)
+    monkeypatch.setattr(service, "afetch_records", fetch_records)
+    monkeypatch.setattr(service, "afetch_values", fetch_values)
+    monkeypatch.setattr(service, "aget_worksheet", get_ws)
+    monkeypatch.setattr(service, "acall_with_backoff", call)
+    asyncio.run(
+        service.upsert_progress_user_state(
+            123456, "ARB", service.MissionRow(145, "x", "dragon-20")
+        )
+    )
+    appended = worksheet.appended[0][0]
+    assert appended[:5] == ["123456", "ARB", "145", "dragon-20", "in_progress"]
+    assert appended[5:9] == ["", "", "", ""]
+
+    async def fetch_existing(_sheet, _tab):
+        return [
+            {
+                "user_id": "123456",
+                "category": "ARB",
+                "notify_plan_ahead": "yes",
+                "private_thread_id": "7",
+                "last_panel_message_id": "8",
+                "notes": "keep",
+            }
+        ]
+
+    worksheet.appended.clear()
+    monkeypatch.setattr(service, "afetch_records", fetch_existing)
+    asyncio.run(
+        service.upsert_progress_user_state(
+            123456, "ARB", service.MissionRow(146, "x", "next")
+        )
+    )
+    assert len(worksheet.updates) == 1
+    cell, values, kwargs = worksheet.updates[0]
+    assert cell == "A2:J2"
+    assert values[0][:5] == ["123456", "ARB", "146", "next", "in_progress"]
+    assert values[0][5:9] == ["yes", "7", "8", "keep"]
+    assert kwargs == {"value_input_option": "RAW"}
+    assert worksheet.appended == []
+
+
+def test_my_progress_persistent_view_has_no_startup_sheet_reads(monkeypatch):
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("startup must not read sheets")
+
+    monkeypatch.setattr(service, "afetch_records", forbidden)
+    bot = FakeBot()
+    ProgressGuidesCog(bot)
+    custom_ids = [
+        getattr(item, "custom_id", "") for view in bot.views for item in view.children
+    ]
+    assert "progressguides:myprogress:ARB" in custom_ids
+
+
+def _set_modal_step_value(modal, value: str) -> None:
+    from types import SimpleNamespace
+
+    modal.step = SimpleNamespace(value=value)
+
+
+def test_set_progress_modal_rejects_non_numeric_with_embed_and_no_write(monkeypatch):
+    data = _data(post_overrides={"my_progress_button_label": "My Progress"})
+    modal = service.SetProgressModal("ARB", data.posts[0])
+    _set_modal_step_value(modal, "abc")
+    writes = []
+
+    async def write(*_args, **_kwargs):
+        writes.append(True)
+
+    monkeypatch.setattr(service, "upsert_progress_user_state", write)
+    interaction = FakeInteraction()
+    asyncio.run(modal.on_submit(interaction))
+
+    assert writes == []
+    assert (
+        interaction.response.sent[0]["embed"].description
+        == "Sheet says enter a valid mission number."
+    )
+    assert "content" not in interaction.response.sent[0]
+
+
+def test_set_progress_modal_rejects_out_of_range_with_embed_and_no_write(monkeypatch):
+    data = _data(post_overrides={"my_progress_button_label": "My Progress"})
+    service.set_progress_guide_cache(data)
+    modal = service.SetProgressModal("ARB", data.posts[0])
+    _set_modal_step_value(modal, "999")
+    writes = []
+
+    async def category(_category):
+        return service.ProgressCategory(
+            "ARB", "Arena Rush Basics", 2, "PROGRESS_MISSIONS_ARB_TAB"
+        )
+
+    async def missions(_category):
+        return [service.MissionRow(1, "First", "first")]
+
+    async def write(*_args, **_kwargs):
+        writes.append(True)
+
+    monkeypatch.setattr(service, "_progress_category", category)
+    monkeypatch.setattr(service, "get_or_load_missions", missions)
+    monkeypatch.setattr(service, "upsert_progress_user_state", write)
+    interaction = FakeInteraction()
+    asyncio.run(modal.on_submit(interaction))
+
+    assert writes == []
+    assert (
+        interaction.response.sent[0]["embed"].description
+        == "Sheet says that mission is not available."
+    )
+    assert "content" not in interaction.response.sent[0]
+
+
+def test_set_progress_modal_success_is_embed_only(monkeypatch):
+    data = _data(post_overrides={"my_progress_button_label": "My Progress"})
+    service.set_progress_guide_cache(data)
+    modal = service.SetProgressModal("ARB", data.posts[0])
+    _set_modal_step_value(modal, "1")
+    writes = []
+
+    async def category(_category):
+        return service.ProgressCategory(
+            "ARB", "Arena Rush Basics", 2, "PROGRESS_MISSIONS_ARB_TAB"
+        )
+
+    async def missions(_category):
+        return [service.MissionRow(1, "First", "first")]
+
+    async def write(user_id, category_name, mission):
+        writes.append((user_id, category_name, mission.number, mission.key))
+
+    monkeypatch.setattr(service, "_progress_category", category)
+    monkeypatch.setattr(service, "get_or_load_missions", missions)
+    monkeypatch.setattr(service, "upsert_progress_user_state", write)
+    interaction = FakeInteraction()
+    asyncio.run(modal.on_submit(interaction))
+
+    assert writes == [(123456, "ARB", 1, "first")]
+    sent = interaction.response.sent[0]
+    assert "content" not in sent
+    assert sent["embed"].footer.text == "Progress saved."
+    assert "First" in sent["embed"].description
+
+
+def test_my_progress_unavailable_embed_uses_sheet_description():
+    data = _data(post_overrides={"my_progress_button_label": "My Progress"})
+    embed = service._progress_unavailable_embed(data.posts[0])
+    assert embed.title == "Arbiter Progress"
+    assert embed.description == "Sheet says progress is temporarily unavailable."
