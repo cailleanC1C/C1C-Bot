@@ -390,8 +390,32 @@ def test_button_labels_fallback_and_help_remains_last():
     ]
 
 
+def test_sheet_driven_visible_values_are_limited_for_discord():
+    data = _data(
+        post_overrides={
+            "guide_title": "G" * 300,
+            "faq_title": "F" * 300,
+            "faq_description": "D" * 5000,
+            "faq_button_label": "Q" * 100,
+            "help_button_label": "H" * 100,
+        }
+    )
+
+    guide_embed = service.build_guide_embed(data.posts[0], data)
+    faq_embed = service.build_faq_embed("ARB", data)
+    view = service.build_guide_view(data.posts[0], data)
+
+    assert guide_embed.title == "G" * 256
+    assert faq_embed.title == "F" * 256
+    assert faq_embed.description == "D" * 4096
+    assert [getattr(item, "label", "") for item in view.children] == [
+        "Q" * 80,
+        "H" * 80,
+    ]
+
+
 def test_progress_guides_title_renders_exactly_as_sheet_value():
-    exact_title = "✨ Top 1 Tip — Sheet Value"
+    exact_title = "✨ Top 1 Tip - Sheet Value"
     data = _data(
         guides=[
             {

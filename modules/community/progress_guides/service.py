@@ -24,7 +24,10 @@ _FAQ_KEY = "PROGRESS_FAQ_TAB"
 _ASSETS_KEY = "PROGRESS_ASSETS_TAB"
 _MESSAGE_ID_COLUMN = "guide_panel_message_id"
 _EMBED_LIMIT = 3900
+_EMBED_TITLE_LIMIT = 256
+_EMBED_DESCRIPTION_LIMIT = 4096
 _FIELD_LIMIT = 900
+_BUTTON_LABEL_LIMIT = 80
 _URL_RE = re.compile(r"https?://\S+")
 _FAQ_CUSTOM_ID_PREFIX = "progressguides:faq:"
 _PERSISTENT_FAQ_CATEGORIES = ("ARB", "RAM", "MAR", "FW_N", "FW_H")
@@ -198,6 +201,23 @@ def _strip_visible_urls(value: object) -> str:
     return _URL_RE.sub("", _text(value)).strip()
 
 
+def _limit_text(value: object, limit: int) -> str:
+    return _text(value)[:limit]
+
+
+def _embed_title(value: object) -> str:
+    return _limit_text(value, _EMBED_TITLE_LIMIT)
+
+
+def _embed_description(value: object) -> str | None:
+    description = _limit_text(value, _EMBED_DESCRIPTION_LIMIT)
+    return description or None
+
+
+def _button_label(value: object) -> str:
+    return _limit_text(value, _BUTTON_LABEL_LIMIT)
+
+
 def _post_for_category(category: str, data: ProgressGuideData) -> ForumPost | None:
     return next((post for post in data.posts if post.category == category), None)
 
@@ -205,9 +225,9 @@ def _post_for_category(category: str, data: ProgressGuideData) -> ForumPost | No
 def _faq_title_for_category(category: str, data: ProgressGuideData) -> str:
     post = _post_for_category(category, data)
     if post is None:
-        return f"{category} FAQ"
+        return _embed_title(f"{category} FAQ")
     base = post.guide_title or post.label or post.category
-    return post.faq_title or f"{base} FAQ"
+    return _embed_title(post.faq_title or f"{base} FAQ")
 
 
 def build_faq_embed(category: str, data: ProgressGuideData) -> discord.Embed | None:
@@ -217,7 +237,7 @@ def build_faq_embed(category: str, data: ProgressGuideData) -> discord.Embed | N
     post = _post_for_category(category, data)
     embed = discord.Embed(
         title=_faq_title_for_category(category, data),
-        description=post.faq_description if post and post.faq_description else None,
+        description=_embed_description(post.faq_description) if post else None,
         color=discord.Color.blurple(),
     )
     ordered = sorted(
@@ -236,7 +256,7 @@ class ProgressGuideFAQButton(discord.ui.Button):
     def __init__(self, category: str, label: str = "FAQ") -> None:
         self.category = category
         super().__init__(
-            label=label or "FAQ",
+            label=_button_label(label or "FAQ"),
             style=discord.ButtonStyle.secondary,
             custom_id=f"{_FAQ_CUSTOM_ID_PREFIX}{category}",
         )
@@ -273,7 +293,7 @@ def build_guide_embed(post: ForumPost, data: ProgressGuideData) -> discord.Embed
     if not guide_rows:
         return None
     embed = discord.Embed(
-        title=post.guide_title or post.label or post.category,
+        title=_embed_title(post.guide_title or post.label or post.category),
         color=discord.Color.blurple(),
     )
     used = 0
@@ -312,7 +332,7 @@ def build_guide_view(
     if post.questions_enabled and help_url:
         view.add_item(
             discord.ui.Button(
-                label=post.help_button_label or "Ask in Help",
+                label=_button_label(post.help_button_label or "Ask in Help"),
                 style=discord.ButtonStyle.link,
                 url=help_url,
             )
