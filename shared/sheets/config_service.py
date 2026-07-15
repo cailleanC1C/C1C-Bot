@@ -58,6 +58,21 @@ def _normalize_key(row: Mapping[str, object]) -> str:
     return ""
 
 
+def _runtime_config_columns(row: Mapping[str, object]) -> dict[str, object]:
+    """Return only key/value fields from a Config row.
+
+    Additional Config columns (for example ``description``) are operator
+    documentation only and must not influence runtime feature behavior.
+    """
+
+    allowed = {"spec_key", "key", "name", "value", "val"}
+    return {
+        str(column): value
+        for column, value in row.items()
+        if str(column or "").strip().lower() in allowed
+    }
+
+
 def _filter_rows(rows: Iterable[Mapping[str, object]]) -> dict[str, Mapping[str, object]]:
     config: dict[str, Mapping[str, object]] = {}
     for row in rows or []:
@@ -66,7 +81,7 @@ def _filter_rows(rows: Iterable[Mapping[str, object]]) -> dict[str, Mapping[str,
             continue
         if _ALLOWED_KEYS and key not in _ALLOWED_KEYS:
             continue
-        config[key] = dict(row)
+        config[key] = _runtime_config_columns(row)
     return config
 
 

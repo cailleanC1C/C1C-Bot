@@ -434,19 +434,10 @@ def _parse_config_records(records: Sequence[Dict[str, Any]]) -> Dict[str, str]:
                 key_value = str(value).strip().lower() if value is not None else ""
             elif col_norm in {"value", "val"}:
                 stored_value = str(value).strip() if value is not None else ""
-        if key_value:
-            if stored_value:
-                parsed[key_value] = stored_value
-                continue
-            for col, value in row.items():
-                if (col or "").strip().lower() == "key":
-                    continue
-                if value is None:
-                    continue
-                candidate = str(value).strip()
-                if candidate:
-                    parsed[key_value] = candidate
-                    break
+        # Config is a strict key/value contract: column C+ may contain human-only
+        # documentation and must never become a runtime fallback value.
+        if key_value and stored_value:
+            parsed[key_value] = stored_value
     return parsed
 
 
