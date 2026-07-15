@@ -90,6 +90,7 @@ class FakeInteractionResponse:
         self.deferred = []
         self.sent = []
         self.modals = []
+        self.edits = []
 
     async def defer(self, **kwargs):
         self.deferred.append(kwargs)
@@ -99,6 +100,9 @@ class FakeInteractionResponse:
 
     async def send_modal(self, modal):
         self.modals.append(modal)
+
+    async def edit_message(self, **kwargs):
+        self.edits.append(kwargs)
 
 
 class FakeFollowup:
@@ -1432,94 +1436,141 @@ def test_my_progress_persistent_view_has_no_startup_sheet_reads(monkeypatch):
     assert "progressguides:myprogress:ARB" in custom_ids
 
 
-def _set_modal_step_value(modal, value: str) -> None:
-    from types import SimpleNamespace
-
-    modal.step = SimpleNamespace(value=value)
-
-
-def test_set_progress_modal_rejects_non_numeric_with_embed_and_no_write(monkeypatch):
-    data = _data(post_overrides={"my_progress_button_label": "My Progress"})
-    modal = service.SetProgressModal("ARB", data.posts[0])
-    _set_modal_step_value(modal, "abc")
-    writes = []
-
-    async def write(*_args, **_kwargs):
-        writes.append(True)
-
-    monkeypatch.setattr(service, "upsert_progress_user_state", write)
-    interaction = FakeInteraction()
-    asyncio.run(modal.on_submit(interaction))
-
-    assert writes == []
-    assert (
-        interaction.response.sent[0]["embed"].description
-        == "Sheet says enter a valid mission number."
+def _picker_post_data():
+    return _data(
+        post_overrides={
+            "my_progress_button_label": "My Progress",
+            "my_progress_picker_title": "Pick Progress",
+            "my_progress_picker_description": "Choose where you are.",
+            "my_progress_chapter_select_placeholder": "Choose a chapter",
+            "my_progress_mission_select_placeholder": "Choose a mission",
+            "my_progress_no_missions_description": "No missions from sheet.",
+        }
     )
-    assert "content" not in interaction.response.sent[0]
 
 
-def test_set_progress_modal_rejects_out_of_range_with_embed_and_no_write(monkeypatch):
-    data = _data(post_overrides={"my_progress_button_label": "My Progress"})
+def _select_from_view(view, select_type):
+    return next(item for item in view.children if isinstance(item, select_type))
+
+
+def test_set_progress_button_defers_then_opens_chapter_picker_via_followup(monkeypatch):
+    data = _picker_post_data()
     service.set_progress_guide_cache(data)
-    modal = service.SetProgressModal("ARB", data.posts[0])
-    _set_modal_step_value(modal, "999")
-    writes = []
-
-    async def category(_category):
-        return service.ProgressCategory(
-            "ARB", "Arena Rush Basics", 2, "PROGRESS_MISSIONS_ARB_TAB"
-        )
+    events = []
 
     async def missions(_category):
-        return [service.MissionRow(1, "First", "first")]
+        events.append(("load_missions", list(interaction.response.deferred)))
+        return [service.MissionRow(1, "First mission", "first", "Chapter One")]
 
-    async def write(*_args, **_kwargs):
-        writes.append(True)
-
-    monkeypatch.setattr(service, "_progress_category", category)
     monkeypatch.setattr(service, "get_or_load_missions", missions)
-    monkeypatch.setattr(service, "upsert_progress_user_state", write)
+    button = service.SetProgressButton("ARB", "Set Progress")
     interaction = FakeInteraction()
-    asyncio.run(modal.on_submit(interaction))
+    asyncio.run(button.callback(interaction))
 
-    assert writes == []
-    assert (
-        interaction.response.sent[0]["embed"].description
-        == "Sheet says that mission is not available."
+    assert interaction.response.modals == []
+    assert interaction.response.sent == []
+    assert interaction.response.deferred == [{"ephemeral": True, "thinking": True}]
+    assert events == [("load_missions", [{"ephemeral": True, "thinking": True}])]
+    sent = interaction.followup.sent[0]
+    assert "content" not in sent
+    assert sent["embed"].title == "Pick Progress"
+    assert isinstance(sent["view"], service.ProgressChapterPickerView)
+    select = _select_from_view(sent["view"], service.ProgressChapterSelect)
+    assert select.placeholder == "Choose a chapter"
+    assert [option.label for option in select.options] == ["Chapter One"]
+
+
+def test_chapter_dropdown_options_are_built_from_mission_title():
+    data = _picker_post_data()
+    missions = [
+        service.MissionRow(2, "Second", "second", "Later"),
+        service.MissionRow(1, "First", "first", "Earlier"),
+        service.MissionRow(3, "Third", "third", "Earlier"),
+    ]
+    view = service.ProgressChapterPickerView("ARB", data.posts[0], missions)
+    select = _select_from_view(view, service.ProgressChapterSelect)
+
+    assert [option.label for option in select.options] == ["Earlier", "Later"]
+    assert [option.value for option in select.options] == ["0", "1"]
+
+
+def test_mission_dropdown_uses_description_step_and_mission_key_without_hidden_fields():
+    data = _picker_post_data()
+    mission = service.MissionRow(
+        56,
+        "Earn 3 Stars on Stage 7 https://example.test/source",
+        "stable-key",
+        "Tilshire",
     )
-    assert "content" not in interaction.response.sent[0]
+    view = service.ProgressMissionPickerView("ARB", data.posts[0], [mission], 0)
+    select = _select_from_view(view, service.ProgressMissionSelect)
+    option = select.options[0]
+
+    assert option.label.startswith("56. Earn 3 Stars on Stage 7")
+    assert option.value == "stable-key"
+    assert "stable-key" not in option.label
+    assert "system_tags" not in option.label
+    assert "resource_tags" not in option.label
+    assert "source_url" not in option.label
 
 
-def test_set_progress_modal_success_is_embed_only(monkeypatch):
-    data = _data(post_overrides={"my_progress_button_label": "My Progress"})
+def test_selecting_mission_defers_before_writing(monkeypatch):
+    data = _picker_post_data()
     service.set_progress_guide_cache(data)
-    modal = service.SetProgressModal("ARB", data.posts[0])
-    _set_modal_step_value(modal, "1")
-    writes = []
+    mission = service.MissionRow(1, "First", "first", "Chapter")
+    view = service.ProgressMissionPickerView("ARB", data.posts[0], [mission], 0)
+    select = _select_from_view(view, service.ProgressMissionSelect)
+    select._values = ["first"]
+    events = []
 
     async def category(_category):
-        return service.ProgressCategory(
-            "ARB", "Arena Rush Basics", 2, "PROGRESS_MISSIONS_ARB_TAB"
+        return service.ProgressCategory("ARB", "Arena Rush Basics", 2, "TAB")
+
+    async def write(user_id, category_name, selected):
+        events.append(("write", list(interaction.response.deferred)))
+        assert (user_id, category_name, selected.number, selected.key) == (
+            123456,
+            "ARB",
+            1,
+            "first",
         )
 
-    async def missions(_category):
-        return [service.MissionRow(1, "First", "first")]
-
-    async def write(user_id, category_name, mission):
-        writes.append((user_id, category_name, mission.number, mission.key))
-
     monkeypatch.setattr(service, "_progress_category", category)
-    monkeypatch.setattr(service, "get_or_load_missions", missions)
     monkeypatch.setattr(service, "upsert_progress_user_state", write)
     interaction = FakeInteraction()
-    asyncio.run(modal.on_submit(interaction))
+    asyncio.run(select.callback(interaction))
 
-    assert writes == [(123456, "ARB", 1, "first")]
-    sent = interaction.response.sent[0]
+    assert interaction.response.deferred == [{"ephemeral": True, "thinking": True}]
+    assert events == [("write", [{"ephemeral": True, "thinking": True}])]
+    sent = interaction.followup.sent[0]
     assert "content" not in sent
     assert sent["embed"].footer.text == "Progress saved."
-    assert "First" in sent["embed"].description
+
+
+def test_chapters_and_missions_paginate_after_25_options():
+    data = _picker_post_data()
+    chapter_missions = [
+        service.MissionRow(i, f"Mission {i}", f"key-{i}", "Big Chapter")
+        for i in range(1, 28)
+    ]
+    many_chapters = [
+        service.MissionRow(i, f"Mission {i}", f"key-{i}", f"Chapter {i}")
+        for i in range(1, 28)
+    ]
+
+    chapter_view = service.ProgressChapterPickerView(
+        "ARB", data.posts[0], many_chapters
+    )
+    chapter_select = _select_from_view(chapter_view, service.ProgressChapterSelect)
+    assert len(chapter_select.options) == 25
+    assert any(getattr(item, "emoji", None) for item in chapter_view.children)
+
+    mission_view = service.ProgressMissionPickerView(
+        "ARB", data.posts[0], chapter_missions, 0
+    )
+    mission_select = _select_from_view(mission_view, service.ProgressMissionSelect)
+    assert len(mission_select.options) == 25
+    assert any(getattr(item, "emoji", None) for item in mission_view.children)
 
 
 def test_my_progress_unavailable_embed_uses_sheet_description():
