@@ -20,20 +20,31 @@ def clear_progress_guide_cache():
 
 
 class FakeMessage:
-    def __init__(self, message_id=99):
+    def __init__(self, message_id=99, *, delete_error=None):
         self.id = message_id
         self.edits = []
+        self.delete_error = delete_error
+        self.delete_attempted = False
+        self.deleted = False
 
     async def edit(self, **kwargs):
         self.edits.append(kwargs)
 
+    async def delete(self):
+        self.delete_attempted = True
+        if self.delete_error is not None:
+            raise self.delete_error
+        self.deleted = True
+
 
 class FakeChannel:
-    def __init__(self, *, existing=None, missing=False, fetch_error=None):
+    def __init__(self, *, existing=None, missing=False, fetch_error=None, send_message=None):
         self.existing = existing
         self.missing = missing
         self.fetch_error = fetch_error
+        self.send_message = send_message
         self.sent = []
+        self.sent_messages = []
 
     async def fetch_message(self, message_id):
         if self.fetch_error is not None:
@@ -44,7 +55,9 @@ class FakeChannel:
 
     async def send(self, **kwargs):
         self.sent.append(kwargs)
-        return FakeMessage(12345)
+        message = self.send_message or FakeMessage(12345)
+        self.sent_messages.append(message)
+        return message
 
 
 class FakeWorksheet:
@@ -109,6 +122,7 @@ async def _run(monkeypatch, data, channels, worksheet, *, refresh=True):
         return channels.get(channel_id)
 
     async def call(func, *args, **kwargs):
+        kwargs.pop("attempts", None)
         return func(*args, **kwargs)
 
     monkeypatch.setattr(service, "_resolve_messageable", resolve)
@@ -609,3 +623,305 @@ def test_progress_guides_cog_registers_persistent_faq_view():
         "progressguides:faq:FW_N",
         "progressguides:faq:FW_H",
     }
+
+
+def test_refresh_existing_stored_message_does_not_read_worksheet_or_header(monkeypatch):
+    data = _data(post_overrides={"guide_panel_message_id": "777"})
+    message = FakeMessage(777)
+    guide = FakeChannel(existing=message)
+
+    async def load_data():
+        return data
+
+    async def forbidden_ws(*_args, **_kwargs):
+        raise AssertionError("existing refresh must not fetch worksheet")
+
+    async def forbidden_header(*_args, **_kwargs):
+        raise AssertionError("existing refresh must not load header")
+
+    async def resolve(_bot, channel_id):
+        return {10: guide}.get(channel_id)
+
+    monkeypatch.setattr(service, "load_progress_guide_data", load_data)
+    monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
+    monkeypatch.setattr(service.discord, "NotFound", FakeDiscordNotFound)
+    monkeypatch.setattr(service, "aget_worksheet", forbidden_ws)
+    monkeypatch.setattr(service, "_load_header", forbidden_header)
+    monkeypatch.setattr(service, "_resolve_messageable", resolve)
+
+    summary = asyncio.run(service.publish_or_refresh(FakeBot(), refresh=True))
+
+    assert summary.refreshed == 1
+    assert message.edits
+    assert guide.sent == []
+
+
+def test_refresh_existing_stored_message_does_not_write_guide_panel_message_id(monkeypatch):
+    worksheet = FakeWorksheet()
+    message = FakeMessage(777)
+    guide = FakeChannel(existing=message)
+    summary = asyncio.run(
+        _run(
+            monkeypatch,
+            _data(post_overrides={"guide_panel_message_id": "777"}),
+            {10: guide},
+            worksheet,
+        )
+    )
+
+    assert summary.refreshed == 1
+    assert worksheet.updates == []
+
+
+def test_create_path_still_writes_guide_panel_message_id(monkeypatch):
+    worksheet = FakeWorksheet()
+    summary = asyncio.run(_run(monkeypatch, _data(), {10: FakeChannel()}, worksheet))
+
+    assert summary.created == 1
+    assert worksheet.updates == [("B2", [["12345"]], {"value_input_option": "RAW"})]
+
+
+class FakeCtx:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, **kwargs):
+        self.sent.append(kwargs)
+
+
+def test_quota_config_load_failure_produces_clean_admin_embed(monkeypatch):
+    from modules.community.progress_guides import cog
+    from shared.sheets import milestones_config
+
+    async def fail(*_args, **_kwargs):
+        raise milestones_config.MilestonesConfigLoadFailed("RESOURCE_EXHAUSTED 429")
+
+    ctx = FakeCtx()
+    monkeypatch.setattr(cog, "publish_or_refresh", fail)
+
+    asyncio.run(cog._send_publish_result(ctx, FakeBot(), action="refresh", refresh=True))
+
+    embed = ctx.sent[0]["embed"]
+    assert embed.title == "Progress guides refresh unavailable"
+    assert "Google Sheets read quota was temporarily exceeded" in embed.description
+    assert "RESOURCE_EXHAUSTED" not in embed.description
+
+
+def test_quota_error_does_not_expose_raw_commandinvokeerror_to_discord(monkeypatch):
+    from modules.community.progress_guides import cog
+
+    async def fail(*_args, **_kwargs):
+        raise RuntimeError("429 RESOURCE_EXHAUSTED raw traceback details")
+
+    ctx = FakeCtx()
+    monkeypatch.setattr(cog, "publish_or_refresh", fail)
+
+    asyncio.run(cog._send_publish_result(ctx, FakeBot(), action="refresh", refresh=True))
+
+    embed = ctx.sent[0]["embed"]
+    rendered = f"{embed.title}\n{embed.description}"
+    assert "CommandInvokeError" not in rendered
+    assert "traceback" not in rendered.casefold()
+    assert "RESOURCE_EXHAUSTED" not in rendered
+
+
+class FakeRateLimitError(RuntimeError):
+    status_code = 429
+
+
+async def _run_refresh_command_with_lazy_write_failure(monkeypatch, *, fail_at):
+    from modules.community.progress_guides import cog
+
+    data = _data()
+    worksheet = FakeWorksheet()
+
+    async def load_data():
+        return data
+
+    async def resolve(_bot, channel_id):
+        return {10: FakeChannel()}.get(channel_id)
+
+    async def get_ws(_sheet, _tab):
+        if fail_at == "aget_worksheet":
+            raise FakeRateLimitError("APIError 429 RESOURCE_EXHAUSTED")
+        return worksheet
+
+    async def load_header(_sheet, _tab):
+        if fail_at == "_load_header":
+            raise FakeRateLimitError("APIError 429 RESOURCE_EXHAUSTED")
+        return ["category", "guide_panel_message_id"]
+
+    async def call(_func, *_args, **_kwargs):
+        if fail_at == "acall_with_backoff":
+            raise FakeRateLimitError("APIError 429 RESOURCE_EXHAUSTED")
+        return None
+
+    ctx = FakeCtx()
+    monkeypatch.setattr(service, "load_progress_guide_data", load_data)
+    monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
+    monkeypatch.setattr(service, "_resolve_messageable", resolve)
+    monkeypatch.setattr(service, "aget_worksheet", get_ws)
+    monkeypatch.setattr(service, "_load_header", load_header)
+    monkeypatch.setattr(service, "acall_with_backoff", call)
+
+    await cog._send_publish_result(ctx, FakeBot(), action="refresh", refresh=True)
+    return ctx
+
+
+@pytest.mark.parametrize("fail_at", ["aget_worksheet", "_load_header", "acall_with_backoff"])
+def test_lazy_writeback_quota_errors_send_clean_embed_without_failure_details(
+    monkeypatch, fail_at
+):
+    ctx = asyncio.run(
+        _run_refresh_command_with_lazy_write_failure(monkeypatch, fail_at=fail_at)
+    )
+
+    assert len(ctx.sent) == 1
+    embed = ctx.sent[0]["embed"]
+    rendered = str(embed.to_dict())
+    assert embed.title == "Progress guides refresh unavailable"
+    assert "Google Sheets read quota was temporarily exceeded" in embed.description
+    assert "Failure details" not in rendered
+    assert "APIError" not in rendered
+    assert "RESOURCE_EXHAUSTED" not in rendered
+
+
+def test_non_quota_lazy_writeback_failure_stays_in_summary_failures(monkeypatch):
+    from modules.community.progress_guides import cog
+
+    data = _data()
+
+    async def load_data():
+        return data
+
+    async def resolve(_bot, channel_id):
+        return {10: FakeChannel()}.get(channel_id)
+
+    async def get_ws(_sheet, _tab):
+        raise RuntimeError("ordinary writeback problem")
+
+    ctx = FakeCtx()
+    monkeypatch.setattr(service, "load_progress_guide_data", load_data)
+    monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
+    monkeypatch.setattr(service, "_resolve_messageable", resolve)
+    monkeypatch.setattr(service, "aget_worksheet", get_ws)
+
+    asyncio.run(cog._send_publish_result(ctx, FakeBot(), action="refresh", refresh=True))
+
+    embed = ctx.sent[0]["embed"]
+    assert embed.title == "Progress guides refresh"
+    assert any(field.name == "Failure details" for field in embed.fields)
+    assert "ordinary writeback problem" in str(embed.to_dict())
+
+
+def test_quota_writeback_failure_deletes_untracked_sent_message(monkeypatch):
+    from modules.community.progress_guides import cog
+
+    data = _data()
+    sent_message = FakeMessage(12345)
+    guide = FakeChannel(send_message=sent_message)
+
+    async def load_data():
+        return data
+
+    async def resolve(_bot, channel_id):
+        return {10: guide}.get(channel_id)
+
+    async def call(_func, *_args, **_kwargs):
+        raise FakeRateLimitError("APIError 429 RESOURCE_EXHAUSTED")
+
+    ctx = FakeCtx()
+    monkeypatch.setattr(service, "load_progress_guide_data", load_data)
+    monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
+    monkeypatch.setattr(service, "_resolve_messageable", resolve)
+    monkeypatch.setattr(service, "acall_with_backoff", call)
+    monkeypatch.setattr(service, "aget_worksheet", lambda *_args: asyncio.sleep(0, result=FakeWorksheet()))
+    monkeypatch.setattr(
+        service,
+        "_load_header",
+        lambda *_args: asyncio.sleep(0, result=["category", "guide_panel_message_id"]),
+    )
+
+    asyncio.run(cog._send_publish_result(ctx, FakeBot(), action="refresh", refresh=True))
+
+    assert sent_message.delete_attempted is True
+    assert sent_message.deleted is True
+    embed = ctx.sent[0]["embed"]
+    rendered = str(embed.to_dict())
+    assert embed.title == "Progress guides refresh unavailable"
+    assert "APIError" not in rendered
+    assert "RESOURCE_EXHAUSTED" not in rendered
+
+
+def test_quota_writeback_failure_still_clean_embed_when_rollback_delete_fails(monkeypatch):
+    from modules.community.progress_guides import cog
+
+    data = _data()
+    sent_message = FakeMessage(12345, delete_error=RuntimeError("delete forbidden"))
+    guide = FakeChannel(send_message=sent_message)
+
+    async def load_data():
+        return data
+
+    async def resolve(_bot, channel_id):
+        return {10: guide}.get(channel_id)
+
+    async def call(_func, *_args, **_kwargs):
+        raise FakeRateLimitError("APIError 429 RESOURCE_EXHAUSTED")
+
+    ctx = FakeCtx()
+    monkeypatch.setattr(service, "load_progress_guide_data", load_data)
+    monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
+    monkeypatch.setattr(service, "_resolve_messageable", resolve)
+    monkeypatch.setattr(service, "acall_with_backoff", call)
+    monkeypatch.setattr(service, "aget_worksheet", lambda *_args: asyncio.sleep(0, result=FakeWorksheet()))
+    monkeypatch.setattr(
+        service,
+        "_load_header",
+        lambda *_args: asyncio.sleep(0, result=["category", "guide_panel_message_id"]),
+    )
+
+    asyncio.run(cog._send_publish_result(ctx, FakeBot(), action="refresh", refresh=True))
+
+    assert sent_message.delete_attempted is True
+    assert sent_message.deleted is False
+    embed = ctx.sent[0]["embed"]
+    rendered = str(embed.to_dict())
+    assert embed.title == "Progress guides refresh unavailable"
+    assert "delete forbidden" not in rendered
+    assert "RESOURCE_EXHAUSTED" not in rendered
+
+
+def test_non_quota_writeback_failure_deletes_untracked_message_and_reports_failure(
+    monkeypatch,
+):
+    data = _data()
+    sent_message = FakeMessage(12345)
+    guide = FakeChannel(send_message=sent_message)
+
+    async def load_data():
+        return data
+
+    async def resolve(_bot, channel_id):
+        return {10: guide}.get(channel_id)
+
+    async def call(_func, *_args, **_kwargs):
+        raise RuntimeError("ordinary update failure")
+
+    monkeypatch.setattr(service, "load_progress_guide_data", load_data)
+    monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
+    monkeypatch.setattr(service, "_resolve_messageable", resolve)
+    monkeypatch.setattr(service, "acall_with_backoff", call)
+    monkeypatch.setattr(service, "aget_worksheet", lambda *_args: asyncio.sleep(0, result=FakeWorksheet()))
+    monkeypatch.setattr(
+        service,
+        "_load_header",
+        lambda *_args: asyncio.sleep(0, result=["category", "guide_panel_message_id"]),
+    )
+
+    summary = asyncio.run(service.publish_or_refresh(FakeBot(), refresh=True))
+
+    assert sent_message.delete_attempted is True
+    assert sent_message.deleted is True
+    assert summary.created == 0
+    assert "ordinary update failure" in summary.failures[0]
