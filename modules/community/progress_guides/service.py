@@ -40,6 +40,8 @@ _SET_PROGRESS_CUSTOM_ID_PREFIX = "progressguides:setprogress:"
 _PERSISTENT_FAQ_CATEGORIES = ("ARB", "RAM", "MAR", "FW_N", "FW_H")
 _MISSION_CATEGORIES = ("ARB", "RAM", "MAR")
 _MISSIONS_PER_PAGE = 15
+_PICKER_OPTIONS_PER_PAGE = 25
+_SELECT_LABEL_LIMIT = 100
 _DATA_CACHE: "ProgressGuideData | None" = None
 _DATA_CACHE_LOCK = asyncio.Lock()
 _MISSION_CACHE: dict[str, list["MissionRow"]] = {}
@@ -104,6 +106,11 @@ class ForumPost:
     my_progress_invalid_step_description: str
     my_progress_missing_step_description: str
     my_progress_unavailable_description: str
+    my_progress_picker_title: str
+    my_progress_picker_description: str
+    my_progress_chapter_select_placeholder: str
+    my_progress_mission_select_placeholder: str
+    my_progress_no_missions_description: str
     progress_tracking_enabled: bool
     guide_channel_id: int | None
     guide_thread_id: int | None
@@ -148,6 +155,19 @@ class ForumPost:
             my_progress_unavailable_description=_text(
                 row.get("my_progress_unavailable_description")
             ),
+            my_progress_picker_title=_text(row.get("my_progress_picker_title")),
+            my_progress_picker_description=_text(
+                row.get("my_progress_picker_description")
+            ),
+            my_progress_chapter_select_placeholder=_text(
+                row.get("my_progress_chapter_select_placeholder")
+            ),
+            my_progress_mission_select_placeholder=_text(
+                row.get("my_progress_mission_select_placeholder")
+            ),
+            my_progress_no_missions_description=_text(
+                row.get("my_progress_no_missions_description")
+            ),
             progress_tracking_enabled=_truthy(row.get("progress_tracking_enabled")),
             guide_channel_id=_int_or_none(row.get("guide_channel_id")),
             guide_thread_id=_int_or_none(row.get("guide_thread_id")),
@@ -165,6 +185,7 @@ class MissionRow:
     number: int
     text: str
     key: str = ""
+    title: str = ""
 
 
 @dataclass(slots=True)
@@ -337,7 +358,12 @@ def _parse_mission_rows(rows: Sequence[Mapping[str, object]]) -> list[MissionRow
             continue
         number = _int_or_none(row.get("step_index")) or order
         parsed.append(
-            MissionRow(number=number, text=text, key=_text(row.get("mission_key")))
+            MissionRow(
+                number=number,
+                text=text,
+                key=_text(row.get("mission_key")),
+                title=_text(row.get("title")),
+            )
         )
     return sorted(parsed, key=lambda mission: mission.number)
 
@@ -656,14 +682,33 @@ class SetProgressButton(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
         data = await get_or_load_progress_guide_data()
         post = _post_for_category(self.category, data)
         if post is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=_progress_unavailable_embed(None), ephemeral=True
             )
             return
-        await interaction.response.send_modal(SetProgressModal(self.category, post))
+        try:
+            missions = await get_or_load_missions(self.category)
+        except Exception as exc:
+            if _is_quota_failure(exc):
+                await interaction.followup.send(
+                    embed=_progress_unavailable_embed(post), ephemeral=True
+                )
+                return
+            raise
+        if not missions:
+            await interaction.followup.send(
+                embed=_progress_no_missions_embed(post), ephemeral=True
+            )
+            return
+        await interaction.followup.send(
+            embed=build_progress_picker_embed(post),
+            view=ProgressChapterPickerView(self.category, post, missions),
+            ephemeral=True,
+        )
 
 
 class MyProgressView(discord.ui.View):
@@ -675,64 +720,263 @@ class MyProgressView(discord.ui.View):
             )
 
 
-class SetProgressModal(discord.ui.Modal):
-    def __init__(self, category: str, post: ForumPost) -> None:
-        super().__init__(
-            title=_embed_title(post.my_progress_modal_title or post.my_progress_title)
+def build_progress_picker_embed(
+    post: ForumPost, *, selected_chapter: str | None = None
+) -> discord.Embed:
+    description = post.my_progress_picker_description
+    if selected_chapter:
+        description = (
+            f"{description}\n\n**{_limit_text(selected_chapter, 200)}**"
+            if description
+            else f"**{_limit_text(selected_chapter, 200)}**"
         )
-        self.category = category
-        self.post = post
-        self.step = discord.ui.TextInput(
-            label=_button_label(post.my_progress_modal_step_label),
-            required=True,
-        )
-        self.add_item(self.step)
+    return discord.Embed(
+        title=_embed_title(post.my_progress_picker_title or post.my_progress_title),
+        description=_embed_description(description),
+        color=discord.Color.blurple(),
+    )
 
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        post = self.post
-        raw = str(self.step.value).strip()
-        if not raw.isdigit():
+
+def _progress_no_missions_embed(post: ForumPost) -> discord.Embed:
+    return _progress_notice_embed(
+        post,
+        post.my_progress_no_missions_description
+        or post.my_progress_missing_step_description,
+    )
+
+
+def _chapter_groups(
+    missions: Sequence[MissionRow],
+) -> list[tuple[str, list[MissionRow]]]:
+    grouped: dict[str, list[MissionRow]] = {}
+    for mission in missions:
+        chapter = mission.title or "Missions"
+        grouped.setdefault(chapter, []).append(mission)
+    groups = [
+        (title, sorted(rows, key=lambda m: m.number)) for title, rows in grouped.items()
+    ]
+    return sorted(groups, key=lambda item: item[1][0].number if item[1] else 0)
+
+
+def _select_label(value: object) -> str:
+    text = _text(value)
+    return text if len(text) <= _SELECT_LABEL_LIMIT else text[:97].rstrip() + "..."
+
+
+def _mission_option_label(mission: MissionRow) -> str:
+    return _select_label(f"{mission.number}. {mission.text}")
+
+
+def _mission_option_value(mission: MissionRow) -> str:
+    return mission.key or str(mission.number)
+
+
+class ProgressChapterSelect(discord.ui.Select):
+    def __init__(
+        self,
+        groups: Sequence[tuple[str, list[MissionRow]]],
+        page: int,
+        placeholder: str,
+    ) -> None:
+        self.groups = list(groups)
+        start = page * _PICKER_OPTIONS_PER_PAGE
+        options = [
+            discord.SelectOption(label=_select_label(title), value=str(start + index))
+            for index, (title, _rows) in enumerate(
+                self.groups[start : start + _PICKER_OPTIONS_PER_PAGE]
+            )
+        ]
+        super().__init__(
+            placeholder=_select_label(placeholder or "Select a chapter"),
+            options=options,
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, ProgressChapterPickerView):
+            return
+        index = int(self.values[0])
+        await interaction.response.edit_message(
+            embed=build_progress_picker_embed(
+                view.post, selected_chapter=view.groups[index][0]
+            ),
+            view=ProgressMissionPickerView(
+                view.category, view.post, view.missions, index, 0
+            ),
+        )
+
+
+class ProgressMissionSelect(discord.ui.Select):
+    def __init__(
+        self, missions: Sequence[MissionRow], placeholder: str, page: int
+    ) -> None:
+        self.missions = list(missions)
+        start = page * _PICKER_OPTIONS_PER_PAGE
+        options = [
+            discord.SelectOption(
+                label=_mission_option_label(mission),
+                value=_mission_option_value(mission),
+            )
+            for mission in self.missions[start : start + _PICKER_OPTIONS_PER_PAGE]
+        ]
+        super().__init__(
+            placeholder=_select_label(placeholder or "Select a mission"),
+            options=options,
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, ProgressMissionPickerView):
+            return
+        selected_value = self.values[0]
+        mission = next(
+            (
+                m
+                for m in view.chapter_missions
+                if _mission_option_value(m) == selected_value
+            ),
+            None,
+        )
+        if mission is None:
             await interaction.response.send_message(
-                embed=_progress_notice_embed(
-                    self.post, self.post.my_progress_invalid_step_description
-                ),
-                ephemeral=True,
+                embed=_progress_no_missions_embed(view.post), ephemeral=True
             )
             return
-        selected = int(raw)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             data = await get_or_load_progress_guide_data()
-            post = _post_for_category(self.category, data) or self.post
-            category_info = await _progress_category(self.category)
-            missions = await get_or_load_missions(self.category)
-            mission = next((m for m in missions if m.number == selected), None)
-            if mission is None:
-                await interaction.response.send_message(
-                    embed=_progress_notice_embed(
-                        self.post, self.post.my_progress_missing_step_description
-                    ),
-                    ephemeral=True,
-                )
-                return
+            post = _post_for_category(view.category, data) or view.post
+            category_info = await _progress_category(view.category)
             await upsert_progress_user_state(
-                interaction.user.id, self.category, mission
+                interaction.user.id, view.category, mission
             )
             state = {
                 "current_step_index": str(mission.number),
                 "current_mission_key": mission.key,
                 "status": "in_progress",
             }
-            embed = build_my_progress_embed(post, category_info, state, missions)
+            embed = build_my_progress_embed(post, category_info, state, view.missions)
             if post.my_progress_saved_description:
                 embed.set_footer(text=post.my_progress_saved_description)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
         except Exception as exc:
             if _is_quota_failure(exc):
-                await interaction.response.send_message(
-                    embed=_progress_unavailable_embed(post), ephemeral=True
+                await interaction.followup.send(
+                    embed=_progress_unavailable_embed(view.post), ephemeral=True
                 )
                 return
             raise
+
+
+class ProgressChapterPickerView(discord.ui.View):
+    def __init__(
+        self,
+        category: str,
+        post: ForumPost,
+        missions: Sequence[MissionRow],
+        page: int = 0,
+    ) -> None:
+        super().__init__(timeout=900)
+        self.category = category
+        self.post = post
+        self.missions = list(missions)
+        self.groups = _chapter_groups(self.missions)
+        self.page = page
+        select = ProgressChapterSelect(
+            self.groups,
+            page,
+            post.my_progress_chapter_select_placeholder,
+        )
+        self.add_item(select)
+        total_pages = max(
+            1,
+            (len(self.groups) + _PICKER_OPTIONS_PER_PAGE - 1)
+            // _PICKER_OPTIONS_PER_PAGE,
+        )
+        if total_pages > 1:
+            self.add_item(
+                ProgressPickerPageButton("◀️", page - 1, page <= 0, "chapter")
+            )
+            self.add_item(
+                ProgressPickerPageButton(
+                    "▶️", page + 1, page >= total_pages - 1, "chapter"
+                )
+            )
+
+
+class ProgressMissionPickerView(discord.ui.View):
+    def __init__(
+        self,
+        category: str,
+        post: ForumPost,
+        missions: Sequence[MissionRow],
+        chapter_index: int,
+        page: int = 0,
+    ) -> None:
+        super().__init__(timeout=900)
+        self.category = category
+        self.post = post
+        self.missions = list(missions)
+        self.groups = _chapter_groups(self.missions)
+        self.chapter_index = chapter_index
+        self.chapter_title, self.chapter_missions = self.groups[chapter_index]
+        self.page = page
+        self.add_item(
+            ProgressMissionSelect(
+                self.chapter_missions, post.my_progress_mission_select_placeholder, page
+            )
+        )
+        total_pages = max(
+            1,
+            (len(self.chapter_missions) + _PICKER_OPTIONS_PER_PAGE - 1)
+            // _PICKER_OPTIONS_PER_PAGE,
+        )
+        if total_pages > 1:
+            self.add_item(
+                ProgressPickerPageButton("◀️", page - 1, page <= 0, "mission")
+            )
+            self.add_item(
+                ProgressPickerPageButton(
+                    "▶️", page + 1, page >= total_pages - 1, "mission"
+                )
+            )
+
+
+class ProgressPickerPageButton(discord.ui.Button):
+    def __init__(self, emoji: str, target_page: int, disabled: bool, mode: str) -> None:
+        self.target_page = target_page
+        self.mode = mode
+        super().__init__(
+            emoji=emoji, style=discord.ButtonStyle.secondary, disabled=disabled
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if isinstance(view, ProgressChapterPickerView):
+            next_view = ProgressChapterPickerView(
+                view.category, view.post, view.missions, self.target_page
+            )
+            await interaction.response.edit_message(
+                embed=build_progress_picker_embed(view.post), view=next_view
+            )
+        elif isinstance(view, ProgressMissionPickerView):
+            next_view = ProgressMissionPickerView(
+                view.category,
+                view.post,
+                view.missions,
+                view.chapter_index,
+                self.target_page,
+            )
+            await interaction.response.edit_message(
+                embed=build_progress_picker_embed(
+                    view.post, selected_chapter=view.chapter_title
+                ),
+                view=next_view,
+            )
 
 
 async def upsert_progress_user_state(
