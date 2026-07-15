@@ -72,6 +72,11 @@ class ForumPost:
     row_number: int
     category: str
     label: str
+    guide_title: str
+    faq_title: str
+    faq_description: str
+    faq_button_label: str
+    help_button_label: str
     guide_channel_id: int | None
     guide_thread_id: int | None
     guide_panel_message_id: int | None
@@ -87,6 +92,11 @@ class ForumPost:
             row_number=row_number,
             category=_text(row.get("category")),
             label=_text(row.get("label")),
+            guide_title=_text(row.get("guide_title")),
+            faq_title=_text(row.get("faq_title")),
+            faq_description=_text(row.get("faq_description")),
+            faq_button_label=_text(row.get("faq_button_label")),
+            help_button_label=_text(row.get("help_button_label")),
             guide_channel_id=_int_or_none(row.get("guide_channel_id")),
             guide_thread_id=_int_or_none(row.get("guide_thread_id")),
             guide_panel_message_id=_int_or_none(row.get("guide_panel_message_id")),
@@ -188,19 +198,26 @@ def _strip_visible_urls(value: object) -> str:
     return _URL_RE.sub("", _text(value)).strip()
 
 
-def _label_for_category(category: str, data: ProgressGuideData) -> str:
-    for post in data.posts:
-        if post.category == category:
-            return post.label or post.category
-    return category
+def _post_for_category(category: str, data: ProgressGuideData) -> ForumPost | None:
+    return next((post for post in data.posts if post.category == category), None)
+
+
+def _faq_title_for_category(category: str, data: ProgressGuideData) -> str:
+    post = _post_for_category(category, data)
+    if post is None:
+        return f"{category} FAQ"
+    base = post.guide_title or post.label or post.category
+    return post.faq_title or f"{base} FAQ"
 
 
 def build_faq_embed(category: str, data: ProgressGuideData) -> discord.Embed | None:
     rows = data.faq_by_category.get(category, [])
     if not rows:
         return None
+    post = _post_for_category(category, data)
     embed = discord.Embed(
-        title=f"{_label_for_category(category, data)} FAQ",
+        title=_faq_title_for_category(category, data),
+        description=post.faq_description if post and post.faq_description else None,
         color=discord.Color.blurple(),
     )
     ordered = sorted(
@@ -216,10 +233,10 @@ def build_faq_embed(category: str, data: ProgressGuideData) -> discord.Embed | N
 
 
 class ProgressGuideFAQButton(discord.ui.Button):
-    def __init__(self, category: str) -> None:
+    def __init__(self, category: str, label: str = "FAQ") -> None:
         self.category = category
         super().__init__(
-            label="FAQ",
+            label=label or "FAQ",
             style=discord.ButtonStyle.secondary,
             custom_id=f"{_FAQ_CUSTOM_ID_PREFIX}{category}",
         )
@@ -256,7 +273,8 @@ def build_guide_embed(post: ForumPost, data: ProgressGuideData) -> discord.Embed
     if not guide_rows:
         return None
     embed = discord.Embed(
-        title=post.label or post.category, color=discord.Color.blurple()
+        title=post.guide_title or post.label or post.category,
+        color=discord.Color.blurple(),
     )
     used = 0
     for row in guide_rows[:10]:
@@ -286,15 +304,19 @@ def build_guide_view(
     view = discord.ui.View(timeout=None)
     added = False
     help_url = _safe_url(post.help_post_url)
+    if data.faq_by_category.get(post.category):
+        view.add_item(
+            ProgressGuideFAQButton(post.category, post.faq_button_label or "FAQ")
+        )
+        added = True
     if post.questions_enabled and help_url:
         view.add_item(
             discord.ui.Button(
-                label="Ask in Help", style=discord.ButtonStyle.link, url=help_url
+                label=post.help_button_label or "Ask in Help",
+                style=discord.ButtonStyle.link,
+                url=help_url,
             )
         )
-        added = True
-    if data.faq_by_category.get(post.category):
-        view.add_item(ProgressGuideFAQButton(post.category))
         added = True
     return view if added else None
 

@@ -120,6 +120,11 @@ def _data(*, post_overrides=None, guides=None, faq=None):
     row = {
         "category": "ARB",
         "label": "Arena Rush Basics",
+        "guide_title": "🏟️ Arena Rush Basics",
+        "faq_title": "🏟️ Arena Rush Questions",
+        "faq_description": "Sheet-authored FAQ intro.",
+        "faq_button_label": "Read FAQ",
+        "help_button_label": "Ask the Helpers",
         "guide_channel_id": "10",
         "guide_thread_id": "",
         "guide_panel_message_id": "",
@@ -134,30 +139,34 @@ def _data(*, post_overrides=None, guides=None, faq=None):
     return service.ProgressGuideData(
         posts=[post],
         guides_by_category={
-            "ARB": guides
-            if guides is not None
-            else [
-                {
-                    "category": "ARB",
-                    "title": "Overview",
-                    "body": "Use stamina wisely.",
-                    "sort_order": "1",
-                    "enabled": "TRUE",
-                }
-            ]
+            "ARB": (
+                guides
+                if guides is not None
+                else [
+                    {
+                        "category": "ARB",
+                        "title": "Overview",
+                        "body": "Use stamina wisely.",
+                        "sort_order": "1",
+                        "enabled": "TRUE",
+                    }
+                ]
+            )
         },
         faq_by_category={
-            "ARB": faq
-            if faq is not None
-            else [
-                {
-                    "category": "ARB",
-                    "question": "What first?",
-                    "answer": "Start with the overview.",
-                    "sort_order": "1",
-                    "enabled": "TRUE",
-                }
-            ]
+            "ARB": (
+                faq
+                if faq is not None
+                else [
+                    {
+                        "category": "ARB",
+                        "question": "What first?",
+                        "answer": "Start with the overview.",
+                        "sort_order": "1",
+                        "enabled": "TRUE",
+                    }
+                ]
+            )
         },
         assets_by_category_key={
             ("ARB", "hero"): {
@@ -318,6 +327,102 @@ def test_url_only_guide_fields_are_skipped():
     assert len(embed.fields) == 0
 
 
+def test_guide_title_comes_from_guide_title_column():
+    data = _data()
+    embed = service.build_guide_embed(data.posts[0], data)
+    assert embed.title == "🏟️ Arena Rush Basics"
+
+
+def test_guide_title_falls_back_to_label_then_category():
+    label_data = _data(post_overrides={"guide_title": ""})
+    label_embed = service.build_guide_embed(label_data.posts[0], label_data)
+    assert label_embed.title == "Arena Rush Basics"
+
+    category_data = _data(post_overrides={"guide_title": "", "label": ""})
+    category_embed = service.build_guide_embed(category_data.posts[0], category_data)
+    assert category_embed.title == "ARB"
+
+
+def test_faq_embed_uses_sheet_title_and_description():
+    data = _data()
+    embed = service.build_faq_embed("ARB", data)
+    assert embed.title == "🏟️ Arena Rush Questions"
+    assert embed.description == "Sheet-authored FAQ intro."
+
+
+def test_faq_title_falls_back_through_public_display_values():
+    guide_title_data = _data(post_overrides={"faq_title": ""})
+    assert (
+        service.build_faq_embed("ARB", guide_title_data).title
+        == "🏟️ Arena Rush Basics FAQ"
+    )
+
+    label_data = _data(post_overrides={"faq_title": "", "guide_title": ""})
+    assert service.build_faq_embed("ARB", label_data).title == "Arena Rush Basics FAQ"
+
+    category_data = _data(
+        post_overrides={"faq_title": "", "guide_title": "", "label": ""}
+    )
+    assert service.build_faq_embed("ARB", category_data).title == "ARB FAQ"
+
+
+def test_blank_faq_description_is_omitted():
+    data = _data(post_overrides={"faq_description": ""})
+    embed = service.build_faq_embed("ARB", data)
+    assert embed.description is None
+
+
+def test_button_labels_and_order_come_from_forum_post_columns():
+    data = _data()
+    view = service.build_guide_view(data.posts[0], data)
+    assert [getattr(item, "label", "") for item in view.children] == [
+        "Read FAQ",
+        "Ask the Helpers",
+    ]
+
+
+def test_button_labels_fallback_and_help_remains_last():
+    data = _data(post_overrides={"faq_button_label": "", "help_button_label": ""})
+    view = service.build_guide_view(data.posts[0], data)
+    assert [getattr(item, "label", "") for item in view.children] == [
+        "FAQ",
+        "Ask in Help",
+    ]
+
+
+def test_progress_guides_title_renders_exactly_as_sheet_value():
+    exact_title = "✨ Top 1 Tip — Sheet Value"
+    data = _data(
+        guides=[
+            {
+                "category": "ARB",
+                "title": exact_title,
+                "body": "Use the title exactly.",
+                "sort_order": "1",
+                "enabled": "TRUE",
+            }
+        ]
+    )
+    embed = service.build_guide_embed(data.posts[0], data)
+    assert embed.fields[0].name == exact_title
+
+
+def test_progress_guides_optional_display_columns_are_not_required():
+    data = _data(
+        guides=[
+            {
+                "category": "ARB",
+                "title": "Sheet Title",
+                "body": "No display_style, button_label, or image_asset_key needed.",
+                "sort_order": "1",
+                "enabled": "TRUE",
+            }
+        ]
+    )
+    embed = service.build_guide_embed(data.posts[0], data)
+    assert embed.fields[0].name == "Sheet Title"
+
+
 def test_faq_button_opens_faq_content_from_progress_faq(monkeypatch):
     data = _data(
         faq=[
@@ -351,7 +456,8 @@ def test_faq_button_opens_faq_content_from_progress_faq(monkeypatch):
     sent = interaction.followup.sent[0]
     assert sent["ephemeral"] is True
     embed = sent["embed"]
-    assert embed.title == "Arena Rush Basics FAQ"
+    assert embed.title == "🏟️ Arena Rush Questions"
+    assert embed.description == "Sheet-authored FAQ intro."
     assert [field.name for field in embed.fields] == ["First?", "Second?"]
     assert "source.example" not in embed.fields[0].value
 
@@ -376,13 +482,13 @@ def test_faq_button_sends_clean_error_embed_when_loading_fails(monkeypatch):
 def test_faq_button_is_not_shown_when_no_faq_rows_exist():
     view = service.build_guide_view(_data(faq=[]).posts[0], _data(faq=[]))
     assert view is not None
-    assert [getattr(item, "label", "") for item in view.children] == ["Ask in Help"]
+    assert [getattr(item, "label", "") for item in view.children] == ["Ask the Helpers"]
 
 
 def test_faq_button_does_not_link_to_help_post_url():
     data = _data()
     view = service.build_guide_view(data.posts[0], data)
-    faq_button = _button_by_label(view, "FAQ")
+    faq_button = _button_by_label(view, "Read FAQ")
     assert faq_button.custom_id == "progressguides:faq:ARB"
     assert faq_button.url is None
 
@@ -390,7 +496,7 @@ def test_faq_button_does_not_link_to_help_post_url():
 def test_ask_in_help_still_links_to_help_post_url():
     data = _data()
     view = service.build_guide_view(data.posts[0], data)
-    ask_button = _button_by_label(view, "Ask in Help")
+    ask_button = _button_by_label(view, "Ask the Helpers")
     assert ask_button.url == "https://discord.com/channels/1/2/3"
 
 
@@ -423,7 +529,7 @@ def test_first_faq_click_loads_once_and_caches_data(monkeypatch):
 
     assert loads == 1
     assert service.get_cached_progress_guide_data() is data
-    assert interaction.followup.sent[0]["embed"].title == "Arena Rush Basics FAQ"
+    assert interaction.followup.sent[0]["embed"].title == "🏟️ Arena Rush Questions"
 
 
 def test_second_faq_click_uses_cache_without_loading_sheet(monkeypatch):
@@ -438,7 +544,7 @@ def test_second_faq_click_uses_cache_without_loading_sheet(monkeypatch):
 
     asyncio.run(service.ProgressGuideFAQButton("ARB").callback(interaction))
 
-    assert interaction.followup.sent[0]["embed"].title == "Arena Rush Basics FAQ"
+    assert interaction.followup.sent[0]["embed"].title == "🏟️ Arena Rush Questions"
 
 
 def test_concurrent_faq_clicks_share_single_sheet_load(monkeypatch):
@@ -464,8 +570,8 @@ def test_concurrent_faq_clicks_share_single_sheet_load(monkeypatch):
     first, second = asyncio.run(click_twice())
 
     assert loads == 1
-    assert first.followup.sent[0]["embed"].title == "Arena Rush Basics FAQ"
-    assert second.followup.sent[0]["embed"].title == "Arena Rush Basics FAQ"
+    assert first.followup.sent[0]["embed"].title == "🏟️ Arena Rush Questions"
+    assert second.followup.sent[0]["embed"].title == "🏟️ Arena Rush Questions"
 
 
 def test_progress_guides_cog_registers_persistent_faq_view():
