@@ -5,6 +5,7 @@ COMMUNITY_EXTENSIONS: tuple[str, ...] = (
     "modules.community.fusion",
     "modules.community.leagues",
     "modules.community.reaction_roles",
+    "modules.community.progress_guides",
 )
 
 __all__ = ["COMMUNITY_EXTENSIONS"]
