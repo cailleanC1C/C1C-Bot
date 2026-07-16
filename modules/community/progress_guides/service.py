@@ -1406,6 +1406,9 @@ class PlanAheadButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         post: ForumPost | None = None
+        category_info: ProgressCategory | None = None
+        state: dict[str, Any] | None = None
+        missions: list[MissionRow] = []
         try:
             data = await get_or_load_progress_guide_data()
             post = _post_for_category(self.category, data)
@@ -1417,8 +1420,8 @@ class PlanAheadButton(discord.ui.Button):
             category_info = await _progress_category(self.category)
             _tab, rows = await _user_state_rows()
             found = _find_user_state(rows, interaction.user.id, self.category)
-            missions = await get_or_load_missions(self.category) if found else []
             state = found[1] if found else None
+            missions = await get_or_load_missions(self.category) if found else []
             view = (
                 PlanAheadNoProgressView(post)
                 if state is None and post.my_progress_set_button_label
@@ -1442,6 +1445,14 @@ class PlanAheadButton(discord.ui.Button):
                     "user_id": getattr(getattr(interaction, "user", None), "id", None),
                     "guild_id": getattr(getattr(interaction, "guild", None), "id", None),
                     "channel_id": getattr(getattr(interaction, "channel", None), "id", None),
+                    "exc_type": type(exc).__name__,
+                    "exc_message": str(exc),
+                    "post_found": post is not None,
+                    "state_found": state is not None,
+                    "current_mission_key": _text(state.get("current_mission_key")) if state else "",
+                    "current_step_index": _text(state.get("current_step_index")) if state else "",
+                    "missions_loaded_count": len(missions) if missions is not None else 0,
+                    "category_info_found": category_info is not None,
                 },
             )
             await interaction.followup.send(
