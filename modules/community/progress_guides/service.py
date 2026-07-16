@@ -37,6 +37,7 @@ _FAQ_CUSTOM_ID_PREFIX = "progressguides:faq:"
 _MISSIONS_CUSTOM_ID_PREFIX = "progressguides:missions:"
 _MY_PROGRESS_CUSTOM_ID_PREFIX = "progressguides:myprogress:"
 _SET_PROGRESS_CUSTOM_ID_PREFIX = "progressguides:setprogress:"
+_PLAN_AHEAD_CUSTOM_ID_PREFIX = "progressguides:planahead:"
 _PERSISTENT_FAQ_CATEGORIES = ("ARB", "RAM", "MAR", "FW_N", "FW_H")
 _MISSION_CATEGORIES = ("ARB", "RAM", "MAR")
 _MISSIONS_PER_PAGE = 15
@@ -115,6 +116,18 @@ class ForumPost:
     my_progress_complete_saved_description: str
     my_progress_next_mission_saved_description: str
     my_progress_completed_template: str
+    plan_ahead_button_label: str
+    plan_ahead_title: str
+    plan_ahead_intro_template: str
+    plan_ahead_no_progress_description: str
+    plan_ahead_no_items_description: str
+    plan_ahead_upcoming_field_title: str
+    plan_ahead_save_field_title: str
+    plan_ahead_avoid_field_title: str
+    plan_ahead_time_gate_field_title: str
+    plan_ahead_warning_field_title: str
+    plan_ahead_footer: str
+    plan_ahead_lookahead_count: int | None
     progress_tracking_enabled: bool
     guide_channel_id: int | None
     guide_thread_id: int | None
@@ -184,6 +197,30 @@ class ForumPost:
             my_progress_completed_template=_text(
                 row.get("my_progress_completed_template")
             ),
+            plan_ahead_button_label=_text(row.get("plan_ahead_button_label")),
+            plan_ahead_title=_text(row.get("plan_ahead_title")),
+            plan_ahead_intro_template=_text(row.get("plan_ahead_intro_template")),
+            plan_ahead_no_progress_description=_text(
+                row.get("plan_ahead_no_progress_description")
+            ),
+            plan_ahead_no_items_description=_text(
+                row.get("plan_ahead_no_items_description")
+            ),
+            plan_ahead_upcoming_field_title=_text(
+                row.get("plan_ahead_upcoming_field_title")
+            ),
+            plan_ahead_save_field_title=_text(row.get("plan_ahead_save_field_title")),
+            plan_ahead_avoid_field_title=_text(row.get("plan_ahead_avoid_field_title")),
+            plan_ahead_time_gate_field_title=_text(
+                row.get("plan_ahead_time_gate_field_title")
+            ),
+            plan_ahead_warning_field_title=_text(
+                row.get("plan_ahead_warning_field_title")
+            ),
+            plan_ahead_footer=_text(row.get("plan_ahead_footer")),
+            plan_ahead_lookahead_count=_int_or_none(
+                row.get("plan_ahead_lookahead_count")
+            ),
             progress_tracking_enabled=_truthy(row.get("progress_tracking_enabled")),
             guide_channel_id=_int_or_none(row.get("guide_channel_id")),
             guide_thread_id=_int_or_none(row.get("guide_thread_id")),
@@ -203,6 +240,13 @@ class MissionRow:
     key: str
     title: str
     text: str
+    tips: str
+    avoid_doing: str
+    resource_tags: str
+    time_gate: bool
+    difficulty_note: str
+    guide_priority: str
+    retroactive_note: str
 
     def __init__(
         self,
@@ -211,12 +255,26 @@ class MissionRow:
         key: str = "",
         title: str = "",
         step_index: int | None = None,
+        tips: str = "",
+        avoid_doing: str = "",
+        resource_tags: str = "",
+        time_gate: bool = False,
+        difficulty_note: str = "",
+        guide_priority: str = "",
+        retroactive_note: str = "",
     ) -> None:
         self.sequence_number = sequence_number
         self.step_index = step_index if step_index is not None else sequence_number
         self.key = key
         self.title = title
         self.text = text
+        self.tips = tips
+        self.avoid_doing = avoid_doing
+        self.resource_tags = resource_tags
+        self.time_gate = time_gate
+        self.difficulty_note = difficulty_note
+        self.guide_priority = guide_priority
+        self.retroactive_note = retroactive_note
 
     @property
     def number(self) -> int:
@@ -363,6 +421,14 @@ def _supports_missions(post: ForumPost) -> bool:
     )
 
 
+def _supports_plan_ahead(post: ForumPost) -> bool:
+    return (
+        post.category in _MISSION_CATEGORIES
+        and post.progress_tracking_enabled
+        and bool(post.plan_ahead_button_label)
+    )
+
+
 def _supports_my_progress(post: ForumPost) -> bool:
     return (
         post.category in _MISSION_CATEGORIES
@@ -399,6 +465,13 @@ def _parse_mission_rows(rows: Sequence[Mapping[str, object]]) -> list[MissionRow
                 key=_text(row.get("mission_key")),
                 title=_text(row.get("title")),
                 text=text,
+                tips=_strip_visible_urls(row.get("tips")),
+                avoid_doing=_strip_visible_urls(row.get("avoid_doing")),
+                resource_tags=_text(row.get("resource_tags")),
+                time_gate=_truthy(row.get("time_gate")),
+                difficulty_note=_strip_visible_urls(row.get("difficulty_note")),
+                guide_priority=_text(row.get("guide_priority")),
+                retroactive_note=_strip_visible_urls(row.get("retroactive_note")),
             )
         )
     return parsed
@@ -838,6 +911,225 @@ class MarkMissionDoneButton(discord.ui.Button):
             raise
 
 
+def _plan_lookahead_count(post: ForumPost) -> int:
+    count = post.plan_ahead_lookahead_count or 12
+    return max(1, min(count, 25))
+
+
+def _dedupe(values: Sequence[str], limit: int = 8) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        clean = _strip_visible_urls(value)
+        key = clean.casefold()
+        if not clean or key in seen:
+            continue
+        seen.add(key)
+        result.append(clean)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _display_resource_tags(value: object, limit: int = 8) -> list[str]:
+    parts = re.split(r"[,;]", _text(value))
+    seen: set[str] = set()
+    result: list[str] = []
+    for part in parts:
+        clean = part.strip().replace("_", " ")
+        clean = re.sub(r"\s+", " ", clean).strip()
+        key = clean.casefold()
+        if not clean or key in seen:
+            continue
+        seen.add(key)
+        result.append(clean)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _plan_line(mission: MissionRow) -> str:
+    title = mission.title or "Missions"
+    text = _limit_text(mission.text, 140)
+    return f"- {title}, {mission.step_index}: {text}"
+
+
+def build_plan_ahead_embed(
+    post: ForumPost,
+    category_info: ProgressCategory | None,
+    state: Mapping[str, object] | None,
+    missions: Sequence[MissionRow],
+) -> discord.Embed:
+    title = _embed_title(post.plan_ahead_title or post.my_progress_title or post.label)
+    if state is None:
+        return discord.Embed(
+            title=title,
+            description=_embed_description(post.plan_ahead_no_progress_description),
+            color=discord.Color.blurple(),
+        )
+    current = _mission_for_state(state, missions)
+    if current is None:
+        return discord.Embed(
+            title=title,
+            description=_embed_description(post.plan_ahead_no_progress_description),
+            color=discord.Color.blurple(),
+        )
+    total = category_info.total_steps if category_info else len(missions)
+    completed = max(current.sequence_number - 1, 0)
+    remaining = max(total - completed, 0) if total is not None else None
+    lookahead_count = _plan_lookahead_count(post)
+    upcoming = [m for m in missions if m.sequence_number > current.sequence_number][
+        :lookahead_count
+    ]
+    chapter_total = sum(
+        1 for m in missions if (m.title or "Missions") == (current.title or "Missions")
+    )
+    values = {
+        "category_label": category_info.label
+        if category_info
+        else (post.label or post.category),
+        "chapter_title": current.title,
+        "chapter_step_index": str(current.step_index),
+        "chapter_total_steps": str(chapter_total),
+        "current_sequence_number": str(current.sequence_number),
+        "completed_steps": str(completed),
+        "total_steps": str(total) if total is not None else "",
+        "remaining_steps": str(remaining) if remaining is not None else "",
+        "percent_complete": _format_percent(completed, total),
+        "lookahead_count": str(lookahead_count),
+        "mission_description": current.text,
+    }
+    description = post.plan_ahead_intro_template
+    for key, value in values.items():
+        description = description.replace("{" + key + "}", value)
+    embed = discord.Embed(
+        title=title,
+        description=_embed_description(description),
+        color=discord.Color.blurple(),
+    )
+    if upcoming and post.plan_ahead_upcoming_field_title:
+        embed.add_field(
+            name=_embed_title(post.plan_ahead_upcoming_field_title),
+            value=_limit_text("\n".join(_plan_line(m) for m in upcoming), _FIELD_LIMIT),
+            inline=False,
+        )
+    save_values: list[str] = []
+    for m in upcoming:
+        save_values.append(m.tips)
+        save_values.extend(_display_resource_tags(m.resource_tags))
+    if post.plan_ahead_save_field_title:
+        lines = _dedupe(save_values)
+        if lines:
+            embed.add_field(
+                name=_embed_title(post.plan_ahead_save_field_title),
+                value=_limit_text("\n".join(f"- {v}" for v in lines), _FIELD_LIMIT),
+                inline=False,
+            )
+    avoid_values: list[str] = []
+    for m in upcoming:
+        avoid_values.extend([m.avoid_doing, m.retroactive_note])
+    if post.plan_ahead_avoid_field_title:
+        lines = _dedupe(avoid_values)
+        if lines:
+            embed.add_field(
+                name=_embed_title(post.plan_ahead_avoid_field_title),
+                value=_limit_text("\n".join(f"- {v}" for v in lines), _FIELD_LIMIT),
+                inline=False,
+            )
+    gate_values = [
+        f"{m.title or 'Missions'}, {m.step_index}: {m.retroactive_note or m.text}"
+        for m in upcoming
+        if m.time_gate or m.retroactive_note
+    ]
+    if post.plan_ahead_time_gate_field_title:
+        lines = _dedupe(gate_values)
+        if lines:
+            embed.add_field(
+                name=_embed_title(post.plan_ahead_time_gate_field_title),
+                value=_limit_text("\n".join(f"- {v}" for v in lines), _FIELD_LIMIT),
+                inline=False,
+            )
+    warning_values: list[str] = []
+    priority_words = ("critical", "high", "major_wall", "major wall", "wall")
+    for m in sorted(
+        upcoming,
+        key=lambda m: (
+            0
+            if any(
+                w in m.guide_priority.casefold() or w in m.difficulty_note.casefold()
+                for w in priority_words
+            )
+            else 1
+        ),
+    ):
+        warning_values.extend([m.difficulty_note, m.guide_priority])
+    if post.plan_ahead_warning_field_title:
+        lines = _dedupe(warning_values)
+        if lines:
+            embed.add_field(
+                name=_embed_title(post.plan_ahead_warning_field_title),
+                value=_limit_text("\n".join(f"- {v}" for v in lines), _FIELD_LIMIT),
+                inline=False,
+            )
+    if not embed.fields and post.plan_ahead_no_items_description:
+        embed.description = _embed_description(post.plan_ahead_no_items_description)
+    if post.plan_ahead_footer:
+        embed.set_footer(text=_limit_text(post.plan_ahead_footer, 2048))
+    return embed
+
+
+class PlanAheadButton(discord.ui.Button):
+    def __init__(self, category: str, label: str = "Plan Ahead") -> None:
+        self.category = category
+        super().__init__(
+            label=_button_label(label or "Plan Ahead"),
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"{_PLAN_AHEAD_CUSTOM_ID_PREFIX}{category}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        post: ForumPost | None = None
+        try:
+            data = await get_or_load_progress_guide_data()
+            post = _post_for_category(self.category, data)
+            if post is None or not _supports_plan_ahead(post):
+                await interaction.followup.send(
+                    embed=_progress_unavailable_embed(post), ephemeral=True
+                )
+                return
+            category_info = await _progress_category(self.category)
+            _tab, rows = await _user_state_rows()
+            found = _find_user_state(rows, interaction.user.id, self.category)
+            missions = await get_or_load_missions(self.category) if found else []
+            state = found[1] if found else None
+            view = (
+                PlanAheadNoProgressView(post)
+                if state is None and post.my_progress_set_button_label
+                else None
+            )
+            await interaction.followup.send(
+                embed=build_plan_ahead_embed(post, category_info, state, missions),
+                view=view,
+                ephemeral=True,
+            )
+        except Exception as exc:
+            if _is_quota_failure(exc):
+                await interaction.followup.send(
+                    embed=_progress_unavailable_embed(post), ephemeral=True
+                )
+                return
+            raise
+
+
+class PlanAheadNoProgressView(discord.ui.View):
+    def __init__(self, post: ForumPost) -> None:
+        super().__init__(timeout=900)
+        self.add_item(
+            SetProgressButton(post.category, post.my_progress_set_button_label)
+        )
+
+
 class MyProgressView(discord.ui.View):
     def __init__(self, post: ForumPost) -> None:
         super().__init__(timeout=900)
@@ -851,6 +1143,8 @@ class MyProgressView(discord.ui.View):
                     post.category, post.my_progress_complete_button_label
                 )
             )
+        if _supports_plan_ahead(post):
+            self.add_item(PlanAheadButton(post.category, post.plan_ahead_button_label))
 
 
 def build_progress_picker_embed(
@@ -1029,9 +1323,7 @@ class ProgressChapterPickerView(discord.ui.View):
             // _PICKER_OPTIONS_PER_PAGE,
         )
         if total_pages > 1:
-            self.add_item(
-                ProgressPickerPageButton("◀️", page - 1, page <= 0, "chapter")
-            )
+            self.add_item(ProgressPickerPageButton("◀️", page - 1, page <= 0, "chapter"))
             self.add_item(
                 ProgressPickerPageButton(
                     "▶️", page + 1, page >= total_pages - 1, "chapter"
@@ -1067,9 +1359,7 @@ class ProgressMissionPickerView(discord.ui.View):
             // _PICKER_OPTIONS_PER_PAGE,
         )
         if total_pages > 1:
-            self.add_item(
-                ProgressPickerPageButton("◀️", page - 1, page <= 0, "mission")
-            )
+            self.add_item(ProgressPickerPageButton("◀️", page - 1, page <= 0, "mission"))
             self.add_item(
                 ProgressPickerPageButton(
                     "▶️", page + 1, page >= total_pages - 1, "mission"
@@ -1276,6 +1566,13 @@ class ProgressGuideMyProgressButton(discord.ui.Button):
             raise
 
 
+class ProgressGuidePlanAheadPersistentView(discord.ui.View):
+    def __init__(self, categories: Sequence[str] = _MISSION_CATEGORIES) -> None:
+        super().__init__(timeout=None)
+        for category in categories:
+            self.add_item(PlanAheadButton(category))
+
+
 class ProgressGuideMyProgressPersistentView(discord.ui.View):
     def __init__(self, categories: Sequence[str] = _MISSION_CATEGORIES) -> None:
         super().__init__(timeout=None)
@@ -1344,6 +1641,9 @@ def build_guide_view(
         view.add_item(
             ProgressGuideMyProgressButton(post.category, post.my_progress_button_label)
         )
+        added = True
+    if _supports_plan_ahead(post):
+        view.add_item(PlanAheadButton(post.category, post.plan_ahead_button_label))
         added = True
     if data.faq_by_category.get(post.category):
         view.add_item(

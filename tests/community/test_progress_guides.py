@@ -1732,3 +1732,191 @@ def test_my_progress_unavailable_embed_uses_sheet_description():
     embed = service._progress_unavailable_embed(data.posts[0])
     assert embed.title == "Arbiter Progress"
     assert embed.description == "Sheet says progress is temporarily unavailable."
+
+
+def _plan_data(**overrides):
+    base = {
+        "mission_list_button_label": "Mission List",
+        "mission_list_title": "Mission List",
+        "my_progress_button_label": "My Progress",
+        "plan_ahead_button_label": "Plan Ahead",
+        "plan_ahead_title": "Plan Ahead Title",
+        "plan_ahead_intro_template": "Planning {category_label}: {chapter_title} {chapter_step_index}/{chapter_total_steps}; scan {lookahead_count}; current {mission_description}",
+        "plan_ahead_no_progress_description": "Set progress first.",
+        "plan_ahead_no_items_description": "Nothing to plan.",
+        "plan_ahead_upcoming_field_title": "Coming soon",
+        "plan_ahead_save_field_title": "Save or prepare",
+        "plan_ahead_avoid_field_title": "Do not do too early",
+        "plan_ahead_time_gate_field_title": "Time-gated",
+        "plan_ahead_warning_field_title": "Watch-outs",
+        "plan_ahead_footer": "Sheet footer",
+        "plan_ahead_lookahead_count": "2",
+        "my_progress_complete_button_label": "Mark Mission Done",
+    }
+    base.update(overrides)
+    return _data(post_overrides=base)
+
+
+def _plan_missions():
+    return [
+        service.MissionRow(1, "Current text", "current-key", "Marius - Part 1", 1),
+        service.MissionRow(
+            2,
+            "Clear Stage 1",
+            "next-key",
+            "Marius - Part 1",
+            2,
+            tips="Save energy",
+            resource_tags="hydra_keys, arena_refills",
+            time_gate=True,
+            difficulty_note="wall",
+            guide_priority="high",
+            retroactive_note="Must be active",
+        ),
+        service.MissionRow(
+            3,
+            "Upgrade gear",
+            "third-key",
+            "Marius - Part 1",
+            3,
+            tips="Save energy",
+            avoid_doing="Do not claim reward",
+            resource_tags="hydra_keys; silver",
+            difficulty_note="medium",
+            guide_priority="normal",
+        ),
+        service.MissionRow(4, "Hidden future", "future-key", "Marius - Part 1", 4),
+    ]
+
+
+def test_plan_ahead_main_guide_button_order_and_visibility_rules():
+    data = _plan_data()
+    view = service.build_guide_view(data.posts[0], data)
+    assert [getattr(item, "label", "") for item in view.children] == [
+        "Mission List",
+        "My Progress",
+        "Plan Ahead",
+        "Read FAQ",
+        "Ask the Helpers",
+    ]
+    assert view.children[2].custom_id == "progressguides:planahead:ARB"
+
+    assert "progressguides:planahead:ARB" not in [
+        getattr(item, "custom_id", "")
+        for item in service.build_guide_view(
+            _plan_data(plan_ahead_button_label="").posts[0], data
+        ).children
+    ]
+    assert "progressguides:planahead:ARB" not in [
+        getattr(item, "custom_id", "")
+        for item in service.build_guide_view(
+            _plan_data(progress_tracking_enabled="FALSE").posts[0], data
+        ).children
+    ]
+    fw = _plan_data(category="FW_N")
+    fw.faq_by_category["FW_N"] = fw.faq_by_category.pop("ARB")
+    assert "progressguides:planahead:FW_N" not in [
+        getattr(item, "custom_id", "")
+        for item in service.build_guide_view(fw.posts[0], fw).children
+    ]
+
+
+def test_plan_ahead_persistent_view_has_no_startup_sheet_reads(monkeypatch):
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("startup must not read sheets")
+
+    monkeypatch.setattr(service, "afetch_records", forbidden)
+    bot = FakeBot()
+    ProgressGuidesCog(bot)
+    assert "progressguides:planahead:ARB" in [
+        getattr(item, "custom_id", "") for view in bot.views for item in view.children
+    ]
+
+
+def test_plan_ahead_no_saved_progress_uses_sheet_copy_and_set_progress(monkeypatch):
+    data = _plan_data()
+    service.set_progress_guide_cache(data)
+
+    async def category(_category):
+        return service.ProgressCategory("ARB", "Arena Rush Basics", 4, "TAB")
+
+    async def rows():
+        return "ProgressUserState", []
+
+    monkeypatch.setattr(service, "_progress_category", category)
+    monkeypatch.setattr(service, "_user_state_rows", rows)
+    interaction = FakeInteraction()
+    asyncio.run(service.PlanAheadButton("ARB", "Plan Ahead").callback(interaction))
+    sent = interaction.followup.sent[0]
+    assert sent["embed"].description == "Set progress first."
+    assert [getattr(item, "label", "") for item in sent["view"].children] == [
+        "Set Progress"
+    ]
+    assert interaction.response.deferred == [{"ephemeral": True, "thinking": True}]
+
+
+def test_plan_ahead_saved_progress_builds_fields_from_future_missions(monkeypatch):
+    data = _plan_data()
+    service.set_progress_guide_cache(data)
+    state = {
+        "user_id": "123456",
+        "category": "ARB",
+        "current_step_index": "99",
+        "current_mission_key": "current-key",
+        "status": "in_progress",
+    }
+
+    async def category(_category):
+        return service.ProgressCategory("ARB", "Arena Rush Basics", 4, "TAB")
+
+    async def rows():
+        return "ProgressUserState", [state]
+
+    async def missions(_category):
+        return _plan_missions()
+
+    monkeypatch.setattr(service, "_progress_category", category)
+    monkeypatch.setattr(service, "_user_state_rows", rows)
+    monkeypatch.setattr(service, "get_or_load_missions", missions)
+    interaction = FakeInteraction()
+    asyncio.run(service.PlanAheadButton("ARB", "Plan Ahead").callback(interaction))
+    embed = interaction.followup.sent[0]["embed"]
+    fields = {field.name: field.value for field in embed.fields}
+    assert "Clear Stage 1" in fields["Coming soon"]
+    assert "Upgrade gear" in fields["Coming soon"]
+    assert "Current text" not in fields["Coming soon"]
+    assert "Save energy" in fields["Save or prepare"]
+    assert "hydra keys" in fields["Save or prepare"]
+    assert "arena refills" in fields["Save or prepare"]
+    assert "hydra_keys" not in fields["Save or prepare"]
+    assert "high" not in fields["Save or prepare"]
+    assert fields["Save or prepare"].count("Save energy") == 1
+    assert fields["Save or prepare"].count("hydra keys") == 1
+    assert "Do not claim reward" in fields["Do not do too early"]
+    assert "Must be active" in fields["Time-gated"]
+    assert "wall" in fields["Watch-outs"]
+    assert "high" in fields["Watch-outs"]
+    rendered = embed.description + "\n" + "\n".join(fields.values())
+    assert "current-key" not in rendered
+    assert "next-key" not in rendered
+    assert "source_url" not in rendered
+    assert "Hidden future" not in rendered
+
+
+def test_empty_plan_uses_no_items_description_and_my_progress_shortcut():
+    data = _plan_data(plan_ahead_lookahead_count="12")
+    post = data.posts[0]
+    embed = service.build_plan_ahead_embed(
+        post,
+        service.ProgressCategory("ARB", "Arena Rush Basics", 1, "TAB"),
+        {"current_mission_key": "current-key", "current_step_index": "1"},
+        [service.MissionRow(1, "Current text", "current-key", "Chapter", 1)],
+    )
+    assert embed.description == "Nothing to plan."
+    assert [
+        getattr(item, "label", "") for item in service.MyProgressView(post).children
+    ] == [
+        "Set Progress",
+        "Mark Mission Done",
+        "Plan Ahead",
+    ]
