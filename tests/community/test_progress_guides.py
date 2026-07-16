@@ -26,6 +26,7 @@ class FakeMessage:
         self.delete_error = delete_error
         self.delete_attempted = False
         self.deleted = False
+        self.jump_url = f"https://discord.com/channels/1/2/{message_id}"
 
     async def edit(self, **kwargs):
         self.edits.append(kwargs)
@@ -136,7 +137,19 @@ async def _run(monkeypatch, data, channels, worksheet, *, refresh=True):
         return worksheet
 
     async def fetch_values(sheet, tab):
-        return [["category", "guide_panel_message_id", "help_panel_message_id"]]
+        return [
+            [
+                "category",
+                "guide_panel_message_id",
+                "guide_post_url",
+                "help_panel_message_id",
+                "help_post_url",
+                "help_panel_title",
+                "help_panel_description",
+                "help_panel_footer",
+                "help_back_button_label",
+            ]
+        ]
 
     monkeypatch.setattr(service, "aget_worksheet", get_ws)
     monkeypatch.setattr(service, "afetch_values", fetch_values)
@@ -171,6 +184,10 @@ def _data(*, post_overrides=None, guides=None, faq=None):
         "help_channel_id": "",
         "help_thread_id": "",
         "help_panel_message_id": "",
+        "help_panel_title": "Help for Arbiter",
+        "help_panel_description": "Use these sheet-authored buttons for help.",
+        "help_panel_footer": "Sheet footer.",
+        "help_back_button_label": "Back to Guide",
         "progress_tracking_enabled": "TRUE",
         "leaderboard_enabled": "FALSE",
         "notes": "",
@@ -251,7 +268,246 @@ def test_publish_posts_only_guide_panels_and_writes_message_id(monkeypatch):
     assert summary.created == 1
     assert len(guide.sent) == 1
     assert help_channel.sent == []
-    assert worksheet.updates == [("B2", [["12345"]], {"value_input_option": "RAW"})]
+    assert worksheet.updates == [
+        ("B2", [["12345"]], {"value_input_option": "RAW"}),
+        (
+            "C2",
+            [["https://discord.com/channels/1/2/12345"]],
+            {"value_input_option": "RAW"},
+        ),
+    ]
+
+
+def test_refresh_creates_managed_help_post_and_updates_guide_link(monkeypatch):
+    worksheet = FakeWorksheet()
+    guide = FakeChannel()
+    help_channel = FakeChannel(send_message=FakeMessage(555))
+    data = _data(
+        post_overrides={
+            "help_channel_id": "20",
+            "help_post_url": "",
+            "mission_list_button_label": "Mission List",
+            "mission_list_title": "Missions",
+        }
+    )
+    summary = asyncio.run(
+        _run(monkeypatch, data, {10: guide, 20: help_channel}, worksheet)
+    )
+    assert summary.created == 2
+    assert (
+        help_channel.sent[0]["content"] is None
+        if "content" in help_channel.sent[0]
+        else True
+    )
+    help_embed = help_channel.sent[0]["embed"]
+    assert help_embed.title == "Help for Arbiter"
+    assert help_embed.description == "Use these sheet-authored buttons for help."
+    labels = [
+        getattr(item, "label", "") for item in help_channel.sent[0]["view"].children
+    ]
+    assert labels == ["Read FAQ", "Mission List", "Back to Guide"]
+    final_guide_view = guide.sent_messages[0].edits[-1]["view"]
+    guide_labels = [getattr(item, "label", "") for item in final_guide_view.children]
+    assert "Ask the Helpers" in guide_labels
+    ask = _button_by_label(final_guide_view, "Ask the Helpers")
+    assert ask.url == "https://discord.com/channels/1/2/555"
+    assert ("D2", [["555"]], {"value_input_option": "RAW"}) in worksheet.updates
+    assert (
+        "E2",
+        [["https://discord.com/channels/1/2/555"]],
+        {"value_input_option": "RAW"},
+    ) in worksheet.updates
+
+
+def test_existing_guide_panel_with_stale_guide_post_url_updates_sheet(monkeypatch):
+    worksheet = FakeWorksheet()
+    message = FakeMessage(777)
+    guide = FakeChannel(existing=message)
+    summary = asyncio.run(
+        _run(
+            monkeypatch,
+            _data(
+                post_overrides={
+                    "guide_panel_message_id": "777",
+                    "guide_post_url": "https://discord.com/channels/1/2/old",
+                }
+            ),
+            {10: guide},
+            worksheet,
+        )
+    )
+    assert summary.refreshed == 1
+    assert (
+        "C2",
+        [["https://discord.com/channels/1/2/777"]],
+        {"value_input_option": "RAW"},
+    ) in worksheet.updates
+
+
+def test_recreated_guide_panel_updates_help_back_button_target(monkeypatch):
+    worksheet = FakeWorksheet()
+    guide = FakeChannel(missing=True, send_message=FakeMessage(444))
+    help_channel = FakeChannel(send_message=FakeMessage(555))
+    summary = asyncio.run(
+        _run(
+            monkeypatch,
+            _data(
+                post_overrides={
+                    "guide_panel_message_id": "777",
+                    "guide_post_url": "https://discord.com/channels/1/2/deleted",
+                    "help_channel_id": "20",
+                    "help_post_url": "",
+                }
+            ),
+            {10: guide, 20: help_channel},
+            worksheet,
+        )
+    )
+    assert summary.created == 2
+    assert ("B2", [["444"]], {"value_input_option": "RAW"}) in worksheet.updates
+    assert (
+        "C2",
+        [["https://discord.com/channels/1/2/444"]],
+        {"value_input_option": "RAW"},
+    ) in worksheet.updates
+    assert (
+        _button_by_label(help_channel.sent[0]["view"], "Back to Guide").url
+        == "https://discord.com/channels/1/2/444"
+    )
+
+
+def test_refresh_edits_existing_help_post(monkeypatch):
+    worksheet = FakeWorksheet()
+    message = FakeMessage(888)
+    help_channel = FakeChannel(existing=message)
+    summary = asyncio.run(
+        _run(
+            monkeypatch,
+            _data(
+                post_overrides={
+                    "help_channel_id": "20",
+                    "help_panel_message_id": "888",
+                    "help_post_url": "https://discord.com/channels/1/2/888",
+                }
+            ),
+            {10: FakeChannel(), 20: help_channel},
+            worksheet,
+        )
+    )
+    assert summary.refreshed == 1
+    assert message.edits
+    assert help_channel.sent == []
+    assert not any(update[0] in {"D2", "E2"} for update in worksheet.updates)
+
+
+def test_refresh_recreates_deleted_help_post(monkeypatch):
+    worksheet = FakeWorksheet()
+    help_channel = FakeChannel(missing=True, send_message=FakeMessage(999))
+    summary = asyncio.run(
+        _run(
+            monkeypatch,
+            _data(
+                post_overrides={"help_channel_id": "20", "help_panel_message_id": "888"}
+            ),
+            {10: FakeChannel(), 20: help_channel},
+            worksheet,
+        )
+    )
+    assert summary.created == 2
+    assert ("D2", [["999"]], {"value_input_option": "RAW"}) in worksheet.updates
+    assert (
+        "E2",
+        [["https://discord.com/channels/1/2/999"]],
+        {"value_input_option": "RAW"},
+    ) in worksheet.updates
+
+
+def test_help_post_back_button_uses_guide_post_url(monkeypatch):
+    worksheet = FakeWorksheet()
+    help_channel = FakeChannel()
+    asyncio.run(
+        _run(
+            monkeypatch,
+            _data(
+                post_overrides={
+                    "help_channel_id": "20",
+                    "guide_post_url": "https://discord.com/channels/1/2/333",
+                }
+            ),
+            {10: FakeChannel(), 20: help_channel},
+            worksheet,
+        )
+    )
+    labels = [
+        getattr(item, "label", "") for item in help_channel.sent[0]["view"].children
+    ]
+    assert "Back to Guide" in labels
+    assert (
+        _button_by_label(help_channel.sent[0]["view"], "Back to Guide").url
+        == "https://discord.com/channels/1/2/12345"
+    )
+
+
+def test_help_view_omits_back_button_without_guide_post_url():
+    data = _data(post_overrides={"guide_post_url": ""})
+    view = service.build_help_view(data.posts[0], data)
+    labels = [getattr(item, "label", "") for item in view.children]
+    assert "Back to Guide" not in labels
+
+
+def test_progress_forum_posts_help_columns_are_appended_when_missing(monkeypatch):
+    worksheet = FakeWorksheet()
+    data = _data(post_overrides={"help_channel_id": "20", "help_post_url": ""})
+
+    async def load_data():
+        return data
+
+    async def get_ws(sheet, tab):
+        return worksheet
+
+    async def fetch_values(sheet, tab):
+        return [
+            [
+                "category",
+                "guide_panel_message_id",
+                "guide_post_url",
+                "help_panel_message_id",
+                "help_post_url",
+            ]
+        ]
+
+    async def resolve(_bot, channel_id):
+        return {10: FakeChannel(), 20: FakeChannel()}.get(channel_id)
+
+    async def call(func, *args, **kwargs):
+        kwargs.pop("attempts", None)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(service, "load_progress_guide_data", load_data)
+    monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
+    monkeypatch.setattr(service.discord, "NotFound", FakeDiscordNotFound)
+    monkeypatch.setattr(service, "aget_worksheet", get_ws)
+    monkeypatch.setattr(service, "afetch_values", fetch_values)
+    monkeypatch.setattr(service, "_resolve_messageable", resolve)
+    monkeypatch.setattr(service, "acall_with_backoff", call)
+    asyncio.run(service.publish_or_refresh(FakeBot(), refresh=True))
+    assert worksheet.updates[0] == (
+        "A1:I1",
+        [
+            [
+                "category",
+                "guide_panel_message_id",
+                "guide_post_url",
+                "help_panel_message_id",
+                "help_post_url",
+                "help_panel_title",
+                "help_panel_description",
+                "help_panel_footer",
+                "help_back_button_label",
+            ]
+        ],
+        {"value_input_option": "RAW"},
+    )
 
 
 def test_publish_primes_progress_guide_cache(monkeypatch):
@@ -269,7 +525,12 @@ def test_refresh_edits_existing_guide_panel(monkeypatch):
     summary = asyncio.run(
         _run(
             monkeypatch,
-            _data(post_overrides={"guide_panel_message_id": "777"}),
+            _data(
+                post_overrides={
+                    "guide_panel_message_id": "777",
+                    "guide_post_url": "https://discord.com/channels/1/2/777",
+                }
+            ),
             {10: guide},
             worksheet,
         )
@@ -286,7 +547,12 @@ def test_missing_deleted_stored_message_recreates_and_updates_id(monkeypatch):
     summary = asyncio.run(
         _run(
             monkeypatch,
-            _data(post_overrides={"guide_panel_message_id": "777"}),
+            _data(
+                post_overrides={
+                    "guide_panel_message_id": "777",
+                    "guide_post_url": "https://discord.com/channels/1/2/777",
+                }
+            ),
             {10: guide},
             worksheet,
         )
@@ -302,7 +568,12 @@ def test_generic_fetch_error_does_not_recreate(monkeypatch):
     summary = asyncio.run(
         _run(
             monkeypatch,
-            _data(post_overrides={"guide_panel_message_id": "777"}),
+            _data(
+                post_overrides={
+                    "guide_panel_message_id": "777",
+                    "guide_post_url": "https://discord.com/channels/1/2/777",
+                }
+            ),
             {10: guide},
             worksheet,
         )
@@ -316,7 +587,7 @@ def test_generic_fetch_error_does_not_recreate(monkeypatch):
 def test_help_panel_message_id_is_never_written(monkeypatch):
     worksheet = FakeWorksheet()
     asyncio.run(_run(monkeypatch, _data(), {10: FakeChannel()}, worksheet))
-    assert [cell for cell, _values, _kw in worksheet.updates] == ["B2"]
+    assert [cell for cell, _values, _kw in worksheet.updates] == ["B2", "C2"]
 
 
 def test_disabled_rows_are_skipped(monkeypatch):
@@ -345,7 +616,7 @@ def test_missing_guide_destination_is_reported_not_fatal(monkeypatch):
         )
     )
     assert summary.created == 0
-    assert "missing guide destination" in summary.skipped[0]
+    assert any("missing guide destination" in item for item in summary.skipped)
 
 
 def test_source_urls_are_not_rendered_in_embed():
@@ -1054,7 +1325,12 @@ def test_progress_guides_cog_registers_persistent_faq_view():
 
 
 def test_refresh_existing_stored_message_does_not_read_worksheet_or_header(monkeypatch):
-    data = _data(post_overrides={"guide_panel_message_id": "777"})
+    data = _data(
+        post_overrides={
+            "guide_panel_message_id": "777",
+            "guide_post_url": "https://discord.com/channels/1/2/777",
+        }
+    )
     message = FakeMessage(777)
     guide = FakeChannel(existing=message)
 
@@ -1093,7 +1369,12 @@ def test_refresh_existing_stored_message_does_not_write_guide_panel_message_id(
     summary = asyncio.run(
         _run(
             monkeypatch,
-            _data(post_overrides={"guide_panel_message_id": "777"}),
+            _data(
+                post_overrides={
+                    "guide_panel_message_id": "777",
+                    "guide_post_url": "https://discord.com/channels/1/2/777",
+                }
+            ),
             {10: guide},
             worksheet,
         )
@@ -1108,7 +1389,14 @@ def test_create_path_still_writes_guide_panel_message_id(monkeypatch):
     summary = asyncio.run(_run(monkeypatch, _data(), {10: FakeChannel()}, worksheet))
 
     assert summary.created == 1
-    assert worksheet.updates == [("B2", [["12345"]], {"value_input_option": "RAW"})]
+    assert worksheet.updates == [
+        ("B2", [["12345"]], {"value_input_option": "RAW"}),
+        (
+            "C2",
+            [["https://discord.com/channels/1/2/12345"]],
+            {"value_input_option": "RAW"},
+        ),
+    ]
 
 
 class FakeCtx:
