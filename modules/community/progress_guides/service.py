@@ -252,6 +252,7 @@ class MissionRow:
     guide_priority: str
     retroactive_note: str
     prep_window: str
+    completion_rule: str
 
     def __init__(
         self,
@@ -268,6 +269,7 @@ class MissionRow:
         guide_priority: str = "",
         retroactive_note: str = "",
         prep_window: str = "",
+        completion_rule: str = "",
     ) -> None:
         self.sequence_number = sequence_number
         self.step_index = step_index if step_index is not None else sequence_number
@@ -282,6 +284,7 @@ class MissionRow:
         self.guide_priority = guide_priority
         self.retroactive_note = retroactive_note
         self.prep_window = prep_window
+        self.completion_rule = completion_rule
 
     @property
     def number(self) -> int:
@@ -480,6 +483,7 @@ def _parse_mission_rows(rows: Sequence[Mapping[str, object]]) -> list[MissionRow
                 guide_priority=_text(row.get("guide_priority")),
                 retroactive_note=_strip_visible_urls(row.get("retroactive_note")),
                 prep_window=_text(row.get("prep_window")),
+                completion_rule=_text(row.get("completion_rule")),
             )
         )
     return parsed
@@ -1292,11 +1296,15 @@ def _append_unique_line(lines: list[str], value: object) -> None:
         lines.append(clean)
 
 
+def _mission_plan_prefix(current_title: str, mission: MissionRow) -> str:
+    if (mission.title or "Missions") == (current_title or "Missions"):
+        return f"{mission.step_index}"
+    return f"{mission.title or 'Missions'}, {mission.step_index}"
+
+
 def _mission_plan_label(current_title: str, mission: MissionRow) -> str:
     text = _limit_text(mission.text, 140)
-    if (mission.title or "Missions") == (current_title or "Missions"):
-        return f"{mission.step_index}: {text}"
-    return f"{mission.title or 'Missions'}, {mission.step_index}: {text}"
+    return f"{_mission_plan_prefix(current_title, mission)}: {text}"
 
 
 def _limited_bullets(
@@ -1329,6 +1337,25 @@ def _prep_window_rank(value: object) -> int:
         pass
     raw = raw_text.casefold().replace("-", "_")
     return _PREP_WINDOW_RANK.get(raw, 0)
+
+
+_ACTIVE_ONLY_TIMING_PHRASES = (
+    "after this mission is active",
+    "while this mission is active",
+    "if it does not auto-complete",
+    "after the mission is active",
+    "while the mission is active",
+    "if the mission does not auto-complete",
+)
+
+
+def _is_active_only_mission(mission: MissionRow) -> bool:
+    return mission.completion_rule.strip().casefold() == "active_only"
+
+
+def _is_active_only_instruction_note(note: str) -> bool:
+    folded = note.casefold()
+    return any(phrase in folded for phrase in _ACTIVE_ONLY_TIMING_PHRASES)
 
 
 def _plan_warning_candidates(upcoming_missions: Sequence[MissionRow]) -> list[str]:
@@ -1438,7 +1465,11 @@ def build_plan_ahead_embed(
     if post.plan_ahead_avoid_field_title:
         avoid_lines: list[str] = []
         for m in upcoming:
-            _append_unique_line(avoid_lines, m.avoid_doing)
+            avoid = _normalized_line(m.avoid_doing)
+            if avoid and _is_active_only_mission(m):
+                _append_unique_line(
+                    avoid_lines, f"{_mission_plan_prefix(current_title, m)}: {avoid}"
+                )
         value = _limited_bullets(avoid_lines, 3)
         if value:
             embed.add_field(
@@ -1453,12 +1484,11 @@ def build_plan_ahead_embed(
             note = _normalized_line(m.retroactive_note)
             if not note:
                 continue
-            prefix = (
-                f"{m.step_index}"
-                if (m.title or "Missions") == current_title
-                else f"{m.title or 'Missions'}, {m.step_index}"
+            if _is_active_only_instruction_note(note):
+                continue
+            _append_unique_line(
+                timing_lines, f"{_mission_plan_prefix(current_title, m)}: {note}"
             )
-            _append_unique_line(timing_lines, f"{prefix}: {note}")
         value = _limited_bullets(timing_lines, 3, "more timing note")
         if value:
             embed.add_field(

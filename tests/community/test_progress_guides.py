@@ -2168,6 +2168,7 @@ def _plan_missions():
             resource_tags="hydra_keys; silver",
             difficulty_note="medium",
             guide_priority="normal",
+            completion_rule="active_only",
         ),
         service.MissionRow(4, "Hidden future", "future-key", "Marius - Part 1", 4),
     ]
@@ -2275,7 +2276,7 @@ def test_plan_ahead_saved_progress_builds_fields_from_future_missions(monkeypatc
     assert "hydra_keys" not in fields["Save or prepare"]
     assert "high" not in fields["Save or prepare"]
     assert fields["Save or prepare"].count("Save energy") == 1
-    assert "Do not claim reward" in fields["Do not do too early"]
+    assert "- 3: Do not claim reward" in fields["Do not do too early"]
     assert "Must be active" in fields["Time-gated"]
     assert "Watch-outs" not in fields
     rendered = embed.description + "\n" + "\n".join(fields.values())
@@ -2352,6 +2353,7 @@ def test_plan_ahead_renderer_uses_player_facing_columns_and_limits_output():
             difficulty_note="normal",
             guide_priority="critical",
             prep_window="normal",
+            completion_rule="active_only",
         ),
         service.MissionRow(
             42,
@@ -2389,6 +2391,7 @@ def test_plan_ahead_renderer_uses_player_facing_columns_and_limits_output():
             retroactive_note="Craft or equip after this mission is active.",
             difficulty_note="Forge steps are only easy if the exact charms and materials were saved.",
             prep_window="high",
+            completion_rule="active_only",
         ),
         service.MissionRow(
             184,
@@ -2402,6 +2405,7 @@ def test_plan_ahead_renderer_uses_player_facing_columns_and_limits_output():
             difficulty_note="critical",
             guide_priority="normal",
             prep_window="wall",
+            completion_rule="active_only",
         ),
         service.MissionRow(
             185,
@@ -2431,9 +2435,23 @@ def test_plan_ahead_renderer_uses_player_facing_columns_and_limits_output():
     assert fields["Save or prepare"].count("- ") == 4
     assert "Earn the points" not in fields["Do not do too early"]
     assert "Keep:" not in fields["Do not do too early"]
-    assert "- 41: Earn the points while this mission is active." in fields["Time-gated"]
+    assert (
+        "- 41: Do not chase points before this mission is active."
+        in fields["Do not do too early"]
+    )
+    assert "Ramantu - Part 2, 41" not in fields["Do not do too early"]
+    assert "- 44: Do not spend Accuracy Charms" in fields["Do not do too early"]
+    assert (
+        "- Ramantu - Part 3, 1: Do not spend fortress keys."
+        in fields["Do not do too early"]
+    )
+    assert "Do not spend Silver Keys early." not in fields["Do not do too early"]
+    assert "Earn the points while this mission is active." not in fields["Time-gated"]
+    assert "Craft or equip after this mission is active." not in fields["Time-gated"]
     assert "Ramantu - Part 2, 41" not in fields["Time-gated"]
-    assert "+2 more timing notes." in fields["Time-gated"]
+    assert "Doom Tower access depends on rotation and reset." in fields["Time-gated"]
+    assert "Use keys after reset." in fields["Time-gated"]
+    assert "Wait for Force affinity." in fields["Time-gated"]
     assert "Doom Tower missions can force a wait" in fields["Watch-outs"]
     assert "Forge steps are only easy" in fields["Watch-outs"]
     assert "Campaign steps" not in fields["Watch-outs"]
@@ -2443,6 +2461,31 @@ def test_plan_ahead_renderer_uses_player_facing_columns_and_limits_output():
     assert "ram-41" not in "\n".join(fields.values())
     assert "system_tags" not in "\n".join(fields.values())
     assert not embed.footer.text
+
+
+def test_plan_ahead_timing_note_filter_keeps_real_timing_gates():
+    active_only_notes = [
+        "Spend medals after this mission is active.",
+        "Farm potions while this mission is active.",
+        "Claim it if it does not auto-complete.",
+        "Earn tournament points while the mission is active.",
+        "Do the upgrade after the mission is active.",
+        "Claim it if the mission does not auto-complete.",
+    ]
+    real_timing_notes = [
+        "Arcane Keep is open every day.",
+        "Magic Keep opens Monday and Thursday.",
+        "Doom Tower access depends on rotation and reset.",
+        "Crypt access depends on Faction Wars rotation.",
+        "Rank checks depend on weekly reset.",
+    ]
+
+    assert all(
+        service._is_active_only_instruction_note(note) for note in active_only_notes
+    )
+    assert not any(
+        service._is_active_only_instruction_note(note) for note in real_timing_notes
+    )
 
 
 def test_plan_ahead_saved_progress_does_not_pass_none_view(monkeypatch):
