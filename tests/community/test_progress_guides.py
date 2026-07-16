@@ -2287,6 +2287,105 @@ def test_plan_ahead_saved_progress_builds_fields_from_future_missions(monkeypatc
     assert "Hidden future" not in rendered
 
 
+
+def test_plan_ahead_non_quota_failure_after_defer_sends_fallback_logs_and_does_not_reraise(monkeypatch, caplog):
+    data = _plan_data()
+    service.set_progress_guide_cache(data)
+
+    async def category(_category):
+        raise RuntimeError("raw google schema boom current_mission_key")
+
+    monkeypatch.setattr(service, "_progress_category", category)
+    interaction = FakeInteraction()
+
+    with caplog.at_level("ERROR", logger="c1c.community.progress_guides.service"):
+        asyncio.run(service.PlanAheadButton("ARB", "Plan Ahead").callback(interaction))
+
+    assert interaction.response.deferred == [{"ephemeral": True, "thinking": True}]
+    sent = interaction.followup.sent[0]
+    assert sent["ephemeral"] is True
+    assert sent["embed"].description == "Sheet says progress is temporarily unavailable."
+    assert "raw google schema boom" not in sent["embed"].description
+    record = next(r for r in caplog.records if r.message == "plan ahead callback failed")
+    assert record.exc_info is not None
+    assert record.category == "ARB"
+    assert record.user_id == 123456
+
+
+def test_plan_ahead_quota_failure_keeps_clean_unavailable_embed(monkeypatch):
+    data = _plan_data()
+    service.set_progress_guide_cache(data)
+
+    async def category(_category):
+        raise RuntimeError("quota details should not leak")
+
+    monkeypatch.setattr(service, "_progress_category", category)
+    monkeypatch.setattr(service, "_is_quota_failure", lambda exc: True)
+    interaction = FakeInteraction()
+
+    asyncio.run(service.PlanAheadButton("ARB", "Plan Ahead").callback(interaction))
+
+    sent = interaction.followup.sent[0]
+    assert sent["ephemeral"] is True
+    assert sent["embed"].description == "Sheet says progress is temporarily unavailable."
+    assert "quota details" not in sent["embed"].description
+
+
+def test_plan_ahead_saved_progress_missing_mission_key_sends_clean_no_progress(monkeypatch):
+    data = _plan_data()
+    service.set_progress_guide_cache(data)
+    state = {
+        "user_id": "123456",
+        "category": "ARB",
+        "current_step_index": "99",
+        "current_mission_key": "missing-key",
+        "status": "in_progress",
+    }
+
+    async def category(_category):
+        return None
+
+    async def rows():
+        return "ProgressUserState", [state]
+
+    async def missions(_category):
+        return _plan_missions()
+
+    monkeypatch.setattr(service, "_progress_category", category)
+    monkeypatch.setattr(service, "_user_state_rows", rows)
+    monkeypatch.setattr(service, "get_or_load_missions", missions)
+    interaction = FakeInteraction()
+
+    asyncio.run(service.PlanAheadButton("ARB", "Plan Ahead").callback(interaction))
+
+    sent = interaction.followup.sent[0]
+    assert sent["ephemeral"] is True
+    assert sent["embed"].description == "Set progress first."
+    assert "missing-key" not in sent["embed"].description
+
+
+def test_plan_ahead_does_not_write_sheets(monkeypatch):
+    data = _plan_data()
+    service.set_progress_guide_cache(data)
+
+    async def category(_category):
+        return service.ProgressCategory("ARB", "Arena Rush Basics", 4, "TAB")
+
+    async def rows():
+        return "ProgressUserState", []
+
+    async def forbidden_write(*_args, **_kwargs):
+        raise AssertionError("Plan Ahead must not write sheets")
+
+    monkeypatch.setattr(service, "_progress_category", category)
+    monkeypatch.setattr(service, "_user_state_rows", rows)
+    monkeypatch.setattr(service, "acall_with_backoff", forbidden_write)
+    interaction = FakeInteraction()
+
+    asyncio.run(service.PlanAheadButton("ARB", "Plan Ahead").callback(interaction))
+
+    assert interaction.followup.sent[0]["embed"].description == "Set progress first."
+
 def test_empty_plan_uses_no_items_description_and_my_progress_shortcut():
     data = _plan_data(plan_ahead_lookahead_count="12")
     post = data.posts[0]
