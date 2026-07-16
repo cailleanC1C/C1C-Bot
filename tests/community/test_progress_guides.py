@@ -1291,8 +1291,21 @@ def test_my_progress_empty_state_uses_sheet_copy_and_set_button():
     embed = service.build_my_progress_embed(data.posts[0], None, None, [])
     assert embed.title == "Arbiter Progress"
     assert embed.description == "No progress saved yet."
-    view = service.MyProgressView(data.posts[0])
+    view = service.MyProgressView(data.posts[0], has_saved_progress=False)
     assert [getattr(item, "label", "") for item in view.children] == ["Set Progress"]
+
+
+def test_my_progress_saved_state_shows_set_progress_and_mark_done_buttons():
+    data = _data()
+    view = service.MyProgressView(data.posts[0], has_saved_progress=True)
+    assert [getattr(item, "label", "") for item in view.children] == [
+        "Set Progress",
+        "Mark Mission Done",
+    ]
+    assert [getattr(item, "custom_id", "") for item in view.children] == [
+        "progressguides:setprogress:ARB",
+        "progressguides:markdone:ARB",
+    ]
 
 
 def test_existing_progress_renders_template_prefers_mission_key_and_hides_metadata():

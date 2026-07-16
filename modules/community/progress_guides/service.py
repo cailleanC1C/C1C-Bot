@@ -37,6 +37,7 @@ _FAQ_CUSTOM_ID_PREFIX = "progressguides:faq:"
 _MISSIONS_CUSTOM_ID_PREFIX = "progressguides:missions:"
 _MY_PROGRESS_CUSTOM_ID_PREFIX = "progressguides:myprogress:"
 _SET_PROGRESS_CUSTOM_ID_PREFIX = "progressguides:setprogress:"
+_MARK_MISSION_DONE_CUSTOM_ID_PREFIX = "progressguides:markdone:"
 _PERSISTENT_FAQ_CATEGORIES = ("ARB", "RAM", "MAR", "FW_N", "FW_H")
 _MISSION_CATEGORIES = ("ARB", "RAM", "MAR")
 _MISSIONS_PER_PAGE = 15
@@ -711,13 +712,84 @@ class SetProgressButton(discord.ui.Button):
         )
 
 
+class MarkMissionDoneButton(discord.ui.Button):
+    def __init__(self, category: str) -> None:
+        self.category = category
+        super().__init__(
+            label="Mark Mission Done",
+            style=discord.ButtonStyle.success,
+            custom_id=f"{_MARK_MISSION_DONE_CUSTOM_ID_PREFIX}{category}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        post: ForumPost | None = None
+        try:
+            data = await get_or_load_progress_guide_data()
+            post = _post_for_category(self.category, data)
+            if post is None:
+                await interaction.followup.send(
+                    embed=_progress_unavailable_embed(post), ephemeral=True
+                )
+                return
+            category_info = await _progress_category(self.category)
+            _tab, rows = await _user_state_rows()
+            found = _find_user_state(rows, interaction.user.id, self.category)
+            if found is None:
+                await interaction.followup.send(
+                    embed=build_my_progress_embed(post, category_info, None, []),
+                    view=MyProgressView(post, has_saved_progress=False),
+                    ephemeral=True,
+                )
+                return
+            missions = await get_or_load_missions(self.category)
+            state = found[1]
+            current = _mission_for_state(state, missions)
+            if current is None:
+                await interaction.followup.send(
+                    embed=_progress_no_missions_embed(post), ephemeral=True
+                )
+                return
+            current_index = missions.index(current)
+            next_mission = (
+                missions[current_index + 1]
+                if current_index + 1 < len(missions)
+                else current
+            )
+            await upsert_progress_user_state(
+                interaction.user.id, self.category, next_mission
+            )
+            next_state = {
+                "current_step_index": str(next_mission.number),
+                "current_mission_key": next_mission.key,
+                "status": "in_progress",
+            }
+            embed = build_my_progress_embed(post, category_info, next_state, missions)
+            if post.my_progress_saved_description:
+                embed.set_footer(text=post.my_progress_saved_description)
+            await interaction.followup.send(
+                embed=embed,
+                view=MyProgressView(post, has_saved_progress=True),
+                ephemeral=True,
+            )
+        except Exception as exc:
+            if _is_quota_failure(exc):
+                await interaction.followup.send(
+                    embed=_progress_unavailable_embed(post), ephemeral=True
+                )
+                return
+            raise
+
+
 class MyProgressView(discord.ui.View):
-    def __init__(self, post: ForumPost) -> None:
+    def __init__(self, post: ForumPost, *, has_saved_progress: bool) -> None:
         super().__init__(timeout=900)
         if post.my_progress_set_button_label:
             self.add_item(
                 SetProgressButton(post.category, post.my_progress_set_button_label)
             )
+        if has_saved_progress:
+            self.add_item(MarkMissionDoneButton(post.category))
 
 
 def build_progress_picker_embed(
@@ -862,7 +934,11 @@ class ProgressMissionSelect(discord.ui.Select):
             embed = build_my_progress_embed(post, category_info, state, view.missions)
             if post.my_progress_saved_description:
                 embed.set_footer(text=post.my_progress_saved_description)
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send(
+                embed=embed,
+                view=MyProgressView(post, has_saved_progress=True),
+                ephemeral=True,
+            )
         except Exception as exc:
             if _is_quota_failure(exc):
                 await interaction.followup.send(
@@ -1071,7 +1147,7 @@ class ProgressGuideMyProgressButton(discord.ui.Button):
             state = found[1] if found else None
             await interaction.followup.send(
                 embed=build_my_progress_embed(post, category_info, state, missions),
-                view=MyProgressView(post),
+                view=MyProgressView(post, has_saved_progress=found is not None),
                 ephemeral=True,
             )
         except Exception as exc:
