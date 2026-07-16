@@ -2270,21 +2270,179 @@ def test_plan_ahead_saved_progress_builds_fields_from_future_missions(monkeypatc
     assert "Upgrade gear" in fields["Coming soon"]
     assert "Current text" not in fields["Coming soon"]
     assert "Save energy" in fields["Save or prepare"]
-    assert "hydra keys" in fields["Save or prepare"]
-    assert "arena refills" in fields["Save or prepare"]
+    assert "hydra keys" not in fields["Save or prepare"]
+    assert "arena refills" not in fields["Save or prepare"]
     assert "hydra_keys" not in fields["Save or prepare"]
     assert "high" not in fields["Save or prepare"]
     assert fields["Save or prepare"].count("Save energy") == 1
-    assert fields["Save or prepare"].count("hydra keys") == 1
     assert "Do not claim reward" in fields["Do not do too early"]
     assert "Must be active" in fields["Time-gated"]
-    assert "wall" in fields["Watch-outs"]
-    assert "high" in fields["Watch-outs"]
+    assert "Watch-outs" not in fields
     rendered = embed.description + "\n" + "\n".join(fields.values())
     assert "current-key" not in rendered
     assert "next-key" not in rendered
     assert "source_url" not in rendered
     assert "Hidden future" not in rendered
+
+
+def test_plan_ahead_prep_window_rank_supports_numeric_and_text_values():
+    assert service._prep_window_rank("30") > service._prep_window_rank("20")
+    assert service._prep_window_rank("20") > service._prep_window_rank("8")
+    assert service._prep_window_rank("") == 0
+    assert service._prep_window_rank("critical") > service._prep_window_rank(
+        "major_wall"
+    )
+    assert service._prep_window_rank("major-wall") == service._prep_window_rank(
+        "major_wall"
+    )
+    assert service._prep_window_rank("high") > service._prep_window_rank("normal")
+
+
+def test_plan_ahead_warning_selection_prefers_numeric_prep_window_values():
+    warnings = service._plan_warning_candidates(
+        [
+            service.MissionRow(
+                41,
+                "Lower priority",
+                "low",
+                "Ramantu - Part 2",
+                41,
+                difficulty_note="Lower priority warning.",
+                prep_window="20",
+            ),
+            service.MissionRow(
+                42,
+                "Higher priority",
+                "high",
+                "Ramantu - Part 2",
+                42,
+                difficulty_note="Higher priority warning.",
+                prep_window="30",
+            ),
+            service.MissionRow(
+                43,
+                "Lowest priority",
+                "lowest",
+                "Ramantu - Part 2",
+                43,
+                difficulty_note="Lowest priority warning.",
+                prep_window="8",
+            ),
+        ]
+    )
+
+    assert warnings == ["Higher priority warning.", "Lower priority warning."]
+
+
+def test_plan_ahead_renderer_uses_player_facing_columns_and_limits_output():
+    data = _plan_data(plan_ahead_lookahead_count="5", plan_ahead_footer="")
+    post = data.posts[0]
+    missions = [
+        service.MissionRow(40, "Current", "ram-40", "Ramantu - Part 2", 40),
+        service.MissionRow(
+            41,
+            "Earn 25,000 Points in Tournaments",
+            "ram-41",
+            "Ramantu - Part 2",
+            41,
+            tips="Save energy, gems, and refill resources for this point mission.",
+            resource_tags="Keep: energy",
+            avoid_doing="Do not chase points before this mission is active.",
+            retroactive_note="Earn the points while this mission is active.",
+            difficulty_note="normal",
+            guide_priority="critical",
+            prep_window="normal",
+        ),
+        service.MissionRow(
+            42,
+            "Clear Secret Room 1",
+            "ram-42",
+            "Ramantu - Part 2",
+            42,
+            resource_tags="Keep: silver keys",
+            avoid_doing="Do not spend Silver Keys early.",
+            retroactive_note="Doom Tower access depends on rotation and reset.",
+            difficulty_note="Doom Tower missions can force a wait if the room, boss, or rotation is not available.",
+            guide_priority="major_wall",
+            prep_window="critical",
+        ),
+        service.MissionRow(
+            43,
+            "Clear Stage 7",
+            "ram-43",
+            "Ramantu - Part 2",
+            43,
+            tips="Prepare a safe Nightmare Campaign duo for this stage.",
+            avoid_doing="Do not farm the wrong stage.",
+            retroactive_note="Use keys after reset.",
+            difficulty_note="Campaign steps are easy with a duo ready.",
+            prep_window="medium",
+        ),
+        service.MissionRow(
+            44,
+            "Craft 10 Artifacts",
+            "ram-44",
+            "Ramantu - Part 2",
+            44,
+            tips="Save Accuracy Charms and enough Forge materials.",
+            avoid_doing="Do not spend Accuracy Charms before this mission if you are low.",
+            retroactive_note="Craft or equip after this mission is active.",
+            difficulty_note="Forge steps are only easy if the exact charms and materials were saved.",
+            prep_window="high",
+        ),
+        service.MissionRow(
+            184,
+            "Iron Twins",
+            "ram-pt3-1",
+            "Ramantu - Part 3",
+            1,
+            tips="Save fortress keys.",
+            avoid_doing="Do not spend fortress keys.",
+            retroactive_note="Wait for Force affinity.",
+            difficulty_note="critical",
+            guide_priority="normal",
+            prep_window="wall",
+        ),
+        service.MissionRow(
+            185,
+            "Hidden sixth",
+            "ram-pt3-2",
+            "Ramantu - Part 3",
+            2,
+            tips="Should not render",
+        ),
+    ]
+
+    embed = service.build_plan_ahead_embed(
+        post,
+        service.ProgressCategory("RAM", "Ramantu", 185, "TAB"),
+        {"current_mission_key": "ram-40", "current_step_index": "40"},
+        missions,
+    )
+    fields = {field.name: field.value for field in embed.fields}
+
+    assert "- 41: Earn 25,000 Points" in fields["Coming soon"]
+    assert "Ramantu - Part 2, 41" not in fields["Coming soon"]
+    assert "- Ramantu - Part 3, 1: Iron Twins" in fields["Coming soon"]
+    assert "184: Iron Twins" not in fields["Coming soon"]
+    assert "Hidden sixth" not in fields["Coming soon"]
+    assert "Keep: energy" not in fields["Save or prepare"]
+    assert "Keep: silver keys" in fields["Save or prepare"]
+    assert fields["Save or prepare"].count("- ") == 4
+    assert "Earn the points" not in fields["Do not do too early"]
+    assert "Keep:" not in fields["Do not do too early"]
+    assert "- 41: Earn the points while this mission is active." in fields["Time-gated"]
+    assert "Ramantu - Part 2, 41" not in fields["Time-gated"]
+    assert "+2 more timing notes." in fields["Time-gated"]
+    assert "Doom Tower missions can force a wait" in fields["Watch-outs"]
+    assert "Forge steps are only easy" in fields["Watch-outs"]
+    assert "Campaign steps" not in fields["Watch-outs"]
+    assert "guide_priority" not in "\n".join(fields.values())
+    assert "prep_window" not in "\n".join(fields.values())
+    assert "major_wall" not in "\n".join(fields.values())
+    assert "ram-41" not in "\n".join(fields.values())
+    assert "system_tags" not in "\n".join(fields.values())
+    assert not embed.footer.text
 
 
 def test_plan_ahead_saved_progress_does_not_pass_none_view(monkeypatch):
@@ -2320,7 +2478,9 @@ def test_plan_ahead_saved_progress_does_not_pass_none_view(monkeypatch):
     assert sent["embed"].title == "Plan Ahead Title"
 
 
-def test_plan_ahead_non_quota_failure_after_defer_sends_fallback_logs_and_does_not_reraise(monkeypatch, caplog):
+def test_plan_ahead_non_quota_failure_after_defer_sends_fallback_logs_and_does_not_reraise(
+    monkeypatch, caplog
+):
     data = _plan_data()
     service.set_progress_guide_cache(data)
 
@@ -2336,9 +2496,13 @@ def test_plan_ahead_non_quota_failure_after_defer_sends_fallback_logs_and_does_n
     assert interaction.response.deferred == [{"ephemeral": True, "thinking": True}]
     sent = interaction.followup.sent[0]
     assert sent["ephemeral"] is True
-    assert sent["embed"].description == "Sheet says progress is temporarily unavailable."
+    assert (
+        sent["embed"].description == "Sheet says progress is temporarily unavailable."
+    )
     assert "raw google schema boom" not in sent["embed"].description
-    record = next(r for r in caplog.records if r.message == "plan ahead callback failed")
+    record = next(
+        r for r in caplog.records if r.message == "plan ahead callback failed"
+    )
     assert record.exc_info is not None
     assert record.category == "ARB"
     assert record.user_id == 123456
@@ -2354,7 +2518,9 @@ def test_plan_ahead_non_quota_failure_after_defer_sends_fallback_logs_and_does_n
     assert record.category_info_found is False
 
 
-def test_plan_ahead_failure_after_state_and_missions_logs_diagnostics(monkeypatch, caplog):
+def test_plan_ahead_failure_after_state_and_missions_logs_diagnostics(
+    monkeypatch, caplog
+):
     data = _plan_data()
     service.set_progress_guide_cache(data)
     state = {
@@ -2387,9 +2553,13 @@ def test_plan_ahead_failure_after_state_and_missions_logs_diagnostics(monkeypatc
         asyncio.run(service.PlanAheadButton("ARB", "Plan Ahead").callback(interaction))
 
     sent = interaction.followup.sent[0]
-    assert sent["embed"].description == "Sheet says progress is temporarily unavailable."
+    assert (
+        sent["embed"].description == "Sheet says progress is temporarily unavailable."
+    )
     assert "embed render boom" not in sent["embed"].description
-    record = next(r for r in caplog.records if r.message == "plan ahead callback failed")
+    record = next(
+        r for r in caplog.records if r.message == "plan ahead callback failed"
+    )
     assert record.exc_type == "ValueError"
     assert record.exc_message == "embed render boom"
     assert record.current_mission_key == "ram_100"
@@ -2399,7 +2569,9 @@ def test_plan_ahead_failure_after_state_and_missions_logs_diagnostics(monkeypatc
     assert record.state_found is True
 
 
-def test_plan_ahead_failure_before_context_assignment_logs_safe_defaults(monkeypatch, caplog):
+def test_plan_ahead_failure_before_context_assignment_logs_safe_defaults(
+    monkeypatch, caplog
+):
     service.set_progress_guide_cache(None)
 
     async def data():
@@ -2414,7 +2586,9 @@ def test_plan_ahead_failure_before_context_assignment_logs_safe_defaults(monkeyp
     sent = interaction.followup.sent[0]
     assert sent["embed"].description == "Unavailable."
     assert "data load failed" not in sent["embed"].description
-    record = next(r for r in caplog.records if r.message == "plan ahead callback failed")
+    record = next(
+        r for r in caplog.records if r.message == "plan ahead callback failed"
+    )
     assert record.exc_type == "LookupError"
     assert record.exc_message == "data load failed"
     assert record.post_found is False
@@ -2440,11 +2614,15 @@ def test_plan_ahead_quota_failure_keeps_clean_unavailable_embed(monkeypatch):
 
     sent = interaction.followup.sent[0]
     assert sent["ephemeral"] is True
-    assert sent["embed"].description == "Sheet says progress is temporarily unavailable."
+    assert (
+        sent["embed"].description == "Sheet says progress is temporarily unavailable."
+    )
     assert "quota details" not in sent["embed"].description
 
 
-def test_plan_ahead_saved_progress_missing_mission_key_sends_clean_no_progress(monkeypatch):
+def test_plan_ahead_saved_progress_missing_mission_key_sends_clean_no_progress(
+    monkeypatch,
+):
     data = _plan_data()
     service.set_progress_guide_cache(data)
     state = {
@@ -2498,6 +2676,7 @@ def test_plan_ahead_does_not_write_sheets(monkeypatch):
     asyncio.run(service.PlanAheadButton("ARB", "Plan Ahead").callback(interaction))
 
     assert interaction.followup.sent[0]["embed"].description == "Set progress first."
+
 
 def test_empty_plan_uses_no_items_description_and_my_progress_shortcut():
     data = _plan_data(plan_ahead_lookahead_count="12")
