@@ -598,6 +598,54 @@ def _faq_rows_for_category(
     )
 
 
+def _faq_tag_label(tag: object) -> str:
+    cleaned = _text(tag).replace("_", " ")
+    return " ".join(cleaned.split()).title()
+
+
+def _faq_tag_key(tag: object) -> str:
+    label = _faq_tag_label(tag)
+    return _limit_text(label.casefold(), _SELECT_VALUE_LIMIT)
+
+
+def _parse_faq_tags(value: object) -> list[tuple[str, str]]:
+    raw = _text(value)
+    if not raw:
+        return []
+    tags: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for part in re.split(r"[,;]", raw):
+        label = _faq_tag_label(part)
+        if not label:
+            continue
+        key = _faq_tag_key(label)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        tags.append((key, label))
+    return tags
+
+
+def _faq_tag_options(rows: Sequence[Mapping[str, object]]) -> list[tuple[str, str]]:
+    by_key: dict[str, str] = {}
+    for row in rows:
+        for key, label in _parse_faq_tags(row.get("tags")):
+            by_key.setdefault(key, label)
+    return sorted(by_key.items(), key=lambda item: item[1].casefold())
+
+
+def _filter_faq_rows_by_tag(
+    rows: Sequence[Mapping[str, object]], selected_tag: str | None
+) -> list[Mapping[str, object]]:
+    if not selected_tag:
+        return list(rows)
+    return [
+        row
+        for row in rows
+        if any(key == selected_tag for key, _label in _parse_faq_tags(row.get("tags")))
+    ]
+
+
 def _faq_option_value(row: Mapping[str, object], sorted_index: int) -> str:
     key = _text(row.get("faq_key"))
     if key:
@@ -611,9 +659,13 @@ def build_faq_picker_embed(
     rows: Sequence[Mapping[str, object]],
     *,
     page: int,
+    selected_tag_label: str | None = None,
 ) -> discord.Embed:
     post = _post_for_category(category, data)
     description = _embed_description(post.faq_description) if post else None
+    if selected_tag_label:
+        filter_note = f"Filter: {selected_tag_label}"
+        description = f"{description}\n\n{filter_note}" if description else filter_note
     total_pages = max(
         1, (len(rows) + _FAQ_OPTIONS_PER_PAGE - 1) // _FAQ_OPTIONS_PER_PAGE
     )
@@ -637,7 +689,7 @@ def build_selected_faq_embed(
     description = f"{prefix}{answer}"
     if len(description) > _EMBED_DESCRIPTION_LIMIT:
         available = _EMBED_DESCRIPTION_LIMIT - len(prefix) - len(note)
-        description = f"{prefix}{answer[:max(0, available)].rstrip()}{note}"
+        description = f"{prefix}{answer[: max(0, available)].rstrip()}{note}"
     return discord.Embed(
         title=_faq_title_for_category(category, data),
         description=_embed_description(description),
@@ -665,6 +717,51 @@ def build_faq_embed(category: str, data: ProgressGuideData) -> discord.Embed | N
             continue
         embed.add_field(name=question, value=answer, inline=False)
     return embed if embed.fields else None
+
+
+class ProgressGuideFAQTagSelect(discord.ui.Select):
+    def __init__(
+        self, tag_options: Sequence[tuple[str, str]], selected_tag: str | None
+    ) -> None:
+        options = [
+            discord.SelectOption(
+                label="All questions", value="__all__", default=selected_tag is None
+            )
+        ]
+        options.extend(
+            discord.SelectOption(
+                label=_limit_text(label, _SELECT_LABEL_LIMIT),
+                value=key,
+                default=key == selected_tag,
+            )
+            for key, label in list(tag_options)[:24]
+        )
+        super().__init__(
+            placeholder="Filter FAQ questions by tag…",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, ProgressGuideFAQPickerView):
+            return
+        selected = self.values[0]
+        selected_tag = None if selected == "__all__" else selected
+        next_view = ProgressGuideFAQPickerView(
+            view.category, view.data, view.all_rows, 0, selected_tag=selected_tag
+        )
+        await interaction.response.edit_message(
+            embed=build_faq_picker_embed(
+                view.category,
+                view.data,
+                next_view.filtered_rows,
+                page=next_view.page,
+                selected_tag_label=next_view.selected_tag_label,
+            ),
+            view=next_view,
+        )
 
 
 class ProgressGuideFAQSelect(discord.ui.Select):
@@ -697,17 +794,29 @@ class ProgressGuideFAQSelect(discord.ui.Select):
         if row is None:
             await interaction.response.edit_message(
                 embed=build_faq_picker_embed(
-                    view.category, view.data, view.rows, page=view.page
+                    view.category,
+                    view.data,
+                    view.filtered_rows,
+                    page=view.page,
+                    selected_tag_label=view.selected_tag_label,
                 ),
                 view=ProgressGuideFAQPickerView(
-                    view.category, view.data, view.rows, view.page
+                    view.category,
+                    view.data,
+                    view.all_rows,
+                    view.page,
+                    selected_tag=view.selected_tag,
                 ),
             )
             return
         await interaction.response.edit_message(
             embed=build_selected_faq_embed(view.category, view.data, row),
             view=ProgressGuideFAQPickerView(
-                view.category, view.data, view.rows, view.page
+                view.category,
+                view.data,
+                view.all_rows,
+                view.page,
+                selected_tag=view.selected_tag,
             ),
         )
 
@@ -724,11 +833,19 @@ class ProgressGuideFAQPageButton(discord.ui.Button):
         if not isinstance(view, ProgressGuideFAQPickerView):
             return
         next_view = ProgressGuideFAQPickerView(
-            view.category, view.data, view.rows, self.target_page
+            view.category,
+            view.data,
+            view.all_rows,
+            self.target_page,
+            selected_tag=view.selected_tag,
         )
         await interaction.response.edit_message(
             embed=build_faq_picker_embed(
-                view.category, view.data, view.rows, page=self.target_page
+                view.category,
+                view.data,
+                next_view.filtered_rows,
+                page=next_view.page,
+                selected_tag_label=next_view.selected_tag_label,
             ),
             view=next_view,
         )
@@ -741,19 +858,40 @@ class ProgressGuideFAQPickerView(discord.ui.View):
         data: ProgressGuideData,
         rows: Sequence[Mapping[str, object]],
         page: int = 0,
+        *,
+        selected_tag: str | None = None,
     ) -> None:
         super().__init__(timeout=900)
         self.category = category
         self.data = data
-        self.rows = list(rows)
+        self.all_rows = list(rows)
+        self.tag_options = _faq_tag_options(self.all_rows)
+        self.selected_tag = (
+            selected_tag
+            if any(key == selected_tag for key, _ in self.tag_options)
+            else None
+        )
+        self.selected_tag_label = next(
+            (label for key, label in self.tag_options if key == self.selected_tag), None
+        )
+        self.filtered_rows = _filter_faq_rows_by_tag(self.all_rows, self.selected_tag)
+        self.rows = self.filtered_rows
         self.total_pages = max(
-            1, (len(self.rows) + _FAQ_OPTIONS_PER_PAGE - 1) // _FAQ_OPTIONS_PER_PAGE
+            1,
+            (len(self.filtered_rows) + _FAQ_OPTIONS_PER_PAGE - 1)
+            // _FAQ_OPTIONS_PER_PAGE,
         )
         self.page = max(0, min(page, self.total_pages - 1))
         self.row_by_value = {
-            _faq_option_value(row, index): row for index, row in enumerate(self.rows)
+            _faq_option_value(row, index): row
+            for index, row in enumerate(self.filtered_rows)
         }
-        self.add_item(ProgressGuideFAQSelect(self.rows, self.page))
+        if self.tag_options:
+            self.add_item(
+                ProgressGuideFAQTagSelect(self.tag_options, self.selected_tag)
+            )
+        if self.filtered_rows:
+            self.add_item(ProgressGuideFAQSelect(self.filtered_rows, self.page))
         if self.total_pages > 1:
             self.add_item(
                 ProgressGuideFAQPageButton("Previous", self.page - 1, self.page <= 0)
@@ -1499,9 +1637,7 @@ class ProgressChapterPickerView(discord.ui.View):
             // _PICKER_OPTIONS_PER_PAGE,
         )
         if total_pages > 1:
-            self.add_item(
-                ProgressPickerPageButton("◀️", page - 1, page <= 0, "chapter")
-            )
+            self.add_item(ProgressPickerPageButton("◀️", page - 1, page <= 0, "chapter"))
             self.add_item(
                 ProgressPickerPageButton(
                     "▶️", page + 1, page >= total_pages - 1, "chapter"
@@ -1537,9 +1673,7 @@ class ProgressMissionPickerView(discord.ui.View):
             // _PICKER_OPTIONS_PER_PAGE,
         )
         if total_pages > 1:
-            self.add_item(
-                ProgressPickerPageButton("◀️", page - 1, page <= 0, "mission")
-            )
+            self.add_item(ProgressPickerPageButton("◀️", page - 1, page <= 0, "mission"))
             self.add_item(
                 ProgressPickerPageButton(
                     "▶️", page + 1, page >= total_pages - 1, "mission"

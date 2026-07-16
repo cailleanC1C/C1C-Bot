@@ -703,6 +703,231 @@ def test_long_selected_faq_answer_is_shortened_with_note():
     assert "Answer shortened" in embed.description
 
 
+def test_faq_picker_tag_select_parses_formats_and_labels():
+    data = _data(
+        faq=[
+            {
+                "category": "ARB",
+                "faq_key": "one",
+                "question": "One?",
+                "answer": "One.",
+                "sort_order": "1",
+                "enabled": "TRUE",
+                "tags": "great_hall, clan_boss; Great_Hall ; ",
+            },
+            {
+                "category": "ARB",
+                "faq_key": "two",
+                "question": "Two?",
+                "answer": "Two.",
+                "sort_order": "2",
+                "enabled": "TRUE",
+                "tags": "fire_knight",
+            },
+            {
+                "category": "ARB",
+                "faq_key": "disabled",
+                "question": "Disabled?",
+                "answer": "Hidden.",
+                "sort_order": "3",
+                "enabled": "FALSE",
+                "tags": "secret_tag",
+            },
+            {
+                "category": "ARB",
+                "faq_key": "blank_answer",
+                "question": "Blank?",
+                "answer": "",
+                "sort_order": "4",
+                "enabled": "TRUE",
+                "tags": "empty_answer_tag",
+            },
+        ]
+    )
+    view = service.ProgressGuideFAQPickerView(
+        "ARB", data, service._faq_rows_for_category("ARB", data)
+    )
+
+    tag_select = next(
+        item
+        for item in view.children
+        if isinstance(item, service.ProgressGuideFAQTagSelect)
+    )
+    assert [option.label for option in tag_select.options] == [
+        "All questions",
+        "Clan Boss",
+        "Fire Knight",
+        "Great Hall",
+    ]
+    assert "Secret Tag" not in [option.label for option in tag_select.options]
+    assert "Empty Answer Tag" not in [option.label for option in tag_select.options]
+
+
+def test_faq_picker_omits_tag_select_when_no_tags_exist():
+    data = _data()
+    view = service.ProgressGuideFAQPickerView(
+        "ARB", data, service._faq_rows_for_category("ARB", data)
+    )
+
+    assert not any(
+        isinstance(item, service.ProgressGuideFAQTagSelect) for item in view.children
+    )
+    assert any(
+        isinstance(item, service.ProgressGuideFAQSelect) for item in view.children
+    )
+
+
+def test_faq_tag_selection_filters_resets_page_and_all_restores(monkeypatch):
+    faq = [
+        {
+            "category": "ARB",
+            "faq_key": f"keep{i:02d}",
+            "question": f"Keep {i:02d}?",
+            "answer": f"Keep answer {i:02d}.",
+            "sort_order": str(i),
+            "enabled": "TRUE",
+            "tags": "clan_boss",
+        }
+        for i in range(1, 28)
+    ] + [
+        {
+            "category": "ARB",
+            "faq_key": "other",
+            "question": "Other?",
+            "answer": "Other answer.",
+            "sort_order": "99",
+            "enabled": "TRUE",
+            "tags": "great_hall",
+        }
+    ]
+    data = _data(faq=faq)
+    rows = service._faq_rows_for_category("ARB", data)
+    view = service.ProgressGuideFAQPickerView("ARB", data, rows, page=1)
+    tag_select = next(
+        item
+        for item in view.children
+        if isinstance(item, service.ProgressGuideFAQTagSelect)
+    )
+    clan_key = next(
+        option.value for option in tag_select.options if option.label == "Clan Boss"
+    )
+    monkeypatch.setattr(
+        service.ProgressGuideFAQTagSelect, "values", property(lambda _self: [clan_key])
+    )
+    interaction = FakeInteraction()
+
+    asyncio.run(tag_select.callback(interaction))
+
+    edit = interaction.response.edits[0]
+    assert "Filter: Clan Boss" in edit["embed"].description
+    assert "Page 1 / 2" in edit["embed"].description
+    filtered_view = edit["view"]
+    assert filtered_view.page == 0
+    faq_select = next(
+        item
+        for item in filtered_view.children
+        if isinstance(item, service.ProgressGuideFAQSelect)
+    )
+    assert len(faq_select.options) == 25
+    assert all(option.label.startswith("Keep") for option in faq_select.options)
+
+    all_select = next(
+        item
+        for item in filtered_view.children
+        if isinstance(item, service.ProgressGuideFAQTagSelect)
+    )
+    monkeypatch.setattr(
+        service.ProgressGuideFAQTagSelect, "values", property(lambda _self: ["__all__"])
+    )
+    second = FakeInteraction()
+    asyncio.run(all_select.callback(second))
+
+    restored = second.response.edits[0]
+    assert "Filter:" not in restored["embed"].description
+    assert len(restored["view"].filtered_rows) == 28
+
+
+def test_faq_page_preserves_tag_filter_and_selected_answer_scrubs_metadata(monkeypatch):
+    faq = [
+        {
+            "category": "ARB",
+            "faq_key": f"keep{i:02d}",
+            "question": f"Keep {i:02d}?",
+            "answer": f"Keep answer {i:02d}. https://example.com/hidden",
+            "sort_order": str(i),
+            "enabled": "TRUE",
+            "tags": "clan_boss",
+        }
+        for i in range(1, 27)
+    ]
+    data = _data(faq=faq)
+    rows = service._faq_rows_for_category("ARB", data)
+    tag_key = service._faq_tag_key("clan_boss")
+    view = service.ProgressGuideFAQPickerView("ARB", data, rows, selected_tag=tag_key)
+    next_button = next(
+        item
+        for item in view.children
+        if isinstance(item, service.ProgressGuideFAQPageButton) and item.label == "Next"
+    )
+    interaction = FakeInteraction()
+
+    asyncio.run(next_button.callback(interaction))
+
+    edit = interaction.response.edits[0]
+    assert "Filter: Clan Boss" in edit["embed"].description
+    assert "Page 2 / 2" in edit["embed"].description
+    assert edit["view"].selected_tag == tag_key
+
+    select = next(
+        item
+        for item in edit["view"].children
+        if isinstance(item, service.ProgressGuideFAQSelect)
+    )
+    monkeypatch.setattr(
+        service.ProgressGuideFAQSelect, "values", property(lambda _self: ["keep26"])
+    )
+    answer_interaction = FakeInteraction()
+    asyncio.run(select.callback(answer_interaction))
+
+    answer = answer_interaction.response.edits[0]
+    assert "**Keep 26?**" in answer["embed"].description
+    assert "Keep answer 26." in answer["embed"].description
+    assert "example.com" not in answer["embed"].description
+    assert "keep26" not in answer["embed"].description
+    assert "clan_boss" not in answer["embed"].description
+    assert any(
+        isinstance(item, service.ProgressGuideFAQTagSelect)
+        for item in answer["view"].children
+    )
+
+
+def test_faq_tag_select_caps_options_at_discord_limit():
+    faq = [
+        {
+            "category": "ARB",
+            "faq_key": f"q{i:02d}",
+            "question": f"Question {i:02d}?",
+            "answer": f"Answer {i:02d}.",
+            "sort_order": str(i),
+            "enabled": "TRUE",
+            "tags": f"tag_{i:02d}",
+        }
+        for i in range(1, 31)
+    ]
+    data = _data(faq=faq)
+    view = service.ProgressGuideFAQPickerView(
+        "ARB", data, service._faq_rows_for_category("ARB", data)
+    )
+    tag_select = next(
+        item
+        for item in view.children
+        if isinstance(item, service.ProgressGuideFAQTagSelect)
+    )
+
+    assert len(tag_select.options) == 25
+    assert tag_select.options[0].label == "All questions"
+
+
 def test_faq_button_sends_clean_error_embed_when_loading_fails(monkeypatch):
     async def load_data():
         raise RuntimeError("sheets unavailable")
