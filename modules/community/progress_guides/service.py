@@ -251,6 +251,7 @@ class MissionRow:
     difficulty_note: str
     guide_priority: str
     retroactive_note: str
+    prep_window: str
 
     def __init__(
         self,
@@ -266,6 +267,7 @@ class MissionRow:
         difficulty_note: str = "",
         guide_priority: str = "",
         retroactive_note: str = "",
+        prep_window: str = "",
     ) -> None:
         self.sequence_number = sequence_number
         self.step_index = step_index if step_index is not None else sequence_number
@@ -279,6 +281,7 @@ class MissionRow:
         self.difficulty_note = difficulty_note
         self.guide_priority = guide_priority
         self.retroactive_note = retroactive_note
+        self.prep_window = prep_window
 
     @property
     def number(self) -> int:
@@ -476,6 +479,7 @@ def _parse_mission_rows(rows: Sequence[Mapping[str, object]]) -> list[MissionRow
                 difficulty_note=_strip_visible_urls(row.get("difficulty_note")),
                 guide_priority=_text(row.get("guide_priority")),
                 retroactive_note=_strip_visible_urls(row.get("retroactive_note")),
+                prep_window=_text(row.get("prep_window")),
             )
         )
     return parsed
@@ -1247,27 +1251,108 @@ def _dedupe(values: Sequence[str], limit: int = 8) -> list[str]:
     return result
 
 
+_RAW_PLAN_TOKENS = {
+    "normal",
+    "medium",
+    "high",
+    "wall",
+    "major_wall",
+    "critical",
+}
+_PREP_WINDOW_RANK = {
+    "critical": 6,
+    "major_wall": 5,
+    "major wall": 5,
+    "wall": 4,
+    "high": 3,
+    "medium": 2,
+    "normal": 1,
+}
+
+
+def _normalized_line(value: object) -> str:
+    clean = _strip_visible_urls(value)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    if not clean:
+        return ""
+    folded = clean.casefold()
+    if folded in _RAW_PLAN_TOKENS:
+        return ""
+    if re.fullmatch(r"[a-z0-9]+(?:_[a-z0-9]+)+", clean):
+        return ""
+    return clean
+
+
+def _append_unique_line(lines: list[str], value: object) -> None:
+    clean = _normalized_line(value)
+    if not clean:
+        return
+    key = clean.casefold()
+    if key not in {line.casefold() for line in lines}:
+        lines.append(clean)
+
+
+def _mission_plan_label(current_title: str, mission: MissionRow) -> str:
+    text = _limit_text(mission.text, 140)
+    if (mission.title or "Missions") == (current_title or "Missions"):
+        return f"{mission.step_index}: {text}"
+    return f"{mission.title or 'Missions'}, {mission.step_index}: {text}"
+
+
+def _limited_bullets(
+    lines: Sequence[str], limit: int, overflow_label: str | None = None
+) -> str:
+    visible = [line for line in lines if line]
+    selected = visible[:limit]
+    bullets = [f"- {line}" for line in selected]
+    overflow = len(visible) - len(selected)
+    if overflow > 0 and overflow_label:
+        bullets.append(f"- +{overflow} {overflow_label}{'' if overflow == 1 else 's'}.")
+    result: list[str] = []
+    used = 0
+    for bullet in bullets:
+        extra = len(bullet) + (1 if result else 0)
+        if used + extra > _FIELD_LIMIT:
+            break
+        result.append(bullet)
+        used += extra
+    return "\n".join(result)
+
+
+def _prep_window_rank(value: object) -> int:
+    raw_text = _text(value)
+    if not raw_text:
+        return 0
+    try:
+        return int(float(raw_text))
+    except ValueError:
+        pass
+    raw = raw_text.casefold().replace("-", "_")
+    return _PREP_WINDOW_RANK.get(raw, 0)
+
+
+def _plan_warning_candidates(upcoming_missions: Sequence[MissionRow]) -> list[str]:
+    candidates: list[tuple[int, int, str]] = []
+    for order, mission in enumerate(upcoming_missions):
+        clean = _normalized_line(mission.difficulty_note)
+        if clean:
+            candidates.append((-_prep_window_rank(mission.prep_window), order, clean))
+    lines: list[str] = []
+    for _rank, _order, line in sorted(candidates):
+        _append_unique_line(lines, line)
+        if len(lines) >= 2:
+            break
+    return lines
+
+
 def _display_resource_tags(value: object, limit: int = 8) -> list[str]:
     parts = re.split(r"[,;]", _text(value))
-    seen: set[str] = set()
     result: list[str] = []
     for part in parts:
-        clean = part.strip().replace("_", " ")
-        clean = re.sub(r"\s+", " ", clean).strip()
-        key = clean.casefold()
-        if not clean or key in seen:
-            continue
-        seen.add(key)
-        result.append(clean)
+        _append_unique_line(result, part.strip().replace("_", " "))
         if len(result) >= limit:
             break
     return result
-
-
-def _plan_line(mission: MissionRow) -> str:
-    title = mission.title or "Missions"
-    text = _limit_text(mission.text, 140)
-    return f"- {title}, {mission.step_index}: {text}"
 
 
 def build_plan_ahead_embed(
@@ -1323,68 +1408,71 @@ def build_plan_ahead_embed(
         description=_embed_description(description),
         color=discord.Color.blurple(),
     )
+    current_title = current.title or "Missions"
     if upcoming and post.plan_ahead_upcoming_field_title:
-        embed.add_field(
-            name=_embed_title(post.plan_ahead_upcoming_field_title),
-            value=_limit_text("\n".join(_plan_line(m) for m in upcoming), _FIELD_LIMIT),
-            inline=False,
-        )
-    save_values: list[str] = []
-    for m in upcoming:
-        save_values.append(m.tips)
-        save_values.extend(_display_resource_tags(m.resource_tags))
+        upcoming_lines = [_mission_plan_label(current_title, m) for m in upcoming]
+        value = _limited_bullets(upcoming_lines, lookahead_count)
+        if value:
+            embed.add_field(
+                name=_embed_title(post.plan_ahead_upcoming_field_title),
+                value=value,
+                inline=False,
+            )
+
     if post.plan_ahead_save_field_title:
-        lines = _dedupe(save_values)
-        if lines:
+        save_lines: list[str] = []
+        for m in upcoming:
+            if _normalized_line(m.tips):
+                _append_unique_line(save_lines, m.tips)
+            else:
+                for resource_line in _display_resource_tags(m.resource_tags):
+                    _append_unique_line(save_lines, resource_line)
+        value = _limited_bullets(save_lines, 4)
+        if value:
             embed.add_field(
                 name=_embed_title(post.plan_ahead_save_field_title),
-                value=_limit_text("\n".join(f"- {v}" for v in lines), _FIELD_LIMIT),
+                value=value,
                 inline=False,
             )
-    avoid_values: list[str] = []
-    for m in upcoming:
-        avoid_values.extend([m.avoid_doing, m.retroactive_note])
+
     if post.plan_ahead_avoid_field_title:
-        lines = _dedupe(avoid_values)
-        if lines:
+        avoid_lines: list[str] = []
+        for m in upcoming:
+            _append_unique_line(avoid_lines, m.avoid_doing)
+        value = _limited_bullets(avoid_lines, 3)
+        if value:
             embed.add_field(
                 name=_embed_title(post.plan_ahead_avoid_field_title),
-                value=_limit_text("\n".join(f"- {v}" for v in lines), _FIELD_LIMIT),
+                value=value,
                 inline=False,
             )
-    gate_values = [
-        f"{m.title or 'Missions'}, {m.step_index}: {m.retroactive_note or m.text}"
-        for m in upcoming
-        if m.time_gate or m.retroactive_note
-    ]
+
     if post.plan_ahead_time_gate_field_title:
-        lines = _dedupe(gate_values)
-        if lines:
+        timing_lines: list[str] = []
+        for m in upcoming:
+            note = _normalized_line(m.retroactive_note)
+            if not note:
+                continue
+            prefix = (
+                f"{m.step_index}"
+                if (m.title or "Missions") == current_title
+                else f"{m.title or 'Missions'}, {m.step_index}"
+            )
+            _append_unique_line(timing_lines, f"{prefix}: {note}")
+        value = _limited_bullets(timing_lines, 3, "more timing note")
+        if value:
             embed.add_field(
                 name=_embed_title(post.plan_ahead_time_gate_field_title),
-                value=_limit_text("\n".join(f"- {v}" for v in lines), _FIELD_LIMIT),
+                value=value,
                 inline=False,
             )
-    warning_values: list[str] = []
-    priority_words = ("critical", "high", "major_wall", "major wall", "wall")
-    for m in sorted(
-        upcoming,
-        key=lambda m: (
-            0
-            if any(
-                w in m.guide_priority.casefold() or w in m.difficulty_note.casefold()
-                for w in priority_words
-            )
-            else 1
-        ),
-    ):
-        warning_values.extend([m.difficulty_note, m.guide_priority])
+
     if post.plan_ahead_warning_field_title:
-        lines = _dedupe(warning_values)
-        if lines:
+        value = _limited_bullets(_plan_warning_candidates(upcoming), 2)
+        if value:
             embed.add_field(
                 name=_embed_title(post.plan_ahead_warning_field_title),
-                value=_limit_text("\n".join(f"- {v}" for v in lines), _FIELD_LIMIT),
+                value=value,
                 inline=False,
             )
     if not embed.fields and post.plan_ahead_no_items_description:
@@ -1443,15 +1531,25 @@ class PlanAheadButton(discord.ui.Button):
                 extra={
                     "category": self.category,
                     "user_id": getattr(getattr(interaction, "user", None), "id", None),
-                    "guild_id": getattr(getattr(interaction, "guild", None), "id", None),
-                    "channel_id": getattr(getattr(interaction, "channel", None), "id", None),
+                    "guild_id": getattr(
+                        getattr(interaction, "guild", None), "id", None
+                    ),
+                    "channel_id": getattr(
+                        getattr(interaction, "channel", None), "id", None
+                    ),
                     "exc_type": type(exc).__name__,
                     "exc_message": str(exc),
                     "post_found": post is not None,
                     "state_found": state is not None,
-                    "current_mission_key": _text(state.get("current_mission_key")) if state else "",
-                    "current_step_index": _text(state.get("current_step_index")) if state else "",
-                    "missions_loaded_count": len(missions) if missions is not None else 0,
+                    "current_mission_key": (
+                        _text(state.get("current_mission_key")) if state else ""
+                    ),
+                    "current_step_index": (
+                        _text(state.get("current_step_index")) if state else ""
+                    ),
+                    "missions_loaded_count": (
+                        len(missions) if missions is not None else 0
+                    ),
                     "category_info_found": category_info is not None,
                 },
             )
@@ -1661,7 +1759,9 @@ class ProgressChapterPickerView(discord.ui.View):
             // _PICKER_OPTIONS_PER_PAGE,
         )
         if total_pages > 1:
-            self.add_item(ProgressPickerPageButton("◀️", page - 1, page <= 0, "chapter"))
+            self.add_item(
+                ProgressPickerPageButton("◀️", page - 1, page <= 0, "chapter")
+            )
             self.add_item(
                 ProgressPickerPageButton(
                     "▶️", page + 1, page >= total_pages - 1, "chapter"
@@ -1697,7 +1797,9 @@ class ProgressMissionPickerView(discord.ui.View):
             // _PICKER_OPTIONS_PER_PAGE,
         )
         if total_pages > 1:
-            self.add_item(ProgressPickerPageButton("◀️", page - 1, page <= 0, "mission"))
+            self.add_item(
+                ProgressPickerPageButton("◀️", page - 1, page <= 0, "mission")
+            )
             self.add_item(
                 ProgressPickerPageButton(
                     "▶️", page + 1, page >= total_pages - 1, "mission"
