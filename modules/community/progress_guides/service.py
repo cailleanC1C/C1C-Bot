@@ -1427,11 +1427,11 @@ class PlanAheadButton(discord.ui.Button):
                 if state is None and post.my_progress_set_button_label
                 else None
             )
-            await interaction.followup.send(
-                embed=build_plan_ahead_embed(post, category_info, state, missions),
-                view=view,
-                ephemeral=True,
-            )
+            embed = build_plan_ahead_embed(post, category_info, state, missions)
+            send_kwargs: dict[str, Any] = {"embed": embed, "ephemeral": True}
+            if view is not None:
+                send_kwargs["view"] = view
+            await interaction.followup.send(**send_kwargs)
         except Exception as exc:
             if _is_quota_failure(exc):
                 await interaction.followup.send(
