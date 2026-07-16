@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 import re
@@ -49,6 +50,7 @@ _DATA_CACHE: "ProgressGuideData | None" = None
 _DATA_CACHE_LOCK = asyncio.Lock()
 _MISSION_CACHE: dict[str, list["MissionRow"]] = {}
 _MISSION_CACHE_LOCKS: dict[str, asyncio.Lock] = {}
+log = logging.getLogger("c1c.community.progress_guides.service")
 
 
 def _text(value: object) -> str:
@@ -1295,7 +1297,18 @@ class PlanAheadButton(discord.ui.Button):
                     embed=_progress_unavailable_embed(post), ephemeral=True
                 )
                 return
-            raise
+            log.exception(
+                "plan ahead callback failed",
+                extra={
+                    "category": self.category,
+                    "user_id": getattr(getattr(interaction, "user", None), "id", None),
+                    "guild_id": getattr(getattr(interaction, "guild", None), "id", None),
+                    "channel_id": getattr(getattr(interaction, "channel", None), "id", None),
+                },
+            )
+            await interaction.followup.send(
+                embed=_progress_unavailable_embed(post), ephemeral=True
+            )
 
 
 class PlanAheadNoProgressView(discord.ui.View):
