@@ -28,6 +28,15 @@ _ASSETS_KEY = "PROGRESS_ASSETS_TAB"
 _CATEGORIES_KEY = "PROGRESS_CATEGORIES_TAB"
 _USER_STATE_KEY = "PROGRESS_USER_STATE_TAB"
 _MESSAGE_ID_COLUMN = "guide_panel_message_id"
+_GUIDE_POST_URL_COLUMN = "guide_post_url"
+_HELP_MESSAGE_ID_COLUMN = "help_panel_message_id"
+_HELP_POST_URL_COLUMN = "help_post_url"
+_HELP_PANEL_COLUMNS = (
+    "help_panel_title",
+    "help_panel_description",
+    "help_panel_footer",
+    "help_back_button_label",
+)
 _EMBED_LIMIT = 3900
 _EMBED_TITLE_LIMIT = 256
 _EMBED_DESCRIPTION_LIMIT = 4096
@@ -136,7 +145,15 @@ class ForumPost:
     guide_channel_id: int | None
     guide_thread_id: int | None
     guide_panel_message_id: int | None
+    guide_post_url: str
+    help_channel_id: int | None
+    help_thread_id: int | None
     help_post_url: str
+    help_panel_message_id: int | None
+    help_panel_title: str
+    help_panel_description: str
+    help_panel_footer: str
+    help_back_button_label: str
     guide_asset_key: str
     questions_enabled: bool
     sort_order: float
@@ -229,7 +246,15 @@ class ForumPost:
             guide_channel_id=_int_or_none(row.get("guide_channel_id")),
             guide_thread_id=_int_or_none(row.get("guide_thread_id")),
             guide_panel_message_id=_int_or_none(row.get("guide_panel_message_id")),
+            guide_post_url=_text(row.get("guide_post_url")),
+            help_channel_id=_int_or_none(row.get("help_channel_id")),
+            help_thread_id=_int_or_none(row.get("help_thread_id")),
             help_post_url=_text(row.get("help_post_url")),
+            help_panel_message_id=_int_or_none(row.get("help_panel_message_id")),
+            help_panel_title=_text(row.get("help_panel_title")),
+            help_panel_description=_text(row.get("help_panel_description")),
+            help_panel_footer=_text(row.get("help_panel_footer")),
+            help_back_button_label=_text(row.get("help_back_button_label")),
             guide_asset_key=_text(row.get("guide_asset_key")),
             questions_enabled=_truthy(row.get("questions_enabled")),
             sort_order=_sort_num(row.get("sort_order")),
@@ -2064,6 +2089,47 @@ class ProgressGuideFAQPersistentView(discord.ui.View):
             self.add_item(ProgressGuideFAQButton(category))
 
 
+def build_help_embed(post: ForumPost) -> discord.Embed | None:
+    if not (post.help_panel_title or post.help_panel_description):
+        return None
+    embed = discord.Embed(
+        title=_embed_title(post.help_panel_title),
+        description=_embed_description(post.help_panel_description),
+        color=discord.Color.blurple(),
+    )
+    if post.help_panel_footer:
+        embed.set_footer(text=_limit_text(post.help_panel_footer, 2048))
+    return embed
+
+
+def build_help_view(post: ForumPost, data: ProgressGuideData) -> discord.ui.View | None:
+    view = discord.ui.View(timeout=None)
+    added = False
+    if data.faq_by_category.get(post.category):
+        view.add_item(
+            ProgressGuideFAQButton(post.category, post.faq_button_label or "FAQ")
+        )
+        added = True
+    if _supports_missions(post):
+        view.add_item(
+            ProgressGuideMissionButton(
+                post.category, post.mission_list_button_label or "Mission List"
+            )
+        )
+        added = True
+    guide_url = _safe_url(post.guide_post_url)
+    if guide_url:
+        view.add_item(
+            discord.ui.Button(
+                label=_button_label(post.help_back_button_label or "Back"),
+                style=discord.ButtonStyle.link,
+                url=guide_url,
+            )
+        )
+        added = True
+    return view if added else None
+
+
 def build_guide_embed(post: ForumPost, data: ProgressGuideData) -> discord.Embed | None:
     guide_rows = data.guides_by_category.get(post.category, [])
     if not guide_rows:
@@ -2133,28 +2199,13 @@ def build_guide_view(
 
 
 async def publish_or_refresh(bot: commands.Bot, *, refresh: bool) -> PublishSummary:
-    """Publish or refresh progress guide panels within a fixed Sheets budget.
-
-    Read budget per command run:
-    - Config is read through the existing milestones config path.
-    - ProgressForumPosts, ProgressGuides, ProgressFAQ, and ProgressAssets are read
-      once by :func:`load_progress_guide_data`.
-    - Worksheet/header reads are lazy and only allowed when
-      ``guide_panel_message_id`` must actually be written back.
-
-    Write budget per command run:
-    - ``guide_panel_message_id`` is written only after a new panel message is
-      created or a stored/deleted message is recreated.
-    - Refreshing an existing stored message only edits Discord and must not read
-      worksheet/header data or write back to Sheets.
-    """
+    """Publish or refresh progress guide and managed help panels."""
 
     data = await load_progress_guide_data()
     clear_mission_cache()
     set_progress_guide_cache(data)
     sheet_id = get_milestones_sheet_id().strip()
-    worksheet = None
-    message_id_col: str | None = None
+    sheet_state = _ForumPostsSheetState(sheet_id, data.forum_posts_tab)
     summary = PublishSummary()
     for post in data.posts:
         label = post.label or post.category or f"row {post.row_number}"
@@ -2173,49 +2224,175 @@ async def publish_or_refresh(bot: commands.Bot, *, refresh: bool) -> PublishSumm
         if channel is None:
             summary.failures.append(f"{label}: invalid guide destination {target_id}")
             continue
-        view = build_guide_view(post, data)
+        initial_help_post_url = post.help_post_url
         try:
+            message = None
+            guide_created = False
             if post.guide_panel_message_id:
-                message = None
-                try:
-                    message = await channel.fetch_message(post.guide_panel_message_id)  # type: ignore[attr-defined]
-                except discord.NotFound:
-                    message = None
-                except Exception:
-                    raise
-                if message is not None:
-                    await message.edit(embed=embed, view=view)
-                    summary.refreshed += 1
-                    continue
-                if not refresh:
+                message = await _fetch_message_or_none(
+                    channel, post.guide_panel_message_id
+                )
+                if message is None and not refresh:
                     summary.skipped.append(
                         f"{label}: stored panel missing; run refresh to recreate"
                     )
                     continue
-            message = await channel.send(embed=embed, view=view)  # type: ignore[attr-defined]
-            try:
-                if worksheet is None or message_id_col is None:
-                    worksheet = await aget_worksheet(sheet_id, data.forum_posts_tab)
-                    header = await _load_header(sheet_id, data.forum_posts_tab)
-                    message_id_col = _column_label(
-                        _header_index(header, _MESSAGE_ID_COLUMN)
+            if message is None:
+                message = await channel.send(embed=embed, view=build_guide_view(post, data))  # type: ignore[attr-defined]
+                guide_created = True
+                try:
+                    await sheet_state.write_if_changed(
+                        post.row_number,
+                        _MESSAGE_ID_COLUMN,
+                        str(message.id),
+                        post.guide_panel_message_id,
                     )
-                await acall_with_backoff(
-                    worksheet.update,
-                    f"{message_id_col}{post.row_number}",
-                    [[str(message.id)]],
-                    attempts=1,
-                    value_input_option="RAW",
+                    post.guide_panel_message_id = message.id
+                except Exception:
+                    await _delete_untracked_message(message)
+                    raise
+            jump_url = getattr(message, "jump_url", "")
+            if jump_url:
+                await sheet_state.write_if_changed(
+                    post.row_number,
+                    _GUIDE_POST_URL_COLUMN,
+                    jump_url,
+                    post.guide_post_url,
                 )
-            except Exception:
-                await _delete_untracked_message(message)
-                raise
-            summary.created += 1
+                post.guide_post_url = jump_url
+            await _publish_or_refresh_help_post(
+                bot, post, data, sheet_state, summary, label
+            )
+            final_view = build_guide_view(post, data)
+            if guide_created:
+                if post.help_post_url != initial_help_post_url:
+                    await message.edit(embed=embed, view=final_view)
+                summary.created += 1
+            else:
+                await message.edit(embed=embed, view=final_view)
+                summary.refreshed += 1
         except Exception as exc:
             if is_rate_limited_error(exc):
                 raise
             summary.failures.append(f"{label}: {type(exc).__name__}: {exc}")
     return summary
+
+
+async def _publish_or_refresh_help_post(
+    bot: commands.Bot,
+    post: ForumPost,
+    data: ProgressGuideData,
+    sheet_state: "_ForumPostsSheetState",
+    summary: PublishSummary,
+    label: str,
+) -> None:
+    target_id = post.help_thread_id or post.help_channel_id
+    if target_id is None:
+        summary.skipped.append(f"{label}: missing help destination")
+        return
+    embed = build_help_embed(post)
+    if embed is None:
+        summary.skipped.append(f"{label}: missing help panel copy")
+        return
+    channel = await _resolve_messageable(bot, target_id)
+    if channel is None:
+        summary.failures.append(f"{label}: invalid help destination {target_id}")
+        return
+    view = build_help_view(post, data)
+    try:
+        if post.help_panel_message_id:
+            message = await _fetch_message_or_none(channel, post.help_panel_message_id)
+            if message is not None:
+                await message.edit(embed=embed, view=view, content=None)
+                jump_url = getattr(message, "jump_url", "")
+                if jump_url:
+                    await sheet_state.write_if_changed(
+                        post.row_number,
+                        _HELP_POST_URL_COLUMN,
+                        jump_url,
+                        post.help_post_url,
+                    )
+                    post.help_post_url = jump_url
+                summary.refreshed += 1
+                return
+        message = await channel.send(embed=embed, view=view)  # type: ignore[attr-defined]
+        jump_url = getattr(message, "jump_url", "")
+        try:
+            await sheet_state.write_if_changed(
+                post.row_number,
+                _HELP_MESSAGE_ID_COLUMN,
+                str(message.id),
+                post.help_panel_message_id,
+            )
+            if jump_url:
+                await sheet_state.write_if_changed(
+                    post.row_number, _HELP_POST_URL_COLUMN, jump_url, post.help_post_url
+                )
+                post.help_post_url = jump_url
+        except Exception:
+            await _delete_untracked_message(message)
+            raise
+        summary.created += 1
+    except Exception as exc:
+        if is_rate_limited_error(exc):
+            raise
+        summary.failures.append(f"{label} help: {type(exc).__name__}: {exc}")
+
+
+async def _fetch_message_or_none(
+    channel: discord.abc.Messageable, message_id: int
+) -> discord.Message | None:
+    try:
+        return await channel.fetch_message(message_id)  # type: ignore[attr-defined]
+    except discord.NotFound:
+        return None
+
+
+class _ForumPostsSheetState:
+    def __init__(self, sheet_id: str, tab: str) -> None:
+        self.sheet_id = sheet_id
+        self.tab = tab
+        self.worksheet = None
+        self.header: list[str] | None = None
+
+    async def _ensure_loaded(self) -> None:
+        if self.worksheet is None:
+            self.worksheet = await aget_worksheet(self.sheet_id, self.tab)
+        if self.header is None:
+            self.header = await _load_header(self.sheet_id, self.tab)
+
+    async def ensure_help_columns(self) -> None:
+        await self._ensure_loaded()
+        assert self.header is not None
+        missing = [col for col in _HELP_PANEL_COLUMNS if col not in self.header]
+        if not missing:
+            return
+        self.header.extend(missing)
+        assert self.worksheet is not None
+        end_col = _column_label(len(self.header) - 1)
+        await acall_with_backoff(
+            self.worksheet.update,
+            f"A1:{end_col}1",
+            [self.header],
+            attempts=1,
+            value_input_option="RAW",
+        )
+
+    async def write_if_changed(
+        self, row_number: int, column: str, value: str, current: object
+    ) -> None:
+        if _text(current) == value:
+            return
+        await self.ensure_help_columns()
+        assert self.header is not None and self.worksheet is not None
+        col = _column_label(_header_index(self.header, column))
+        await acall_with_backoff(
+            self.worksheet.update,
+            f"{col}{row_number}",
+            [[value]],
+            attempts=1,
+            value_input_option="RAW",
+        )
 
 
 async def _delete_untracked_message(message: discord.Message) -> None:
