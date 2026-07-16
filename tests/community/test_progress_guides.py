@@ -2287,6 +2287,38 @@ def test_plan_ahead_saved_progress_builds_fields_from_future_missions(monkeypatc
     assert "Hidden future" not in rendered
 
 
+def test_plan_ahead_saved_progress_does_not_pass_none_view(monkeypatch):
+    data = _plan_data()
+    service.set_progress_guide_cache(data)
+    state = {
+        "user_id": "123456",
+        "category": "ARB",
+        "current_step_index": "99",
+        "current_mission_key": "current-key",
+        "status": "in_progress",
+    }
+
+    async def category(_category):
+        return service.ProgressCategory("ARB", "Arena Rush Basics", 4, "TAB")
+
+    async def rows():
+        return "ProgressUserState", [state]
+
+    async def missions(_category):
+        return _plan_missions()
+
+    monkeypatch.setattr(service, "_progress_category", category)
+    monkeypatch.setattr(service, "_user_state_rows", rows)
+    monkeypatch.setattr(service, "get_or_load_missions", missions)
+    interaction = FakeInteraction()
+
+    asyncio.run(service.PlanAheadButton("ARB", "Plan Ahead").callback(interaction))
+
+    sent = interaction.followup.sent[0]
+    assert sent["ephemeral"] is True
+    assert "view" not in sent
+    assert sent["embed"].title == "Plan Ahead Title"
+
 
 def test_plan_ahead_non_quota_failure_after_defer_sends_fallback_logs_and_does_not_reraise(monkeypatch, caplog):
     data = _plan_data()
