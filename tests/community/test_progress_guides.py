@@ -2310,6 +2310,87 @@ def test_plan_ahead_non_quota_failure_after_defer_sends_fallback_logs_and_does_n
     assert record.exc_info is not None
     assert record.category == "ARB"
     assert record.user_id == 123456
+    assert record.guild_id is None
+    assert record.channel_id is None
+    assert record.exc_type == "RuntimeError"
+    assert record.exc_message == "raw google schema boom current_mission_key"
+    assert record.post_found is True
+    assert record.state_found is False
+    assert record.current_mission_key == ""
+    assert record.current_step_index == ""
+    assert record.missions_loaded_count == 0
+    assert record.category_info_found is False
+
+
+def test_plan_ahead_failure_after_state_and_missions_logs_diagnostics(monkeypatch, caplog):
+    data = _plan_data()
+    service.set_progress_guide_cache(data)
+    state = {
+        "user_id": "123456",
+        "category": "ARB",
+        "current_step_index": "40",
+        "current_mission_key": "ram_100",
+        "status": "in_progress",
+    }
+
+    async def category(_category):
+        return service.ProgressCategory("ARB", "Arena Rush Basics", 4, "TAB")
+
+    async def rows():
+        return "ProgressUserState", [state]
+
+    async def missions(_category):
+        return _plan_missions()
+
+    def broken_embed(*_args, **_kwargs):
+        raise ValueError("embed render boom")
+
+    monkeypatch.setattr(service, "_progress_category", category)
+    monkeypatch.setattr(service, "_user_state_rows", rows)
+    monkeypatch.setattr(service, "get_or_load_missions", missions)
+    monkeypatch.setattr(service, "build_plan_ahead_embed", broken_embed)
+    interaction = FakeInteraction()
+
+    with caplog.at_level("ERROR", logger="c1c.community.progress_guides.service"):
+        asyncio.run(service.PlanAheadButton("ARB", "Plan Ahead").callback(interaction))
+
+    sent = interaction.followup.sent[0]
+    assert sent["embed"].description == "Sheet says progress is temporarily unavailable."
+    assert "embed render boom" not in sent["embed"].description
+    record = next(r for r in caplog.records if r.message == "plan ahead callback failed")
+    assert record.exc_type == "ValueError"
+    assert record.exc_message == "embed render boom"
+    assert record.current_mission_key == "ram_100"
+    assert record.current_step_index == "40"
+    assert record.missions_loaded_count == 4
+    assert record.category_info_found is True
+    assert record.state_found is True
+
+
+def test_plan_ahead_failure_before_context_assignment_logs_safe_defaults(monkeypatch, caplog):
+    service.set_progress_guide_cache(None)
+
+    async def data():
+        raise LookupError("data load failed")
+
+    monkeypatch.setattr(service, "get_or_load_progress_guide_data", data)
+    interaction = FakeInteraction()
+
+    with caplog.at_level("ERROR", logger="c1c.community.progress_guides.service"):
+        asyncio.run(service.PlanAheadButton("ARB", "Plan Ahead").callback(interaction))
+
+    sent = interaction.followup.sent[0]
+    assert sent["embed"].description == "Unavailable."
+    assert "data load failed" not in sent["embed"].description
+    record = next(r for r in caplog.records if r.message == "plan ahead callback failed")
+    assert record.exc_type == "LookupError"
+    assert record.exc_message == "data load failed"
+    assert record.post_found is False
+    assert record.state_found is False
+    assert record.current_mission_key == ""
+    assert record.current_step_index == ""
+    assert record.missions_loaded_count == 0
+    assert record.category_info_found is False
 
 
 def test_plan_ahead_quota_failure_keeps_clean_unavailable_embed(monkeypatch):
