@@ -540,8 +540,167 @@ def test_faq_button_opens_faq_content_from_progress_faq(monkeypatch):
     embed = sent["embed"]
     assert embed.title == "🏟️ Arena Rush Questions"
     assert embed.description == "Sheet-authored FAQ intro."
-    assert [field.name for field in embed.fields] == ["First?", "Second?"]
-    assert "source.example" not in embed.fields[0].value
+    assert embed.fields == []
+    view = sent["view"]
+    select = next(
+        item
+        for item in view.children
+        if isinstance(item, service.ProgressGuideFAQSelect)
+    )
+    assert [option.label for option in select.options] == ["First?", "Second?"]
+    assert [option.value for option in select.options] == ["idx:0", "idx:1"]
+
+
+def test_faq_picker_uses_faq_key_values_and_selects_single_answer(monkeypatch):
+    data = _data(
+        faq=[
+            {
+                "category": "ARB",
+                "faq_key": "second_key",
+                "question": "Second?",
+                "answer": "Second answer.",
+                "sort_order": "2",
+                "enabled": "TRUE",
+                "tags": "internal",
+            },
+            {
+                "category": "ARB",
+                "faq_key": "first_key",
+                "question": "📌 First?",
+                "answer": "First answer. https://source.example/hidden",
+                "sort_order": "1",
+                "enabled": "TRUE",
+            },
+            {
+                "category": "ARB",
+                "faq_key": "disabled_key",
+                "question": "Disabled?",
+                "answer": "Hidden.",
+                "sort_order": "0",
+                "enabled": "FALSE",
+            },
+        ]
+    )
+    view = service.ProgressGuideFAQPickerView(
+        "ARB", data, service._faq_rows_for_category("ARB", data)
+    )
+    select = next(
+        item
+        for item in view.children
+        if isinstance(item, service.ProgressGuideFAQSelect)
+    )
+    assert [option.label for option in select.options] == ["📌 First?", "Second?"]
+    assert [option.value for option in select.options] == ["first_key", "second_key"]
+    monkeypatch.setattr(
+        service.ProgressGuideFAQSelect, "values", property(lambda _self: ["first_key"])
+    )
+    interaction = FakeInteraction()
+
+    asyncio.run(select.callback(interaction))
+
+    edit = interaction.response.edits[0]
+    assert edit["embed"].title == "🏟️ Arena Rush Questions"
+    assert "**📌 First?**" in edit["embed"].description
+    assert "First answer." in edit["embed"].description
+    assert "source.example" not in edit["embed"].description
+    assert "first_key" not in edit["embed"].description
+    assert "internal" not in edit["embed"].description
+    assert any(
+        isinstance(item, service.ProgressGuideFAQSelect)
+        for item in edit["view"].children
+    )
+
+
+def test_faq_picker_paginates_and_page_change_resets_to_intro():
+    faq = [
+        {
+            "category": "ARB",
+            "faq_key": f"q{i:02d}",
+            "question": f"Question {i:02d}?",
+            "answer": f"Answer {i:02d}.",
+            "sort_order": str(i),
+            "enabled": "TRUE",
+        }
+        for i in range(1, 27)
+    ]
+    data = _data(faq=faq)
+    rows = service._faq_rows_for_category("ARB", data)
+    view = service.ProgressGuideFAQPickerView("ARB", data, rows)
+    embed = service.build_faq_picker_embed("ARB", data, rows, page=0)
+
+    assert "Page 1 / 2" in embed.description
+    buttons = [
+        item
+        for item in view.children
+        if isinstance(item, service.ProgressGuideFAQPageButton)
+    ]
+    assert [(button.label, button.disabled) for button in buttons] == [
+        ("Previous", True),
+        ("Next", False),
+    ]
+    select = next(
+        item
+        for item in view.children
+        if isinstance(item, service.ProgressGuideFAQSelect)
+    )
+    assert len(select.options) == 25
+    assert select.options[0].label == "Question 01?"
+    assert select.options[-1].label == "Question 25?"
+
+    interaction = FakeInteraction()
+    asyncio.run(buttons[1].callback(interaction))
+
+    edit = interaction.response.edits[0]
+    assert "Page 2 / 2" in edit["embed"].description
+    assert "Answer 26" not in edit["embed"].description
+    next_select = next(
+        item
+        for item in edit["view"].children
+        if isinstance(item, service.ProgressGuideFAQSelect)
+    )
+    assert [option.label for option in next_select.options] == ["Question 26?"]
+    next_buttons = [
+        item
+        for item in edit["view"].children
+        if isinstance(item, service.ProgressGuideFAQPageButton)
+    ]
+    assert [(button.label, button.disabled) for button in next_buttons] == [
+        ("Previous", False),
+        ("Next", True),
+    ]
+
+
+def test_faq_picker_does_not_show_paging_for_twenty_five_rows():
+    data = _data(
+        faq=[
+            {
+                "category": "ARB",
+                "question": f"Question {i}?",
+                "answer": f"Answer {i}.",
+                "sort_order": str(i),
+                "enabled": "TRUE",
+            }
+            for i in range(1, 26)
+        ]
+    )
+    rows = service._faq_rows_for_category("ARB", data)
+    view = service.ProgressGuideFAQPickerView("ARB", data, rows)
+    embed = service.build_faq_picker_embed("ARB", data, rows, page=0)
+
+    assert "Page" not in embed.description
+    assert not any(
+        isinstance(item, service.ProgressGuideFAQPageButton) for item in view.children
+    )
+
+
+def test_long_selected_faq_answer_is_shortened_with_note():
+    data = _data()
+    embed = service.build_selected_faq_embed(
+        "ARB", data, {"question": "Long?", "answer": "x" * 5000}
+    )
+
+    assert len(embed.description) <= service._EMBED_DESCRIPTION_LIMIT
+    assert "Answer shortened" in embed.description
 
 
 def test_faq_button_sends_clean_error_embed_when_loading_fails(monkeypatch):
