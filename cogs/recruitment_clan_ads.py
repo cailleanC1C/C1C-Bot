@@ -62,15 +62,16 @@ class ClanAdsCog(commands.Cog):
         if not custom_id or not str(custom_id).startswith("clan_ads:view_card:"):
             return
         tag = str(custom_id).rsplit(":", 1)[-1]
+        await interaction.response.defer(ephemeral=True, thinking=True)
         embeds, files, _state = await clan_ads.build_clan_card(
             self.bot, tag, interaction.guild
         )
         if not embeds:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Unknown clan tag `{tag}`.", ephemeral=True
             )
             return
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embeds=embeds, files=files, ephemeral=True
         )
 
