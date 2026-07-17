@@ -48,9 +48,20 @@ _MISSIONS_CUSTOM_ID_PREFIX = "progressguides:missions:"
 _MY_PROGRESS_CUSTOM_ID_PREFIX = "progressguides:myprogress:"
 _SET_PROGRESS_CUSTOM_ID_PREFIX = "progressguides:setprogress:"
 _PLAN_AHEAD_CUSTOM_ID_PREFIX = "progressguides:planahead:"
+_FW_STARS_CUSTOM_ID_PREFIX = "progressguides:fwstars:"
+_FW_PROGRESS_CUSTOM_ID_PREFIX = "progressguides:fwprogress:"
+_FW_GUIDE_CUSTOM_ID_PREFIX = "progressguides:fwguide:"
+_FW_CONDITIONS_CUSTOM_ID_PREFIX = "progressguides:fwconditions:"
 _HOW_TO_USE_CUSTOM_ID_PREFIX = "progressguides:howto:"
 _PERSISTENT_FAQ_CATEGORIES = ("ARB", "RAM", "MAR", "FW_N", "FW_H")
 _MISSION_CATEGORIES = ("ARB", "RAM", "MAR")
+_FACTION_WARS_CATEGORIES = ("FW_N", "FW_H")
+_FW_HARD_CATEGORY = "FW_H"
+_FW_USER_COUNTERS_KEY = "PROGRESS_USER_COUNTERS_TAB"
+_FW_FACTIONS_KEY = "PROGRESS_FW_FACTIONS_TAB"
+_FW_CHAMPION_GUIDES_KEY = "PROGRESS_FW_CHAMPION_GUIDES_TAB"
+_FW_HARD_STAGE_CONDITIONS_KEY = "PROGRESS_FW_HARD_STAGE_CONDITIONS_TAB"
+_FW_HARD_STAGE_SOLVERS_KEY = "PROGRESS_FW_HARD_STAGE_SOLVERS_TAB"
 _MISSIONS_PER_PAGE = 15
 _PICKER_OPTIONS_PER_PAGE = 25
 _FAQ_OPTIONS_PER_PAGE = 25
@@ -60,6 +71,8 @@ _DATA_CACHE: "ProgressGuideData | None" = None
 _DATA_CACHE_LOCK = asyncio.Lock()
 _MISSION_CACHE: dict[str, list["MissionRow"]] = {}
 _MISSION_CACHE_LOCKS: dict[str, asyncio.Lock] = {}
+_FW_DATA_CACHE: "FactionWarsData | None" = None
+_FW_DATA_CACHE_LOCK = asyncio.Lock()
 log = logging.getLogger("c1c.community.progress_guides.service")
 
 
@@ -142,6 +155,36 @@ class ForumPost:
     plan_ahead_warning_field_title: str
     plan_ahead_footer: str
     plan_ahead_lookahead_count: int | None
+    counter_stars_button_label: str
+    counter_progress_button_label: str
+    faction_guide_button_label: str
+    conditions_button_label: str
+    counter_stars_title: str
+    counter_stars_empty_description: str
+    counter_stars_saved_description: str
+    counter_stars_invalid_value_description: str
+    counter_stars_faction_select_placeholder: str
+    counter_stars_modal_title: str
+    counter_stars_modal_value_label: str
+    counter_progress_title: str
+    counter_progress_intro_template: str
+    counter_progress_empty_description: str
+    counter_progress_footer: str
+    counter_progress_finished_field_title: str
+    counter_progress_close_field_title: str
+    counter_progress_focus_field_title: str
+    faction_guide_title: str
+    faction_guide_select_placeholder: str
+    faction_guide_champions_field_title: str
+    faction_guide_roles_field_title: str
+    faction_guide_accessible_field_title: str
+    faction_guide_note_field_title: str
+    faction_guide_empty_description: str
+    conditions_title: str
+    conditions_select_placeholder: str
+    conditions_summary_field_title: str
+    conditions_stages_field_title: str
+    conditions_empty_description: str
     progress_tracking_enabled: bool
     guide_channel_id: int | None
     guide_thread_id: int | None
@@ -247,6 +290,76 @@ class ForumPost:
             plan_ahead_lookahead_count=_int_or_none(
                 row.get("plan_ahead_lookahead_count")
             ),
+            counter_stars_button_label=_text(row.get("counter_stars_button_label")),
+            counter_progress_button_label=_text(
+                row.get("counter_progress_button_label")
+            ),
+            faction_guide_button_label=_text(row.get("faction_guide_button_label")),
+            conditions_button_label=_text(row.get("conditions_button_label")),
+            counter_stars_title=_text(row.get("counter_stars_title")),
+            counter_stars_empty_description=_text(
+                row.get("counter_stars_empty_description")
+            ),
+            counter_stars_saved_description=_text(
+                row.get("counter_stars_saved_description")
+            ),
+            counter_stars_invalid_value_description=_text(
+                row.get("counter_stars_invalid_value_description")
+            ),
+            counter_stars_faction_select_placeholder=_text(
+                row.get("counter_stars_faction_select_placeholder")
+            ),
+            counter_stars_modal_title=_text(row.get("counter_stars_modal_title")),
+            counter_stars_modal_value_label=_text(
+                row.get("counter_stars_modal_value_label")
+            ),
+            counter_progress_title=_text(row.get("counter_progress_title")),
+            counter_progress_intro_template=_text(
+                row.get("counter_progress_intro_template")
+            ),
+            counter_progress_empty_description=_text(
+                row.get("counter_progress_empty_description")
+            ),
+            counter_progress_footer=_text(row.get("counter_progress_footer")),
+            counter_progress_finished_field_title=_text(
+                row.get("counter_progress_finished_field_title")
+            ),
+            counter_progress_close_field_title=_text(
+                row.get("counter_progress_close_field_title")
+            ),
+            counter_progress_focus_field_title=_text(
+                row.get("counter_progress_focus_field_title")
+            ),
+            faction_guide_title=_text(row.get("faction_guide_title")),
+            faction_guide_select_placeholder=_text(
+                row.get("faction_guide_select_placeholder")
+            ),
+            faction_guide_champions_field_title=_text(
+                row.get("faction_guide_champions_field_title")
+            ),
+            faction_guide_roles_field_title=_text(
+                row.get("faction_guide_roles_field_title")
+            ),
+            faction_guide_accessible_field_title=_text(
+                row.get("faction_guide_accessible_field_title")
+            ),
+            faction_guide_note_field_title=_text(
+                row.get("faction_guide_note_field_title")
+            ),
+            faction_guide_empty_description=_text(
+                row.get("faction_guide_empty_description")
+            ),
+            conditions_title=_text(row.get("conditions_title")),
+            conditions_select_placeholder=_text(
+                row.get("conditions_select_placeholder")
+            ),
+            conditions_summary_field_title=_text(
+                row.get("conditions_summary_field_title")
+            ),
+            conditions_stages_field_title=_text(
+                row.get("conditions_stages_field_title")
+            ),
+            conditions_empty_description=_text(row.get("conditions_empty_description")),
             progress_tracking_enabled=_truthy(row.get("progress_tracking_enabled")),
             guide_channel_id=_int_or_none(row.get("guide_channel_id")),
             guide_thread_id=_int_or_none(row.get("guide_thread_id")),
@@ -355,11 +468,17 @@ def clear_progress_guide_cache() -> None:
     global _DATA_CACHE
     _DATA_CACHE = None
     clear_mission_cache()
+    clear_faction_wars_cache()
 
 
 def clear_mission_cache() -> None:
     _MISSION_CACHE.clear()
     _MISSION_CACHE_LOCKS.clear()
+
+
+def clear_faction_wars_cache() -> None:
+    global _FW_DATA_CACHE
+    _FW_DATA_CACHE = None
 
 
 async def get_or_load_progress_guide_data() -> ProgressGuideData:
@@ -2109,6 +2228,707 @@ class ProgressGuideHowToUsePersistentView(discord.ui.View):
             self.add_item(ProgressGuideHowToUseButton(category))
 
 
+@dataclass(slots=True)
+class FactionWarsData:
+    factions: list[Mapping[str, object]]
+    champion_guides: list[Mapping[str, object]]
+    hard_stage_conditions: list[Mapping[str, object]]
+    hard_stage_solvers: list[Mapping[str, object]]
+
+
+async def get_or_load_faction_wars_data() -> FactionWarsData:
+    global _FW_DATA_CACHE
+    if _FW_DATA_CACHE is not None:
+        return _FW_DATA_CACHE
+    async with _FW_DATA_CACHE_LOCK:
+        if _FW_DATA_CACHE is not None:
+            return _FW_DATA_CACHE
+        sheet_id = get_milestones_sheet_id().strip()
+        tabs = await asyncio.gather(
+            milestones_config.arequire_value(_FW_FACTIONS_KEY),
+            milestones_config.arequire_value(_FW_CHAMPION_GUIDES_KEY),
+            milestones_config.arequire_value(_FW_HARD_STAGE_CONDITIONS_KEY),
+            milestones_config.arequire_value(_FW_HARD_STAGE_SOLVERS_KEY),
+        )
+        rows = await _gather_rows(sheet_id, *tabs)
+        _FW_DATA_CACHE = FactionWarsData(*rows)
+        return _FW_DATA_CACHE
+
+
+def _format_template(template: str, values: Mapping[str, object]) -> str:
+    result = template
+    for key, value in values.items():
+        result = result.replace("{" + key + "}", _text(value))
+    return result
+
+
+def _fw_enabled_rows(
+    rows: Sequence[Mapping[str, object]],
+) -> list[Mapping[str, object]]:
+    return [
+        row
+        for row in rows
+        if not _text(row.get("enabled")) or _truthy(row.get("enabled"))
+    ]
+
+
+def _fw_mode(category: str) -> str:
+    return "hard" if category == _FW_HARD_CATEGORY else "normal"
+
+
+def _fw_row_matches_category(row: Mapping[str, object], category: str) -> bool:
+    row_category = _text(row.get("category"))
+    if row_category and row_category != category:
+        return False
+    row_mode = _text(row.get("mode")).casefold()
+    return not row_mode or row_mode == _fw_mode(category)
+
+
+def _fw_faction_key(row: Mapping[str, object]) -> str:
+    return _text(row.get("faction_key") or row.get("counter_key"))
+
+
+def _fw_faction_name(row: Mapping[str, object]) -> str:
+    return _text(
+        row.get("faction_name")
+        or row.get("name")
+        or row.get("counter_label")
+        or _fw_faction_key(row)
+    )
+
+
+def _fw_faction_rows(data: FactionWarsData) -> list[Mapping[str, object]]:
+    return sorted(
+        _fw_enabled_rows(data.factions),
+        key=lambda r: (_fw_faction_name(r).casefold(), _fw_faction_key(r).casefold()),
+    )
+
+
+def _fw_faction_options(data: FactionWarsData) -> list[tuple[str, str, int]]:
+    options: list[tuple[str, str, int]] = []
+    seen: set[str] = set()
+    for row in _fw_faction_rows(data):
+        key = _fw_faction_key(row)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        options.append((key, _fw_faction_name(row) or key, _fw_max_stars(row)))
+    return options
+
+
+def _fw_faction_lookup(data: FactionWarsData) -> dict[str, tuple[str, int]]:
+    return {
+        key: (label, max_stars) for key, label, max_stars in _fw_faction_options(data)
+    }
+
+
+def _fw_max_stars(row: Mapping[str, object] | None) -> int:
+    if row is None:
+        return 63
+    return _int_or_none(row.get("max_stars")) or 63
+
+
+async def _fw_user_counter_rows() -> tuple[str, list[dict[str, Any]]]:
+    sheet_id = get_milestones_sheet_id().strip()
+    tab = await milestones_config.arequire_value(_FW_USER_COUNTERS_KEY)
+    return tab, await afetch_records(sheet_id, tab)
+
+
+def _fw_user_rows(
+    rows: Sequence[Mapping[str, object]], user_id: int, category: str
+) -> list[Mapping[str, object]]:
+    user = str(user_id)
+    return [
+        row
+        for row in rows
+        if _text(row.get("user_id")) == user and _text(row.get("category")) == category
+    ]
+
+
+def _fw_counter_value(row: Mapping[str, object]) -> int:
+    return _int_or_none(row.get("current_value")) or 0
+
+
+def _fw_goal_value(row: Mapping[str, object], fallback: int = 63) -> int:
+    return _int_or_none(row.get("goal_value")) or fallback
+
+
+def _fw_rows_by_key(
+    rows: Sequence[Mapping[str, object]],
+) -> dict[str, Mapping[str, object]]:
+    return {_fw_faction_key(row): row for row in rows if _fw_faction_key(row)}
+
+
+def build_faction_wars_stars_embed(
+    post: ForumPost,
+    fw: FactionWarsData,
+    user_rows: Sequence[Mapping[str, object]],
+) -> discord.Embed:
+    title = post.counter_stars_title or f"{post.label or post.category} — My Stars"
+    if not user_rows:
+        return discord.Embed(
+            title=_embed_title(title),
+            description=_embed_description(
+                post.counter_stars_empty_description
+                or "No Faction Wars stars are saved for you yet."
+            ),
+            color=discord.Color.blurple(),
+        )
+    lookup = _fw_faction_lookup(fw)
+    lines = []
+    total = 0
+    for row in sorted(user_rows, key=lambda r: _fw_faction_name(r).casefold())[:25]:
+        key = _fw_faction_key(row)
+        label, fallback_goal = lookup.get(key, (_fw_faction_name(row) or key, 63))
+        stars = _fw_counter_value(row)
+        goal = _fw_goal_value(row, fallback_goal)
+        total += stars
+        status = _text(row.get("status"))
+        suffix = f" — {status}" if status else ""
+        lines.append(f"- {label}: {stars}/{goal}⭐{suffix}")
+    description = f"Total saved stars: **{total}**\n\n" + "\n".join(lines)
+    return discord.Embed(
+        title=_embed_title(title),
+        description=_embed_description(description),
+        color=discord.Color.blurple(),
+    )
+
+
+def build_faction_wars_progress_embed(
+    post: ForumPost,
+    fw: FactionWarsData,
+    user_rows: Sequence[Mapping[str, object]],
+) -> discord.Embed:
+    lookup = _fw_faction_lookup(fw)
+    saved = _fw_rows_by_key(user_rows)
+    progress_rows: list[tuple[str, str, int, int]] = []
+    for key, label, max_stars in _fw_faction_options(fw):
+        row = saved.get(key)
+        current = _fw_counter_value(row) if row else 0
+        goal = _fw_goal_value(row, max_stars) if row else max_stars
+        progress_rows.append((key, label, current, goal))
+    for key, row in saved.items():
+        if key not in lookup:
+            label = _fw_faction_name(row) or key
+            current = _fw_counter_value(row)
+            progress_rows.append((key, label, current, _fw_goal_value(row)))
+    total = sum(current for _key, _label, current, _goal in progress_rows)
+    max_total = sum(goal for _key, _label, _current, goal in progress_rows)
+    remaining = max(max_total - total, 0)
+    finished = [r for r in progress_rows if r[3] and r[2] >= r[3]]
+    close = [r for r in progress_rows if r[3] and 0 < r[3] - r[2] <= 3]
+    focus = sorted(
+        [r for r in progress_rows if r[2] < r[3]], key=lambda r: (r[2], r[1])
+    )[:5]
+    if not user_rows and post.counter_progress_empty_description:
+        description = post.counter_progress_empty_description
+    else:
+        values = {
+            "category": post.category,
+            "category_label": post.label or post.category,
+            "current_value": total,
+            "goal_value": max_total,
+            "percent_complete": _format_percent(total, max_total),
+            "remaining_value": remaining,
+        }
+        description = _format_template(
+            post.counter_progress_intro_template
+            or "Total stars: {current_value}/{goal_value}⭐ ({percent_complete}% complete)",
+            values,
+        )
+    embed = discord.Embed(
+        title=_embed_title(
+            post.counter_progress_title or f"{post.label or post.category} — Progress"
+        ),
+        description=_embed_description(description),
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(
+        name=_embed_title(
+            post.counter_progress_finished_field_title or "Finished factions"
+        ),
+        value=_limited_bullets(
+            [f"{label}: {current}/{goal}⭐" for _k, label, current, goal in finished], 8
+        )
+        or "None yet.",
+        inline=False,
+    )
+    embed.add_field(
+        name=_embed_title(post.counter_progress_close_field_title or "Close to finish"),
+        value=_limited_bullets(
+            [f"{label}: {current}/{goal}⭐" for _k, label, current, goal in close], 8
+        )
+        or "None yet.",
+        inline=False,
+    )
+    embed.add_field(
+        name=_embed_title(post.counter_progress_focus_field_title or "Focus factions"),
+        value=_limited_bullets(
+            [f"{label}: {current}/{goal}⭐" for _k, label, current, goal in focus], 8
+        )
+        or "All tracked factions are complete.",
+        inline=False,
+    )
+    if post.counter_progress_footer:
+        embed.set_footer(text=_limit_text(post.counter_progress_footer, 2048))
+    return embed
+
+
+def _fw_champion_guide_row(
+    fw: FactionWarsData, category: str, faction_key: str
+) -> Mapping[str, object] | None:
+    return next(
+        (
+            row
+            for row in _fw_enabled_rows(fw.champion_guides)
+            if _fw_row_matches_category(row, category)
+            and _fw_faction_key(row) == faction_key
+        ),
+        None,
+    )
+
+
+def build_faction_wars_guide_embed(
+    post: ForumPost, fw: FactionWarsData, faction_key: str
+) -> discord.Embed:
+    lookup = _fw_faction_lookup(fw)
+    row = _fw_champion_guide_row(fw, post.category, faction_key)
+    label = (
+        _fw_faction_name(row) if row else lookup.get(faction_key, (faction_key, 63))[0]
+    )
+    embed = discord.Embed(
+        title=_embed_title(post.faction_guide_title or f"{label} — Faction Guide"),
+        color=discord.Color.blurple(),
+    )
+    if row is None:
+        embed.description = _embed_description(
+            post.faction_guide_empty_description
+            or "No champion guide is configured for that faction yet."
+        )
+        return embed
+    for title, key, fallback in (
+        (
+            post.faction_guide_champions_field_title,
+            "recommended_champions",
+            "Recommended champions",
+        ),
+        (post.faction_guide_roles_field_title, "core_roles", "Core roles"),
+        (
+            post.faction_guide_accessible_field_title,
+            "accessible_options",
+            "Accessible options",
+        ),
+        (post.faction_guide_note_field_title, "planning_note", "Planning note"),
+    ):
+        value = _strip_visible_urls(row.get(key))
+        if value:
+            embed.add_field(
+                name=_embed_title(title or fallback),
+                value=_limit_text(value, _FIELD_LIMIT),
+                inline=False,
+            )
+    if not embed.fields:
+        embed.description = _embed_description(
+            post.faction_guide_empty_description
+            or "No champion guide details are configured for that faction yet."
+        )
+    return embed
+
+
+def _fw_condition_row(
+    fw: FactionWarsData, category: str, faction_key: str
+) -> Mapping[str, object] | None:
+    return next(
+        (
+            row
+            for row in _fw_enabled_rows(fw.hard_stage_conditions)
+            if _fw_row_matches_category(row, category)
+            and _fw_faction_key(row) == faction_key
+        ),
+        None,
+    )
+
+
+def _fw_solver_rows(
+    fw: FactionWarsData, category: str, faction_key: str
+) -> dict[int, list[Mapping[str, object]]]:
+    solvers: dict[int, list[Mapping[str, object]]] = {}
+    for row in _fw_enabled_rows(fw.hard_stage_solvers):
+        if (
+            not _fw_row_matches_category(row, category)
+            or _fw_faction_key(row) != faction_key
+        ):
+            continue
+        stage = _int_or_none(row.get("stage_number"))
+        if stage is not None:
+            solvers.setdefault(stage, []).append(row)
+    return solvers
+
+
+def build_faction_wars_conditions_embed(
+    post: ForumPost, fw: FactionWarsData, faction_key: str
+) -> discord.Embed:
+    lookup = _fw_faction_lookup(fw)
+    row = _fw_condition_row(fw, post.category, faction_key)
+    label = (
+        _fw_faction_name(row) if row else lookup.get(faction_key, (faction_key, 63))[0]
+    )
+    embed = discord.Embed(
+        title=_embed_title(post.conditions_title or f"{label} — Hard Conditions"),
+        color=discord.Color.blurple(),
+    )
+    if row is None:
+        embed.description = _embed_description(
+            post.conditions_empty_description
+            or "No hard mode conditions are configured for that faction yet."
+        )
+        return embed
+    summary = _strip_visible_urls(row.get("challenge_summary"))
+    if summary:
+        embed.add_field(
+            name=_embed_title(
+                post.conditions_summary_field_title or "Challenge summary"
+            ),
+            value=_limit_text(summary, _FIELD_LIMIT),
+            inline=False,
+        )
+    solver_map = _fw_solver_rows(fw, post.category, faction_key)
+    stage_lines = []
+    solver_lines = []
+    for stage in range(1, 22):
+        condition = _strip_visible_urls(row.get(f"stage_{stage}"))
+        if condition:
+            stage_lines.append(f"{stage}: {condition}")
+        for solver in solver_map.get(stage, []):
+            parts = [
+                _strip_visible_urls(solver.get("condition")),
+                _strip_visible_urls(solver.get("solver_roles")),
+                _strip_visible_urls(solver.get("suggested_champions")),
+                _strip_visible_urls(solver.get("notes")),
+            ]
+            detail = " • ".join(part for part in parts if part)
+            if detail:
+                solver_lines.append(f"{stage} solver: {detail}")
+    combined_stage_lines = [*stage_lines, *solver_lines]
+    stages_value = _limited_bullets(combined_stage_lines, 25)
+    if stages_value:
+        embed.add_field(
+            name=_embed_title(post.conditions_stages_field_title or "Stage conditions"),
+            value=stages_value,
+            inline=False,
+        )
+    if not embed.fields:
+        embed.description = _embed_description(
+            post.conditions_empty_description
+            or "No hard mode condition details are configured for that faction yet."
+        )
+    return embed
+
+
+class FactionWarsStarModal(discord.ui.Modal):
+    def __init__(
+        self, post: ForumPost, faction_key: str, faction_label: str, max_stars: int
+    ) -> None:
+        super().__init__(
+            title=_limit_text(
+                post.counter_stars_modal_title or f"Set {faction_label} stars", 45
+            )
+        )
+        self.post = post
+        self.faction_key = faction_key
+        self.faction_label = faction_label
+        self.max_stars = max_stars
+        self.stars = discord.ui.TextInput(
+            label=_limit_text(
+                post.counter_stars_modal_value_label or "Saved stars", 45
+            ),
+            placeholder=f"0-{max_stars}",
+            required=True,
+            max_length=3,
+        )
+        self.add_item(self.stars)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        raw = _text(self.stars.value)
+        try:
+            value = int(raw)
+        except ValueError:
+            await interaction.response.send_message(
+                embed=_progress_notice_embed(
+                    self.post,
+                    self.post.counter_stars_invalid_value_description
+                    or "Enter a whole number of stars.",
+                ),
+                ephemeral=True,
+            )
+            return
+        if value < 0 or value > self.max_stars:
+            await interaction.response.send_message(
+                embed=_progress_notice_embed(
+                    self.post,
+                    self.post.counter_stars_invalid_value_description
+                    or f"Enter a star value from 0 to {self.max_stars}.",
+                ),
+                ephemeral=True,
+            )
+            return
+        await upsert_faction_wars_counter(
+            interaction.user.id,
+            self.post.category,
+            self.faction_key,
+            self.faction_label,
+            value,
+            self.max_stars,
+        )
+        saved_template = (
+            self.post.counter_stars_saved_description
+            or "Saved {current_value}/{goal_value} stars for {counter_label}."
+        )
+        saved_description = _format_template(
+            saved_template,
+            {
+                "counter_key": self.faction_key,
+                "counter_label": self.faction_label,
+                "current_value": value,
+                "goal_value": self.max_stars,
+                "category": self.post.category,
+                "category_label": self.post.label or self.post.category,
+            },
+        )
+        await interaction.response.send_message(
+            embed=_progress_notice_embed(self.post, saved_description),
+            ephemeral=True,
+        )
+
+
+class FactionWarsFactionSelect(discord.ui.Select):
+    def __init__(self, post: ForumPost, fw: FactionWarsData, kind: str) -> None:
+        self.post = post
+        self.kind = kind
+        options = [
+            discord.SelectOption(label=_select_label(label), value=key)
+            for key, label, _max_stars in _fw_faction_options(fw)[:25]
+        ]
+        placeholder = {
+            "stars": post.counter_stars_faction_select_placeholder,
+            "guide": post.faction_guide_select_placeholder,
+            "conditions": post.conditions_select_placeholder,
+        }.get(kind) or "Choose a faction…"
+        super().__init__(
+            placeholder=_select_label(placeholder),
+            options=options,
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, FactionWarsFactionPickerView):
+            return
+        selected = self.values[0]
+        label, max_stars = _fw_faction_lookup(view.fw).get(selected, (selected, 63))
+        if view.kind == "stars":
+            await interaction.response.send_modal(
+                FactionWarsStarModal(view.post, selected, label, max_stars)
+            )
+            return
+        if view.kind == "guide":
+            embed = build_faction_wars_guide_embed(view.post, view.fw, selected)
+        else:
+            embed = build_faction_wars_conditions_embed(view.post, view.fw, selected)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class FactionWarsFactionPickerView(discord.ui.View):
+    def __init__(self, post: ForumPost, fw: FactionWarsData, kind: str) -> None:
+        super().__init__(timeout=900)
+        self.post = post
+        self.fw = fw
+        self.kind = kind
+        if _fw_faction_options(fw):
+            self.add_item(FactionWarsFactionSelect(post, fw, kind))
+
+
+async def upsert_faction_wars_counter(
+    user_id: int,
+    category: str,
+    counter_key: str,
+    counter_label: str,
+    current_value: int,
+    goal_value: int,
+) -> None:
+    sheet_id = get_milestones_sheet_id().strip()
+    tab, rows = await _fw_user_counter_rows()
+    worksheet = await aget_worksheet(sheet_id, tab)
+    header = await _load_header(sheet_id, tab)
+    now = datetime.now(timezone.utc).isoformat()
+    values = {
+        "user_id": str(user_id),
+        "category": category,
+        "counter_key": counter_key,
+        "counter_label": counter_label,
+        "current_value": str(current_value),
+        "goal_value": str(goal_value),
+        "status": (
+            "complete" if goal_value and current_value >= goal_value else "in_progress"
+        ),
+        "notes": "",
+        "updated_at_utc": now,
+    }
+    found: tuple[int, Mapping[str, object]] | None = None
+    for row_number, row in enumerate(rows, start=2):
+        if (
+            _text(row.get("user_id")) == str(user_id)
+            and _text(row.get("category")) == category
+            and _text(row.get("counter_key")) == counter_key
+        ):
+            found = (row_number, row)
+            break
+    if found is None:
+        await acall_with_backoff(
+            worksheet.append_row,
+            [values.get(name, "") for name in header],
+            value_input_option="RAW",
+        )
+        return
+    row_number, existing = found
+    full_row = [
+        (
+            _text(existing.get(name))
+            if name == "notes"
+            else values.get(name, _text(existing.get(name)))
+        )
+        for name in header
+    ]
+    await acall_with_backoff(
+        worksheet.update,
+        f"{_column_label(0)}{row_number}:{_column_label(len(header) - 1)}{row_number}",
+        [full_row],
+        value_input_option="RAW",
+    )
+
+
+class FactionWarsPanelButton(discord.ui.Button):
+    def __init__(self, category: str, label: str, kind: str) -> None:
+        self.category = category
+        self.kind = kind
+        prefixes = {
+            "stars": _FW_STARS_CUSTOM_ID_PREFIX,
+            "progress": _FW_PROGRESS_CUSTOM_ID_PREFIX,
+            "guide": _FW_GUIDE_CUSTOM_ID_PREFIX,
+            "conditions": _FW_CONDITIONS_CUSTOM_ID_PREFIX,
+        }
+        super().__init__(
+            label=_button_label(label),
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"{prefixes[kind]}{category}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        post: ForumPost | None = None
+        try:
+            data = await get_or_load_progress_guide_data()
+            post = _post_for_category(self.category, data)
+            if post is None or self.category not in _FACTION_WARS_CATEGORIES:
+                await interaction.followup.send(
+                    embed=_progress_unavailable_embed(post), ephemeral=True
+                )
+                return
+            if self.kind == "conditions" and self.category != _FW_HARD_CATEGORY:
+                await interaction.followup.send(
+                    embed=discord.Embed(
+                        title="Hard mode only",
+                        description="Conditions are only available for hard mode Faction Wars.",
+                        color=discord.Color.red(),
+                    ),
+                    ephemeral=True,
+                )
+                return
+            fw = await get_or_load_faction_wars_data()
+            if self.kind == "stars":
+                _tab, rows = await _fw_user_counter_rows()
+                user_rows = _fw_user_rows(rows, interaction.user.id, self.category)
+                await interaction.followup.send(
+                    embed=build_faction_wars_stars_embed(post, fw, user_rows),
+                    view=FactionWarsFactionPickerView(post, fw, "stars"),
+                    ephemeral=True,
+                )
+                return
+            if self.kind == "progress":
+                _tab, rows = await _fw_user_counter_rows()
+                user_rows = _fw_user_rows(rows, interaction.user.id, self.category)
+                await interaction.followup.send(
+                    embed=build_faction_wars_progress_embed(post, fw, user_rows),
+                    ephemeral=True,
+                )
+                return
+            view_kind = "guide" if self.kind == "guide" else "conditions"
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title=_embed_title(
+                        post.faction_guide_title
+                        if view_kind == "guide"
+                        else post.conditions_title
+                    )
+                    or "Choose a faction",
+                    description="Choose a faction to view details.",
+                    color=discord.Color.blurple(),
+                ),
+                view=FactionWarsFactionPickerView(post, fw, view_kind),
+                ephemeral=True,
+            )
+        except Exception as exc:
+            if _is_quota_failure(exc):
+                await interaction.followup.send(
+                    embed=_progress_unavailable_embed(post), ephemeral=True
+                )
+                return
+            raise
+
+
+class FactionWarsPersistentView(discord.ui.View):
+    def __init__(self, categories: Sequence[str] = _FACTION_WARS_CATEGORIES) -> None:
+        super().__init__(timeout=None)
+        for category in categories:
+            self.add_item(FactionWarsPanelButton(category, "My Stars", "stars"))
+            self.add_item(FactionWarsPanelButton(category, "Progress", "progress"))
+            self.add_item(FactionWarsPanelButton(category, "Faction Guide", "guide"))
+            if category == _FW_HARD_CATEGORY:
+                self.add_item(
+                    FactionWarsPanelButton(category, "Conditions", "conditions")
+                )
+
+
+def _add_faction_wars_panel_buttons(view: discord.ui.View, post: ForumPost) -> bool:
+    if post.category not in _FACTION_WARS_CATEGORIES:
+        return False
+    view.add_item(
+        FactionWarsPanelButton(
+            post.category, post.counter_stars_button_label or "My Stars", "stars"
+        )
+    )
+    view.add_item(
+        FactionWarsPanelButton(
+            post.category, post.counter_progress_button_label or "Progress", "progress"
+        )
+    )
+    view.add_item(
+        FactionWarsPanelButton(
+            post.category, post.faction_guide_button_label or "Faction Guide", "guide"
+        )
+    )
+    if post.category == _FW_HARD_CATEGORY:
+        view.add_item(
+            FactionWarsPanelButton(
+                post.category,
+                post.conditions_button_label or "Conditions",
+                "conditions",
+            )
+        )
+    return True
+
+
 def build_help_embed(post: ForumPost) -> discord.Embed | None:
     if not (post.help_panel_title or post.help_panel_description):
         return None
@@ -2129,6 +2949,8 @@ def build_help_view(post: ForumPost, data: ProgressGuideData) -> discord.ui.View
         view.add_item(
             ProgressGuideFAQButton(post.category, post.faq_button_label or "FAQ")
         )
+        added = True
+    if _add_faction_wars_panel_buttons(view, post):
         added = True
     if _supports_missions(post):
         view.add_item(
@@ -2230,6 +3052,8 @@ def build_guide_view(
     view = discord.ui.View(timeout=None)
     added = False
     help_url = _safe_url(post.help_post_url)
+    if _add_faction_wars_panel_buttons(view, post):
+        added = True
     if _supports_missions(post):
         view.add_item(
             ProgressGuideMissionButton(

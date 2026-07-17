@@ -8,6 +8,7 @@ from c1c_coreops.rbac import admin_only
 from shared.sheets import milestones_config
 from shared.sheets.core import is_rate_limited_error
 from modules.community.progress_guides.service import (
+    FactionWarsPersistentView,
     ProgressGuideFAQPersistentView,
     ProgressGuideHowToUsePersistentView,
     ProgressGuideMissionPersistentView,
@@ -79,6 +80,7 @@ class ProgressGuidesCog(commands.Cog):
         bot.add_view(ProgressGuideMyProgressPersistentView())
         bot.add_view(ProgressGuidePlanAheadPersistentView())
         bot.add_view(ProgressGuideHowToUsePersistentView())
+        bot.add_view(FactionWarsPersistentView())
 
     @tier("admin")
     @help_metadata(
