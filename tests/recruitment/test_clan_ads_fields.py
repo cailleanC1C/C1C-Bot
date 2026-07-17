@@ -377,6 +377,45 @@ def test_manual_clanads_summary_auto_deletes_only_in_ad_channel(monkeypatch):
     assert sends == [("Posted 1 clan ad(s).", {"delete_after": 20})]
 
 
+def test_clan_ads_button_defers_before_building_profile(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    import discord
+    from cogs.recruitment_clan_ads import ClanAdsCog
+
+    calls = []
+
+    class Response:
+        async def defer(self, **kwargs):
+            calls.append(("defer", kwargs))
+
+    class Followup:
+        async def send(self, **kwargs):
+            calls.append(("followup", kwargs))
+
+    async def fake_build_clan_card(*args, **kwargs):
+        calls.append(("build", args, kwargs))
+        return [discord.Embed(title="Profile")], [], SimpleNamespace()
+
+    monkeypatch.setattr(clan_ads, "build_clan_card", fake_build_clan_card)
+    interaction = SimpleNamespace(
+        data={"custom_id": "clan_ads:view_card:C1CE"},
+        guild=SimpleNamespace(id=123),
+        response=Response(),
+        followup=Followup(),
+    )
+
+    asyncio.run(
+        ClanAdsCog(SimpleNamespace()).clan_ad_card_interaction(interaction)
+    )
+
+    assert calls[0] == ("defer", {"ephemeral": True, "thinking": True})
+    assert calls[1][0] == "build"
+    assert calls[2][0] == "followup"
+    assert calls[2][1]["embeds"][0].title == "Profile"
+    assert calls[2][1]["ephemeral"] is True
+
+
 def test_embed_color_parsing_and_fallbacks(monkeypatch):
     import asyncio
 
