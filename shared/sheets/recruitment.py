@@ -915,6 +915,39 @@ def get_clan_by_tag(tag: str, *, force: bool = False) -> List[str] | None:
     return None
 
 
+async def aget_clan_by_tag(tag: str, *, force: bool = False) -> List[str] | None:
+    """Async lookup of a clan row by tag, using warm in-memory cache directly."""
+
+    global _CLAN_TAG_INDEX, _CLAN_TAG_INDEX_TS
+    normalized = _normalize_tag(tag)
+    if not normalized:
+        return None
+
+    now = time.time()
+    if not force and _CLAN_TAG_INDEX is not None and (
+        now - _CLAN_TAG_INDEX_TS
+    ) < _CACHE_TTL:
+        return _CLAN_TAG_INDEX.get(normalized)
+
+    rows = await afetch_clans(force=force)
+    now = time.time()
+    if force or _CLAN_TAG_INDEX is None or (
+        now - _CLAN_TAG_INDEX_TS
+    ) >= _CACHE_TTL:
+        _CLAN_TAG_INDEX = _build_tag_index(rows)
+        _CLAN_TAG_INDEX_TS = now
+    if _CLAN_TAG_INDEX:
+        return _CLAN_TAG_INDEX.get(normalized)
+
+    tag_index = (_CLAN_HEADER_MAP or {}).get("clan_tag", 2)
+    for row in rows:
+        if tag_index >= len(row):
+            continue
+        if _normalize_tag(row[tag_index]) == normalized:
+            return row
+    return None
+
+
 def find_clan_row(
     clan_tag: str, *, force: bool = False
 ) -> tuple[int, List[str]] | None:
