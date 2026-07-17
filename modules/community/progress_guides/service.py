@@ -48,6 +48,7 @@ _MISSIONS_CUSTOM_ID_PREFIX = "progressguides:missions:"
 _MY_PROGRESS_CUSTOM_ID_PREFIX = "progressguides:myprogress:"
 _SET_PROGRESS_CUSTOM_ID_PREFIX = "progressguides:setprogress:"
 _PLAN_AHEAD_CUSTOM_ID_PREFIX = "progressguides:planahead:"
+_HOW_TO_USE_CUSTOM_ID_PREFIX = "progressguides:howto:"
 _PERSISTENT_FAQ_CATEGORIES = ("ARB", "RAM", "MAR", "FW_N", "FW_H")
 _MISSION_CATEGORIES = ("ARB", "RAM", "MAR")
 _MISSIONS_PER_PAGE = 15
@@ -154,6 +155,10 @@ class ForumPost:
     help_panel_description: str
     help_panel_footer: str
     help_back_button_label: str
+    how_to_use_button_label: str
+    how_to_use_title: str
+    how_to_use_description: str
+    guide_footer: str
     guide_asset_key: str
     questions_enabled: bool
     sort_order: float
@@ -255,6 +260,10 @@ class ForumPost:
             help_panel_description=_text(row.get("help_panel_description")),
             help_panel_footer=_text(row.get("help_panel_footer")),
             help_back_button_label=_text(row.get("help_back_button_label")),
+            how_to_use_button_label=_text(row.get("how_to_use_button_label")),
+            how_to_use_title=_text(row.get("how_to_use_title")),
+            how_to_use_description=_text(row.get("how_to_use_description")),
+            guide_footer=_text(row.get("guide_footer")),
             guide_asset_key=_text(row.get("guide_asset_key")),
             questions_enabled=_truthy(row.get("questions_enabled")),
             sort_order=_sort_num(row.get("sort_order")),
@@ -470,6 +479,10 @@ def _supports_my_progress(post: ForumPost) -> bool:
         and post.progress_tracking_enabled
         and bool(post.my_progress_button_label)
     )
+
+
+def _supports_how_to_use(post: ForumPost) -> bool:
+    return bool(post.how_to_use_button_label and post.how_to_use_description)
 
 
 def _mission_unavailable_embed(description: str) -> discord.Embed:
@@ -2089,6 +2102,13 @@ class ProgressGuideFAQPersistentView(discord.ui.View):
             self.add_item(ProgressGuideFAQButton(category))
 
 
+class ProgressGuideHowToUsePersistentView(discord.ui.View):
+    def __init__(self, categories: Sequence[str] = _PERSISTENT_FAQ_CATEGORIES) -> None:
+        super().__init__(timeout=None)
+        for category in categories:
+            self.add_item(ProgressGuideHowToUseButton(category))
+
+
 def build_help_embed(post: ForumPost) -> discord.Embed | None:
     if not (post.help_panel_title or post.help_panel_description):
         return None
@@ -2157,7 +2177,51 @@ def build_guide_embed(post: ForumPost, data: ProgressGuideData) -> discord.Embed
         asset_type = _text(asset.get("asset_type")).casefold()
         if url and (not asset_type or asset_type in {"image", "banner", "thumbnail"}):
             embed.set_image(url=url)
+    if post.guide_footer:
+        embed.set_footer(text=_limit_text(post.guide_footer, 2048))
     return embed
+
+
+def build_how_to_use_embed(post: ForumPost) -> discord.Embed:
+    return discord.Embed(
+        title=_embed_title(post.how_to_use_title) or None,
+        description=_embed_description(post.how_to_use_description),
+        color=discord.Color.blurple(),
+    )
+
+
+class ProgressGuideHowToUseButton(discord.ui.Button):
+    def __init__(self, category: str, label: str = "How to use") -> None:
+        self.category = category
+        super().__init__(
+            label=_button_label(label or "How to use"),
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"{_HOW_TO_USE_CUSTOM_ID_PREFIX}{category}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            data = await get_or_load_progress_guide_data()
+            post = _post_for_category(self.category, data)
+            if post is None or not _supports_how_to_use(post):
+                embed = discord.Embed(
+                    title="Progress guide help unavailable",
+                    description="This guide helper is not configured right now.",
+                    color=discord.Color.red(),
+                )
+            else:
+                embed = build_how_to_use_embed(post)
+        except Exception:
+            embed = discord.Embed(
+                title="Progress guide help unavailable",
+                description=(
+                    "I couldn’t load that guide helper right now. "
+                    "Please try again later."
+                ),
+                color=discord.Color.red(),
+            )
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 def build_guide_view(
@@ -2193,6 +2257,11 @@ def build_guide_view(
                 style=discord.ButtonStyle.link,
                 url=help_url,
             )
+        )
+        added = True
+    if _supports_how_to_use(post):
+        view.add_item(
+            ProgressGuideHowToUseButton(post.category, post.how_to_use_button_label)
         )
         added = True
     return view if added else None
