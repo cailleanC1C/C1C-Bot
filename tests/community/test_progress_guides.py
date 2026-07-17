@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -3099,4 +3100,427 @@ def test_empty_plan_uses_no_items_description_and_my_progress_shortcut():
         "Set Progress",
         "Mark Mission Done",
         "Plan Ahead",
+    ]
+
+
+def _fw_data(category="FW_H"):
+    data = _data(
+        post_overrides={
+            "category": category,
+            "label": (
+                "Faction Wars Hard" if category == "FW_H" else "Faction Wars Normal"
+            ),
+            "guide_title": "Faction Wars",
+            "counter_stars_button_label": "Sheet My Stars",
+            "counter_progress_button_label": "Sheet Progress",
+            "faction_guide_button_label": "Sheet Faction Guide",
+            "conditions_button_label": "Sheet Conditions",
+            "counter_stars_title": "Sheet Stars Title",
+            "counter_stars_empty_description": "No sheet stars saved.",
+            "counter_stars_saved_description": "Stars saved for {counter_label}: {current_value}/{goal_value} in {category_label} ({counter_key}, {category}).",
+            "counter_stars_invalid_value_description": "Sheet invalid stars.",
+            "counter_stars_faction_select_placeholder": "Pick stars faction",
+            "counter_stars_modal_value_label": "Sheet Stars Value",
+            "counter_progress_title": "Sheet Progress Title",
+            "counter_progress_intro_template": "{category_label}: {current_value}/{goal_value} stars, {percent_complete}% done, {remaining_value} left.",
+            "counter_progress_empty_description": "No sheet progress saved.",
+            "counter_progress_footer": "Sheet progress footer.",
+            "counter_progress_finished_field_title": "Sheet Finished",
+            "counter_progress_close_field_title": "Sheet Close",
+            "counter_progress_focus_field_title": "Sheet Focus",
+            "faction_guide_title": "Sheet Faction Guide Title",
+            "faction_guide_select_placeholder": "Pick guide faction",
+            "faction_guide_champions_field_title": "Sheet Champions",
+            "faction_guide_roles_field_title": "Sheet Roles",
+            "faction_guide_accessible_field_title": "Sheet Accessible",
+            "faction_guide_note_field_title": "Sheet Note",
+            "faction_guide_empty_description": "Sheet guide empty.",
+            "conditions_title": "Sheet Conditions Title",
+            "conditions_select_placeholder": "Pick conditions faction",
+            "conditions_summary_field_title": "Sheet Summary",
+            "conditions_stages_field_title": "Sheet Stages",
+            "conditions_empty_description": "Sheet conditions empty.",
+        },
+        guides=[
+            {
+                "category": category,
+                "title": "Overview",
+                "body": "Beat crypt stages.",
+                "sort_order": "1",
+                "enabled": "TRUE",
+            }
+        ],
+    )
+    data.guides_by_category[category] = data.guides_by_category.pop("ARB")
+    data.faq_by_category[category] = data.faq_by_category.pop("ARB")
+    return data
+
+
+def _fw_static_data():
+    return service.FactionWarsData(
+        factions=[
+            {
+                "faction_key": "banner_lords",
+                "name": "Banner Lords",
+                "stages": "21",
+                "stars_per_stage": "3",
+                "max_stars": "63",
+            },
+            {
+                "faction_key": "high_elves",
+                "name": "High Elves",
+                "stages": "21",
+                "stars_per_stage": "3",
+                "max_stars": "63",
+            },
+            {
+                "faction_key": "orcs",
+                "name": "Orcs",
+                "stages": "21",
+                "stars_per_stage": "3",
+                "max_stars": "63",
+            },
+        ],
+        champion_guides=[
+            {
+                "category": "FW_H",
+                "mode": "hard",
+                "faction_key": "banner_lords",
+                "faction_name": "Banner Lords",
+                "recommended_champions": "Ragash, Baron",
+                "core_roles": "Revive, decrease ATK",
+                "accessible_options": "Stag Knight, Valerie",
+                "planning_note": "Build control first.",
+                "enabled": "TRUE",
+            }
+        ],
+        hard_stage_conditions=[
+            {
+                "category": "FW_H",
+                "mode": "hard",
+                "faction_key": "banner_lords",
+                "faction_name": "Banner Lords",
+                "stage_1": "Use only Rare champions.",
+                "stage_2": "No support champions.",
+                "stage_21": "No revives.",
+                "challenge_summary": "Hard conditions rotate by stage.",
+                "enabled": "TRUE",
+            }
+        ],
+        hard_stage_solvers=[
+            {
+                "category": "FW_H",
+                "mode": "hard",
+                "faction_key": "banner_lords",
+                "faction_name": "Banner Lords",
+                "stage_number": "21",
+                "condition": "No revives.",
+                "solver_roles": "Shields and control",
+                "suggested_champions": "Ragash",
+                "notes": "Manual boss wave.",
+                "enabled": "TRUE",
+            }
+        ],
+    )
+
+
+def test_fw_guide_view_uses_sheet_labels_and_hard_conditions_only():
+    hard = _fw_data("FW_H")
+    hard_view = service.build_guide_view(hard.posts[0], hard)
+    assert [getattr(i, "label", "") for i in hard_view.children[:4]] == [
+        "Sheet My Stars",
+        "Sheet Progress",
+        "Sheet Faction Guide",
+        "Sheet Conditions",
+    ]
+    assert [getattr(i, "custom_id", "") for i in hard_view.children[:4]] == [
+        "progressguides:fwstars:FW_H",
+        "progressguides:fwprogress:FW_H",
+        "progressguides:fwguide:FW_H",
+        "progressguides:fwconditions:FW_H",
+    ]
+
+    normal = _fw_data("FW_N")
+    normal_view = service.build_guide_view(normal.posts[0], normal)
+    normal_ids = [getattr(i, "custom_id", "") for i in normal_view.children]
+    assert "progressguides:fwstars:FW_N" in normal_ids
+    assert "progressguides:fwprogress:FW_N" in normal_ids
+    assert "progressguides:fwguide:FW_N" in normal_ids
+    assert "progressguides:fwconditions:FW_N" not in normal_ids
+
+
+def test_fw_my_stars_reads_progress_user_counters(monkeypatch):
+    data = _fw_data("FW_H")
+    service.set_progress_guide_cache(data)
+    service._FW_DATA_CACHE = _fw_static_data()
+    calls = []
+
+    async def require_value(key):
+        calls.append(("config", key))
+        return {"PROGRESS_USER_COUNTERS_TAB": "ProgressUserCounters"}[key]
+
+    async def fetch_records(_sheet, tab):
+        calls.append(("tab", tab))
+        return [
+            {
+                "user_id": "123456",
+                "category": "FW_H",
+                "counter_key": "banner_lords",
+                "counter_label": "Banner Lords",
+                "current_value": "61",
+                "goal_value": "63",
+                "status": "in_progress",
+                "notes": "",
+                "updated_at_utc": "",
+            },
+            {
+                "user_id": "999",
+                "category": "FW_H",
+                "counter_key": "orcs",
+                "counter_label": "Orcs",
+                "current_value": "63",
+                "goal_value": "63",
+            },
+        ]
+
+    monkeypatch.setattr(service.milestones_config, "arequire_value", require_value)
+    monkeypatch.setattr(service, "afetch_records", fetch_records)
+    monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
+
+    interaction = FakeInteraction()
+    asyncio.run(
+        service.FactionWarsPanelButton("FW_H", "Sheet My Stars", "stars").callback(
+            interaction
+        )
+    )
+
+    assert calls == [
+        ("config", "PROGRESS_USER_COUNTERS_TAB"),
+        ("tab", "ProgressUserCounters"),
+    ]
+    embed = interaction.followup.sent[0]["embed"]
+    assert embed.title == "Sheet Stars Title"
+    assert "Banner Lords: 61/63" in embed.description
+    assert "Orcs" not in embed.description
+    assert (
+        interaction.followup.sent[0]["view"].children[0].placeholder
+        == "Pick stars faction"
+    )
+
+
+def test_fw_star_save_appends_and_updates_by_headers(monkeypatch):
+    header = [
+        "user_id",
+        "category",
+        "counter_key",
+        "counter_label",
+        "current_value",
+        "goal_value",
+        "status",
+        "notes",
+        "updated_at_utc",
+    ]
+    worksheet = FakeWorksheet()
+    rows = []
+
+    async def user_rows():
+        return "ProgressUserCounters", rows
+
+    async def get_ws(_sheet, _tab):
+        return worksheet
+
+    monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
+    monkeypatch.setattr(service, "_fw_user_counter_rows", user_rows)
+    monkeypatch.setattr(service, "aget_worksheet", get_ws)
+    monkeypatch.setattr(
+        service, "_load_header", lambda *_args: asyncio.sleep(0, result=header)
+    )
+    monkeypatch.setattr(
+        service,
+        "acall_with_backoff",
+        lambda func, *a, **kw: asyncio.sleep(
+            0, result=func(*a, **{k: v for k, v in kw.items() if k != "attempts"})
+        ),
+    )
+
+    asyncio.run(
+        service.upsert_faction_wars_counter(
+            123456, "FW_H", "banner_lords", "Banner Lords", 61, 63
+        )
+    )
+    assert worksheet.appended[0][0][:7] == [
+        "123456",
+        "FW_H",
+        "banner_lords",
+        "Banner Lords",
+        "61",
+        "63",
+        "in_progress",
+    ]
+
+    rows[:] = [
+        {
+            "user_id": "123456",
+            "category": "FW_H",
+            "counter_key": "banner_lords",
+            "counter_label": "Banner Lords",
+            "current_value": "61",
+            "goal_value": "63",
+            "status": "in_progress",
+            "notes": "keep this",
+            "updated_at_utc": "old",
+        }
+    ]
+    asyncio.run(
+        service.upsert_faction_wars_counter(
+            123456, "FW_H", "banner_lords", "Banner Lords", 63, 63
+        )
+    )
+    assert worksheet.updates[0][0] == "A2:I2"
+    assert worksheet.updates[0][1][0][:8] == [
+        "123456",
+        "FW_H",
+        "banner_lords",
+        "Banner Lords",
+        "63",
+        "63",
+        "complete",
+        "keep this",
+    ]
+
+
+def test_fw_star_modal_uses_value_label_and_formats_messages(monkeypatch):
+    post = _fw_data("FW_H").posts[0]
+    modal = service.FactionWarsStarModal(post, "banner_lords", "Banner Lords", 63)
+    assert modal.stars.label == "Sheet Stars Value"
+
+    saved = []
+
+    async def save(*args):
+        saved.append(args)
+
+    monkeypatch.setattr(service, "upsert_faction_wars_counter", save)
+    interaction = FakeInteraction()
+    modal.stars._value = "62"
+    asyncio.run(modal.on_submit(interaction))
+
+    assert saved == [(123456, "FW_H", "banner_lords", "Banner Lords", 62, 63)]
+    description = interaction.response.sent[0]["embed"].description
+    assert description == (
+        "Stars saved for Banner Lords: 62/63 in Faction Wars Hard "
+        "(banner_lords, FW_H)."
+    )
+    assert "{counter_label}" not in description
+
+
+def test_fw_star_modal_invalid_input_uses_configured_text():
+    post = _fw_data("FW_H").posts[0]
+    modal = service.FactionWarsStarModal(post, "banner_lords", "Banner Lords", 63)
+    interaction = FakeInteraction()
+    modal.stars._value = "many"
+
+    asyncio.run(modal.on_submit(interaction))
+
+    assert interaction.response.sent[0]["embed"].description == "Sheet invalid stars."
+
+
+def test_fw_progress_summary_uses_saved_user_counters():
+    post = _fw_data("FW_H").posts[0]
+    embed = service.build_faction_wars_progress_embed(
+        post,
+        _fw_static_data(),
+        [
+            {
+                "user_id": "123456",
+                "category": "FW_H",
+                "counter_key": "banner_lords",
+                "counter_label": "Banner Lords",
+                "current_value": "63",
+                "goal_value": "63",
+            },
+            {
+                "user_id": "123456",
+                "category": "FW_H",
+                "counter_key": "high_elves",
+                "counter_label": "High Elves",
+                "current_value": "61",
+                "goal_value": "63",
+            },
+        ],
+    )
+    fields = {field.name: field.value for field in embed.fields}
+    assert embed.description == "Faction Wars Hard: 124/189 stars, 65.6% done, 65 left."
+    assert embed.footer.text == "Sheet progress footer."
+    assert "Banner Lords: 63/63" in fields["Sheet Finished"]
+    assert "High Elves: 61/63" in fields["Sheet Close"]
+    assert "Orcs: 0/63" in fields["Sheet Focus"]
+
+
+def test_fw_faction_guide_uses_live_headers_and_sheet_field_titles():
+    post = _fw_data("FW_H").posts[0]
+    embed = service.build_faction_wars_guide_embed(
+        post, _fw_static_data(), "banner_lords"
+    )
+    fields = {field.name: field.value for field in embed.fields}
+    assert embed.title == "Sheet Faction Guide Title"
+    assert fields["Sheet Champions"] == "Ragash, Baron"
+    assert fields["Sheet Roles"] == "Revive, decrease ATK"
+    assert fields["Sheet Accessible"] == "Stag Knight, Valerie"
+    assert fields["Sheet Note"] == "Build control first."
+
+
+def test_fw_conditions_uses_stage_columns_and_solver_stage_number():
+    post = _fw_data("FW_H").posts[0]
+    embed = service.build_faction_wars_conditions_embed(
+        post, _fw_static_data(), "banner_lords"
+    )
+    fields = {field.name: field.value for field in embed.fields}
+    assert embed.title == "Sheet Conditions Title"
+    assert fields["Sheet Summary"] == "Hard conditions rotate by stage."
+    assert "1: Use only Rare champions." in fields["Sheet Stages"]
+    assert "2: No support champions." in fields["Sheet Stages"]
+    assert "21: No revives." in fields["Sheet Stages"]
+    assert (
+        "21 solver: No revives. • Shields and control • Ragash • Manual boss wave."
+        in fields["Sheet Stages"]
+    )
+
+
+def test_fw_empty_states_use_configured_copy():
+    post = _fw_data("FW_H").posts[0]
+    fw = _fw_static_data()
+
+    guide = service.build_faction_wars_guide_embed(post, fw, "orcs")
+    conditions = service.build_faction_wars_conditions_embed(post, fw, "orcs")
+    progress = service.build_faction_wars_progress_embed(post, fw, [])
+
+    assert guide.description == "Sheet guide empty."
+    assert conditions.description == "Sheet conditions empty."
+    assert progress.description == "No sheet progress saved."
+
+
+def test_fw_cleanup_has_no_invented_progress_forum_post_fields():
+    forbidden = [
+        "counter_stars_modal_" + "label",
+        "faction_guide_recommended_" + "field_title",
+        "faction_guide_planning_" + "field_title",
+        "counter_progress_total_" + "field_title",
+        "conditions_solvers_" + "field_title",
+    ]
+    service_text = Path("modules/community/progress_guides/service.py").read_text()
+    test_text = Path("tests/community/test_progress_guides.py").read_text()
+    for field in forbidden:
+        assert field not in service_text
+        assert field not in test_text
+
+
+def test_faction_wars_persistent_view_has_no_startup_sheet_reads(monkeypatch):
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("startup must not read sheets")
+
+    monkeypatch.setattr(service, "afetch_records", forbidden)
+    bot = FakeBot()
+    ProgressGuidesCog(bot)
+    assert "progressguides:fwstars:FW_H" in [
+        getattr(item, "custom_id", "") for view in bot.views for item in view.children
     ]
