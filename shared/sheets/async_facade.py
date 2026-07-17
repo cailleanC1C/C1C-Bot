@@ -60,7 +60,7 @@ async def fetch_clan_tags_index(*args: Any, **kwargs: Any) -> Any:
 
 
 async def get_clan_by_tag(*args: Any, **kwargs: Any) -> Any:
-    return await _to_thread(_recruitment_sync.get_clan_by_tag, *args, **kwargs)
+    return await _recruitment_sync.aget_clan_by_tag(*args, **kwargs)
 
 
 # === Core helpers that touch network/files ===
