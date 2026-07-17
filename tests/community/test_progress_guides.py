@@ -188,6 +188,10 @@ def _data(*, post_overrides=None, guides=None, faq=None):
         "help_panel_description": "Use these sheet-authored buttons for help.",
         "help_panel_footer": "Sheet footer.",
         "help_back_button_label": "Back to Guide",
+        "how_to_use_button_label": "",
+        "how_to_use_title": "",
+        "how_to_use_description": "",
+        "guide_footer": "",
         "progress_tracking_enabled": "TRUE",
         "leaderboard_enabled": "FALSE",
         "notes": "",
@@ -717,6 +721,71 @@ def test_button_labels_fallback_and_help_remains_last():
         "FAQ",
         "Ask in Help",
     ]
+
+
+def test_how_to_use_button_appears_after_ask_and_sends_sheet_embed():
+    data = _data(
+        post_overrides={
+            "how_to_use_button_label": "❔ How to use",
+            "how_to_use_title": "How to use this Interactive Guide",
+            "how_to_use_description": "Mission List shows the full mission chain.",
+        }
+    )
+    service.set_progress_guide_cache(data)
+    view = service.build_guide_view(data.posts[0], data)
+    assert [getattr(item, "label", "") for item in view.children] == [
+        "Read FAQ",
+        "Ask the Helpers",
+        "❔ How to use",
+    ]
+    button = _button_by_label(view, "❔ How to use")
+    assert button.custom_id == "progressguides:howto:ARB"
+
+    interaction = FakeInteraction()
+    asyncio.run(button.callback(interaction))
+
+    assert interaction.response.deferred == [{"ephemeral": True, "thinking": True}]
+    sent = interaction.followup.sent[0]
+    assert sent["ephemeral"] is True
+    assert sent["embed"].title == "How to use this Interactive Guide"
+    assert sent["embed"].description == "Mission List shows the full mission chain."
+
+
+def test_how_to_use_button_is_omitted_without_label_or_description():
+    for overrides in (
+        {
+            "how_to_use_button_label": "",
+            "how_to_use_description": "Mission List shows the full mission chain.",
+        },
+        {"how_to_use_button_label": "How to use", "how_to_use_description": ""},
+    ):
+        data = _data(post_overrides=overrides)
+        view = service.build_guide_view(data.posts[0], data)
+        assert "progressguides:howto:ARB" not in [
+            getattr(item, "custom_id", "") for item in view.children
+        ]
+
+
+def test_how_to_use_button_is_not_added_to_managed_help_posts():
+    data = _data(
+        post_overrides={
+            "guide_post_url": "https://discord.com/channels/1/2/333",
+            "how_to_use_button_label": "How to use",
+            "how_to_use_title": "How to use this Interactive Guide",
+            "how_to_use_description": "Mission List shows the full mission chain.",
+        }
+    )
+    view = service.build_help_view(data.posts[0], data)
+    assert [getattr(item, "label", "") for item in view.children] == [
+        "Read FAQ",
+        "Back to Guide",
+    ]
+
+
+def test_main_guide_embed_uses_sheet_footer_when_populated():
+    data = _data(post_overrides={"guide_footer": "New here? Use How to use."})
+    embed = service.build_guide_embed(data.posts[0], data)
+    assert embed.footer.text == "New here? Use How to use."
 
 
 def test_sheet_driven_visible_values_are_limited_for_discord():
@@ -2463,7 +2532,11 @@ def _plan_missions():
 
 
 def test_plan_ahead_main_guide_button_order_and_visibility_rules():
-    data = _plan_data()
+    data = _plan_data(
+        how_to_use_button_label="❔ How to use",
+        how_to_use_title="How to use this Interactive Guide",
+        how_to_use_description="Mission List shows the full mission chain.",
+    )
     view = service.build_guide_view(data.posts[0], data)
     assert [getattr(item, "label", "") for item in view.children] == [
         "Mission List",
@@ -2471,6 +2544,7 @@ def test_plan_ahead_main_guide_button_order_and_visibility_rules():
         "Plan Ahead",
         "Read FAQ",
         "Ask the Helpers",
+        "❔ How to use",
     ]
     assert view.children[2].custom_id == "progressguides:planahead:ARB"
 
