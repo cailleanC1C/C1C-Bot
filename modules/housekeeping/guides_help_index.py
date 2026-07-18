@@ -24,7 +24,6 @@ FEATURE_KEY = "GUIDES_HELP_INDEX_ENABLED"
 DEFAULT_MESSAGE_THRESHOLD = 1800
 BULLET = "🔹"
 HEADER = "# 🛠️ Guides & Help Index"
-INTRO = "Generated from tagged forum posts in 🆘GUIDES & HELP."
 
 CONFIG_SOURCE_CATEGORY_ID = "GUIDES_HELP_INDEX_SOURCE_CATEGORY_ID"
 CONFIG_TARGET_CHANNEL_ID = "GUIDES_HELP_INDEX_TARGET_CHANNEL_ID"
@@ -144,18 +143,8 @@ def _tag_group_sort_key(
     return (0, available_tag_index, tag_name.casefold())
 
 
-def _thread_sort_key(item: IndexedThread) -> tuple[int, float, str]:
-    thread = item.thread
-    created = getattr(thread, "created_at", None)
-    if isinstance(created, dt.datetime):
-        created_key = created.timestamp()
-    else:
-        created_key = 0.0
-    return (
-        _sort_key(item.forum)[0],
-        created_key,
-        str(getattr(thread, "name", "")).casefold(),
-    )
+def _thread_sort_key(item: IndexedThread) -> str:
+    return (_text(getattr(item.thread, "name", "")) or "").casefold()
 
 
 def _thread_mention(thread: object) -> str:
@@ -232,7 +221,7 @@ def build_index_messages(
             if rendered_this_thread and thread_id:
                 indexed_ids.add(thread_id)
 
-    blocks = [f"{HEADER}\n\n{INTRO}".rstrip()]
+    blocks = [HEADER]
     for tag_name, (_, items) in sorted(grouped.items(), key=_tag_group_sort_key):
         lines = [f"## {tag_name}", ""]
         seen: set[str] = set()
