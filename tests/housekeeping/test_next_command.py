@@ -24,13 +24,24 @@ def _runtime_with_jobs(jobs):
     return _Runtime(jobs)
 
 
+def _embed_text(embeds):
+    chunks = []
+    for embed in embeds:
+        chunks.append(embed.title or "")
+        chunks.append(embed.description or "")
+        for field in embed.fields:
+            chunks.append(field.name)
+            chunks.append(field.value)
+    return "\n".join(chunks)
+
+
 def test_build_scheduler_overview_groups_components():
     runtime = _runtime_with_jobs([
         _DummyJob("onboarding_idle_watcher", "recruitment"),
         _DummyJob("cache_refresh", "default"),
     ])
 
-    message = app_admin._build_scheduler_overview(runtime, None)
+    message = _embed_text(app_admin._build_scheduler_embeds(runtime, None))
 
     assert "recruitment" in message
     assert "onboarding_idle_watcher" in message
@@ -43,7 +54,7 @@ def test_build_scheduler_overview_filters_components():
         _DummyJob("cache_refresh", "default"),
     ])
 
-    message = app_admin._build_scheduler_overview(runtime, "recruitment")
+    message = _embed_text(app_admin._build_scheduler_embeds(runtime, "recruitment"))
 
     assert "onboarding_idle_watcher" in message
     assert "cache_refresh" not in message
@@ -52,6 +63,6 @@ def test_build_scheduler_overview_filters_components():
 def test_build_scheduler_overview_handles_empty_filter():
     runtime = _runtime_with_jobs([])
 
-    message = app_admin._build_scheduler_overview(runtime, "unknown")
+    message = _embed_text(app_admin._build_scheduler_embeds(runtime, "unknown"))
 
-    assert "no jobs under unknown" in message
+    assert "No scheduled jobs under unknown." in message

@@ -16,6 +16,7 @@ from modules.common import feature_flags, runtime as runtime_helpers
 from modules.common.discord_utils import resolve_message_target
 from modules.common.logs import channel_label
 from modules.ops import cluster_role_map, server_map
+from modules.housekeeping import guides_help_index
 from shared.config import get_who_we_are_channel_id
 from shared.sheets import recruitment as recruitment_sheet
 
@@ -36,6 +37,7 @@ HOUSEKEEPING_JOBS = {
     "server_map_refresh",
     "cleanup_watcher",
     "housekeeping_keepalive",
+    "guides_help_index_refresh",
 }
 GROUP_ORDER = ("Cache Refresh", "recruitment", "housekeeping", "other")
 
@@ -291,6 +293,52 @@ class AppAdmin(commands.Cog):
         reason = result.reason or "unknown"
         await ctx.reply(
             f"Server map refresh failed ({reason}). Check logs for details.",
+            mention_author=False,
+        )
+
+    @tier("admin")
+    @help_metadata(
+        function_group="operational",
+        section="utilities",
+        access_tier="admin",
+    )
+    @commands.group(
+        name="guideshelpindex",
+        invoke_without_command=True,
+        hidden=True,
+        help="Admin tools for the automated Guides & Help tag index.",
+    )
+    @admin_only()
+    async def guideshelpindex(self, ctx: commands.Context) -> None:
+        if ctx.invoked_subcommand is not None:
+            return
+        await ctx.reply("Usage: !guideshelpindex refresh", mention_author=False)
+
+    @guideshelpindex.command(
+        name="refresh",
+        help="Rebuild the Guides & Help forum-tag index immediately from Discord.",
+    )
+    @admin_only()
+    async def guideshelpindex_refresh(self, ctx: commands.Context) -> None:
+        result = await guides_help_index.refresh_guides_help_index(
+            self.bot, force=True, actor="command"
+        )
+        if result.status == "ok":
+            await ctx.reply(
+                "Guides & Help index refreshed — "
+                f"messages={result.message_count} • posts={result.indexed_posts} • tags={result.tag_groups}.",
+                mention_author=False,
+            )
+            return
+        if result.status == "disabled":
+            await ctx.reply(
+                "Guides & Help index feature is currently disabled in FeatureToggles.",
+                mention_author=False,
+            )
+            return
+        reason = result.reason or "unknown"
+        await ctx.reply(
+            f"Guides & Help index refresh failed ({reason}). Check logs for details.",
             mention_author=False,
         )
 

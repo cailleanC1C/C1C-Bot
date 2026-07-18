@@ -1765,6 +1765,7 @@ class Runtime:
         from modules.housekeeping import keepalive as housekeeping_keepalive
         from modules.housekeeping import mirralith_overview as housekeeping_mirralith
         from modules.housekeeping import c1c_ad as housekeeping_c1c_ad
+        from modules.housekeeping import guides_help_index as housekeeping_guides_help_index
         from modules.recruitment import clan_ads as recruitment_clan_ads
         from modules.common import feature_flags
         from shared.sheets import recruitment as recruitment_sheets
@@ -1981,6 +1982,12 @@ class Runtime:
             "Feature Toggle:SERVER_MAP / shared config",
             lambda: server_map_module.schedule_server_map_job(self),
             logger=logging.getLogger("c1c.server_map"),
+        )
+        self._register_optional_scheduler(
+            "guides_help_index",
+            "Feature Toggle:GUIDES_HELP_INDEX_ENABLED / Config",
+            lambda: housekeeping_guides_help_index.schedule_guides_help_index_job(self),
+            logger=logging.getLogger("c1c.housekeeping.guides_help_index"),
         )
         self._register_optional_scheduler(
             "leagues",
