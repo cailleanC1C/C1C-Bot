@@ -3249,6 +3249,39 @@ def test_fw_guide_view_uses_sheet_labels_and_hard_conditions_only():
     assert "progressguides:fwconditions:FW_N" not in normal_ids
 
 
+def test_fw_help_view_uses_sheet_labels_without_user_progress_actions():
+    hard = _fw_data("FW_H")
+    hard.posts[0].guide_post_url = "https://discord.com/channels/1/2/333"
+    hard_view = service.build_help_view(hard.posts[0], hard)
+    hard_labels = [getattr(i, "label", "") for i in hard_view.children]
+    hard_ids = [getattr(i, "custom_id", "") for i in hard_view.children]
+    assert hard_labels == [
+        "Read FAQ",
+        "Sheet Faction Guide",
+        "Sheet Conditions",
+        "Back to Guide",
+    ]
+    assert "progressguides:fwstars:FW_H" not in hard_ids
+    assert "progressguides:fwprogress:FW_H" not in hard_ids
+    assert "progressguides:fwguide:FW_H" in hard_ids
+    assert "progressguides:fwconditions:FW_H" in hard_ids
+
+    normal = _fw_data("FW_N")
+    normal.posts[0].guide_post_url = "https://discord.com/channels/1/2/444"
+    normal_view = service.build_help_view(normal.posts[0], normal)
+    normal_labels = [getattr(i, "label", "") for i in normal_view.children]
+    normal_ids = [getattr(i, "custom_id", "") for i in normal_view.children]
+    assert normal_labels == [
+        "Read FAQ",
+        "Sheet Faction Guide",
+        "Back to Guide",
+    ]
+    assert "progressguides:fwstars:FW_N" not in normal_ids
+    assert "progressguides:fwprogress:FW_N" not in normal_ids
+    assert "progressguides:fwguide:FW_N" in normal_ids
+    assert "progressguides:fwconditions:FW_N" not in normal_ids
+
+
 def test_fw_my_stars_reads_progress_user_counters(monkeypatch):
     data = _fw_data("FW_H")
     service.set_progress_guide_cache(data)

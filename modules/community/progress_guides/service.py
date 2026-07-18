@@ -2900,7 +2900,7 @@ class FactionWarsPersistentView(discord.ui.View):
                 )
 
 
-def _add_faction_wars_panel_buttons(view: discord.ui.View, post: ForumPost) -> bool:
+def _add_faction_wars_main_buttons(view: discord.ui.View, post: ForumPost) -> bool:
     if post.category not in _FACTION_WARS_CATEGORIES:
         return False
     view.add_item(
@@ -2913,6 +2913,25 @@ def _add_faction_wars_panel_buttons(view: discord.ui.View, post: ForumPost) -> b
             post.category, post.counter_progress_button_label or "Progress", "progress"
         )
     )
+    view.add_item(
+        FactionWarsPanelButton(
+            post.category, post.faction_guide_button_label or "Faction Guide", "guide"
+        )
+    )
+    if post.category == _FW_HARD_CATEGORY:
+        view.add_item(
+            FactionWarsPanelButton(
+                post.category,
+                post.conditions_button_label or "Conditions",
+                "conditions",
+            )
+        )
+    return True
+
+
+def _add_faction_wars_help_buttons(view: discord.ui.View, post: ForumPost) -> bool:
+    if post.category not in _FACTION_WARS_CATEGORIES:
+        return False
     view.add_item(
         FactionWarsPanelButton(
             post.category, post.faction_guide_button_label or "Faction Guide", "guide"
@@ -2950,7 +2969,7 @@ def build_help_view(post: ForumPost, data: ProgressGuideData) -> discord.ui.View
             ProgressGuideFAQButton(post.category, post.faq_button_label or "FAQ")
         )
         added = True
-    if _add_faction_wars_panel_buttons(view, post):
+    if _add_faction_wars_help_buttons(view, post):
         added = True
     if _supports_missions(post):
         view.add_item(
@@ -3052,7 +3071,7 @@ def build_guide_view(
     view = discord.ui.View(timeout=None)
     added = False
     help_url = _safe_url(post.help_post_url)
-    if _add_faction_wars_panel_buttons(view, post):
+    if _add_faction_wars_main_buttons(view, post):
         added = True
     if _supports_missions(post):
         view.add_item(
