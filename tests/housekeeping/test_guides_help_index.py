@@ -194,6 +194,34 @@ def test_tag_groups_follow_available_tags_order_without_position():
     assert body.index("## Faction Wars") < body.index("## Missions")
 
 
+def test_posts_within_tag_group_are_sorted_by_name_case_insensitively():
+    a = tag(10, "Missions", 0)
+    f = forum(
+        1,
+        "forum",
+        [a],
+        [
+            thread(12, "Zulu guide", [a], created=1),
+            thread(13, "alpha guide", [a], created=3),
+            thread(14, "Bravo guide", [a], created=2),
+        ],
+    )
+
+    body = "\n".join(ghi.build_index_messages([f], {1: f.threads})[0])
+
+    assert body.index("<#T13>") < body.index("<#T14>") < body.index("<#T12>")
+
+
+def test_generated_text_omits_source_subtitle():
+    a = tag(10, "Missions", 0)
+    f = forum(1, "forum", [a], [thread(12, "guide", [a])])
+
+    body = "\n".join(ghi.build_index_messages([f], {1: f.threads})[0])
+
+    assert "Generated from tagged forum posts" not in body
+    assert body.startswith(f"{ghi.HEADER}\n\n## Missions")
+
+
 def test_tag_and_post_blacklists_hide_content():
     a = tag(10, "Missions", 0)
     b = tag(11, "Faction Wars", 1)
@@ -210,7 +238,7 @@ def test_output_splits_when_threshold_exceeded():
     a = tag(10, "Missions", 0)
     b = tag(11, "Faction Wars", 1)
     f = forum(1, "forum", [a, b], [thread(12, "long", [a]), thread(13, "long2", [b])])
-    messages, _, _ = ghi.build_index_messages([f], {1: f.threads}, threshold=90)
+    messages, _, _ = ghi.build_index_messages([f], {1: f.threads}, threshold=60)
     assert len(messages) > 1
 
 
