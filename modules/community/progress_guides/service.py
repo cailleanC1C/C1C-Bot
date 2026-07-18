@@ -50,6 +50,10 @@ _SET_PROGRESS_CUSTOM_ID_PREFIX = "progressguides:setprogress:"
 _PLAN_AHEAD_CUSTOM_ID_PREFIX = "progressguides:planahead:"
 _FW_STARS_CUSTOM_ID_PREFIX = "progressguides:fwstars:"
 _FW_PROGRESS_CUSTOM_ID_PREFIX = "progressguides:fwprogress:"
+_FW_SET_STAGES_CUSTOM_ID_PREFIX = "progressguides:fwsetstages:"
+_FW_MARK_PERFECT_CUSTOM_ID_PREFIX = "progressguides:fwperfect:"
+_FW_TIPS_CUSTOM_ID_PREFIX = "progressguides:fwtips:"
+_FW_STUCK_CUSTOM_ID_PREFIX = "progressguides:fwstuck:"
 _FW_GUIDE_CUSTOM_ID_PREFIX = "progressguides:fwguide:"
 _FW_CONDITIONS_CUSTOM_ID_PREFIX = "progressguides:fwconditions:"
 _HOW_TO_USE_CUSTOM_ID_PREFIX = "progressguides:howto:"
@@ -58,6 +62,7 @@ _MISSION_CATEGORIES = ("ARB", "RAM", "MAR")
 _FACTION_WARS_CATEGORIES = ("FW_N", "FW_H")
 _FW_HARD_CATEGORY = "FW_H"
 _FW_USER_COUNTERS_KEY = "PROGRESS_USER_COUNTERS_TAB"
+_FW_STAGE_STARS_KEY = "PROGRESS_FW_STAGE_STARS_TAB"
 _FW_FACTIONS_KEY = "PROGRESS_FW_FACTIONS_TAB"
 _FW_CHAMPION_GUIDES_KEY = "PROGRESS_FW_CHAMPION_GUIDES_TAB"
 _FW_HARD_STAGE_CONDITIONS_KEY = "PROGRESS_FW_HARD_STAGE_CONDITIONS_TAB"
@@ -2337,6 +2342,52 @@ async def _fw_user_counter_rows() -> tuple[str, list[dict[str, Any]]]:
     return tab, await afetch_records(sheet_id, tab)
 
 
+async def _fw_stage_star_rows() -> tuple[str, list[dict[str, Any]]]:
+    sheet_id = get_milestones_sheet_id().strip()
+    tab = await milestones_config.arequire_value(_FW_STAGE_STARS_KEY)
+    return tab, await afetch_records(sheet_id, tab)
+
+
+def _fw_user_stage_rows(
+    rows: Sequence[Mapping[str, object]], user_id: int, category: str
+) -> list[Mapping[str, object]]:
+    user = str(user_id)
+    return [
+        row
+        for row in rows
+        if _text(row.get("user_id")) == user and _text(row.get("category")) == category
+    ]
+
+
+def _fw_stage_rows_for_faction(
+    rows: Sequence[Mapping[str, object]], faction_key: str
+) -> list[Mapping[str, object]]:
+    return [row for row in rows if _fw_faction_key(row) == faction_key]
+
+
+def _fw_stage_star_map(rows: Sequence[Mapping[str, object]]) -> dict[int, int]:
+    stage_map: dict[int, int] = {}
+    for row in rows:
+        stage = _int_or_none(row.get("stage_number"))
+        stars = _int_or_none(row.get("stars"))
+        if stage is not None and stars is not None and 1 <= stage <= 21:
+            stage_map[stage] = max(0, min(stars, 3))
+    return stage_map
+
+
+def _fw_complete_stage_star_map(
+    rows: Sequence[Mapping[str, object]],
+) -> dict[int, int] | None:
+    stage_map = _fw_stage_star_map(rows)
+    required_stages = set(range(1, 22))
+    return stage_map if set(stage_map) == required_stages else None
+
+
+def _fw_stage_total(rows: Sequence[Mapping[str, object]]) -> int | None:
+    stage_map = _fw_complete_stage_star_map(rows)
+    return sum(stage_map.values()) if stage_map is not None else None
+
+
 def _fw_user_rows(
     rows: Sequence[Mapping[str, object]], user_id: int, category: str
 ) -> list[Mapping[str, object]]:
@@ -2366,9 +2417,23 @@ def build_faction_wars_stars_embed(
     post: ForumPost,
     fw: FactionWarsData,
     user_rows: Sequence[Mapping[str, object]],
+    stage_rows: Sequence[Mapping[str, object]] = (),
 ) -> discord.Embed:
     title = post.counter_stars_title or f"{post.label or post.category} — My Stars"
-    if not user_rows:
+    lookup = _fw_faction_lookup(fw)
+    saved = _fw_rows_by_key(user_rows)
+    staged_keys = {
+        _fw_faction_key(row)
+        for row in stage_rows
+        if _fw_faction_key(row)
+        and _fw_stage_total(
+            _fw_stage_rows_for_faction(stage_rows, _fw_faction_key(row))
+        )
+        is not None
+    }
+    display_keys = list(saved)
+    display_keys.extend(key for key in staged_keys if key not in saved)
+    if not display_keys:
         return discord.Embed(
             title=_embed_title(title),
             description=_embed_description(
@@ -2377,16 +2442,27 @@ def build_faction_wars_stars_embed(
             ),
             color=discord.Color.blurple(),
         )
-    lookup = _fw_faction_lookup(fw)
     lines = []
     total = 0
-    for row in sorted(user_rows, key=lambda r: _fw_faction_name(r).casefold())[:25]:
-        key = _fw_faction_key(row)
-        label, fallback_goal = lookup.get(key, (_fw_faction_name(row) or key, 63))
-        stars = _fw_counter_value(row)
-        goal = _fw_goal_value(row, fallback_goal)
+    for key in sorted(
+        display_keys,
+        key=lambda row_key: lookup.get(
+            row_key, (_fw_faction_name(saved.get(row_key, {})) or row_key, 63)
+        )[0].casefold(),
+    )[:25]:
+        row = saved.get(key)
+        label, fallback_goal = lookup.get(
+            key, (_fw_faction_name(row or {"faction_key": key}) or key, 63)
+        )
+        stage_total = _fw_stage_total(_fw_stage_rows_for_faction(stage_rows, key))
+        stars = (
+            stage_total
+            if stage_total is not None
+            else (_fw_counter_value(row) if row else 0)
+        )
+        goal = _fw_goal_value(row, fallback_goal) if row else fallback_goal
         total += stars
-        status = _text(row.get("status")).casefold()
+        status = _text(row.get("status") if row else "").casefold()
         icon = "✅" if status == "complete" or stars >= goal else "⏳"
         lines.append(f"- {icon} {label}: {stars}/{goal}⭐")
     description = f"Total saved stars: **{total}**\n\n" + "\n".join(lines)
@@ -2395,12 +2471,6 @@ def build_faction_wars_stars_embed(
         description=_embed_description(description),
         color=discord.Color.blurple(),
     )
-
-
-def _fw_estimated_next_stage(current_stars: int, goal_stars: int) -> int | None:
-    if goal_stars <= 0 or current_stars >= goal_stars:
-        return None
-    return min((current_stars // 3) + 1, 21)
 
 
 def _fw_row_matches_mode(row: Mapping[str, object], category: str) -> bool:
@@ -2426,72 +2496,122 @@ def _fw_boss_solver_row(
     )
 
 
-def _fw_hard_solver_hint(
+def _fw_stage_hint_lines(
     fw: FactionWarsData, category: str, faction_key: str, stage: int
-) -> str:
-    if category != _FW_HARD_CATEGORY:
-        return ""
-    solver = next(iter(_fw_solver_rows(fw, category, faction_key).get(stage, [])), None)
-    if solver is None:
-        return ""
-    parts = [
-        _strip_visible_urls(solver.get("condition")),
-        _strip_visible_urls(solver.get("solver_roles")),
-        _strip_visible_urls(solver.get("suggested_champions")),
-    ]
-    detail = " • ".join(part for part in parts if part)
-    return _limit_text(f"Stage {stage}: {detail}", 180) if detail else ""
+) -> list[str]:
+    lines: list[str] = []
+    if category == _FW_HARD_CATEGORY:
+        condition_row = _fw_condition_row(fw, category, faction_key)
+        if condition_row is not None:
+            condition = _strip_visible_urls(condition_row.get(f"stage_{stage}"))
+            if condition:
+                lines.append(f"Stage condition: {condition}")
+        for solver in _fw_solver_rows(fw, category, faction_key).get(stage, []):
+            parts = [
+                _strip_visible_urls(solver.get("condition")),
+                _strip_visible_urls(solver.get("solver_roles")),
+                _strip_visible_urls(solver.get("suggested_champions")),
+            ]
+            detail = " • ".join(part for part in parts if part)
+            if detail:
+                lines.append(f"Stage solver: {detail}")
+    boss = _fw_boss_solver_row(fw, category, faction_key, stage)
+    if boss is not None:
+        parts = [
+            _strip_visible_urls(boss.get("boss_type")),
+            _strip_visible_urls(boss.get("recommended_roles")),
+            _strip_visible_urls(boss.get("strategy_note")),
+        ]
+        detail = " • ".join(part for part in parts if part)
+        if detail:
+            lines.append(f"Boss {stage}: {detail}")
+    return lines
 
 
-def _fw_boss_solver_hint(
-    fw: FactionWarsData, category: str, faction_key: str, stage: int
-) -> str:
-    row = _fw_boss_solver_row(fw, category, faction_key, stage)
-    if row is None:
-        return ""
-    parts = [
-        _strip_visible_urls(row.get("boss_type")),
-        _strip_visible_urls(row.get("recommended_roles")),
-        _strip_visible_urls(row.get("strategy_note")),
-    ]
-    detail = " • ".join(part for part in parts if part)
-    return _limit_text(f"Boss {stage}: {detail}", 180) if detail else ""
+def build_faction_wars_stage_hints_embed(
+    post: ForumPost, fw: FactionWarsData, faction_key: str, stage: int
+) -> discord.Embed:
+    label = _fw_faction_lookup(fw).get(faction_key, (faction_key, 63))[0]
+    lines = _fw_stage_hint_lines(fw, post.category, faction_key, stage)
+    embed = discord.Embed(
+        title=_embed_title(f"{label}: Stage {stage} Help"),
+        description=_embed_description(
+            "\n".join(f"- {line}" for line in lines)
+            or "No exact hints are configured for this stage yet."
+        ),
+        color=discord.Color.blurple(),
+    )
+    return embed
 
 
-def _fw_focus_line(
-    fw: FactionWarsData, category: str, key: str, label: str, current: int, goal: int
-) -> str:
-    line = f"{label}: {current}/{goal}⭐"
-    stage = _fw_estimated_next_stage(current, goal)
-    if stage is None:
-        return line
-    hints = [
-        _fw_hard_solver_hint(fw, category, key, stage),
-        _fw_boss_solver_hint(fw, category, key, stage),
-    ]
-    hints = [hint for hint in hints if hint]
-    if hints:
-        line += "\n" + "\n".join(hints)
-    return line
+def build_faction_wars_completion_tips_embed(
+    post: ForumPost,
+    fw: FactionWarsData,
+    faction_key: str,
+    stage_rows: Sequence[Mapping[str, object]],
+) -> discord.Embed:
+    label = _fw_faction_lookup(fw).get(faction_key, (faction_key, 63))[0]
+    if not stage_rows:
+        return discord.Embed(
+            title=_embed_title(f"{label}: Completion Tips"),
+            description=(
+                "Completion tips need stage stars for this faction. Use Set Stages "
+                "to save them, or use I'm Stuck for one specific stage."
+            ),
+            color=discord.Color.blurple(),
+        )
+    stage_map = _fw_complete_stage_star_map(stage_rows)
+    if stage_map is None:
+        return discord.Embed(
+            title=_embed_title(f"{label}: Completion Tips"),
+            description=(
+                "Stage tracking is incomplete for this faction. Use Set Stages "
+                "to save all 21 stages, or use I'm Stuck for one specific stage."
+            ),
+            color=discord.Color.blurple(),
+        )
+    tips: list[str] = []
+    for stage in range(1, 22):
+        if stage_map.get(stage, 0) >= 3:
+            continue
+        for line in _fw_stage_hint_lines(fw, post.category, faction_key, stage):
+            tips.append(f"Stage {stage}: {line}")
+    return discord.Embed(
+        title=_embed_title(f"{label}: Completion Tips"),
+        description=_embed_description(
+            _limited_bullets(tips, 20, "more tip")
+            or "No exact hints are configured for incomplete stages."
+        ),
+        color=discord.Color.blurple(),
+    )
 
 
 def build_faction_wars_progress_embed(
     post: ForumPost,
     fw: FactionWarsData,
     user_rows: Sequence[Mapping[str, object]],
+    stage_rows: Sequence[Mapping[str, object]] = (),
 ) -> discord.Embed:
     lookup = _fw_faction_lookup(fw)
     saved = _fw_rows_by_key(user_rows)
     progress_rows: list[tuple[str, str, int, int]] = []
     for key, label, max_stars in _fw_faction_options(fw):
         row = saved.get(key)
-        current = _fw_counter_value(row) if row else 0
+        staged_total = _fw_stage_total(_fw_stage_rows_for_faction(stage_rows, key))
+        current = (
+            staged_total
+            if staged_total is not None
+            else (_fw_counter_value(row) if row else 0)
+        )
         goal = _fw_goal_value(row, max_stars) if row else max_stars
         progress_rows.append((key, label, current, goal))
     for key, row in saved.items():
         if key not in lookup:
             label = _fw_faction_name(row) or key
-            current = _fw_counter_value(row)
+            staged_total = _fw_stage_total(_fw_stage_rows_for_faction(stage_rows, key))
+            current = (
+                staged_total if staged_total is not None else _fw_counter_value(row)
+            )
             progress_rows.append((key, label, current, _fw_goal_value(row)))
     total = sum(current for _key, _label, current, _goal in progress_rows)
     max_total = sum(goal for _key, _label, _current, goal in progress_rows)
@@ -2501,7 +2621,7 @@ def build_faction_wars_progress_embed(
     focus = sorted(
         [r for r in progress_rows if r[2] < r[3]], key=lambda r: (r[2], r[1])
     )[:5]
-    if not user_rows and post.counter_progress_empty_description:
+    if not user_rows and not stage_rows and post.counter_progress_empty_description:
         description = post.counter_progress_empty_description
     else:
         values = {
@@ -2524,36 +2644,31 @@ def build_faction_wars_progress_embed(
         description=_embed_description(description),
         color=discord.Color.blurple(),
     )
-    embed.add_field(
-        name=_embed_title(
-            post.counter_progress_finished_field_title or "Finished factions"
+    for title, rows, empty in (
+        (
+            post.counter_progress_finished_field_title or "Finished factions",
+            finished,
+            "None yet.",
         ),
-        value=_limited_bullets(
-            [f"{label}: {current}/{goal}⭐" for _k, label, current, goal in finished], 8
+        (
+            post.counter_progress_close_field_title or "Close to finish",
+            close,
+            "None yet.",
+        ),
+        (
+            post.counter_progress_focus_field_title or "Focus factions",
+            focus,
+            "All tracked factions are complete.",
+        ),
+    ):
+        embed.add_field(
+            name=_embed_title(title),
+            value=_limited_bullets(
+                [f"{label}: {current}/{goal}⭐" for _k, label, current, goal in rows], 8
+            )
+            or empty,
+            inline=False,
         )
-        or "None yet.",
-        inline=False,
-    )
-    embed.add_field(
-        name=_embed_title(post.counter_progress_close_field_title or "Close to finish"),
-        value=_limited_bullets(
-            [f"{label}: {current}/{goal}⭐" for _k, label, current, goal in close], 8
-        )
-        or "None yet.",
-        inline=False,
-    )
-    embed.add_field(
-        name=_embed_title(post.counter_progress_focus_field_title or "Focus factions"),
-        value=_limited_bullets(
-            [
-                _fw_focus_line(fw, post.category, key, label, current, goal)
-                for key, label, current, goal in focus
-            ],
-            8,
-        )
-        or "All tracked factions are complete.",
-        inline=False,
-    )
     if post.counter_progress_footer:
         embed.set_footer(text=_limit_text(post.counter_progress_footer, 2048))
     return embed
@@ -2796,6 +2911,9 @@ class FactionWarsFactionSelect(discord.ui.Select):
         ]
         placeholder = {
             "stars": post.counter_stars_faction_select_placeholder,
+            "setstages": "Choose a faction to set stage stars…",
+            "tips": "Choose a faction for completion tips…",
+            "stuck": "Choose a faction for stage help…",
             "guide": post.faction_guide_select_placeholder,
             "conditions": post.conditions_select_placeholder,
         }.get(kind) or "Choose a faction…"
@@ -2817,7 +2935,42 @@ class FactionWarsFactionSelect(discord.ui.Select):
                 FactionWarsStarModal(view.post, selected, label, max_stars)
             )
             return
-        if view.kind == "guide":
+        if view.kind == "setstages":
+            await interaction.response.send_modal(
+                FactionWarsStageStarsModal(view.post, selected, label)
+            )
+            return
+        if view.kind == "perfect":
+            await mark_faction_wars_perfect(
+                interaction.user.id, view.post.category, selected, label, max_stars
+            )
+            await interaction.response.edit_message(
+                embed=_progress_notice_embed(
+                    view.post, f"Marked {label} complete: {max_stars}/{max_stars}."
+                ),
+                view=view,
+            )
+            return
+        if view.kind == "stuck":
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title=_embed_title(f"{label}: Choose a Stage"),
+                    description="Choose the stage where you're stuck.",
+                    color=discord.Color.blurple(),
+                ),
+                view=FactionWarsStagePickerView(view.post, view.fw, selected),
+            )
+            return
+        if view.kind == "tips":
+            _tab, rows = await _fw_stage_star_rows()
+            user_stage_rows = _fw_stage_rows_for_faction(
+                _fw_user_stage_rows(rows, interaction.user.id, view.post.category),
+                selected,
+            )
+            embed = build_faction_wars_completion_tips_embed(
+                view.post, view.fw, selected, user_stage_rows
+            )
+        elif view.kind == "guide":
             embed = build_faction_wars_guide_embed(view.post, view.fw, selected)
         else:
             embed = build_faction_wars_conditions_embed(view.post, view.fw, selected)
@@ -2893,6 +3046,238 @@ async def upsert_faction_wars_counter(
     )
 
 
+class FactionWarsStageStarsModal(discord.ui.Modal):
+    def __init__(self, post: ForumPost, faction_key: str, faction_label: str) -> None:
+        super().__init__(title=_limit_text(f"Set {faction_label} stage stars", 45))
+        self.post = post
+        self.faction_key = faction_key
+        self.faction_label = faction_label
+        self.stage_number = discord.ui.TextInput(
+            label="Stage number", placeholder="1-21", required=True, max_length=2
+        )
+        self.stars = discord.ui.TextInput(
+            label="Stars", placeholder="0-3", required=True, max_length=1
+        )
+        self.add_item(self.stage_number)
+        self.add_item(self.stars)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        stage = _int_or_none(self.stage_number.value)
+        stars = _int_or_none(self.stars.value)
+        if (
+            stage is None
+            or not 1 <= stage <= 21
+            or stars is None
+            or not 0 <= stars <= 3
+        ):
+            await interaction.response.send_message(
+                embed=_progress_notice_embed(
+                    self.post, "Stage must be 1-21 and stars must be 0-3."
+                ),
+                ephemeral=True,
+            )
+            return
+        await upsert_faction_wars_stage_stars(
+            interaction.user.id,
+            self.post.category,
+            self.faction_key,
+            self.faction_label,
+            stage,
+            stars,
+        )
+        await interaction.response.send_message(
+            embed=_progress_notice_embed(
+                self.post,
+                f"Saved {stars}/3 stars for {self.faction_label} stage {stage}.",
+            ),
+            ephemeral=True,
+        )
+
+
+class FactionWarsStageSelect(discord.ui.Select):
+    def __init__(self, post: ForumPost, fw: FactionWarsData, faction_key: str) -> None:
+        self.post = post
+        self.fw = fw
+        self.faction_key = faction_key
+        super().__init__(
+            placeholder="Choose a stage…",
+            options=[
+                discord.SelectOption(label=f"Stage {stage}", value=str(stage))
+                for stage in range(1, 22)
+            ],
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(
+            embed=build_faction_wars_stage_hints_embed(
+                self.post, self.fw, self.faction_key, int(self.values[0])
+            ),
+            view=self.view,
+        )
+
+
+class FactionWarsStagePickerView(discord.ui.View):
+    def __init__(self, post: ForumPost, fw: FactionWarsData, faction_key: str) -> None:
+        super().__init__(timeout=900)
+        self.add_item(FactionWarsStageSelect(post, fw, faction_key))
+
+
+async def upsert_faction_wars_stage_stars(
+    user_id: int,
+    category: str,
+    faction_key: str,
+    faction_name: str,
+    stage_number: int,
+    stars: int,
+) -> None:
+    sheet_id = get_milestones_sheet_id().strip()
+    tab, rows = await _fw_stage_star_rows()
+    worksheet = await aget_worksheet(sheet_id, tab)
+    header = await _load_header(sheet_id, tab)
+    now = datetime.now(timezone.utc).isoformat()
+    values = {
+        "user_id": str(user_id),
+        "category": category,
+        "faction_key": faction_key,
+        "faction_name": faction_name,
+        "stage_number": str(stage_number),
+        "stars": str(stars),
+        "updated_at_utc": now,
+    }
+    found: tuple[int, Mapping[str, object]] | None = None
+    for row_number, row in enumerate(rows, start=2):
+        if (
+            _text(row.get("user_id")) == str(user_id)
+            and _text(row.get("category")) == category
+            and _fw_faction_key(row) == faction_key
+            and _int_or_none(row.get("stage_number")) == stage_number
+        ):
+            found = (row_number, row)
+            break
+    if found is None:
+        await acall_with_backoff(
+            worksheet.append_row,
+            [values.get(name, "") for name in header],
+            value_input_option="RAW",
+        )
+        return
+    row_number, existing = found
+    full_row = [values.get(name, _text(existing.get(name))) for name in header]
+    await acall_with_backoff(
+        worksheet.update,
+        f"{_column_label(0)}{row_number}:{_column_label(len(header) - 1)}{row_number}",
+        [full_row],
+        value_input_option="RAW",
+    )
+
+
+async def upsert_all_faction_wars_stage_stars(
+    user_id: int, category: str, faction_key: str, faction_name: str, stars: int
+) -> None:
+    sheet_id = get_milestones_sheet_id().strip()
+    tab, rows = await _fw_stage_star_rows()
+    worksheet = await aget_worksheet(sheet_id, tab)
+    header = await _load_header(sheet_id, tab)
+    now = datetime.now(timezone.utc).isoformat()
+    existing_by_stage: dict[int, tuple[int, Mapping[str, object]]] = {}
+    for row_number, row in enumerate(rows, start=2):
+        stage = _int_or_none(row.get("stage_number"))
+        if (
+            _text(row.get("user_id")) == str(user_id)
+            and _text(row.get("category")) == category
+            and _fw_faction_key(row) == faction_key
+            and stage is not None
+            and 1 <= stage <= 21
+        ):
+            existing_by_stage[stage] = (row_number, row)
+    for stage_number in range(1, 22):
+        values = {
+            "user_id": str(user_id),
+            "category": category,
+            "faction_key": faction_key,
+            "faction_name": faction_name,
+            "stage_number": str(stage_number),
+            "stars": str(stars),
+            "updated_at_utc": now,
+        }
+        found = existing_by_stage.get(stage_number)
+        if found is None:
+            await acall_with_backoff(
+                worksheet.append_row,
+                [values.get(name, "") for name in header],
+                value_input_option="RAW",
+            )
+            continue
+        row_number, existing = found
+        full_row = [values.get(name, _text(existing.get(name))) for name in header]
+        await acall_with_backoff(
+            worksheet.update,
+            f"{_column_label(0)}{row_number}:{_column_label(len(header) - 1)}{row_number}",
+            [full_row],
+            value_input_option="RAW",
+        )
+
+
+async def mark_faction_wars_perfect(
+    user_id: int, category: str, faction_key: str, faction_name: str, max_stars: int
+) -> None:
+    await upsert_faction_wars_counter(
+        user_id, category, faction_key, faction_name, max_stars, max_stars
+    )
+    await upsert_all_faction_wars_stage_stars(
+        user_id, category, faction_key, faction_name, 3
+    )
+
+
+class FactionWarsProgressActionButton(discord.ui.Button):
+    def __init__(self, category: str, label: str, kind: str) -> None:
+        self.category = category
+        self.kind = kind
+        prefix = (
+            _FW_TIPS_CUSTOM_ID_PREFIX if kind == "tips" else _FW_STUCK_CUSTOM_ID_PREFIX
+        )
+        super().__init__(
+            label=_button_label(label),
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"{prefix}{category}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        data = await get_or_load_progress_guide_data()
+        post = _post_for_category(self.category, data)
+        if post is None:
+            await interaction.followup.send(
+                embed=_progress_unavailable_embed(post), ephemeral=True
+            )
+            return
+        fw = await get_or_load_faction_wars_data()
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="Choose a faction",
+                description=(
+                    "Choose a faction for completion tips."
+                    if self.kind == "tips"
+                    else "Choose a faction, then a stage."
+                ),
+                color=discord.Color.blurple(),
+            ),
+            view=FactionWarsFactionPickerView(post, fw, self.kind),
+            ephemeral=True,
+        )
+
+
+def build_faction_wars_progress_view(post: ForumPost) -> discord.ui.View:
+    view = discord.ui.View(timeout=900)
+    view.add_item(
+        FactionWarsProgressActionButton(post.category, "Completion Tips", "tips")
+    )
+    view.add_item(FactionWarsProgressActionButton(post.category, "I'm Stuck", "stuck"))
+    return view
+
+
 class FactionWarsPanelButton(discord.ui.Button):
     def __init__(self, category: str, label: str, kind: str) -> None:
         self.category = category
@@ -2900,6 +3285,8 @@ class FactionWarsPanelButton(discord.ui.Button):
         prefixes = {
             "stars": _FW_STARS_CUSTOM_ID_PREFIX,
             "progress": _FW_PROGRESS_CUSTOM_ID_PREFIX,
+            "setstages": _FW_SET_STAGES_CUSTOM_ID_PREFIX,
+            "perfect": _FW_MARK_PERFECT_CUSTOM_ID_PREFIX,
             "guide": _FW_GUIDE_CUSTOM_ID_PREFIX,
             "conditions": _FW_CONDITIONS_CUSTOM_ID_PREFIX,
         }
@@ -2934,8 +3321,14 @@ class FactionWarsPanelButton(discord.ui.Button):
             if self.kind == "stars":
                 _tab, rows = await _fw_user_counter_rows()
                 user_rows = _fw_user_rows(rows, interaction.user.id, self.category)
+                _stage_tab, stage_rows = await _fw_stage_star_rows()
+                user_stage_rows = _fw_user_stage_rows(
+                    stage_rows, interaction.user.id, self.category
+                )
                 await interaction.followup.send(
-                    embed=build_faction_wars_stars_embed(post, fw, user_rows),
+                    embed=build_faction_wars_stars_embed(
+                        post, fw, user_rows, user_stage_rows
+                    ),
                     view=FactionWarsFactionPickerView(post, fw, "stars"),
                     ephemeral=True,
                 )
@@ -2943,21 +3336,47 @@ class FactionWarsPanelButton(discord.ui.Button):
             if self.kind == "progress":
                 _tab, rows = await _fw_user_counter_rows()
                 user_rows = _fw_user_rows(rows, interaction.user.id, self.category)
+                _stage_tab, stage_rows = await _fw_stage_star_rows()
+                user_stage_rows = _fw_user_stage_rows(
+                    stage_rows, interaction.user.id, self.category
+                )
                 await interaction.followup.send(
-                    embed=build_faction_wars_progress_embed(post, fw, user_rows),
+                    embed=build_faction_wars_progress_embed(
+                        post, fw, user_rows, user_stage_rows
+                    ),
+                    view=build_faction_wars_progress_view(post),
                     ephemeral=True,
                 )
                 return
-            view_kind = "guide" if self.kind == "guide" else "conditions"
+            if self.kind == "perfect":
+                await interaction.followup.send(
+                    embed=discord.Embed(
+                        title="Choose a faction",
+                        description="Choose a faction to mark perfect (63/63).",
+                        color=discord.Color.blurple(),
+                    ),
+                    view=FactionWarsFactionPickerView(post, fw, "perfect"),
+                    ephemeral=True,
+                )
+                return
+            view_kind = (
+                "guide"
+                if self.kind == "guide"
+                else ("setstages" if self.kind == "setstages" else "conditions")
+            )
+            if view_kind == "setstages":
+                picker_title = "Set Stage Stars"
+                picker_description = "Choose a faction to save stage stars."
+            elif view_kind == "guide":
+                picker_title = post.faction_guide_title or "Choose a faction"
+                picker_description = "Choose a faction to view details."
+            else:
+                picker_title = post.conditions_title or "Choose a faction"
+                picker_description = "Choose a faction to view details."
             await interaction.followup.send(
                 embed=discord.Embed(
-                    title=_embed_title(
-                        post.faction_guide_title
-                        if view_kind == "guide"
-                        else post.conditions_title
-                    )
-                    or "Choose a faction",
-                    description="Choose a faction to view details.",
+                    title=_embed_title(picker_title),
+                    description=picker_description,
                     color=discord.Color.blurple(),
                 ),
                 view=FactionWarsFactionPickerView(post, fw, view_kind),
@@ -2977,6 +3396,8 @@ class FactionWarsPersistentView(discord.ui.View):
         super().__init__(timeout=None)
         for category in categories:
             self.add_item(FactionWarsPanelButton(category, "My Stars", "stars"))
+            self.add_item(FactionWarsPanelButton(category, "Set Stages", "setstages"))
+            self.add_item(FactionWarsPanelButton(category, "Mark Perfect", "perfect"))
             self.add_item(FactionWarsPanelButton(category, "Progress", "progress"))
             self.add_item(FactionWarsPanelButton(category, "Faction Guide", "guide"))
             if category == _FW_HARD_CATEGORY:
@@ -2993,6 +3414,8 @@ def _add_faction_wars_main_buttons(view: discord.ui.View, post: ForumPost) -> bo
             post.category, post.counter_stars_button_label or "My Stars", "stars"
         )
     )
+    view.add_item(FactionWarsPanelButton(post.category, "Set Stages", "setstages"))
+    view.add_item(FactionWarsPanelButton(post.category, "Mark Perfect", "perfect"))
     view.add_item(
         FactionWarsPanelButton(
             post.category, post.counter_progress_button_label or "Progress", "progress"

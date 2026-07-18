@@ -3288,18 +3288,20 @@ def _fw_static_data():
 def test_fw_guide_view_uses_sheet_labels_and_hard_conditions_only():
     hard = _fw_data("FW_H")
     hard_view = service.build_guide_view(hard.posts[0], hard)
-    assert [getattr(i, "label", "") for i in hard_view.children[:4]] == [
-        "Sheet My Stars",
-        "Sheet Progress",
-        "Sheet Faction Guide",
-        "Sheet Conditions",
-    ]
-    assert [getattr(i, "custom_id", "") for i in hard_view.children[:4]] == [
-        "progressguides:fwstars:FW_H",
-        "progressguides:fwprogress:FW_H",
-        "progressguides:fwguide:FW_H",
-        "progressguides:fwconditions:FW_H",
-    ]
+    hard_labels = [getattr(i, "label", "") for i in hard_view.children]
+    hard_ids = [getattr(i, "custom_id", "") for i in hard_view.children]
+    assert "Sheet My Stars" in hard_labels
+    assert "Set Stages" in hard_labels
+    assert "Mark Perfect" in hard_labels
+    assert "Sheet Progress" in hard_labels
+    assert "Sheet Faction Guide" in hard_labels
+    assert "Sheet Conditions" in hard_labels
+    assert "progressguides:fwstars:FW_H" in hard_ids
+    assert "progressguides:fwsetstages:FW_H" in hard_ids
+    assert "progressguides:fwperfect:FW_H" in hard_ids
+    assert "progressguides:fwprogress:FW_H" in hard_ids
+    assert "progressguides:fwguide:FW_H" in hard_ids
+    assert "progressguides:fwconditions:FW_H" in hard_ids
 
     normal = _fw_data("FW_N")
     normal_view = service.build_guide_view(normal.posts[0], normal)
@@ -3351,10 +3353,15 @@ def test_fw_my_stars_reads_progress_user_counters(monkeypatch):
 
     async def require_value(key):
         calls.append(("config", key))
-        return {"PROGRESS_USER_COUNTERS_TAB": "ProgressUserCounters"}[key]
+        return {
+            "PROGRESS_USER_COUNTERS_TAB": "ProgressUserCounters",
+            "PROGRESS_FW_STAGE_STARS_TAB": "ProgressUserFactionStageStars",
+        }[key]
 
     async def fetch_records(_sheet, tab):
         calls.append(("tab", tab))
+        if tab == "ProgressUserFactionStageStars":
+            return []
         return [
             {
                 "user_id": "123456",
@@ -3391,6 +3398,8 @@ def test_fw_my_stars_reads_progress_user_counters(monkeypatch):
     assert calls == [
         ("config", "PROGRESS_USER_COUNTERS_TAB"),
         ("tab", "ProgressUserCounters"),
+        ("config", "PROGRESS_FW_STAGE_STARS_TAB"),
+        ("tab", "ProgressUserFactionStageStars"),
     ]
     embed = interaction.followup.sent[0]["embed"]
     assert embed.title == "Sheet Stars Title"
@@ -3625,7 +3634,7 @@ def test_fw_progress_summary_uses_saved_user_counters():
     assert "Ogryn Tribes: 0/63" in fields["Sheet Focus"]
 
 
-def test_fw_h_progress_includes_compact_solver_hints_for_lowest_stars():
+def test_fw_progress_is_summary_only_without_solver_hints():
     post = _fw_data("FW_H").posts[0]
     embed = service.build_faction_wars_progress_embed(
         post,
@@ -3652,14 +3661,10 @@ def test_fw_h_progress_includes_compact_solver_hints_for_lowest_stars():
     assert "Sheet Finished" in [field.name for field in embed.fields]
     assert "Sheet Close" in [field.name for field in embed.fields]
     assert "Sheet Focus" in [field.name for field in embed.fields]
-    assert "⏳ Ogryn Tribes: 2/63⭐" in focus
-    assert (
-        "Tip: Stage 3, Stun application. Control. Bellower / stun set options." in focus
-    )
+    assert "Ogryn Tribes: 2/63⭐" in focus
+    assert "Stage 3" not in focus
+    assert "Tip:" not in focus
     assert "Keep waves locked" not in focus
-    assert all(
-        len(line) <= 180 for line in focus.splitlines() if line.startswith("Tip:")
-    )
 
 
 def test_fw_normal_progress_does_not_include_solver_hints():
@@ -3684,46 +3689,59 @@ def test_fw_normal_progress_does_not_include_solver_hints():
     assert "Stage 3" not in focus
 
 
-def test_fw_progress_solver_hints_match_estimated_stage_number():
+def test_fw_partial_stage_rows_do_not_override_manual_total():
     post = _fw_data("FW_H").posts[0]
+    stage_rows = [
+        {"category": "FW_H", "faction_key": "orcs", "stage_number": "1", "stars": "3"},
+        {"category": "FW_H", "faction_key": "orcs", "stage_number": "2", "stars": "2"},
+    ]
     embed = service.build_faction_wars_progress_embed(
         post,
         _fw_static_data(),
         [
             {
                 "category": "FW_H",
-                "counter_key": "banner_lords",
-                "counter_label": "Banner Lords",
+                "counter_key": "orcs",
                 "current_value": "63",
                 "goal_value": "63",
-            },
-            {
-                "category": "FW_H",
-                "counter_key": "high_elves",
-                "counter_label": "High Elves",
-                "current_value": "63",
-                "goal_value": "63",
-            },
-            {
-                "category": "FW_H",
-                "counter_key": "ogryn_tribes",
-                "counter_label": "Ogryn Tribes",
-                "current_value": "63",
-                "goal_value": "63",
-            },
+            }
+        ],
+        stage_rows,
+    )
+    fields = {field.name: field.value for field in embed.fields}
+
+    assert "Orcs: 63/63⭐" in fields["Sheet Finished"]
+    assert "Orcs: 5/63⭐" not in fields["Sheet Focus"]
+
+
+def test_fw_full_stage_rows_override_manual_total():
+    post = _fw_data("FW_H").posts[0]
+    stage_rows = [
+        {
+            "category": "FW_H",
+            "faction_key": "orcs",
+            "stage_number": str(stage),
+            "stars": "3" if stage <= 20 else "2",
+        }
+        for stage in range(1, 22)
+    ]
+    embed = service.build_faction_wars_progress_embed(
+        post,
+        _fw_static_data(),
+        [
             {
                 "category": "FW_H",
                 "counter_key": "orcs",
-                "counter_label": "Orcs",
-                "current_value": "12",
+                "current_value": "10",
                 "goal_value": "63",
-            },
+            }
         ],
+        stage_rows,
     )
-    focus = {field.name: field.value for field in embed.fields}["Sheet Focus"]
+    fields = {field.name: field.value for field in embed.fields}
 
-    assert "Tip: Stage 5, Turn meter control." in focus
-    assert "Stage 3" not in focus
+    assert "Orcs: 62/63⭐" in fields["Sheet Close"]
+    assert "Orcs: 10/63⭐" not in fields["Sheet Focus"]
 
 
 def test_fw_progress_does_not_show_stale_early_solver_hint_for_late_progress():
@@ -3764,7 +3782,7 @@ def test_fw_progress_does_not_show_stale_early_solver_hint_for_late_progress():
     )
     focus = {field.name: field.value for field in embed.fields}["Sheet Focus"]
 
-    assert "⏳ Orcs: 62/63⭐" in focus
+    assert "Orcs: 62/63⭐" in focus
     assert "Tip:" not in focus
     assert "Stage 5" not in focus
     assert "Turn meter control" not in focus
@@ -3908,7 +3926,7 @@ def test_fw_normal_progress_shows_matching_boss_tip_for_boss_stage_only():
 
     assert "High Elves: 18/63" in focus
     assert " — " not in focus
-    assert "\nBoss 7: Turn meter boss • Decrease speed • Control the boss" in focus
+    assert "Boss 7:" not in focus
     assert "Turn meter cuts" not in focus
     assert "Apothecary" not in focus
     assert "normal.example" not in focus
@@ -3947,8 +3965,8 @@ def test_fw_hard_progress_combines_hard_solver_and_boss_tip_without_notes():
     focus = {field.name: field.value for field in embed.fields}["Sheet Focus"]
 
     assert " — " not in focus
-    assert "\nStage 21: No revives. • Shields and control • Ragash" in focus
-    assert "\nBoss 21: Health-swap boss • Shield and control • Save cooldowns" in focus
+    assert "Stage 21:" not in focus
+    assert "Boss 21:" not in focus
     assert "Sustain pressure" not in focus
     assert "Valerie" not in focus
     assert "boss.example" not in focus
@@ -3974,3 +3992,300 @@ def test_fw_progress_does_not_fallback_to_earlier_boss_stage():
     assert "High Elves: 39/63" in focus
     assert "Boss 7:" not in focus
     assert "Boss 14:" not in focus
+
+
+def test_fw_completion_tips_requires_saved_stage_rows():
+    post = _fw_data("FW_H").posts[0]
+    embed = service.build_faction_wars_completion_tips_embed(
+        post, _fw_static_data(), "banner_lords", []
+    )
+
+    assert embed.description == (
+        "Completion tips need stage stars for this faction. Use Set Stages to save them, "
+        "or use I'm Stuck for one specific stage."
+    )
+
+
+def test_fw_im_stuck_renders_exact_stage_hints_without_saved_progress():
+    post = _fw_data("FW_H").posts[0]
+    embed = service.build_faction_wars_stage_hints_embed(
+        post, _fw_static_data(), "banner_lords", 21
+    )
+
+    assert "Stage condition: No revives." in embed.description
+    assert (
+        "Stage solver: No revives. • Shields and control • Ragash" in embed.description
+    )
+    assert (
+        "Boss 21: Health-swap boss • Shield and control • Save cooldowns"
+        in embed.description
+    )
+    assert "Manual boss wave" not in embed.description
+    assert "Sustain pressure" not in embed.description
+    assert "Valerie" not in embed.description
+    assert "boss.example" not in embed.description
+
+
+def test_fw_partial_stage_rows_do_not_produce_completion_tips():
+    post = _fw_data("FW_H").posts[0]
+    stage_rows = [
+        {
+            "category": "FW_H",
+            "faction_key": "banner_lords",
+            "stage_number": "21",
+            "stars": "2",
+        }
+    ]
+    embed = service.build_faction_wars_completion_tips_embed(
+        post, _fw_static_data(), "banner_lords", stage_rows
+    )
+
+    assert embed.description == (
+        "Stage tracking is incomplete for this faction. Use Set Stages to save all 21 "
+        "stages, or use I'm Stuck for one specific stage."
+    )
+
+
+def test_fw_full_stage_rows_produce_completion_tips_below_three_stars():
+    post = _fw_data("FW_H").posts[0]
+    stage_rows = [
+        {
+            "category": "FW_H",
+            "faction_key": "banner_lords",
+            "stage_number": str(stage),
+            "stars": "2" if stage == 21 else "3",
+        }
+        for stage in range(1, 22)
+    ]
+    embed = service.build_faction_wars_completion_tips_embed(
+        post, _fw_static_data(), "banner_lords", stage_rows
+    )
+
+    assert "Stage 21: Stage condition: No revives." in embed.description
+    assert "Stage 1:" not in embed.description
+    assert "Manual boss wave" not in embed.description
+
+
+def test_fw_boss_hints_only_render_on_exact_boss_stage():
+    post = _fw_data("FW_N").posts[0]
+    boss = service.build_faction_wars_stage_hints_embed(
+        post, _fw_static_data(), "high_elves", 7
+    )
+    non_boss = service.build_faction_wars_stage_hints_embed(
+        post, _fw_static_data(), "high_elves", 8
+    )
+
+    assert (
+        "Boss 7: Turn meter boss • Decrease speed • Control the boss"
+        in boss.description
+    )
+    assert "Boss 7:" not in non_boss.description
+
+
+def test_fw_mark_perfect_upserts_all_stage_rows_as_three(monkeypatch):
+    header = [
+        "user_id",
+        "category",
+        "faction_key",
+        "faction_name",
+        "stage_number",
+        "stars",
+        "updated_at_utc",
+    ]
+    worksheet = FakeWorksheet()
+    rows = [
+        {
+            "user_id": "123456",
+            "category": "FW_H",
+            "faction_key": "banner_lords",
+            "faction_name": "Banner Lords",
+            "stage_number": "1",
+            "stars": "1",
+            "updated_at_utc": "old",
+        }
+    ]
+
+    async def stage_rows():
+        return "ProgressUserFactionStageStars", rows
+
+    async def get_ws(_sheet, _tab):
+        return worksheet
+
+    monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
+    monkeypatch.setattr(service, "_fw_stage_star_rows", stage_rows)
+    monkeypatch.setattr(service, "aget_worksheet", get_ws)
+    monkeypatch.setattr(
+        service, "_load_header", lambda *_args: asyncio.sleep(0, result=header)
+    )
+    monkeypatch.setattr(
+        service,
+        "acall_with_backoff",
+        lambda func, *a, **kw: asyncio.sleep(
+            0, result=func(*a, **{k: v for k, v in kw.items() if k != "attempts"})
+        ),
+    )
+
+    asyncio.run(
+        service.upsert_all_faction_wars_stage_stars(
+            123456, "FW_H", "banner_lords", "Banner Lords", 3
+        )
+    )
+
+    assert worksheet.updates[0][0] == "A2:G2"
+    assert worksheet.updates[0][1][0][4:6] == ["1", "3"]
+    assert len(worksheet.appended) == 20
+    assert {row[0][5] for row in worksheet.appended} == {"3"}
+    assert {row[0][4] for row in worksheet.appended} == {str(i) for i in range(2, 22)}
+
+
+def test_fw_mark_perfect_with_existing_incomplete_stage_rows_makes_progress_complete():
+    post = _fw_data("FW_H").posts[0]
+    stage_rows = [
+        {
+            "category": "FW_H",
+            "faction_key": "banner_lords",
+            "stage_number": str(stage),
+            "stars": "3",
+        }
+        for stage in range(1, 22)
+    ]
+    embed = service.build_faction_wars_progress_embed(
+        post,
+        _fw_static_data(),
+        [
+            {
+                "category": "FW_H",
+                "counter_key": "banner_lords",
+                "counter_label": "Banner Lords",
+                "current_value": "63",
+                "goal_value": "63",
+                "status": "complete",
+            }
+        ],
+        stage_rows,
+    )
+    fields = {field.name: field.value for field in embed.fields}
+
+    assert "Banner Lords: 63/63⭐" in fields["Sheet Finished"]
+    assert "Banner Lords" not in fields["Sheet Focus"]
+
+
+def test_fw_my_stars_uses_complete_stage_rows_over_manual_total():
+    post = _fw_data("FW_H").posts[0]
+    stage_rows = [
+        {
+            "category": "FW_H",
+            "faction_key": "banner_lords",
+            "stage_number": str(stage),
+            "stars": "3" if stage <= 20 else "2",
+        }
+        for stage in range(1, 22)
+    ]
+    embed = service.build_faction_wars_stars_embed(
+        post,
+        _fw_static_data(),
+        [
+            {
+                "category": "FW_H",
+                "counter_key": "banner_lords",
+                "counter_label": "Banner Lords",
+                "current_value": "10",
+                "goal_value": "63",
+            }
+        ],
+        stage_rows,
+    )
+
+    assert "Banner Lords: 62/63⭐" in embed.description
+    assert "Banner Lords: 10/63⭐" not in embed.description
+
+
+def test_fw_my_stars_includes_complete_stage_faction_without_counter_row():
+    post = _fw_data("FW_H").posts[0]
+    stage_rows = [
+        {
+            "category": "FW_H",
+            "faction_key": "orcs",
+            "stage_number": str(stage),
+            "stars": "3",
+        }
+        for stage in range(1, 22)
+    ]
+    embed = service.build_faction_wars_stars_embed(
+        post, _fw_static_data(), [], stage_rows
+    )
+
+    assert "Orcs: 63/63⭐" in embed.description
+    assert "Total saved stars: **63**" in embed.description
+
+
+def test_fw_my_stars_partial_stage_rows_do_not_override_manual_total():
+    post = _fw_data("FW_H").posts[0]
+    stage_rows = [
+        {"category": "FW_H", "faction_key": "orcs", "stage_number": "1", "stars": "2"}
+    ]
+    embed = service.build_faction_wars_stars_embed(
+        post,
+        _fw_static_data(),
+        [
+            {
+                "category": "FW_H",
+                "counter_key": "orcs",
+                "counter_label": "Orcs",
+                "current_value": "40",
+                "goal_value": "63",
+            }
+        ],
+        stage_rows,
+    )
+
+    assert "Orcs: 40/63⭐" in embed.description
+    assert "Orcs: 2/63⭐" not in embed.description
+
+
+def test_fw_set_stages_picker_uses_dedicated_copy(monkeypatch):
+    data = _fw_data("FW_H")
+    service.set_progress_guide_cache(data)
+    service._FW_DATA_CACHE = _fw_static_data()
+    interaction = FakeInteraction()
+
+    asyncio.run(
+        service.FactionWarsPanelButton("FW_H", "Set Stages", "setstages").callback(
+            interaction
+        )
+    )
+
+    embed = interaction.followup.sent[0]["embed"]
+    assert embed.title == "Set Stage Stars"
+    assert embed.description == "Choose a faction to save stage stars."
+    assert embed.title != data.posts[0].conditions_title
+    assert embed.description != "Choose a faction to view details."
+
+
+def test_fw_new_stage_helper_titles_use_colons_not_em_dashes():
+    post = _fw_data("FW_H").posts[0]
+    stage_help = service.build_faction_wars_stage_hints_embed(
+        post, _fw_static_data(), "banner_lords", 21
+    )
+    tips = service.build_faction_wars_completion_tips_embed(
+        post,
+        _fw_static_data(),
+        "banner_lords",
+        [
+            {
+                "category": "FW_H",
+                "faction_key": "banner_lords",
+                "stage_number": str(stage),
+                "stars": "2" if stage == 21 else "3",
+            }
+            for stage in range(1, 22)
+        ],
+    )
+    stuck_picker_title = service._embed_title("Banner Lords: Choose a Stage")
+
+    assert stage_help.title == "Banner Lords: Stage 21 Help"
+    assert tips.title == "Banner Lords: Completion Tips"
+    assert stuck_picker_title == "Banner Lords: Choose a Stage"
+    assert " — " not in stage_help.title
+    assert " — " not in tips.title
+    assert " — " not in stuck_picker_title
