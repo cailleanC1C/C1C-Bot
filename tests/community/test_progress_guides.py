@@ -3221,6 +3221,36 @@ def _fw_static_data():
                 "enabled": "TRUE",
             }
         ],
+        boss_solvers=[
+            {
+                "category": "FW_H",
+                "mode": "any",
+                "faction_key": "banner_lords",
+                "faction_name": "Banner Lords",
+                "boss_stage": "21",
+                "boss_type": "Health-swap boss",
+                "boss_problem": "Sustain pressure",
+                "recommended_roles": "Shield and control",
+                "strategy_note": "Save cooldowns",
+                "accessible_options": "Valerie",
+                "source_url": "https://boss.example/hide",
+                "enabled": "TRUE",
+            },
+            {
+                "category": "FW_N",
+                "mode": "normal",
+                "faction_key": "high_elves",
+                "faction_name": "High Elves",
+                "boss_stage": "7",
+                "boss_type": "Turn meter boss",
+                "boss_problem": "Turn meter cuts",
+                "recommended_roles": "Decrease speed",
+                "strategy_note": "Control the boss",
+                "accessible_options": "Apothecary",
+                "source_url": "https://normal.example/hide",
+                "enabled": "TRUE",
+            },
+        ],
     )
 
 
@@ -3457,6 +3487,39 @@ def test_fw_star_modal_invalid_input_uses_configured_text():
     assert interaction.response.sent[0]["embed"].description == "Sheet invalid stars."
 
 
+def test_fw_my_stars_uses_status_icons_without_raw_status_text():
+    post = _fw_data("FW_H").posts[0]
+    embed = service.build_faction_wars_stars_embed(
+        post,
+        _fw_static_data(),
+        [
+            {
+                "user_id": "123456",
+                "category": "FW_H",
+                "counter_key": "banner_lords",
+                "counter_label": "Banner Lords",
+                "current_value": "63",
+                "goal_value": "63",
+                "status": "complete",
+            },
+            {
+                "user_id": "123456",
+                "category": "FW_H",
+                "counter_key": "high_elves",
+                "counter_label": "High Elves",
+                "current_value": "60",
+                "goal_value": "63",
+                "status": "in_progress",
+            },
+        ],
+    )
+
+    assert "- ✅ Banner Lords: 63/63⭐" in embed.description
+    assert "- ⏳ High Elves: 60/63⭐" in embed.description
+    assert "complete" not in embed.description
+    assert "in_progress" not in embed.description
+
+
 def test_fw_progress_summary_uses_saved_user_counters():
     post = _fw_data("FW_H").posts[0]
     embed = service.build_faction_wars_progress_embed(
@@ -3557,3 +3620,139 @@ def test_faction_wars_persistent_view_has_no_startup_sheet_reads(monkeypatch):
     assert "progressguides:fwstars:FW_H" in [
         getattr(item, "custom_id", "") for view in bot.views for item in view.children
     ]
+
+
+def test_fw_data_loads_boss_solvers_from_configured_header_tab(monkeypatch):
+    service._FW_DATA_CACHE = None
+    calls = []
+
+    async def require_value(key):
+        calls.append(("config", key))
+        return {
+            "PROGRESS_FW_FACTIONS_TAB": "FWFactions",
+            "PROGRESS_FW_CHAMPION_GUIDES_TAB": "FWChampionGuides",
+            "PROGRESS_FW_HARD_STAGE_CONDITIONS_TAB": "FWHardStageConditions",
+            "PROGRESS_FW_HARD_STAGE_SOLVERS_TAB": "FWHardStageSolvers",
+            "PROGRESS_FW_BOSS_SOLVERS_TAB": "ConfiguredBossSolvers",
+        }[key]
+
+    async def fetch_records(_sheet, tab):
+        calls.append(("tab", tab))
+        if tab == "ConfiguredBossSolvers":
+            return [
+                {
+                    "category": "FW_N",
+                    "mode": "normal",
+                    "faction_key": "high_elves",
+                    "boss_stage": "7",
+                    "boss_type": "Turn meter boss",
+                    "enabled": "TRUE",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(service.milestones_config, "arequire_value", require_value)
+    monkeypatch.setattr(service, "afetch_records", fetch_records)
+    monkeypatch.setattr(service, "get_milestones_sheet_id", lambda: "sheet-id")
+
+    fw = asyncio.run(service.get_or_load_faction_wars_data())
+
+    assert fw.boss_solvers[0]["boss_type"] == "Turn meter boss"
+    assert calls == [
+        ("config", "PROGRESS_FW_FACTIONS_TAB"),
+        ("config", "PROGRESS_FW_CHAMPION_GUIDES_TAB"),
+        ("config", "PROGRESS_FW_HARD_STAGE_CONDITIONS_TAB"),
+        ("config", "PROGRESS_FW_HARD_STAGE_SOLVERS_TAB"),
+        ("config", "PROGRESS_FW_BOSS_SOLVERS_TAB"),
+        ("tab", "FWFactions"),
+        ("tab", "FWChampionGuides"),
+        ("tab", "FWHardStageConditions"),
+        ("tab", "FWHardStageSolvers"),
+        ("tab", "ConfiguredBossSolvers"),
+    ]
+
+
+def test_fw_normal_progress_shows_matching_boss_tip_for_boss_stage_only():
+    post = _fw_data("FW_N").posts[0]
+    embed = service.build_faction_wars_progress_embed(
+        post,
+        _fw_static_data(),
+        [
+            {
+                "category": "FW_N",
+                "counter_key": "high_elves",
+                "current_value": "18",
+                "goal_value": "63",
+            }
+        ],
+    )
+    focus = {field.name: field.value for field in embed.fields}["Sheet Focus"]
+
+    assert "High Elves: 18/63" in focus
+    assert " — " not in focus
+    assert "\nBoss 7: Turn meter boss • Decrease speed • Control the boss" in focus
+    assert "Turn meter cuts" not in focus
+    assert "Apothecary" not in focus
+    assert "normal.example" not in focus
+
+    no_tip = service.build_faction_wars_progress_embed(
+        post,
+        _fw_static_data(),
+        [
+            {
+                "category": "FW_N",
+                "counter_key": "high_elves",
+                "current_value": "21",
+                "goal_value": "63",
+            }
+        ],
+    )
+    no_tip_focus = {field.name: field.value for field in no_tip.fields}["Sheet Focus"]
+    assert "High Elves: 21/63" in no_tip_focus
+    assert "Boss 7:" not in no_tip_focus
+
+
+def test_fw_hard_progress_combines_hard_solver_and_boss_tip_without_notes():
+    post = _fw_data("FW_H").posts[0]
+    embed = service.build_faction_wars_progress_embed(
+        post,
+        _fw_static_data(),
+        [
+            {
+                "category": "FW_H",
+                "counter_key": "banner_lords",
+                "current_value": "60",
+                "goal_value": "63",
+            }
+        ],
+    )
+    focus = {field.name: field.value for field in embed.fields}["Sheet Focus"]
+
+    assert " — " not in focus
+    assert "\nStage 21: No revives. • Shields and control • Ragash" in focus
+    assert "\nBoss 21: Health-swap boss • Shield and control • Save cooldowns" in focus
+    assert "Sustain pressure" not in focus
+    assert "Valerie" not in focus
+    assert "boss.example" not in focus
+    assert "Manual boss wave" not in focus
+
+
+def test_fw_progress_does_not_fallback_to_earlier_boss_stage():
+    post = _fw_data("FW_N").posts[0]
+    embed = service.build_faction_wars_progress_embed(
+        post,
+        _fw_static_data(),
+        [
+            {
+                "category": "FW_N",
+                "counter_key": "high_elves",
+                "current_value": "39",
+                "goal_value": "63",
+            }
+        ],
+    )
+    focus = {field.name: field.value for field in embed.fields}["Sheet Focus"]
+
+    assert "High Elves: 39/63" in focus
+    assert "Boss 7:" not in focus
+    assert "Boss 14:" not in focus
