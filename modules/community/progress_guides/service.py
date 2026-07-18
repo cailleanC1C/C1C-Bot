@@ -62,6 +62,7 @@ _FW_FACTIONS_KEY = "PROGRESS_FW_FACTIONS_TAB"
 _FW_CHAMPION_GUIDES_KEY = "PROGRESS_FW_CHAMPION_GUIDES_TAB"
 _FW_HARD_STAGE_CONDITIONS_KEY = "PROGRESS_FW_HARD_STAGE_CONDITIONS_TAB"
 _FW_HARD_STAGE_SOLVERS_KEY = "PROGRESS_FW_HARD_STAGE_SOLVERS_TAB"
+_FW_BOSS_SOLVERS_KEY = "PROGRESS_FW_BOSS_SOLVERS_TAB"
 _MISSIONS_PER_PAGE = 15
 _PICKER_OPTIONS_PER_PAGE = 25
 _FAQ_OPTIONS_PER_PAGE = 25
@@ -2234,6 +2235,7 @@ class FactionWarsData:
     champion_guides: list[Mapping[str, object]]
     hard_stage_conditions: list[Mapping[str, object]]
     hard_stage_solvers: list[Mapping[str, object]]
+    boss_solvers: list[Mapping[str, object]]
 
 
 async def get_or_load_faction_wars_data() -> FactionWarsData:
@@ -2249,6 +2251,7 @@ async def get_or_load_faction_wars_data() -> FactionWarsData:
             milestones_config.arequire_value(_FW_CHAMPION_GUIDES_KEY),
             milestones_config.arequire_value(_FW_HARD_STAGE_CONDITIONS_KEY),
             milestones_config.arequire_value(_FW_HARD_STAGE_SOLVERS_KEY),
+            milestones_config.arequire_value(_FW_BOSS_SOLVERS_KEY),
         )
         rows = await _gather_rows(sheet_id, *tabs)
         _FW_DATA_CACHE = FactionWarsData(*rows)
@@ -2281,7 +2284,7 @@ def _fw_row_matches_category(row: Mapping[str, object], category: str) -> bool:
     if row_category and row_category != category:
         return False
     row_mode = _text(row.get("mode")).casefold()
-    return not row_mode or row_mode == _fw_mode(category)
+    return not row_mode or row_mode == "any" or row_mode == _fw_mode(category)
 
 
 def _fw_faction_key(row: Mapping[str, object]) -> str:
@@ -2385,7 +2388,7 @@ def build_faction_wars_stars_embed(
         total += stars
         status = _text(row.get("status")).casefold()
         icon = "✅" if status == "complete" or stars >= goal else "⏳"
-        lines.append(f"{icon} {label}: {stars}/{goal}⭐")
+        lines.append(f"- {icon} {label}: {stars}/{goal}⭐")
     description = f"Total saved stars: **{total}**\n\n" + "\n".join(lines)
     return discord.Embed(
         title=_embed_title(title),
@@ -2394,45 +2397,81 @@ def build_faction_wars_stars_embed(
     )
 
 
-def _fw_estimated_next_stage(current_stars: int) -> int:
-    return max(1, min((current_stars // 3) + 1, 21))
+def _fw_estimated_next_stage(current_stars: int, goal_stars: int) -> int | None:
+    if goal_stars <= 0 or current_stars >= goal_stars:
+        return None
+    return min((current_stars // 3) + 1, 21)
 
 
-def _fw_progress_solver_hint(
-    fw: FactionWarsData, category: str, faction_key: str, current_stars: int
+def _fw_row_matches_mode(row: Mapping[str, object], category: str) -> bool:
+    row_mode = _text(row.get("mode")).casefold()
+    return not row_mode or row_mode == "any" or row_mode == _fw_mode(category)
+
+
+def _fw_boss_solver_row(
+    fw: FactionWarsData, category: str, faction_key: str, boss_stage: int
+) -> Mapping[str, object] | None:
+    if boss_stage not in {7, 14, 21}:
+        return None
+    return next(
+        (
+            row
+            for row in _fw_enabled_rows(fw.boss_solvers)
+            if _fw_row_matches_category(row, category)
+            and _fw_row_matches_mode(row, category)
+            and _fw_faction_key(row) == faction_key
+            and _int_or_none(row.get("boss_stage")) == boss_stage
+        ),
+        None,
+    )
+
+
+def _fw_hard_solver_hint(
+    fw: FactionWarsData, category: str, faction_key: str, stage: int
 ) -> str:
     if category != _FW_HARD_CATEGORY:
         return ""
-    solver_map = _fw_solver_rows(fw, category, faction_key)
-    if not solver_map:
+    solver = next(iter(_fw_solver_rows(fw, category, faction_key).get(stage, [])), None)
+    if solver is None:
         return ""
-    estimated_stage = _fw_estimated_next_stage(current_stars)
-    stage = next(
-        (value for value in sorted(solver_map) if value >= estimated_stage), None
-    )
-    if stage is None:
-        return ""
-    solver = solver_map[stage][0]
     parts = [
         _strip_visible_urls(solver.get("condition")),
         _strip_visible_urls(solver.get("solver_roles")),
         _strip_visible_urls(solver.get("suggested_champions")),
     ]
-    detail = ". ".join(part.rstrip(".") for part in parts if part)
-    if not detail:
-        return ""
-    return _limit_text(f"Tip: Stage {stage}, {detail}.", 180)
+    detail = " • ".join(part for part in parts if part)
+    return _limit_text(f"Stage {stage}: {detail}", 180) if detail else ""
 
 
-def _fw_progress_focus_line(
-    fw: FactionWarsData, category: str, row: tuple[str, str, int, int]
+def _fw_boss_solver_hint(
+    fw: FactionWarsData, category: str, faction_key: str, stage: int
 ) -> str:
-    key, label, current, goal = row
-    icon = "✅" if goal and current >= goal else "⏳"
-    line = f"{icon} {label}: {current}/{goal}⭐"
-    hint = _fw_progress_solver_hint(fw, category, key, current)
-    if hint:
-        line = f"{line}\n{hint}"
+    row = _fw_boss_solver_row(fw, category, faction_key, stage)
+    if row is None:
+        return ""
+    parts = [
+        _strip_visible_urls(row.get("boss_type")),
+        _strip_visible_urls(row.get("recommended_roles")),
+        _strip_visible_urls(row.get("strategy_note")),
+    ]
+    detail = " • ".join(part for part in parts if part)
+    return _limit_text(f"Boss {stage}: {detail}", 180) if detail else ""
+
+
+def _fw_focus_line(
+    fw: FactionWarsData, category: str, key: str, label: str, current: int, goal: int
+) -> str:
+    line = f"{label}: {current}/{goal}⭐"
+    stage = _fw_estimated_next_stage(current, goal)
+    if stage is None:
+        return line
+    hints = [
+        _fw_hard_solver_hint(fw, category, key, stage),
+        _fw_boss_solver_hint(fw, category, key, stage),
+    ]
+    hints = [hint for hint in hints if hint]
+    if hints:
+        line += "\n" + "\n".join(hints)
     return line
 
 
@@ -2506,7 +2545,11 @@ def build_faction_wars_progress_embed(
     embed.add_field(
         name=_embed_title(post.counter_progress_focus_field_title or "Focus factions"),
         value=_limited_bullets(
-            [_fw_progress_focus_line(fw, post.category, row) for row in focus], 5
+            [
+                _fw_focus_line(fw, post.category, key, label, current, goal)
+                for key, label, current, goal in focus
+            ],
+            8,
         )
         or "All tracked factions are complete.",
         inline=False,
