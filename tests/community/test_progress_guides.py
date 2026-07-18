@@ -3180,6 +3180,13 @@ def _fw_static_data():
                 "stars_per_stage": "3",
                 "max_stars": "63",
             },
+            {
+                "faction_key": "ogryn_tribes",
+                "name": "Ogryn Tribes",
+                "stages": "21",
+                "stars_per_stage": "3",
+                "max_stars": "63",
+            },
         ],
         champion_guides=[
             {
@@ -3219,7 +3226,31 @@ def _fw_static_data():
                 "suggested_champions": "Ragash",
                 "notes": "Manual boss wave.",
                 "enabled": "TRUE",
-            }
+            },
+            {
+                "category": "FW_H",
+                "mode": "hard",
+                "faction_key": "ogryn_tribes",
+                "faction_name": "Ogryn Tribes",
+                "stage_number": "3",
+                "condition": "Stun application",
+                "solver_roles": "Control",
+                "suggested_champions": "Bellower / stun set options",
+                "notes": "Keep waves locked.",
+                "enabled": "TRUE",
+            },
+            {
+                "category": "FW_H",
+                "mode": "hard",
+                "faction_key": "orcs",
+                "faction_name": "Orcs",
+                "stage_number": "5",
+                "condition": "Turn meter control",
+                "solver_roles": "Decrease speed",
+                "suggested_champions": "Robar",
+                "notes": "Target Valk waves.",
+                "enabled": "TRUE",
+            },
         ],
     )
 
@@ -3306,6 +3337,46 @@ def test_fw_my_stars_reads_progress_user_counters(monkeypatch):
         interaction.followup.sent[0]["view"].children[0].placeholder
         == "Pick stars faction"
     )
+
+
+def test_fw_my_stars_uses_status_icons_without_raw_status_text():
+    post = _fw_data("FW_H").posts[0]
+    embed = service.build_faction_wars_stars_embed(
+        post,
+        _fw_static_data(),
+        [
+            {
+                "category": "FW_H",
+                "counter_key": "banner_lords",
+                "counter_label": "Banner Lords",
+                "current_value": "63",
+                "goal_value": "63",
+                "status": "complete",
+            },
+            {
+                "category": "FW_H",
+                "counter_key": "high_elves",
+                "counter_label": "High Elves",
+                "current_value": "63",
+                "goal_value": "63",
+                "status": "",
+            },
+            {
+                "category": "FW_H",
+                "counter_key": "ogryn_tribes",
+                "counter_label": "Ogryn Tribes",
+                "current_value": "2",
+                "goal_value": "63",
+                "status": "in_progress",
+            },
+        ],
+    )
+
+    assert "— in_progress" not in embed.description
+    assert "— complete" not in embed.description
+    assert "✅ Banner Lords: 63/63⭐" in embed.description
+    assert "✅ High Elves: 63/63⭐" in embed.description
+    assert "⏳ Ogryn Tribes: 2/63⭐" in embed.description
 
 
 def test_fw_star_save_appends_and_updates_by_headers(monkeypatch):
@@ -3449,11 +3520,158 @@ def test_fw_progress_summary_uses_saved_user_counters():
         ],
     )
     fields = {field.name: field.value for field in embed.fields}
-    assert embed.description == "Faction Wars Hard: 124/189 stars, 65.6% done, 65 left."
+    assert (
+        embed.description == "Faction Wars Hard: 124/252 stars, 49.2% done, 128 left."
+    )
     assert embed.footer.text == "Sheet progress footer."
     assert "Banner Lords: 63/63" in fields["Sheet Finished"]
     assert "High Elves: 61/63" in fields["Sheet Close"]
-    assert "Orcs: 0/63" in fields["Sheet Focus"]
+    assert "Ogryn Tribes: 0/63" in fields["Sheet Focus"]
+
+
+def test_fw_h_progress_includes_compact_solver_hints_for_lowest_stars():
+    post = _fw_data("FW_H").posts[0]
+    embed = service.build_faction_wars_progress_embed(
+        post,
+        _fw_static_data(),
+        [
+            {
+                "category": "FW_H",
+                "counter_key": "ogryn_tribes",
+                "counter_label": "Ogryn Tribes",
+                "current_value": "2",
+                "goal_value": "63",
+            },
+            {
+                "category": "FW_H",
+                "counter_key": "orcs",
+                "counter_label": "Orcs",
+                "current_value": "12",
+                "goal_value": "63",
+            },
+        ],
+    )
+    focus = {field.name: field.value for field in embed.fields}["Sheet Focus"]
+
+    assert "Sheet Finished" in [field.name for field in embed.fields]
+    assert "Sheet Close" in [field.name for field in embed.fields]
+    assert "Sheet Focus" in [field.name for field in embed.fields]
+    assert "⏳ Ogryn Tribes: 2/63⭐" in focus
+    assert (
+        "Tip: Stage 3, Stun application. Control. Bellower / stun set options." in focus
+    )
+    assert "Keep waves locked" not in focus
+    assert all(
+        len(line) <= 180 for line in focus.splitlines() if line.startswith("Tip:")
+    )
+
+
+def test_fw_normal_progress_does_not_include_solver_hints():
+    post = _fw_data("FW_N").posts[0]
+    embed = service.build_faction_wars_progress_embed(
+        post,
+        _fw_static_data(),
+        [
+            {
+                "category": "FW_N",
+                "counter_key": "ogryn_tribes",
+                "counter_label": "Ogryn Tribes",
+                "current_value": "2",
+                "goal_value": "63",
+            }
+        ],
+    )
+    focus = {field.name: field.value for field in embed.fields}["Sheet Focus"]
+
+    assert "Ogryn Tribes: 2/63⭐" in focus
+    assert "Tip:" not in focus
+    assert "Stage 3" not in focus
+
+
+def test_fw_progress_solver_hints_match_estimated_stage_number():
+    post = _fw_data("FW_H").posts[0]
+    embed = service.build_faction_wars_progress_embed(
+        post,
+        _fw_static_data(),
+        [
+            {
+                "category": "FW_H",
+                "counter_key": "banner_lords",
+                "counter_label": "Banner Lords",
+                "current_value": "63",
+                "goal_value": "63",
+            },
+            {
+                "category": "FW_H",
+                "counter_key": "high_elves",
+                "counter_label": "High Elves",
+                "current_value": "63",
+                "goal_value": "63",
+            },
+            {
+                "category": "FW_H",
+                "counter_key": "ogryn_tribes",
+                "counter_label": "Ogryn Tribes",
+                "current_value": "63",
+                "goal_value": "63",
+            },
+            {
+                "category": "FW_H",
+                "counter_key": "orcs",
+                "counter_label": "Orcs",
+                "current_value": "12",
+                "goal_value": "63",
+            },
+        ],
+    )
+    focus = {field.name: field.value for field in embed.fields}["Sheet Focus"]
+
+    assert "Tip: Stage 5, Turn meter control." in focus
+    assert "Stage 3" not in focus
+
+
+def test_fw_progress_does_not_show_stale_early_solver_hint_for_late_progress():
+    post = _fw_data("FW_H").posts[0]
+    embed = service.build_faction_wars_progress_embed(
+        post,
+        _fw_static_data(),
+        [
+            {
+                "category": "FW_H",
+                "counter_key": "banner_lords",
+                "counter_label": "Banner Lords",
+                "current_value": "63",
+                "goal_value": "63",
+            },
+            {
+                "category": "FW_H",
+                "counter_key": "high_elves",
+                "counter_label": "High Elves",
+                "current_value": "63",
+                "goal_value": "63",
+            },
+            {
+                "category": "FW_H",
+                "counter_key": "ogryn_tribes",
+                "counter_label": "Ogryn Tribes",
+                "current_value": "63",
+                "goal_value": "63",
+            },
+            {
+                "category": "FW_H",
+                "counter_key": "orcs",
+                "counter_label": "Orcs",
+                "current_value": "62",
+                "goal_value": "63",
+            },
+        ],
+    )
+    focus = {field.name: field.value for field in embed.fields}["Sheet Focus"]
+
+    assert "⏳ Orcs: 62/63⭐" in focus
+    assert "Tip:" not in focus
+    assert "Stage 5" not in focus
+    assert "Turn meter control" not in focus
 
 
 def test_fw_faction_guide_uses_live_headers_and_sheet_field_titles():

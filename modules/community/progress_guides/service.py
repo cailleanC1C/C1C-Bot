@@ -2383,15 +2383,57 @@ def build_faction_wars_stars_embed(
         stars = _fw_counter_value(row)
         goal = _fw_goal_value(row, fallback_goal)
         total += stars
-        status = _text(row.get("status"))
-        suffix = f" — {status}" if status else ""
-        lines.append(f"- {label}: {stars}/{goal}⭐{suffix}")
+        status = _text(row.get("status")).casefold()
+        icon = "✅" if status == "complete" or stars >= goal else "⏳"
+        lines.append(f"{icon} {label}: {stars}/{goal}⭐")
     description = f"Total saved stars: **{total}**\n\n" + "\n".join(lines)
     return discord.Embed(
         title=_embed_title(title),
         description=_embed_description(description),
         color=discord.Color.blurple(),
     )
+
+
+def _fw_estimated_next_stage(current_stars: int) -> int:
+    return max(1, min((current_stars // 3) + 1, 21))
+
+
+def _fw_progress_solver_hint(
+    fw: FactionWarsData, category: str, faction_key: str, current_stars: int
+) -> str:
+    if category != _FW_HARD_CATEGORY:
+        return ""
+    solver_map = _fw_solver_rows(fw, category, faction_key)
+    if not solver_map:
+        return ""
+    estimated_stage = _fw_estimated_next_stage(current_stars)
+    stage = next(
+        (value for value in sorted(solver_map) if value >= estimated_stage), None
+    )
+    if stage is None:
+        return ""
+    solver = solver_map[stage][0]
+    parts = [
+        _strip_visible_urls(solver.get("condition")),
+        _strip_visible_urls(solver.get("solver_roles")),
+        _strip_visible_urls(solver.get("suggested_champions")),
+    ]
+    detail = ". ".join(part.rstrip(".") for part in parts if part)
+    if not detail:
+        return ""
+    return _limit_text(f"Tip: Stage {stage}, {detail}.", 180)
+
+
+def _fw_progress_focus_line(
+    fw: FactionWarsData, category: str, row: tuple[str, str, int, int]
+) -> str:
+    key, label, current, goal = row
+    icon = "✅" if goal and current >= goal else "⏳"
+    line = f"{icon} {label}: {current}/{goal}⭐"
+    hint = _fw_progress_solver_hint(fw, category, key, current)
+    if hint:
+        line = f"{line}\n{hint}"
+    return line
 
 
 def build_faction_wars_progress_embed(
@@ -2464,7 +2506,7 @@ def build_faction_wars_progress_embed(
     embed.add_field(
         name=_embed_title(post.counter_progress_focus_field_title or "Focus factions"),
         value=_limited_bullets(
-            [f"{label}: {current}/{goal}⭐" for _k, label, current, goal in focus], 8
+            [_fw_progress_focus_line(fw, post.category, row) for row in focus], 5
         )
         or "All tracked factions are complete.",
         inline=False,
