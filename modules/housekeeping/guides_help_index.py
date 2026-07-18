@@ -263,28 +263,34 @@ async def _config(key: str, default: str | None = None) -> str | None:
     return await recruitment.get_config_value_async(key, default)
 
 
-async def _resolve_category(
-    bot: discord.Client, category_id: int | None
+def _resolve_category_from_guild(
+    guild: object, category_id: int | None
 ) -> tuple[object | None, str | None]:
     if category_id is None:
         return None, "missing_source_category"
-    channel = bot.get_channel(category_id)
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(category_id)
-        except discord.NotFound:
-            return None, "missing_source_category"
-        except discord.Forbidden:
-            return None, "discord_permission_issue"
-        except discord.HTTPException:
-            return None, "discord_fetch_issue"
-    if not (
-        isinstance(channel, discord.CategoryChannel)
-        or getattr(channel, "type", None) == discord.ChannelType.category
-        or hasattr(channel, "channels")
-    ):
+
+    categories = list(getattr(guild, "categories", []) or [])
+    for category in categories:
+        if _parse_int(getattr(category, "id", None)) == category_id:
+            return category, None
+
+    resolved = None
+    get_channel = getattr(guild, "get_channel", None)
+    if callable(get_channel):
+        resolved = get_channel(category_id)
+
+    if resolved is not None:
+        log.warning(
+            "guides help index source category resolved outside guild.categories: "
+            "source_id=%s resolved_class=%s resolved_name=%s resolved_type=%s",
+            category_id,
+            resolved.__class__.__name__,
+            getattr(resolved, "name", None),
+            getattr(resolved, "type", None),
+        )
         return None, "invalid_category_type"
-    return channel, None
+
+    return None, "missing_source_category"
 
 
 def _extract_message_slots(state: Mapping[str, str]) -> list[tuple[int, int]]:
@@ -316,12 +322,6 @@ async def refresh_guides_help_index(
     if target_id is None:
         return GuidesHelpIndexResult(status="error", reason="missing_target_channel")
 
-    category, category_error = await _resolve_category(bot, source_id)
-    if category_error:
-        await runtime_helpers.send_log_message(
-            f"❌ Guides help index — error • reason={category_error}"
-        )
-        return GuidesHelpIndexResult(status="error", reason=category_error)
     target, target_error = await runtime_helpers.resolve_configured_text_channel(
         bot,
         channel_id=target_id,
@@ -339,6 +339,15 @@ async def refresh_guides_help_index(
             f"❌ Guides help index — error • reason={reason}"
         )
         return GuidesHelpIndexResult(status="error", reason=reason)
+
+    category, category_error = _resolve_category_from_guild(
+        getattr(target, "guild", None), source_id
+    )
+    if category_error:
+        await runtime_helpers.send_log_message(
+            f"❌ Guides help index — error • reason={category_error}"
+        )
+        return GuidesHelpIndexResult(status="error", reason=category_error)
 
     try:
         state = await server_map_state.fetch_state()

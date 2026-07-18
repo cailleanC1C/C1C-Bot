@@ -45,11 +45,11 @@ class Message:
 
 
 class Target:
-    def __init__(self, messages=None):
+    def __init__(self, messages=None, guild=None):
         self.messages = {m.id: m for m in (messages or [])}
         self.sent = []
         self.id = 60
-        self.guild = SimpleNamespace(name="guild")
+        self.guild = guild or SimpleNamespace(name="guild", categories=[])
 
     async def fetch_message(self, mid):
         if mid not in self.messages:
@@ -107,6 +107,56 @@ async def _noop(*args, **kwargs):
 
 async def _ret(v):
     return v
+
+
+def test_resolve_category_from_guild_returns_matching_guild_category():
+    source_category = SimpleNamespace(id=50, name="🆘GUIDES & HELP", channels=[])
+    other_category = SimpleNamespace(id=51, name="Other", channels=[])
+    guild = SimpleNamespace(categories=[other_category, source_category])
+
+    category, reason = ghi._resolve_category_from_guild(guild, 50)
+
+    assert category is source_category
+    assert reason is None
+
+
+def test_resolve_category_from_guild_invalid_when_get_channel_finds_non_category(
+    caplog,
+):
+    non_category = SimpleNamespace(
+        id=50,
+        name="general",
+        type=ghi.discord.ChannelType.text,
+    )
+
+    class Guild:
+        categories = []
+
+        def get_channel(self, cid):
+            return non_category if cid == 50 else None
+
+    with caplog.at_level("WARNING", logger="c1c.housekeeping.guides_help_index"):
+        category, reason = ghi._resolve_category_from_guild(Guild(), 50)
+
+    assert category is None
+    assert reason == "invalid_category_type"
+    assert "source_id=50" in caplog.text
+    assert "resolved_class=SimpleNamespace" in caplog.text
+    assert "resolved_name=general" in caplog.text
+    assert "resolved_type=text" in caplog.text
+
+
+def test_resolve_category_from_guild_missing_when_no_category_or_channel_found():
+    class Guild:
+        categories = [SimpleNamespace(id=51, name="Other", channels=[])]
+
+        def get_channel(self, cid):
+            return None
+
+    category, reason = ghi._resolve_category_from_guild(Guild(), 50)
+
+    assert category is None
+    assert reason == "missing_source_category"
 
 
 def test_discover_forum_channels_from_category_and_blacklist():
@@ -225,8 +275,12 @@ def test_refresh_edits_reuses_deletes_and_pin_nonfatal(monkeypatch):
     async def run():
         a = tag(10, "Missions", 0)
         f = forum(1, "forum", [a], [thread(12, "y", [a])])
-        target = Target([Message(201, "old", pin_fails=True), Message(202, "stale")])
-        bot = Bot({50: SimpleNamespace(id=50, channels=[f]), 60: target})
+        category = SimpleNamespace(id=50, channels=[f])
+        target = Target(
+            [Message(201, "old", pin_fails=True), Message(202, "stale")],
+            guild=SimpleNamespace(name="guild", categories=[category]),
+        )
+        bot = Bot({60: target})
         monkeypatch.setattr(ghi.feature_flags, "is_enabled", lambda key: True)
 
         async def cfg(key, default=None):
@@ -274,7 +328,8 @@ def test_message_lifecycle_failures_return_clear_reasons(monkeypatch):
     async def run():
         a = tag(10, "Missions", 0)
         f = forum(1, "forum", [a], [thread(12, "y", [a])])
-        bot = Bot({50: SimpleNamespace(id=50, channels=[f])})
+        category = SimpleNamespace(id=50, channels=[f])
+        bot = Bot({})
         monkeypatch.setattr(ghi.feature_flags, "is_enabled", lambda key: True)
 
         async def cfg(key, default=None):
@@ -300,7 +355,8 @@ def test_message_lifecycle_failures_return_clear_reasons(monkeypatch):
                     message="boom",
                 )
 
-        send_fail = SendFailTarget([])
+        guild = SimpleNamespace(name="guild", categories=[category])
+        send_fail = SendFailTarget([], guild=guild)
         monkeypatch.setattr(
             ghi.runtime_helpers,
             "resolve_configured_text_channel",
@@ -317,7 +373,7 @@ def test_message_lifecycle_failures_return_clear_reasons(monkeypatch):
                     message="boom",
                 )
 
-        edit_fail = Target([EditFailMessage(201, "old")])
+        edit_fail = Target([EditFailMessage(201, "old")], guild=guild)
         monkeypatch.setattr(
             ghi.runtime_helpers,
             "resolve_configured_text_channel",
@@ -332,7 +388,7 @@ def test_message_lifecycle_failures_return_clear_reasons(monkeypatch):
             await ghi.refresh_guides_help_index(bot, force=True)
         ).reason == "message_edit_failed"
 
-        target = Target([])
+        target = Target([], guild=guild)
         monkeypatch.setattr(
             ghi.runtime_helpers,
             "resolve_configured_text_channel",
@@ -355,8 +411,9 @@ def test_manual_force_bypasses_interval(monkeypatch):
     async def run():
         a = tag(10, "Missions", 0)
         f = forum(1, "forum", [a], [thread(12, "y", [a])])
-        target = Target([])
-        bot = Bot({50: SimpleNamespace(id=50, channels=[f]), 60: target})
+        category = SimpleNamespace(id=50, channels=[f])
+        target = Target([], guild=SimpleNamespace(name="guild", categories=[category]))
+        bot = Bot({60: target})
         monkeypatch.setattr(ghi.feature_flags, "is_enabled", lambda key: True)
 
         async def cfg(key, default=None):
@@ -387,5 +444,95 @@ def test_manual_force_bypasses_interval(monkeypatch):
             await ghi.refresh_guides_help_index(bot, force=False)
         ).reason == "interval_not_elapsed"
         assert (await ghi.refresh_guides_help_index(bot, force=True)).status == "ok"
+
+    asyncio.run(run())
+
+
+def test_refresh_resolves_source_category_from_target_guild_categories(monkeypatch):
+    async def run():
+        a = tag(10, "Missions", 0)
+        f = forum(1, "forum", [a], [thread(12, "y", [a])])
+        source_category = SimpleNamespace(id=50, name="🆘GUIDES & HELP", channels=[f])
+        bad_old_resolver_object = SimpleNamespace(
+            id=50,
+            name="not-a-category-cache-shape",
+            type="text",
+        )
+        guild = SimpleNamespace(name="guild", categories=[source_category])
+        target = Target([], guild=guild)
+        bot = Bot({50: bad_old_resolver_object, 60: target})
+        monkeypatch.setattr(ghi.feature_flags, "is_enabled", lambda key: True)
+
+        async def cfg(key, default=None):
+            return {
+                ghi.CONFIG_SOURCE_CATEGORY_ID: "50",
+                ghi.CONFIG_TARGET_CHANNEL_ID: "60",
+                ghi.CONFIG_REFRESH_DAYS: "1",
+            }.get(key, default)
+
+        monkeypatch.setattr(ghi, "_config", cfg)
+        monkeypatch.setattr(
+            ghi.runtime_helpers,
+            "resolve_configured_text_channel",
+            lambda *a, **k: _ret((target, None)),
+        )
+        monkeypatch.setattr(ghi.runtime_helpers, "send_log_message", lambda msg: _noop())
+        monkeypatch.setattr(ghi.server_map_state, "fetch_state", lambda: _ret({}))
+        monkeypatch.setattr(ghi.server_map_state, "update_state", lambda entries: _noop())
+
+        result = await ghi.refresh_guides_help_index(bot, force=True, actor="command")
+
+        assert result.status == "ok"
+        assert result.indexed_posts == 1
+        assert target.sent
+
+    asyncio.run(run())
+
+
+def test_non_category_source_id_returns_invalid_category_type_with_diagnostics(
+    monkeypatch, caplog
+):
+    async def run():
+        non_category = SimpleNamespace(
+            id=50,
+            name="general",
+            type=ghi.discord.ChannelType.text,
+        )
+
+        class Guild:
+            name = "guild"
+            categories = []
+
+            def get_channel(self, cid):
+                return non_category if cid == 50 else None
+
+        target = Target([], guild=Guild())
+        bot = Bot({60: target})
+        monkeypatch.setattr(ghi.feature_flags, "is_enabled", lambda key: True)
+
+        async def cfg(key, default=None):
+            return {
+                ghi.CONFIG_SOURCE_CATEGORY_ID: "50",
+                ghi.CONFIG_TARGET_CHANNEL_ID: "60",
+            }.get(key, default)
+
+        monkeypatch.setattr(ghi, "_config", cfg)
+        monkeypatch.setattr(
+            ghi.runtime_helpers,
+            "resolve_configured_text_channel",
+            lambda *a, **k: _ret((target, None)),
+        )
+        monkeypatch.setattr(ghi.runtime_helpers, "send_log_message", lambda msg: _noop())
+
+        with caplog.at_level("WARNING", logger="c1c.housekeeping.guides_help_index"):
+            result = await ghi.refresh_guides_help_index(bot, force=True)
+
+        assert result.status == "error"
+        assert result.reason == "invalid_category_type"
+        log_text = caplog.text
+        assert "source_id=50" in log_text
+        assert "resolved_class=SimpleNamespace" in log_text
+        assert "resolved_name=general" in log_text
+        assert "resolved_type=text" in log_text
 
     asyncio.run(run())
