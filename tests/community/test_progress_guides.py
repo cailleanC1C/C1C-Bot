@@ -3801,6 +3801,47 @@ def test_fw_faction_guide_uses_live_headers_and_sheet_field_titles():
     assert fields["Sheet Note"] == "Build control first."
 
 
+def test_fw_champion_guide_ignores_legacy_champion_columns():
+    post = _fw_data("FW_H").posts[0]
+    fw = service.FactionWarsData(
+        factions=[
+            {
+                "faction_key": "DE",
+                "name": "Dark Elves",
+                "stages": "21",
+                "stars_per_stage": "3",
+                "max_stars": "63",
+            }
+        ],
+        champion_guides=[
+            {
+                "category": "FW_H",
+                "faction_key": "DE",
+                "faction_name": "Dark Elves",
+                "recommended_champions": "",
+                "champion_1": "Should Not Appear",
+                "champion_2": "Also Should Not Appear",
+                "core_roles": "Control and revive.",
+                "accessible_options": "",
+                "planning_note": "",
+                "enabled": "TRUE",
+            }
+        ],
+        hard_stage_conditions=[],
+        hard_stage_solvers=[],
+        boss_solvers=[],
+    )
+
+    embed = service.build_faction_wars_guide_embed(post, fw, "DE")
+
+    fields = {field.name: field.value for field in embed.fields}
+    all_field_text = "\n".join(f"{field.name}\n{field.value}" for field in embed.fields)
+    assert "Should Not Appear" not in all_field_text
+    assert "Also Should Not Appear" not in all_field_text
+    assert "Sheet Champions" not in fields
+    assert fields["Sheet Roles"] == "Control and revive."
+
+
 def test_fw_conditions_uses_stage_columns_and_solver_stage_number():
     post = _fw_data("FW_H").posts[0]
     embed = service.build_faction_wars_conditions_embed(

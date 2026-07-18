@@ -2706,12 +2706,16 @@ def build_faction_wars_guide_embed(
             or "No champion guide is configured for that faction yet."
         )
         return embed
+    champion_value = _text(row.get("recommended_champions"))
+    if champion_value:
+        embed.add_field(
+            name=_embed_title(
+                post.faction_guide_champions_field_title or "Recommended champions"
+            ),
+            value=_limit_text(champion_value, _FIELD_LIMIT),
+            inline=False,
+        )
     for title, key, fallback in (
-        (
-            post.faction_guide_champions_field_title,
-            "recommended_champions",
-            "Recommended champions",
-        ),
         (post.faction_guide_roles_field_title, "core_roles", "Core roles"),
         (
             post.faction_guide_accessible_field_title,
