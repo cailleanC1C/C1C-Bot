@@ -3,6 +3,8 @@ import datetime as dt
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from modules.community.fusion import scheduler as fusion_scheduler
 
 
@@ -184,3 +186,62 @@ def test_announcement_refresh_uses_event_boundaries(monkeypatch) -> None:
     )
     assert job.next_run == event_start
     assert job.next_run not in {parent.start_at_utc, parent.end_at_utc}
+
+
+def test_announcement_refresh_keeps_earlier_daily_refresh(monkeypatch) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    parent = _fusion(now, start_delta=-24, end_delta=72)
+    event = SimpleNamespace()
+    event_start = now + dt.timedelta(days=2)
+    event_end = event_start + dt.timedelta(hours=1)
+    runtime = _runtime()
+    _patch_fusion_data(monkeypatch, published=(parent,), events=(event,))
+    monkeypatch.setattr(
+        fusion_scheduler.fusion_sheets,
+        "get_valid_event_timing",
+        lambda _event, **_kwargs: (event_start, event_end),
+    )
+
+    asyncio.run(fusion_scheduler.reconcile_fusion_jobs(runtime))
+    job = next(
+        job
+        for job in runtime.scheduler.jobs
+        if job.name == "fusion_announcement_refresh"
+    )
+    assert job.next_run == fusion_scheduler._next_daily(now)
+
+
+def test_grouped_callback_failure_rearms_due_job(monkeypatch) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    target = _fusion(now)
+    runtime = _runtime()
+    _patch_fusion_data(monkeypatch, target=target)
+
+    async def settings(**_kwargs):
+        return SimpleNamespace(group_events=True, grouped_post_time_utc="00:00")
+
+    async def sent_keys(_target):
+        return set(), True
+
+    monkeypatch.setattr(
+        fusion_scheduler.fusion_sheets, "get_fusion_reminder_settings", settings
+    )
+    monkeypatch.setattr(fusion_scheduler, "_load_grouped_sent_keys", sent_keys)
+    monkeypatch.setattr(fusion_scheduler, "_next_grouped_due", lambda **_kwargs: now)
+    monkeypatch.setattr(
+        fusion_scheduler,
+        "process_fusion_reminders",
+        AsyncMock(side_effect=RuntimeError("unexpected")),
+    )
+
+    asyncio.run(fusion_scheduler.reconcile_fusion_jobs(runtime))
+    job = next(
+        job for job in runtime.scheduler.jobs if job.name == "fusion_grouped_reminders"
+    )
+    with pytest.raises(RuntimeError, match="unexpected"):
+        asyncio.run(job._runner())
+
+    assert job.next_run is not None
+    assert job.next_run >= dt.datetime.now(dt.timezone.utc) + dt.timedelta(
+        minutes=14, seconds=59
+    )

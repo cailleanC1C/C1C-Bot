@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 from typing import TYPE_CHECKING, Awaitable, Callable
@@ -66,7 +67,7 @@ async def reconcile_fusion_jobs(
                 )
                 if timing is not None:
                     event_boundaries.extend(value for value in timing if value > now)
-        refresh_due = min(event_boundaries) if event_boundaries else _next_daily(now)
+        refresh_due = min([_next_daily(now), *event_boundaries])
         specs.append(
             (
                 "fusion_announcement_refresh",
@@ -98,11 +99,20 @@ async def reconcile_fusion_jobs(
         )
 
         async def runner(job=job, callback=callback, name=name) -> None:
-            await callback()
-            await reconcile_fusion_jobs(
-                runtime,
-                include_cleanup_catchup=name != "fusion_role_cleanup",
-            )
+            try:
+                await callback()
+                await reconcile_fusion_jobs(
+                    runtime,
+                    include_cleanup_catchup=name != "fusion_role_cleanup",
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # _DueJob clears next_run before invoking us. Unexpected owner
+                # failures must leave a safe retry armed rather than silently
+                # disabling the job until the daily reconciliation pass.
+                job.reschedule(dt.datetime.now(dt.timezone.utc) + _DUE_JOB_RETRY_DELAY)
+                raise
             if name == "fusion_grouped_reminders":
                 completed_at = dt.datetime.now(dt.timezone.utc)
                 next_due = job.next_run

@@ -521,6 +521,34 @@ def test_due_job_catches_up_once_then_backs_off_if_target_remains_missing(
     )
 
 
+def test_due_job_callback_failure_rearms_instead_of_disarming(monkeypatch) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    reminder = _make_reset_reminder(next_scheduled_post_utc=now)
+    scheduler._last_successful_load["records"] = [
+        scheduler._ResetReminderRecord(row_number=7, reminder=reminder)
+    ]
+    runtime = SimpleNamespace(bot=SimpleNamespace(), scheduler=_FakeScheduler())
+    calls = 0
+
+    async def _process(_bot):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(scheduler, "process_reset_reminders", _process)
+    asyncio.run(scheduler.reconcile_reset_reminder_jobs(runtime))
+    job = next(job for job in runtime.scheduler.jobs if job.name == "reset_reminders")
+
+    with pytest.raises(RuntimeError, match="unexpected"):
+        asyncio.run(job._runner())
+
+    assert job.next_run is not None
+    assert job.next_run >= dt.datetime.now(dt.timezone.utc) + dt.timedelta(
+        minutes=14, seconds=59
+    )
+
+
 def _run_reset_process(monkeypatch, reminder, now):
     record = scheduler._ResetReminderRecord(row_number=7, reminder=reminder)
     channel = _DummyChannel()

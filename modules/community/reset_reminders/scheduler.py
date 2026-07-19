@@ -1253,7 +1253,16 @@ async def reconcile_reset_reminder_jobs(runtime: "Runtime") -> None:
     )
 
     async def _runner() -> None:
-        await process_reset_reminders(runtime.bot)
+        try:
+            await process_reset_reminders(runtime.bot)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # _DueJob clears next_run before invoking the owner. Preserve a
+            # bounded retry when an unexpected failure bypasses normal cache
+            # reconciliation instead of leaving this job silently disarmed.
+            job.reschedule(_utc_now() + _DUE_JOB_RETRY_DELAY)
+            raise
         now_utc = _utc_now()
         next_due = _earliest_cached_due()
         if next_due is not None and next_due <= now_utc:
