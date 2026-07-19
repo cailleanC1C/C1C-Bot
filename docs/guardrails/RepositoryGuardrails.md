@@ -115,7 +115,6 @@ Every audit and CI check validates against this document.
 
 - **G-01 Version Control:** Versions (bot, footers, changelog) change only on explicit instruction from the owner.
 - **G-02 Codex Scope:** Codex performs only what the PR body instructs—no implicit deletions or moves.
-- **G-03 PR Metadata:** PR bodies include the `[meta]...[/meta]` block for labels and milestone.
 - **G-04 Docs Discipline:** Any code change that affects docs must update them in the same PR.
 - **G-05 Audit-First:** Destructive refactors or removals require a prior audit that proves safety.
 - **G-06 Naming:** Filenames are `lower_snake_case.md` (no spaces, no “Phase”).
@@ -153,4 +152,4 @@ Every audit and CI check validates against this document.
 ### Verification
 Compliance script must check: structure (S), code (C), docs (D), governance (G), feature toggles (F) and write `AUDIT/<timestamp>_GUARDRAILS/report.md`.
 
-Doc last updated: 2025-12-31 (v0.9.8.2)
+Doc last updated: 2026-07-19 (v0.9.8.2)

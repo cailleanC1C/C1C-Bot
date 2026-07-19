@@ -69,19 +69,6 @@ Details here.
     assert category.violations[0].rule_id == "G-09"
 
 
-def test_g03_requires_meta_block() -> None:
-    body = """Summary only
-
-Tests: Added
-Docs: Added
-"""
-    category = guardrails_suite.CategoryResult("Governance (G)")
-    guardrails_suite.check_g03(category, body)
-
-    assert category.status == "fail"
-    assert category.violations[0].rule_id == "G-03"
-
-
 def test_f04_uses_feature_registry_and_accessor(tmp_path: Path, monkeypatch: object) -> None:
     _configure_roots(tmp_path, monkeypatch)
 
@@ -235,15 +222,13 @@ def test_run_checks_covers_all_codes(tmp_path: Path, monkeypatch: object) -> Non
         guardrails_suite, "_git_diff_status", lambda base_ref: {"modules/bad_import.py": "M"}
     )
 
-    pr_body = (
-        "[meta]\nlabels: guardrails\nmilestone: Harmonize v1.0\n[/meta]\n\n"
-        "Tests:\nNot required (reason: CI-only)\nDocs:\nNot required (reason: CI-only)\n"
-    )
+    pr_body = "Tests: Not required (reason: CI-only)\nDocs: Not required (reason: CI-only)\n"
 
     suite = guardrails_suite.run_checks(None, pr_body=pr_body, parity_status="success", pr_number=1)
 
     codes = {result.code for result in suite.check_results}
     assert codes == {check.code for check in guardrails_suite.CHECKS}
+    assert "G-03" not in codes
 
     c03_result = next(result for result in suite.check_results if result.code == "C-03")
     assert c03_result.status == "fail"
@@ -268,7 +253,7 @@ def test_pr_scope_ignores_unchanged_historical_violations(
 
     suite = guardrails_suite.run_checks(
         "origin/main",
-        pr_body="Tests: passed\nDocs: not required\n[meta]\nlabels: bug\nmilestone: Harmonize v1.0\n[/meta]",
+        pr_body="Tests: passed\nDocs: not required",
         parity_status="success",
         pr_number=1017,
     )
@@ -292,7 +277,7 @@ def test_pr_scope_keeps_violations_in_changed_files(tmp_path: Path, monkeypatch:
 
     suite = guardrails_suite.run_checks(
         "origin/main",
-        pr_body="Tests: passed\nDocs: not required\n[meta]\nlabels: bug\nmilestone: Harmonize v1.0\n[/meta]",
+        pr_body="Tests: passed\nDocs: not required",
         parity_status="success",
         pr_number=1017,
     )
@@ -328,10 +313,7 @@ def test_run_all_checks_returns_results(tmp_path: Path, monkeypatch: object) -> 
         guardrails_suite, "_git_diff_status", lambda base_ref: {"modules/bad_import.py": "M"}
     )
 
-    pr_body = (
-        "[meta]\nlabels: guardrails\nmilestone: Harmonize v1.0\n[/meta]\n\n"
-        "Tests:\nNot required (reason: CI-only)\nDocs:\nNot required (reason: CI-only)\n"
-    )
+    pr_body = "Tests: Not required (reason: CI-only)\nDocs: Not required (reason: CI-only)\n"
 
     results, violations = guardrails_suite.run_all_checks(
         base_ref=None, pr_number=1, pr_body=pr_body, parity_status="success"
