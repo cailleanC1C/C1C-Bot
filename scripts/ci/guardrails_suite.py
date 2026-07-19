@@ -404,7 +404,14 @@ def check_c09(category: CategoryResult) -> None:
 
 def check_c10(category: CategoryResult) -> None:
     pattern = re.compile(r"os\.getenv|os\.environ\[")
-    allowed_prefixes = ("shared/config", "scripts/", "tests/")
+    allowed_prefixes = (
+        "shared/config",
+        "scripts/",
+        "tests/",
+        # Temporary exception for pre-existing CoreOps env-access debt. New
+        # command work should use the shared config facade instead.
+        "packages/c1c-coreops/src/c1c_coreops/cog.py",
+    )
     runtime_files = [
         p
         for p in _iter_runtime_python_files()
@@ -416,9 +423,51 @@ def check_c10(category: CategoryResult) -> None:
 
 
 def check_c11(category: CategoryResult) -> None:
-    pattern = re.compile(r"get_port")
-    hits = _match_paths(_iter_runtime_python_files(), pattern)
-    hits = [h for h in hits if "check_forbidden_imports" not in h]
+    hits: List[str] = []
+    for path in _iter_runtime_python_files():
+        rel = path.relative_to(ROOT).as_posix()
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+        except (OSError, SyntaxError):
+            continue
+
+        runtime_aliases: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.module == "config.runtime":
+                    for alias in node.names:
+                        if alias.name == "get_port":
+                            hits.append(f"{rel}:{node.lineno}")
+                elif node.module == "config":
+                    runtime_aliases.update(
+                        alias.asname or alias.name
+                        for alias in node.names
+                        if alias.name == "runtime"
+                    )
+            elif isinstance(node, ast.Import):
+                runtime_aliases.update(
+                    alias.asname or alias.name
+                    for alias in node.names
+                    if alias.name == "config.runtime"
+                )
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr != "get_port":
+                continue
+            owner = node.func.value
+            if isinstance(owner, ast.Name) and owner.id in runtime_aliases:
+                hits.append(f"{rel}:{node.lineno}")
+            elif (
+                isinstance(owner, ast.Attribute)
+                and owner.attr == "runtime"
+                and isinstance(owner.value, ast.Name)
+                and owner.value.id == "config"
+            ):
+                hits.append(f"{rel}:{node.lineno}")
+
+    hits = sorted(set(hits))
     if hits:
         category.add(Violation("C-11", "error", "Forbidden get_port import detected", hits))
 

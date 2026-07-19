@@ -28,7 +28,6 @@ from config.runtime import (
     get_watchdog_stall_sec,
 )
 from shared import logfmt
-from shared import config as shared_config
 from shared import socket_heartbeat as hb
 from c1c_coreops.render import (
     ChecksheetEmbedData,
@@ -2029,7 +2028,7 @@ class CoreOpsCog(commands.Cog):
 
         start = time.monotonic()
         try:
-            await shared_config.areload_config()
+            await _ensure_config_module().areload_config()
         except Exception as exc:  # pragma: no cover - defensive guard
             msg, extra = sanitize_log(
                 f"{logfmt.LOG_EMOJI['lifecycle']} **CoreOps** — config reload failed",

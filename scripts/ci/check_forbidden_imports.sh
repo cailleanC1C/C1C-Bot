@@ -8,6 +8,12 @@ shopt -s globstar nullglob
 
 echo "🔍 Guardrail: scanning for forbidden imports (shared.config → get_port)..."
 
+if ! command -v rg >/dev/null 2>&1; then
+  echo "❌ Guardrail dependency missing: install ripgrep (rg)."
+  exit 2
+fi
+
+set +e
 matches=$(rg -n --hidden --no-ignore \
   -g '!AUDIT/**' \
   -g '!**/.git/**' \
@@ -16,7 +22,14 @@ matches=$(rg -n --hidden --no-ignore \
   -g '!**/venv/**' \
   -g '!**/dist/**' \
   -g '!**/build/**' \
-  "(from\\s+shared\\.config\\s+import[^\\n]*\\bget_port\\b|shared\\.config\\.get_port)" || true)
+  "(from\\s+shared\\.config\\s+import[^\\n]*\\bget_port\\b|shared\\.config\\.get_port)")
+rg_status=$?
+set -e
+
+if (( rg_status > 1 )); then
+  echo "❌ ripgrep failed while scanning forbidden imports (status ${rg_status})."
+  exit "${rg_status}"
+fi
 
 if [[ -n "${matches}" ]]; then
   echo "❌ Forbidden import path detected:"
