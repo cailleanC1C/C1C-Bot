@@ -38,7 +38,7 @@ Every audit and CI check validates against this document.
 - **C-08 Single-Message Panels:** Interactive panels (like clan panels) update in place; avoid message spam.
 - **C-09 No Legacy Paths:** No imports from removed legacy paths (e.g., top-level `recruitment/`, deprecated shared CoreOps shims, `shared/utils/coreops_*`).
 - **C-10 Config Access:** Runtime config is accessed via the common config accessor (not scattered utility readers).
-- **C-11 Forbidden Ports Import:** Import the runtime port helper from `shared.ports`. Using the old `shared.config` import for `get_port` fails guardrails (`scripts/ci/check_forbidden_imports.sh`, workflow `11-guardrails-suite`).
+- **C-11 Forbidden Ports Import:** Import the runtime port helper from `shared.ports`. Using `shared.config` or `config.runtime` for `get_port` fails guardrails (`scripts/ci/check_forbidden_imports.sh`, workflow `11-guardrails-suite`).
 - **C-12 No Order Targets:** Onboarding rules and evaluators must reference question IDs (no order-number or sheet-position logic).
 - **C-13 Render Free-Tier Constraints**
   - No continuous background polling.

@@ -431,24 +431,30 @@ def check_c11(category: CategoryResult) -> None:
         except (OSError, SyntaxError):
             continue
 
-        runtime_aliases: set[str] = set()
+        forbidden_module_aliases: set[str] = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
-                if node.module == "config.runtime":
+                if node.module in {"config.runtime", "shared.config"}:
                     for alias in node.names:
                         if alias.name == "get_port":
                             hits.append(f"{rel}:{node.lineno}")
                 elif node.module == "config":
-                    runtime_aliases.update(
+                    forbidden_module_aliases.update(
                         alias.asname or alias.name
                         for alias in node.names
                         if alias.name == "runtime"
                     )
+                elif node.module == "shared":
+                    forbidden_module_aliases.update(
+                        alias.asname or alias.name
+                        for alias in node.names
+                        if alias.name == "config"
+                    )
             elif isinstance(node, ast.Import):
-                runtime_aliases.update(
+                forbidden_module_aliases.update(
                     alias.asname or alias.name
                     for alias in node.names
-                    if alias.name == "config.runtime"
+                    if alias.name in {"config.runtime", "shared.config"}
                 )
 
         for node in ast.walk(tree):
@@ -457,13 +463,20 @@ def check_c11(category: CategoryResult) -> None:
             if node.func.attr != "get_port":
                 continue
             owner = node.func.value
-            if isinstance(owner, ast.Name) and owner.id in runtime_aliases:
+            if isinstance(owner, ast.Name) and owner.id in forbidden_module_aliases:
                 hits.append(f"{rel}:{node.lineno}")
             elif (
                 isinstance(owner, ast.Attribute)
                 and owner.attr == "runtime"
                 and isinstance(owner.value, ast.Name)
                 and owner.value.id == "config"
+            ):
+                hits.append(f"{rel}:{node.lineno}")
+            elif (
+                isinstance(owner, ast.Attribute)
+                and owner.attr == "config"
+                and isinstance(owner.value, ast.Name)
+                and owner.value.id == "shared"
             ):
                 hits.append(f"{rel}:{node.lineno}")
 

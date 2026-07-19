@@ -6,7 +6,7 @@ set -euo pipefail
 
 shopt -s globstar nullglob
 
-echo "🔍 Guardrail: scanning for forbidden imports (shared.config → get_port)..."
+echo "🔍 Guardrail: scanning for forbidden get_port imports..."
 
 if ! command -v rg >/dev/null 2>&1; then
   echo "❌ Guardrail dependency missing: install ripgrep (rg)."
@@ -16,13 +16,14 @@ fi
 set +e
 matches=$(rg -n --hidden --no-ignore \
   -g '!AUDIT/**' \
+  -g '!tests/**' \
   -g '!**/.git/**' \
   -g '!**/node_modules/**' \
   -g '!**/.venv/**' \
   -g '!**/venv/**' \
   -g '!**/dist/**' \
   -g '!**/build/**' \
-  "(from\\s+shared\\.config\\s+import[^\\n]*\\bget_port\\b|shared\\.config\\.get_port)")
+  "(from\\s+(shared\\.config|config\\.runtime)\\s+import[^\\n]*\\bget_port\\b|(shared\\.config|config\\.runtime)\\.get_port)")
 rg_status=$?
 set -e
 
