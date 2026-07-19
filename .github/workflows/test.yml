@@ -43,8 +43,8 @@ jobs:
             --title "Test Suite" \
             --status "${STEP_OUTCOME}" \
             --message "${MESSAGE}" \
-            --detail "Command: `pytest -q`" \
-            --detail "Log: `pytest.out`" \
+            --detail "Command: pytest -q" \
+            --detail "Log: pytest.out" \
             --output tests-summary.md
       - name: Post tests summary comment
         if: github.event_name == 'pull_request'
