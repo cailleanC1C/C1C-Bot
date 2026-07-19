@@ -63,28 +63,28 @@ def test_pr_body_metadata_is_not_a_guardrail() -> None:
     assert "G-09" not in codes
 
 
-def test_d09_and_d10_ignore_pr_body_metadata() -> None:
+def test_d09_ignores_pr_body_metadata() -> None:
     tests_category = guardrails_suite.CategoryResult("Docs (D)")
-    docs_category = guardrails_suite.CategoryResult("Docs (D)")
 
     guardrails_suite.check_d09(tests_category, ["modules/example.py"])
-    guardrails_suite.check_d10(docs_category, ["modules/example.py"])
 
     assert tests_category.status == "fail"
     assert tests_category.violations[0].message == "Runtime changes require tests"
-    assert docs_category.status == "fail"
-    assert docs_category.violations[0].message == "User-facing changes require docs"
 
 
 def test_ci_only_change_needs_no_pr_body_metadata() -> None:
     tests_category = guardrails_suite.CategoryResult("Docs (D)")
-    docs_category = guardrails_suite.CategoryResult("Docs (D)")
 
     guardrails_suite.check_d09(tests_category, [".github/workflows/test.yml"])
-    guardrails_suite.check_d10(docs_category, [".github/workflows/test.yml"])
 
     assert tests_category.status == "pass"
-    assert docs_category.status == "pass"
+
+
+def test_d10_is_not_an_automated_guardrail() -> None:
+    codes = {check.code for check in guardrails_suite.CHECKS}
+
+    assert "D-10" not in codes
+    assert "D-10" not in guardrails_suite.PR_DIFF_AWARE_CHECKS
 
 
 def test_f04_uses_feature_registry_and_accessor(tmp_path: Path, monkeypatch: object) -> None:

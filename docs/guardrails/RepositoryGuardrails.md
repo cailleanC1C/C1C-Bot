@@ -97,18 +97,6 @@ Every audit and CI check validates against this document.
     • `tests/config/**` (config-loading behaviour)
 
   Docs-only and CI-only changes do not trigger this rule. Runtime changes must include tests; PR-body declarations are not used as a substitute.
-- **D-10 User-Facing Behaviour = Mandatory Doc Updates:**
-  If a PR changes commands, help text, onboarding questions, summary formatting, watcher
-  schedules, feature toggles, or any user-visible flow, the PR **must** update the relevant
-  SSoT docs:
-    • `docs/ops/CommandMatrix.md`
-    • `docs/modules/<Module>.md`
-    • `docs/ops/Config.md`
-    • `docs/_meta/DocStyle.md` (if formatting changed)
-    • `docs/Architecture.md` (if data flows changed)
-    • `CHANGELOG.md`
-  No new docs may be created unless an ADR authorises it.
-
 ---
 
 ## **5) Governance & Workflow**
