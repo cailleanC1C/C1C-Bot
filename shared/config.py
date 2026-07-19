@@ -9,11 +9,13 @@ import sys
 from typing import Dict, Iterable, Mapping, Optional, Sequence, Set
 
 from config import runtime as _runtime
+from shared.ports import get_port
 from shared.redaction import mask_secret, mask_service_account, sanitize_text
 
 __all__ = [
     "cfg",
     "reload_config",
+    "areload_config",
     "get_config_snapshot",
     "get_env_name",
     "get_bot_name",
@@ -508,7 +510,9 @@ def onboarding_config_merge_count() -> int:
     return _LAST_ONBOARDING_CONFIG_KEYS
 
 
-def _load_config() -> Dict[str, object]:
+def _load_config_snapshot() -> Dict[str, object]:
+    """Build the environment-backed portion of a config snapshot."""
+
     keepalive = _runtime.get_watchdog_check_sec()
     stall = _runtime.get_watchdog_stall_sec()
     grace = _runtime.get_watchdog_disconnect_grace_sec(stall)
@@ -519,7 +523,7 @@ def _load_config() -> Dict[str, object]:
     refresh_default = ("02:00", "10:00", "18:00")
 
     config: Dict[str, object] = {
-        "PORT": _runtime.get_port(),
+        "PORT": get_port(),
         "BOT_NAME": _runtime.get_bot_name(),
         "DISCORD_TOKEN": os.getenv("DISCORD_TOKEN", ""),
         "ENV_NAME": _runtime.get_env_name(),
@@ -593,8 +597,44 @@ def _load_config() -> Dict[str, object]:
             "Legacy ENABLE_WELCOME_WATCHER detected; set ENABLE_WELCOME_HOOK and remove the old key."
         )
 
+    return config
+
+
+def _load_config() -> Dict[str, object]:
+    """Build a config snapshot using the synchronous Sheets loaders."""
+
+    config = _load_config_snapshot()
     _merge_onboarding_tab(config)
     _merge_milestones_tab(config)
+    return config
+
+
+async def _aload_config() -> Dict[str, object]:
+    """Build a config snapshot using only async Sheets loaders."""
+
+    config = _load_config_snapshot()
+
+    try:
+        _, onboarding_values = await _aload_onboarding_config_values()
+    except RuntimeError:
+        log.debug("config: onboarding sheet id not configured; skipping tab merge")
+    except Exception as exc:  # pragma: no cover - network or credential failures
+        log.warning("config: failed to load onboarding Config tab: %s", exc)
+    else:
+        if onboarding_values:
+            config.update(onboarding_values)
+            global _LAST_ONBOARDING_CONFIG_KEYS
+            _LAST_ONBOARDING_CONFIG_KEYS = len(onboarding_values)
+
+    try:
+        _, milestone_values = await _aload_milestones_config_values()
+    except RuntimeError:
+        log.debug("config: milestones sheet id not configured; skipping tab merge")
+    except Exception as exc:  # pragma: no cover - network or credential failures
+        log.warning("config: failed to load milestones Config tab: %s", exc)
+    else:
+        if milestone_values:
+            config.update(milestone_values)
 
     return config
 
@@ -606,6 +646,20 @@ def reload_config() -> Dict[str, object]:
         _require_env(_name)
 
     snapshot = _load_config()
+
+    global _CONFIG
+    _CONFIG = snapshot
+    _log_snapshot(snapshot)
+    return dict(_CONFIG)
+
+
+async def areload_config() -> Dict[str, object]:
+    """Reload configuration without blocking the active event loop."""
+
+    for _name in _REQUIRED_ENV:
+        _require_env(_name)
+
+    snapshot = await _aload_config()
 
     global _CONFIG
     _CONFIG = snapshot

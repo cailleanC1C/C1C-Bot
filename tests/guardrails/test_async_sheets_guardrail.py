@@ -32,13 +32,16 @@ FORBIDDEN_HELPERS = {
     "get_ticket_finalization_state",
     "get_finalization_headers",
     "get_promo_source_clan_tag_header",
+    "reload_config",
 }
 SCOPED_FORBIDDEN_HELPERS = {
     "get_by_thread_id", "load_all", "update_existing", "upsert_session",
     "mark_completed", "missing_columns", "get_ticket_finalization_state",
     "get_finalization_headers", "get_promo_source_clan_tag_header",
+    "reload_config",
 }
 FORBIDDEN_MODULES = {
+    "shared.config",
     "shared.sheets.core",
     "shared.sheets.recruitment",
     "shared.sheets.onboarding",
@@ -118,6 +121,14 @@ def _forbidden_call_name(call: ast.Call, aliases: ImportAliases) -> str | None:
                 return None
             if module_name in aliases.forbidden_modules:
                 return func.attr
+        if (
+            func.attr == "reload_config"
+            and isinstance(func.value, ast.Attribute)
+            and func.value.attr == "config"
+            and isinstance(func.value.value, ast.Name)
+            and func.value.value.id in aliases.forbidden_modules
+        ):
+            return func.attr
         if func.attr in SCOPED_FORBIDDEN_HELPERS:
             return None
         return func.attr
@@ -158,6 +169,46 @@ def test_guardrail_detects_forbidden_import_alias_inside_async_function() -> Non
     call = next(n for n in ast.walk(command) if isinstance(n, ast.Call))
 
     assert _forbidden_call_name(call, aliases) == "fetch_records"
+
+
+def test_guardrail_detects_sync_config_reload_inside_async_function() -> None:
+    calls = _forbidden_calls(
+        "from shared import config as cfg\n"
+        "async def command():\n"
+        "    cfg.reload_config()\n"
+    )
+
+    assert calls == ["reload_config"]
+
+
+def test_guardrail_detects_directly_imported_sync_config_reload() -> None:
+    calls = _forbidden_calls(
+        "from shared.config import reload_config\n"
+        "async def command():\n"
+        "    reload_config()\n"
+    )
+
+    assert calls == ["reload_config"]
+
+
+def test_guardrail_detects_fully_qualified_sync_config_reload() -> None:
+    calls = _forbidden_calls(
+        "import shared.config\n"
+        "async def command():\n"
+        "    shared.config.reload_config()\n"
+    )
+
+    assert calls == ["reload_config"]
+
+
+def test_guardrail_detects_sync_config_reload_in_local_async_wrapper() -> None:
+    calls = _forbidden_calls(
+        "from shared import config as cfg\n"
+        "async def reload_wrapper():\n"
+        "    cfg.reload_config()\n"
+    )
+
+    assert calls == ["reload_config"]
 
 
 def _forbidden_calls(source: str) -> list[str]:

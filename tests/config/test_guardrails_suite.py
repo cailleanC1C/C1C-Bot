@@ -171,6 +171,50 @@ def test_summary_reports_guardrail_health(tmp_path: Path, monkeypatch: object) -
     assert "Secret scan" not in summary_text
 
 
+def test_c11_allows_shared_ports_and_rejects_config_runtime(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    _configure_roots(tmp_path, monkeypatch)
+    package = tmp_path / "modules" / "example"
+    package.mkdir(parents=True)
+    (package / "allowed.py").write_text(
+        "from shared.ports import get_port\nPORT = get_port()\n",
+        encoding="utf-8",
+    )
+    (package / "forbidden.py").write_text(
+        "from config import runtime as runtime_config\n"
+        "PORT = runtime_config.get_port()\n",
+        encoding="utf-8",
+    )
+    (package / "forbidden_direct.py").write_text(
+        "from config.runtime import get_port\nPORT = get_port()\n",
+        encoding="utf-8",
+    )
+
+    category = guardrails_suite.CategoryResult("c11")
+    guardrails_suite.check_c11(category)
+
+    assert len(category.violations) == 1
+    assert category.violations[0].files == [
+        "modules/example/forbidden.py:2",
+        "modules/example/forbidden_direct.py:1",
+    ]
+
+
+def test_c10_temporarily_exempts_existing_coreops_cog_env_debt(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    _configure_roots(tmp_path, monkeypatch)
+    coreops = tmp_path / "packages" / "c1c-coreops" / "src" / "c1c_coreops"
+    coreops.mkdir(parents=True)
+    (coreops / "cog.py").write_text("import os\nVALUE = os.getenv('VALUE')\n")
+
+    category = guardrails_suite.CategoryResult("c10")
+    guardrails_suite.check_c10(category)
+
+    assert category.violations == []
+
+
 def test_summary_json_includes_all_check_results(tmp_path: Path, monkeypatch: object) -> None:
     _configure_roots(tmp_path, monkeypatch)
 

@@ -10,7 +10,14 @@ def test_reload_command_dispatches_reboot(monkeypatch):
     intents = discord.Intents.none()
     bot = commands.Bot(command_prefix="!", intents=intents)
 
-    monkeypatch.setattr("shared.config.reload_config", lambda: None)
+    def sync_reload_forbidden() -> None:
+        raise AssertionError("reload command must not call sync config reload")
+
+    async def fake_async_reload() -> None:
+        return None
+
+    monkeypatch.setattr("shared.config.reload_config", sync_reload_forbidden)
+    monkeypatch.setattr("shared.config.areload_config", fake_async_reload)
 
     reboot_called = {}
 
