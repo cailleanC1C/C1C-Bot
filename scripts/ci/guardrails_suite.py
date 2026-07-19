@@ -710,9 +710,14 @@ def check_g06(category: CategoryResult, diff_status: Dict[str, str]) -> None:
 
 
 def check_g09(category: CategoryResult, pr_body: str) -> None:
-    tests_block = _parse_block(pr_body, "Tests")
-    docs_block = _parse_block(pr_body, "Docs")
-    if not tests_block or not docs_block:
+    def _has_section(label: str) -> bool:
+        pattern = re.compile(
+            rf"^\s*(?:#{{1,6}}\s+)?{re.escape(label)}:\s*(?:\S.*)?$",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        return pattern.search(pr_body) is not None
+
+    if not _has_section("Tests") or not _has_section("Docs"):
         category.add(Violation("G-09", "error", "PR body must declare Tests: and Docs: sections", []))
 
 

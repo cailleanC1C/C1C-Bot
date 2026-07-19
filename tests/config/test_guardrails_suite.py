@@ -69,6 +69,29 @@ Details here.
     assert category.violations[0].rule_id == "G-09"
 
 
+def test_g09_accepts_plain_markdown_sections_anywhere_in_body() -> None:
+    body = """### Summary
+
+Guardrails follow-up for the current pull request.
+
+Tests:
+
+- `pytest -q tests/config/test_guardrails_suite.py`
+
+Additional notes can appear between the required sections.
+
+### Docs:
+
+- Updated the guardrails documentation.
+"""
+    category = guardrails_suite.CategoryResult("Governance (G)")
+
+    guardrails_suite.check_g09(category, body)
+
+    assert category.status == "pass"
+    assert category.violations == []
+
+
 def test_f04_uses_feature_registry_and_accessor(tmp_path: Path, monkeypatch: object) -> None:
     _configure_roots(tmp_path, monkeypatch)
 
