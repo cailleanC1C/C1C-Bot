@@ -160,6 +160,69 @@ def test_guardrail_detects_forbidden_import_alias_inside_async_function() -> Non
     assert _forbidden_call_name(call, aliases) == "fetch_records"
 
 
+def _forbidden_calls(source: str) -> list[str]:
+    tree = ast.parse(source)
+    aliases = _import_aliases(tree)
+    command = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef))
+    return [
+        name
+        for call in ast.walk(command)
+        if isinstance(call, ast.Call)
+        and (name := _forbidden_call_name(call, aliases)) is not None
+    ]
+
+
+def test_guardrail_detects_onboarding_sessions_module_alias_calls() -> None:
+    calls = _forbidden_calls(
+        "import shared.sheets.onboarding_sessions as sessions\n"
+        "async def listener():\n"
+        "    sessions.get_by_thread_id(1)\n"
+        "    sessions.load_all()\n"
+        "    sessions.update_existing(1, {})\n"
+        "    sessions.upsert_session(thread_id=1, thread_name='W1-user', user_id=2)\n"
+        "    sessions.mark_completed(1)\n"
+        "    sessions.missing_columns({'thread_id'})\n"
+    )
+
+    assert calls == [
+        "get_by_thread_id",
+        "load_all",
+        "update_existing",
+        "upsert_session",
+        "mark_completed",
+        "missing_columns",
+    ]
+
+
+def test_guardrail_detects_direct_imported_onboarding_session_helpers() -> None:
+    calls = _forbidden_calls(
+        "from shared.sheets.onboarding_sessions import "
+        "get_by_thread_id as find_session, update_existing\n"
+        "async def listener():\n"
+        "    find_session(1)\n"
+        "    update_existing(1, {})\n"
+    )
+
+    assert calls == ["get_by_thread_id", "update_existing"]
+
+
+def test_guardrail_detects_onboarding_finalization_alias_and_direct_calls() -> None:
+    calls = _forbidden_calls(
+        "from shared.sheets import onboarding as onboarding_sheets\n"
+        "from shared.sheets.onboarding import get_finalization_headers as headers\n"
+        "async def listener():\n"
+        "    onboarding_sheets.get_ticket_finalization_state('welcome', {})\n"
+        "    onboarding_sheets.get_promo_source_clan_tag_header()\n"
+        "    headers('welcome')\n"
+    )
+
+    assert calls == [
+        "get_ticket_finalization_state",
+        "get_promo_source_clan_tag_header",
+        "get_finalization_headers",
+    ]
+
+
 def test_async_facade_alias_is_the_only_allowed_sheets_alias() -> None:
     async_tree = ast.parse(
         "from shared.sheets import async_facade as sheets\n"
