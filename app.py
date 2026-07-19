@@ -39,8 +39,9 @@ from c1c_coreops.rbac import (
     is_admin_member,
 )
 from c1c_coreops.cron_summary import emit_daily_summary
-from modules.recruitment.reporting.daily_recruiter_update import ensure_scheduler_started
-from modules.ops.startup_summary import render_startup_summary
+from modules.recruitment.reporting.daily_recruiter_update import (
+    ensure_scheduler_started,
+)
 from modules.community.fusion.reminders import collect_fusion_reminder_startup_summary
 
 logging.basicConfig(
@@ -127,7 +128,9 @@ def _interaction_diagnostics(interaction: object | None) -> dict[str, object]:
     channel = getattr(interaction, "channel", None)
     user = getattr(interaction, "user", None)
     message = getattr(interaction, "message", None)
-    interaction_type = getattr(getattr(interaction, "type", None), "name", None) or str(getattr(interaction, "type", "-"))
+    interaction_type = getattr(getattr(interaction, "type", None), "name", None) or str(
+        getattr(interaction, "type", "-")
+    )
     return {
         "interaction_type": interaction_type,
         "interaction_id": _safe_id(interaction),
@@ -141,7 +144,9 @@ def _interaction_diagnostics(interaction: object | None) -> dict[str, object]:
             data.get("name") if isinstance(data, dict) else None,
         ),
         "custom_id": _find_custom_id(data),
-        "component_type": data.get("component_type") if isinstance(data, dict) else None,
+        "component_type": (
+            data.get("component_type") if isinstance(data, dict) else None
+        ),
     }
 
 
@@ -162,6 +167,7 @@ async def _send_interaction_error_ops_message(metadata: dict[str, object]) -> No
     except Exception:
         log.warning("failed to send interaction error to log channel", exc_info=True)
 
+
 INTENTS = discord.Intents.default()
 INTENTS.message_content = True
 INTENTS.members = True
@@ -180,7 +186,9 @@ CRON_JOB_NAMES = (
     "cleanup_watcher",
     "housekeeping_keepalive",
     "mirralith_overview",
-    "fusion_reminders",
+    "fusion_grouped_reminders",
+    "fusion_announcement_refresh",
+    "fusion_role_cleanup",
 )
 
 bot = commands.Bot(
@@ -223,7 +231,9 @@ def _safe_logged_message_content(content: str) -> str:
     return _truncate_text(str(sanitized), LOG_MESSAGE_CONTENT_MAX_LEN)
 
 
-def _can_dispatch_bare_coreops(member: discord.abc.User | discord.Member | None) -> bool:
+def _can_dispatch_bare_coreops(
+    member: discord.abc.User | discord.Member | None,
+) -> bool:
     if not isinstance(member, discord.Member):
         return False
     return is_admin_member(member)
@@ -254,7 +264,11 @@ def _fmt_next_utc(job: object) -> str:
     next_run = getattr(job, "next_run", None)
     if next_run is None:
         return "not scheduled"
-    return next_run.astimezone(dt.timezone.utc).replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M UTC")
+    return (
+        next_run.astimezone(dt.timezone.utc)
+        .replace(second=0, microsecond=0)
+        .strftime("%Y-%m-%d %H:%M UTC")
+    )
 
 
 async def _maybe_capture_onboarding_answer(message: discord.Message) -> bool:
@@ -320,7 +334,9 @@ async def _enforce_guild_allow_list(
     allowed_guilds = get_allowed_guild_ids()
     allowed_sorted = sorted(allowed_guilds)
     connected_guilds = list(bot.guilds)
-    allowed_labels = [guild_label(bot, gid) for gid in allowed_sorted] if allowed_sorted else []
+    allowed_labels = (
+        [guild_label(bot, gid) for gid in allowed_sorted] if allowed_sorted else []
+    )
     connected_labels = [guild_label(bot, g.id) for g in connected_guilds]
     if not allowed_guilds:
         if log_when_empty:
@@ -368,8 +384,6 @@ async def _enforce_guild_allow_list(
     return True
 
 
-
-
 @bot.event
 async def on_ready():
     hb.note_ready()
@@ -386,11 +400,13 @@ async def on_ready():
         "CoreOps RBAC: admin_role_ids=%s staff_role_ids=%s",
         sorted(get_admin_role_ids()),
         sorted(get_staff_role_ids()),
-        )
+    )
     bot._c1c_started_mono = _STARTED_MONO
 
     allowed_guilds = sorted(get_allowed_guild_ids())
-    allowed_labels = [guild_label(bot, gid) for gid in allowed_guilds] if allowed_guilds else []
+    allowed_labels = (
+        [guild_label(bot, gid) for gid in allowed_guilds] if allowed_guilds else []
+    )
     connected_labels = [guild_label(bot, g.id) for g in list(bot.guilds)]
     allow_list_lines = [
         "✅ Guild allow-list",
@@ -427,6 +443,7 @@ async def on_ready():
         watchdog_tuple = runtime.watchdog(delay_sec=5.0)
 
         if not hasattr(bot, "_cron_summary_task"):
+
             async def _daily_summary_loop() -> None:
                 while True:
                     now = dt.datetime.now(dt.timezone.utc)
@@ -468,20 +485,23 @@ async def on_ready():
                 )
             refresh_lines.append(f"• total={preload_report.total_s:.1f}s")
         else:
-            refresh_lines = ["♻️ Refresh", f"• failed: {preload_report.error or 'unknown'}"]
+            refresh_lines = [
+                "♻️ Refresh",
+                f"• failed: {preload_report.error or 'unknown'}",
+            ]
 
     jobs = {getattr(job, "name", ""): job for job in runtime.scheduler.jobs}
     fusion_reminder_lines: list[str]
     try:
         fusion_reminder_lines = await collect_fusion_reminder_startup_summary(
             bot,
-            scheduler_started="fusion_reminders" in jobs,
+            scheduler_started=any(name.startswith("fusion_") for name in jobs),
         )
     except Exception as exc:
         log.exception("fusion reminder startup summary failed")
         fusion_reminder_lines = [
             "🧬 Fusion reminders",
-            f"• started={'yes' if 'fusion_reminders' in jobs else 'no'}",
+            f"• started={'yes' if any(name.startswith('fusion_') for name in jobs) else 'no'}",
             f"• failed={type(exc).__name__}",
         ]
     scheduler_lines = [
@@ -494,7 +514,11 @@ async def on_ready():
         f"• cleanup={_fmt_next_utc(jobs['cleanup_watcher']) if 'cleanup_watcher' in jobs else 'not scheduled'}",
         f"• housekeeping_keepalive={_fmt_next_utc(jobs['housekeeping_keepalive']) if 'housekeeping_keepalive' in jobs else 'not scheduled'}",
         f"• mirralith_overview={_fmt_next_utc(jobs['mirralith_overview']) if 'mirralith_overview' in jobs else 'not scheduled'}",
-        f"• fusion_reminders={_fmt_next_utc(jobs['fusion_reminders']) if 'fusion_reminders' in jobs else 'not scheduled'}",
+        f"• fusion_grouped_reminders={_fmt_next_utc(jobs['fusion_grouped_reminders']) if 'fusion_grouped_reminders' in jobs else 'not scheduled'}",
+        f"• fusion_announcement_refresh={_fmt_next_utc(jobs['fusion_announcement_refresh']) if 'fusion_announcement_refresh' in jobs else 'not scheduled'}",
+        f"• fusion_role_cleanup={_fmt_next_utc(jobs['fusion_role_cleanup']) if 'fusion_role_cleanup' in jobs else 'not scheduled'}",
+        f"• reset_reminders={_fmt_next_utc(jobs['reset_reminders']) if 'reset_reminders' in jobs else 'not scheduled'}",
+        f"• achievement_collector={_fmt_next_utc(jobs['achievement_collector']) if 'achievement_collector' in jobs else 'not scheduled'}",
         *fusion_reminder_lines,
     ]
     watchers_lines = [
@@ -513,7 +537,12 @@ async def on_ready():
         watchdog_lines = ["🐶 Watchdog started", "• failed: unavailable"]
     else:
         _, interval, stall, grace = watchdog_tuple
-        watchdog_lines = ["🐶 Watchdog started", f"• interval={interval}s", f"• stall={stall}s", f"• disconnect_grace={grace}s"]
+        watchdog_lines = [
+            "🐶 Watchdog started",
+            f"• interval={interval}s",
+            f"• stall={stall}s",
+            f"• disconnect_grace={grace}s",
+        ]
 
     global _startup_summary_lock
     if _startup_summary_lock is None:
@@ -523,16 +552,18 @@ async def on_ready():
             if getattr(bot, "_startup_summary_sent", False):
                 return
             bot._startup_summary_sent = True
-            summary = render_startup_summary(
-                sections={
-                    "allow_list": allow_list_lines,
-                    "watchers": watchers_lines,
-                    "scheduler": scheduler_lines,
-                    "watchdog": watchdog_lines,
-                    "refresh": refresh_lines,
-                },
+            startup_message = "\n\n".join(
+                [
+                    "✅ Woadkeeper Startup",
+                    "\n".join(allow_list_lines),
+                    "\n".join(watchers_lines),
+                    "\n".join(watchdog_lines),
+                ]
             )
-            await runtime.send_log_message(summary)
+            scheduler_message = "\n".join(["🧭 Scheduler", *scheduler_lines[1:]])
+            refresh_message = "\n".join(["♻️ Startup Refresh", *refresh_lines[1:]])
+            for message in (startup_message, scheduler_message, refresh_message):
+                await runtime.send_log_message(message)
     except Exception:
         bot._startup_summary_sent = False
         log.exception("startup summary failed", exc_info=True)
@@ -566,11 +597,18 @@ async def on_error(event: str, *_args, **_kwargs) -> None:
     if event == "on_interaction":
         interaction = _args[0] if _args else None
         extra.update(_interaction_diagnostics(interaction))
-        log.error("Unhandled exception in %s", event, exc_info=(exc_type, exc, tb), extra=extra)
+        log.error(
+            "Unhandled exception in %s",
+            event,
+            exc_info=(exc_type, exc, tb),
+            extra=extra,
+        )
         await _send_interaction_error_ops_message(extra)
         return
 
-    log.error("Unhandled exception in %s", event, exc_info=(exc_type, exc, tb), extra=extra)
+    log.error(
+        "Unhandled exception in %s", event, exc_info=(exc_type, exc, tb), extra=extra
+    )
 
 
 @bot.event
@@ -579,9 +617,11 @@ async def on_socket_response(_payload):
 
 
 try:
+
     @bot.event
     async def on_socket_raw_receive(_):
         hb.touch()
+
 except Exception:
     pass
 
@@ -703,7 +743,9 @@ async def on_command_error(ctx: commands.Context, error: Exception):
         await runtime.send_log_message(
             LogTemplates.cmd_error(
                 command=getattr(ctx.command, "name", None) or "-",
-                user=user_label(getattr(ctx, "guild", None), getattr(ctx.author, "id", None)),
+                user=user_label(
+                    getattr(ctx, "guild", None), getattr(ctx.author, "id", None)
+                ),
                 reason=human_reason(error),
             )
         )
@@ -786,7 +828,8 @@ async def main() -> None:
         for sig in (signal.SIGTERM, signal.SIGINT):
             try:
                 loop.add_signal_handler(
-                    sig, lambda s=sig: asyncio.create_task(_shutdown(f"signal:{s.name}"))
+                    sig,
+                    lambda s=sig: asyncio.create_task(_shutdown(f"signal:{s.name}")),
                 )
             except NotImplementedError:
                 log.warning("Signal handlers not supported", extra={"signal": sig.name})

@@ -13,7 +13,6 @@ from c1c_coreops.rbac import admin_only
 from modules.common import runtime as runtime_helpers
 from modules.housekeeping.achievement_collector import (
     AchievementCollectorError,
-    AchievementCollectorScheduler,
     LeaderboardCache,
     build_leaderboard,
     effective_limit,
@@ -102,13 +101,6 @@ class AchievementCollectorCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self._cache: LeaderboardCache | None = None
-        self._scheduler = AchievementCollectorScheduler(self)
-
-    async def cog_load(self) -> None:
-        self._scheduler.start()
-
-    async def cog_unload(self) -> None:
-        self._scheduler.cancel()
 
     async def cog_command_error(self, ctx: commands.Context, error: Exception) -> None:
         if isinstance(error, commands.BadArgument):

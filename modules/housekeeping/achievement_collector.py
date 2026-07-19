@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import datetime as dt
 import logging
 import os
@@ -327,40 +326,8 @@ async def resolve_messageable(bot: discord.Client, channel_id: int) -> Any | Non
     return channel if hasattr(channel, "send") else None
 
 
-class AchievementCollectorScheduler:
-    def __init__(self, cog: Any) -> None:
-        self.cog = cog
-        self.task: asyncio.Task[None] | None = None
-        self.last_post_key: str | None = None
-
-    def start(self) -> None:
-        if self.task is None or self.task.done():
-            self.task = asyncio.create_task(self._run(), name="achievement_collector_scheduler")
-
-    def cancel(self) -> None:
-        if self.task is not None:
-            self.task.cancel()
-
-    async def _run(self) -> None:
-        await self.cog.bot.wait_until_ready()
-        while not self.cog.bot.is_closed():
-            try:
-                config = await resolve_config()
-                next_run = parse_schedule(config.schedule_rrule, config.schedule_time_utc)
-                await asyncio.sleep(max(0.0, (next_run - dt.datetime.now(dt.timezone.utc)).total_seconds()))
-                post_key = next_run.strftime("%Y-%m-%dT%H:%MZ")
-                if post_key != self.last_post_key:
-                    self.last_post_key = post_key
-                    await self.cog.publish_scheduled(config)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("achievement collector scheduler failed; retrying after backoff")
-                await asyncio.sleep(3600)
-
-
 __all__ = [
-    "AchievementCollectorConfig", "AchievementCollectorError", "AchievementCollectorScheduler",
+    "AchievementCollectorConfig", "AchievementCollectorError",
     "LeaderboardCache", "LeaderboardEntry", "NON_RAID_RANK_COPY", "build_leaderboard",
     "effective_limit", "leaderboard_embed", "load_active_role_ids", "member_has_role",
     "non_raid_rank_embed", "parse_schedule", "rank_embed", "resolve_config",
