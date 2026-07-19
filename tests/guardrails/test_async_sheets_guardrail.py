@@ -32,13 +32,16 @@ FORBIDDEN_HELPERS = {
     "get_ticket_finalization_state",
     "get_finalization_headers",
     "get_promo_source_clan_tag_header",
+    "reload_config",
 }
 SCOPED_FORBIDDEN_HELPERS = {
     "get_by_thread_id", "load_all", "update_existing", "upsert_session",
     "mark_completed", "missing_columns", "get_ticket_finalization_state",
     "get_finalization_headers", "get_promo_source_clan_tag_header",
+    "reload_config",
 }
 FORBIDDEN_MODULES = {
+    "shared.config",
     "shared.sheets.core",
     "shared.sheets.recruitment",
     "shared.sheets.onboarding",
@@ -158,6 +161,16 @@ def test_guardrail_detects_forbidden_import_alias_inside_async_function() -> Non
     call = next(n for n in ast.walk(command) if isinstance(n, ast.Call))
 
     assert _forbidden_call_name(call, aliases) == "fetch_records"
+
+
+def test_guardrail_detects_sync_config_reload_inside_async_function() -> None:
+    calls = _forbidden_calls(
+        "from shared import config as cfg\n"
+        "async def command():\n"
+        "    cfg.reload_config()\n"
+    )
+
+    assert calls == ["reload_config"]
 
 
 def _forbidden_calls(source: str) -> list[str]:
