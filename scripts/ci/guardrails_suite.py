@@ -21,7 +21,9 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 from scripts.ci.utils.env import get_env, get_env_path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+# ``guardrails_suite.py`` lives in ``scripts/ci``; guardrails must scan from the
+# repository root rather than treating ``scripts`` as the application root.
+ROOT = Path(__file__).resolve().parents[2]
 AUDIT_ROOT = ROOT / "AUDIT"
 DOCS_ROOT = ROOT / "docs"
 
@@ -1256,6 +1258,60 @@ def _run_guardrail_checks(context: GuardrailContext) -> List[CheckResult]:
     return results
 
 
+# These checks deliberately validate PR metadata or repository-wide sources of
+# truth. All other checks are scoped to files changed by the PR so historical
+# violations elsewhere in the repository remain visible to dedicated audits
+# without blocking an unrelated change.
+PR_GLOBAL_CHECKS = {"D-03", "D-04", "D-08", "G-03", "G-09"}
+PR_DIFF_AWARE_CHECKS = {"S-07", "D-06", "D-09", "D-10", "G-06"}
+
+
+def _violation_path_is_changed(entry: str, changed_files: set[str]) -> bool:
+    return any(entry == path or entry.startswith(f"{path}:") for path in changed_files)
+
+
+def _scope_results_to_pr_changes(
+    results: List[CheckResult], changed_files: List[str]
+) -> List[CheckResult]:
+    changed = set(changed_files)
+    scoped: List[CheckResult] = []
+    for result in results:
+        if result.code in PR_GLOBAL_CHECKS or result.code in PR_DIFF_AWARE_CHECKS:
+            scoped.append(result)
+            continue
+
+        violations: List[Violation] = []
+        for violation in result.violations:
+            relevant_files = [
+                entry for entry in violation.files if _violation_path_is_changed(entry, changed)
+            ]
+            if relevant_files:
+                violations.append(
+                    Violation(
+                        rule_id=violation.rule_id,
+                        severity=violation.severity,
+                        message=violation.message,
+                        files=relevant_files,
+                    )
+                )
+
+        status = result.status
+        reason = result.reason
+        if result.status != "skip":
+            status = _status_from_violations(violations)
+            reason = None
+        scoped.append(
+            CheckResult(
+                code=result.code,
+                description=result.description,
+                status=status,
+                violations=violations,
+                reason=reason,
+            )
+        )
+    return scoped
+
+
 def run_checks(
     base_ref: Optional[str], pr_body: str, parity_status: Optional[str], pr_number: int
 ) -> SuiteResult:
@@ -1270,6 +1326,8 @@ def run_checks(
     )
 
     check_results = _run_guardrail_checks(context)
+    if pr_number > 0:
+        check_results = _scope_results_to_pr_changes(check_results, changed_files)
     categories = _build_categories(check_results)
     violations = [violation for result in check_results for violation in result.violations]
 

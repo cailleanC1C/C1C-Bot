@@ -43,12 +43,13 @@ jobs:
         run: |
           status_file=guardrails_status.txt
           exit_code=0
-          python -m scripts.ci.render_guardrails_comment \
+          base_ref="${{ github.base_ref || 'main' }}"
+          git fetch origin "$base_ref" --depth=1 || exit_code=$?
+          python -m scripts.ci.guardrails_suite \
             --pr "${{ github.event.pull_request.number || 0 }}" \
             --status-file "$status_file" \
-            --output guardrails-comment.md \
-            --base-ref "origin/${{ github.base_ref || 'main' }}" || exit_code=$?
-          git fetch origin main --depth=1 || exit_code=$?
+            --summary guardrails-comment.md \
+            --base-ref "origin/$base_ref" || exit_code=$?
           if [ -f "$status_file" ]; then
             echo "guardrails_status=$(cat "$status_file")" >> "$GITHUB_OUTPUT"
           else
@@ -56,12 +57,6 @@ jobs:
           fi
           # Always succeed here; the final step decides whether the job fails.
           exit 0
-      - name: Render guardrails summary comment
-        if: github.event_name == 'pull_request'
-        run: |
-          python scripts/ci/render_guardrails_comment.py \
-            --results guardrails-results.json \
-            --output guardrails-comment.md
       - name: Post guardrails summary comment
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
