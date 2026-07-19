@@ -173,6 +173,26 @@ def test_guardrail_detects_sync_config_reload_inside_async_function() -> None:
     assert calls == ["reload_config"]
 
 
+def test_guardrail_detects_directly_imported_sync_config_reload() -> None:
+    calls = _forbidden_calls(
+        "from shared.config import reload_config\n"
+        "async def command():\n"
+        "    reload_config()\n"
+    )
+
+    assert calls == ["reload_config"]
+
+
+def test_guardrail_detects_sync_config_reload_in_local_async_wrapper() -> None:
+    calls = _forbidden_calls(
+        "from shared import config as cfg\n"
+        "async def reload_wrapper():\n"
+        "    cfg.reload_config()\n"
+    )
+
+    assert calls == ["reload_config"]
+
+
 def _forbidden_calls(source: str) -> list[str]:
     tree = ast.parse(source)
     aliases = _import_aliases(tree)

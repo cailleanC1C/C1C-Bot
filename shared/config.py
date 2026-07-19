@@ -9,6 +9,7 @@ import sys
 from typing import Dict, Iterable, Mapping, Optional, Sequence, Set
 
 from config import runtime as _runtime
+from shared.ports import get_port
 from shared.redaction import mask_secret, mask_service_account, sanitize_text
 
 __all__ = [
@@ -522,7 +523,7 @@ def _load_config_snapshot() -> Dict[str, object]:
     refresh_default = ("02:00", "10:00", "18:00")
 
     config: Dict[str, object] = {
-        "PORT": _runtime.get_port(),
+        "PORT": get_port(),
         "BOT_NAME": _runtime.get_bot_name(),
         "DISCORD_TOKEN": os.getenv("DISCORD_TOKEN", ""),
         "ENV_NAME": _runtime.get_env_name(),
