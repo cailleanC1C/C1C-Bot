@@ -6,7 +6,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 import discord
 from discord.abc import Messageable
@@ -27,7 +27,7 @@ from shared.config import (
     get_refresh_timezone,
     get_welcome_general_channel_id,
 )
-from shared.sheets import recruitment as sheets
+from shared.sheets import async_facade as sheets
 
 try:  # Python 3.9+ optional zoneinfo
     from zoneinfo import ZoneInfo
@@ -198,7 +198,7 @@ def _build_template(row: Mapping[str, Any]) -> Optional[WelcomeTemplate]:
 
 
 async def _load_templates() -> tuple[dict[str, WelcomeTemplate], Optional[WelcomeTemplate]]:
-    rows = sheets.get_cached_welcome_templates()
+    rows = await sheets.get_cached_welcome_templates()
     templates: dict[str, WelcomeTemplate] = {}
     default_row: WelcomeTemplate | None = None
     alt_default: WelcomeTemplate | None = None

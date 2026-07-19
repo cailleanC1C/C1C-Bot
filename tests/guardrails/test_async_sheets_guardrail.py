@@ -16,6 +16,7 @@ FORBIDDEN_HELPERS = {
     "call_with_backoff",
     "_retry_with_backoff",
     "get_config_value",
+    "get_cached_welcome_templates",
     "_config_lookup",
     "_load_config",
     "get_clans_tab_name",
@@ -160,6 +161,19 @@ def test_async_facade_alias_is_the_only_allowed_sheets_alias() -> None:
 
     assert _forbidden_call_name(async_call, async_aliases) is None
     assert _forbidden_call_name(core_call, core_aliases) == "fetch_records"
+
+
+def test_guardrail_detects_sync_cached_welcome_template_loader() -> None:
+    tree = ast.parse(
+        "from shared.sheets import recruitment as sheets\n"
+        "async def command():\n"
+        "    return sheets.get_cached_welcome_templates()\n"
+    )
+    aliases = _import_aliases(tree)
+    command = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef))
+    call = next(n for n in ast.walk(command) if isinstance(n, ast.Call))
+
+    assert _forbidden_call_name(call, aliases) == "get_cached_welcome_templates"
 
 
 def test_whoweare_regression_uses_async_role_map_tab_lookup() -> None:

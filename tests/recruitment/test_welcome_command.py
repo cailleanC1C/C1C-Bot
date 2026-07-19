@@ -6,6 +6,7 @@ import pytest
 
 from cogs.recruitment_welcome import WelcomeBridge
 from modules.recruitment import welcome as welcome_module
+from shared.sheets import recruitment as recruitment_sheets
 
 
 class FakeChannel:
@@ -133,10 +134,11 @@ def test_welcome_happy_path_posts_embed(monkeypatch, stub_logs):
         message = FakeMessage(mentions=[recruit])
         ctx = FakeContext(bot=bot, guild=guild, channel=FakeChannel(555), author=author, message=message)
 
+        template_loader = AsyncMock(return_value=_template_rows())
         monkeypatch.setattr(
             welcome_module.sheets,
             "get_cached_welcome_templates",
-            Mock(return_value=_template_rows()),
+            template_loader,
         )
         monkeypatch.setattr(welcome_module, "get_welcome_general_channel_id", lambda: 999)
 
@@ -154,10 +156,61 @@ def test_welcome_happy_path_posts_embed(monkeypatch, stub_logs):
 
         assert len(general_channel.sent) == 1
         assert recruit.mention in general_channel.sent[0]["content"]
+        template_loader.assert_awaited_once_with()
         await asyncio.sleep(0)
 
     asyncio.run(scenario())
     stub_logs.assert_called_once()
+
+
+def test_welcome_does_not_call_sync_template_loader(monkeypatch):
+    async def scenario():
+        clan_channel = FakeChannel(123)
+        bot = FakeBot(channels=[clan_channel])
+        guild = FakeGuild(42, channels=[clan_channel])
+        ctx = FakeContext(
+            bot=bot,
+            guild=guild,
+            channel=clan_channel,
+            author=FakeMember(7),
+            message=FakeMessage(),
+        )
+        async_loader = AsyncMock(return_value=_template_rows())
+        sync_loader = Mock(side_effect=AssertionError("sync loader called in event loop"))
+        monkeypatch.setattr(welcome_module.sheets, "get_cached_welcome_templates", async_loader)
+        monkeypatch.setattr(recruitment_sheets, "get_cached_welcome_templates", sync_loader)
+        monkeypatch.setattr(welcome_module, "get_welcome_general_channel_id", lambda: None)
+
+        await welcome_module.WelcomeCommandService(bot).post_welcome(ctx, "C1CM")
+
+        async_loader.assert_awaited_once_with()
+        sync_loader.assert_not_called()
+
+    asyncio.run(scenario())
+
+
+def test_welcome_template_load_failure_keeps_existing_response(monkeypatch):
+    async def scenario():
+        channel = FakeChannel(123)
+        bot = FakeBot(channels=[channel])
+        ctx = FakeContext(
+            bot=bot,
+            guild=FakeGuild(42, channels=[channel]),
+            channel=channel,
+            author=FakeMember(7),
+            message=FakeMessage(),
+        )
+        loader = AsyncMock(side_effect=RuntimeError("sheet unavailable"))
+        monkeypatch.setattr(welcome_module.sheets, "get_cached_welcome_templates", loader)
+
+        await welcome_module.WelcomeCommandService(bot).post_welcome(ctx, "C1CM")
+
+        loader.assert_awaited_once_with()
+        assert ctx.replies == [
+            "⚠️ Failed to load welcome templates. Try again after the next refresh."
+        ]
+
+    asyncio.run(scenario())
 
 
 def test_default_merge_uses_c1c_row(monkeypatch):
@@ -172,7 +225,11 @@ def test_default_merge_uses_c1c_row(monkeypatch):
         message = FakeMessage()
         ctx = FakeContext(bot=bot, guild=guild, channel=clan_channel, author=author, message=message)
 
-        monkeypatch.setattr(welcome_module.sheets, "get_cached_welcome_templates", Mock(return_value=rows))
+        monkeypatch.setattr(
+            welcome_module.sheets,
+            "get_cached_welcome_templates",
+            AsyncMock(return_value=rows),
+        )
         monkeypatch.setattr(welcome_module, "get_welcome_general_channel_id", lambda: None)
 
         bridge = WelcomeBridge(bot)
@@ -198,7 +255,11 @@ def test_ping_respects_toggle(monkeypatch):
         message = FakeMessage(mentions=[recruit])
         ctx = FakeContext(bot=bot, guild=guild, channel=clan_channel, author=author, message=message)
 
-        monkeypatch.setattr(welcome_module.sheets, "get_cached_welcome_templates", Mock(return_value=rows))
+        monkeypatch.setattr(
+            welcome_module.sheets,
+            "get_cached_welcome_templates",
+            AsyncMock(return_value=rows),
+        )
         monkeypatch.setattr(welcome_module, "get_welcome_general_channel_id", lambda: None)
 
         bridge = WelcomeBridge(bot)
@@ -228,7 +289,11 @@ def test_target_channel_routing(monkeypatch):
         message = FakeMessage()
         ctx = FakeContext(bot=bot, guild=guild, channel=fallback_channel, author=author, message=message)
 
-        monkeypatch.setattr(welcome_module.sheets, "get_cached_welcome_templates", Mock(return_value=rows))
+        monkeypatch.setattr(
+            welcome_module.sheets,
+            "get_cached_welcome_templates",
+            AsyncMock(return_value=rows),
+        )
         monkeypatch.setattr(welcome_module, "get_welcome_general_channel_id", lambda: None)
 
         bridge = WelcomeBridge(bot)
@@ -251,7 +316,11 @@ def test_missing_or_inactive_rows(monkeypatch):
         message = FakeMessage()
         ctx = FakeContext(bot=bot, guild=guild, channel=clan_channel, author=author, message=message)
 
-        monkeypatch.setattr(welcome_module.sheets, "get_cached_welcome_templates", Mock(return_value=rows))
+        monkeypatch.setattr(
+            welcome_module.sheets,
+            "get_cached_welcome_templates",
+            AsyncMock(return_value=rows),
+        )
         monkeypatch.setattr(welcome_module, "get_welcome_general_channel_id", lambda: None)
 
         bridge = WelcomeBridge(bot)
