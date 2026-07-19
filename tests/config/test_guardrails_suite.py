@@ -190,6 +190,14 @@ def test_c11_allows_shared_ports_and_rejects_config_runtime(
         "from config.runtime import get_port\nPORT = get_port()\n",
         encoding="utf-8",
     )
+    (package / "forbidden_shared.py").write_text(
+        "import shared.config\nPORT = shared.config.get_port()\n",
+        encoding="utf-8",
+    )
+    (package / "forbidden_shared_direct.py").write_text(
+        "from shared.config import get_port\nPORT = get_port()\n",
+        encoding="utf-8",
+    )
 
     category = guardrails_suite.CategoryResult("c11")
     guardrails_suite.check_c11(category)
@@ -198,6 +206,8 @@ def test_c11_allows_shared_ports_and_rejects_config_runtime(
     assert category.violations[0].files == [
         "modules/example/forbidden.py:2",
         "modules/example/forbidden_direct.py:1",
+        "modules/example/forbidden_shared.py:2",
+        "modules/example/forbidden_shared_direct.py:1",
     ]
 
 
