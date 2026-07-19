@@ -23,8 +23,8 @@ def test_render_guardrails_comment_includes_all_statuses():
                 "violations": [1],
             },
             {
-                "code": "G-09",
-                "description": "PR body has Tests: and Docs: sections",
+                "code": "G-03",
+                "description": "PR body has [meta] block",
                 "status": "skip",
                 "reason": "PR body unavailable",
                 "violations": [],
@@ -38,8 +38,7 @@ def test_render_guardrails_comment_includes_all_statuses():
     assert "✅ C-02 — Use logger instead of print()" in body
     assert "❌ C-03 — Parent-relative imports are forbidden (2 violations)" in body
     assert "❌ D-04 — README includes setup instructions (1 violation)" in body
-    assert "⚪ G-09 — PR body has Tests: and Docs: sections (skipped: PR body unavailable)" in body
-    assert "G-03" not in body
+    assert "⚪ G-03 — PR body has [meta] block (skipped: PR body unavailable)" in body
 
 
 def test_render_guardrails_comment_handles_empty_results():
