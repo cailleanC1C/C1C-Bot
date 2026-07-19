@@ -311,6 +311,10 @@ def test_config_resolution_parses_comma_separated_game_role_ids(monkeypatch):
     assert config is not None
     assert config.access_role_id == 1450000000000000000
     assert config.game_role_ids == frozenset(game_ids)
+    assert len(config.game_role_ids) == 7
+    assert (
+        int("".join(str(role_id) for role_id in game_ids)) not in config.game_role_ids
+    )
 
 
 def test_config_resolution_tolerates_whitespace_and_newlines(monkeypatch):
@@ -489,3 +493,56 @@ def test_daily_realmwalker_scan_warns_instead_of_using_partial_cache(monkeypatch
     assert result is not None
     assert result.realmwalker_issues == []
     assert "full member list could not be loaded" in (result.realmwalker_warning or "")
+
+
+def test_daily_audit_combines_config_and_unresolved_role_warnings(monkeypatch):
+    roles = {
+        role_id: role(role_id, name)
+        for role_id, name in (
+            (1, "Raid"),
+            (2, "Wandering Souls"),
+            (3, "Visitor"),
+            (10, "RealmWalker"),
+            (20, "WoW"),
+        )
+    }
+    affected = member(1, [roles[20]])
+
+    async def fetched_members():
+        yield affected
+
+    guild = SimpleNamespace(
+        id=100,
+        roles=list(roles.values()),
+        fetch_members=lambda **_kwargs: fetched_members(),
+        get_role=roles.get,
+    )
+    affected.guild = guild
+
+    async def no_tickets(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(role_audit, "fetch_ticket_threads", no_tickets)
+    result = asyncio.run(
+        role_audit._audit_guild(
+            SimpleNamespace(),
+            guild,
+            raid_role_id=1,
+            wanderer_role_id=2,
+            visitor_role_id=3,
+            clan_role_ids={99},
+            raid_role_name="Raid",
+            wanderer_role_name="Wandering Souls",
+            realmwalker_config=realmwalker.RealmWalkerConfig(10, frozenset({20, 30})),
+            realmwalker_warning=(
+                "REALMWALKER_GAME_ROLE_IDS contains invalid values: `bad-id`"
+            ),
+        )
+    )
+
+    assert result is not None
+    assert len(result.realmwalker_issues) == 1
+    assert "invalid values: `bad-id`" in (result.realmwalker_warning or "")
+    assert "could not be resolved in this guild: `30`" in (
+        result.realmwalker_warning or ""
+    )

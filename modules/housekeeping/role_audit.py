@@ -286,13 +286,26 @@ async def _audit_guild(
     )
 
     if realmwalker_config is not None and not full_members_loaded:
-        result.realmwalker_warning = "RealmWalker audit was skipped because the full member list could not be loaded."
+        member_warning = (
+            "RealmWalker audit was skipped because the full member list could not "
+            "be loaded."
+        )
+        result.realmwalker_warning = (
+            "; ".join(
+                item for item in (result.realmwalker_warning, member_warning) if item
+            )
+            or None
+        )
     elif realmwalker_config is not None:
         resolved_roles, role_error = realmwalker.resolve_guild_roles(
             guild, realmwalker_config
         )
+        combined_warning = (
+            "; ".join(item for item in (result.realmwalker_warning, role_error) if item)
+            or None
+        )
         if resolved_roles is None:
-            result.realmwalker_warning = role_error
+            result.realmwalker_warning = combined_warning
             log.warning(
                 "RealmWalker audit role config unresolved",
                 extra={
@@ -301,15 +314,13 @@ async def _audit_guild(
                 },
             )
         else:
-            if role_error:
-                result.realmwalker_warning = "; ".join(
-                    item for item in (result.realmwalker_warning, role_error) if item
-                )
+            result.realmwalker_warning = combined_warning
+            if combined_warning:
                 log.warning(
                     "RealmWalker audit role config partially unresolved",
                     extra={
                         "guild_id": getattr(guild, "id", None),
-                        "reason": role_error,
+                        "reason": combined_warning,
                     },
                 )
             result.realmwalker_issues.extend(
