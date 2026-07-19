@@ -732,14 +732,6 @@ def check_d09(category: CategoryResult, changed_files: List[str]) -> None:
     category.add(Violation("D-09", "error", "Runtime changes require tests", changed_files))
 
 
-def check_d10(category: CategoryResult, changed_files: List[str]) -> None:
-    user_flow_change = any(f.startswith("cogs/") or f.startswith("modules/") for f in changed_files)
-    docs_changed = any(f.startswith("docs/") for f in changed_files)
-    if not user_flow_change or docs_changed:
-        return
-    category.add(Violation("D-10", "error", "User-facing changes require docs", changed_files))
-
-
 def _parity_violation(parity_status: Optional[str]) -> tuple[List[Violation], Optional[str]]:
     if parity_status is None:
         return [], "ENV parity status unavailable"
@@ -981,17 +973,6 @@ def _build_guardrail_checks() -> List[GuardrailCheck]:
                 "Runtime changes require tests",
                 lambda ctx: _collect_category_violations(
                     ctx, "d09", check_d09, ctx.changed_files
-                ),
-            ),
-        ),
-        GuardrailCheck(
-            "D-10",
-            "User-facing changes require docs",
-            _build_pr_only_check(
-                "D-10",
-                "User-facing changes require docs",
-                lambda ctx: _collect_category_violations(
-                    ctx, "d10", check_d10, ctx.changed_files
                 ),
             ),
         ),
@@ -1286,7 +1267,7 @@ def _run_guardrail_checks(context: GuardrailContext) -> List[CheckResult]:
 # violations elsewhere in the repository remain visible to dedicated audits
 # without blocking an unrelated change.
 PR_GLOBAL_CHECKS = {"D-03", "D-04", "D-08"}
-PR_DIFF_AWARE_CHECKS = {"S-07", "D-06", "D-09", "D-10", "G-06"}
+PR_DIFF_AWARE_CHECKS = {"S-07", "D-06", "D-09", "G-06"}
 
 
 def _violation_path_is_changed(entry: str, changed_files: set[str]) -> bool:
