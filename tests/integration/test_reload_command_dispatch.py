@@ -10,7 +10,10 @@ def test_reload_command_dispatches_reboot(monkeypatch):
     intents = discord.Intents.none()
     bot = commands.Bot(command_prefix="!", intents=intents)
 
-    monkeypatch.setattr("shared.config.reload_config", lambda: None)
+    async def reload_config() -> None:
+        return None
+
+    monkeypatch.setattr("shared.config.areload_config", reload_config)
 
     reboot_called = {}
 

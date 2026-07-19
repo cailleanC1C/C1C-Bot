@@ -508,7 +508,7 @@ def onboarding_config_merge_count() -> int:
     return _LAST_ONBOARDING_CONFIG_KEYS
 
 
-def _load_config() -> Dict[str, object]:
+def _load_config(*, merge_sheet_config: bool = True) -> Dict[str, object]:
     keepalive = _runtime.get_watchdog_check_sec()
     stall = _runtime.get_watchdog_stall_sec()
     grace = _runtime.get_watchdog_disconnect_grace_sec(stall)
@@ -593,8 +593,9 @@ def _load_config() -> Dict[str, object]:
             "Legacy ENABLE_WELCOME_WATCHER detected; set ENABLE_WELCOME_HOOK and remove the old key."
         )
 
-    _merge_onboarding_tab(config)
-    _merge_milestones_tab(config)
+    if merge_sheet_config:
+        _merge_onboarding_tab(config)
+        _merge_milestones_tab(config)
 
     return config
 
@@ -606,6 +607,37 @@ def reload_config() -> Dict[str, object]:
         _require_env(_name)
 
     snapshot = _load_config()
+
+    global _CONFIG
+    _CONFIG = snapshot
+    _log_snapshot(snapshot)
+    return dict(_CONFIG)
+
+
+async def areload_config() -> Dict[str, object]:
+    """Reload bot-runtime configuration without synchronous Sheets access."""
+
+    for _name in _REQUIRED_ENV:
+        _require_env(_name)
+
+    snapshot = _load_config(merge_sheet_config=False)
+    try:
+        _, onboarding_values = await _aload_onboarding_config_values()
+    except RuntimeError:
+        log.debug("config: onboarding sheet id not configured; skipping tab merge")
+    except Exception as exc:  # pragma: no cover - network or credential failures
+        log.warning("config: failed to async-load onboarding Config tab: %s", exc)
+    else:
+        snapshot.update(onboarding_values)
+
+    try:
+        _, milestone_values = await _aload_milestones_config_values()
+    except RuntimeError:
+        log.debug("config: milestones sheet id not configured; skipping tab merge")
+    except Exception as exc:  # pragma: no cover - network or credential failures
+        log.warning("config: failed to async-load milestones Config tab: %s", exc)
+    else:
+        snapshot.update(milestone_values)
 
     global _CONFIG
     _CONFIG = snapshot
