@@ -148,6 +148,23 @@ def test_runtime_alert_reports_fail_closed_finishplacement(monkeypatch) -> None:
     assert "keys=welcome_watcher_enabled,promo_watcher_enabled" in messages[0]
 
 
+def test_runtime_alert_reports_each_explicit_shared_config_skip(monkeypatch) -> None:
+    messages, _ops_calls = _run_extension_load(
+        monkeypatch, failure_reason="Feature Toggles tab read failed"
+    )
+
+    expected_modules = (
+        "cogs.housekeeping_mirralith",
+        "modules.onboarding.reaction_fallback",
+        "modules.onboarding.watcher_welcome",
+        "modules.onboarding.watcher_promo",
+        "modules.onboarding.cmd_resume",
+        "modules.onboarding.cmd_finishplacement",
+    )
+    assert all(module_path in messages[0] for module_path in expected_modules)
+    assert "—" not in messages[0]
+
+
 def test_runtime_alert_does_not_report_ops_permissions_when_setup_runs(
     monkeypatch,
 ) -> None:

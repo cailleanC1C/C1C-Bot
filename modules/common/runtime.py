@@ -1335,7 +1335,7 @@ class Runtime:
             for module_path, feature_keys in skipped
         )
         alert = (
-            "❌ **Feature toggles unreadable** feature toggles could not be read; "
+            "❌ **Feature toggles unreadable:** feature toggles could not be read; "
             "feature-gated modules were disabled/skipped for safety "
             f"• reason={failure_reason}\n• affected={affected}"
         )
