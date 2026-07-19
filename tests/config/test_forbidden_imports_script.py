@@ -43,6 +43,8 @@ def test_forbidden_import_check_falls_back_and_allows_shared_ports(tmp_path: Pat
 def test_forbidden_import_check_fallback_rejects_deprecated_paths(tmp_path: Path) -> None:
     result = _run_without_ripgrep(
         tmp_path,
+        "import config.runtime\n"
+        "CONFIG_PORT = config.runtime.get_port()\n"
         "from config.runtime import get_port\n"
         "import shared.config\n"
         "PORT = shared.config.get_port()\n",
@@ -50,5 +52,6 @@ def test_forbidden_import_check_fallback_rejects_deprecated_paths(tmp_path: Path
 
     assert result.returncode == 1
     assert "Forbidden import path detected" in result.stdout
-    assert "example.py:1" in result.stdout
+    assert "example.py:2" in result.stdout
     assert "example.py:3" in result.stdout
+    assert "example.py:5" in result.stdout

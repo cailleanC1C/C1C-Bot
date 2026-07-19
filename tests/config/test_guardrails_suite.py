@@ -197,6 +197,10 @@ def test_c11_allows_shared_ports_and_rejects_config_runtime(
         "PORT = runtime_config.get_port()\n",
         encoding="utf-8",
     )
+    (package / "forbidden_qualified.py").write_text(
+        "import config.runtime\nPORT = config.runtime.get_port()\n",
+        encoding="utf-8",
+    )
     (package / "forbidden_direct.py").write_text(
         "from config.runtime import get_port\nPORT = get_port()\n",
         encoding="utf-8",
@@ -217,6 +221,7 @@ def test_c11_allows_shared_ports_and_rejects_config_runtime(
     assert category.violations[0].files == [
         "modules/example/forbidden.py:2",
         "modules/example/forbidden_direct.py:1",
+        "modules/example/forbidden_qualified.py:2",
         "modules/example/forbidden_shared.py:2",
         "modules/example/forbidden_shared_direct.py:1",
     ]
