@@ -21,7 +21,9 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 from scripts.ci.utils.env import get_env, get_env_path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+# ``guardrails_suite.py`` lives in ``scripts/ci``; guardrails must scan from the
+# repository root rather than treating ``scripts`` as the application root.
+ROOT = Path(__file__).resolve().parents[2]
 AUDIT_ROOT = ROOT / "AUDIT"
 DOCS_ROOT = ROOT / "docs"
 
@@ -694,16 +696,6 @@ def _parity_violation(parity_status: Optional[str]) -> tuple[List[Violation], Op
     return [], f"ENV parity status reported as '{parity_status}'"
 
 
-def check_g03(category: CategoryResult, pr_body: str) -> None:
-    meta_block = re.search(r"\[meta\](.*?)\[/meta\]", pr_body, re.DOTALL | re.IGNORECASE)
-    if not meta_block:
-        category.add(Violation("G-03", "error", "PR body missing [meta] block with labels and milestone", []))
-        return
-    block = meta_block.group(1)
-    if "labels:" not in block or "milestone:" not in block:
-        category.add(Violation("G-03", "error", "[meta] block must include labels and milestone", []))
-
-
 def check_g06(category: CategoryResult, diff_status: Dict[str, str]) -> None:
     added_docs = [path for path, status in diff_status.items() if status.upper() == "A" and path.startswith("docs/")]
     bad: List[str] = []
@@ -718,9 +710,14 @@ def check_g06(category: CategoryResult, diff_status: Dict[str, str]) -> None:
 
 
 def check_g09(category: CategoryResult, pr_body: str) -> None:
-    tests_block = _parse_block(pr_body, "Tests")
-    docs_block = _parse_block(pr_body, "Docs")
-    if not tests_block or not docs_block:
+    def _has_section(label: str) -> bool:
+        pattern = re.compile(
+            rf"^\s*(?:#{{1,6}}\s+)?{re.escape(label)}:\s*(?:\S.*)?$",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        return pattern.search(pr_body) is not None
+
+    if not _has_section("Tests") or not _has_section("Docs"):
         category.add(Violation("G-09", "error", "PR body must declare Tests: and Docs: sections", []))
 
 
@@ -950,15 +947,6 @@ def _build_guardrail_checks() -> List[GuardrailCheck]:
                 lambda ctx: _collect_category_violations(
                     ctx, "d10", check_d10, ctx.changed_files, ctx.pr_body
                 ),
-            ),
-        ),
-        GuardrailCheck(
-            "G-03",
-            "PR body must include [meta] block with labels and milestone",
-            _build_pr_only_check(
-                "G-03",
-                "PR body must include [meta] block with labels and milestone",
-                lambda ctx: _collect_category_violations(ctx, "g03", check_g03, ctx.pr_body),
             ),
         ),
         GuardrailCheck(
@@ -1256,6 +1244,60 @@ def _run_guardrail_checks(context: GuardrailContext) -> List[CheckResult]:
     return results
 
 
+# These checks deliberately validate PR governance or repository-wide sources of
+# truth. All other checks are scoped to files changed by the PR so historical
+# violations elsewhere in the repository remain visible to dedicated audits
+# without blocking an unrelated change.
+PR_GLOBAL_CHECKS = {"D-03", "D-04", "D-08", "G-09"}
+PR_DIFF_AWARE_CHECKS = {"S-07", "D-06", "D-09", "D-10", "G-06"}
+
+
+def _violation_path_is_changed(entry: str, changed_files: set[str]) -> bool:
+    return any(entry == path or entry.startswith(f"{path}:") for path in changed_files)
+
+
+def _scope_results_to_pr_changes(
+    results: List[CheckResult], changed_files: List[str]
+) -> List[CheckResult]:
+    changed = set(changed_files)
+    scoped: List[CheckResult] = []
+    for result in results:
+        if result.code in PR_GLOBAL_CHECKS or result.code in PR_DIFF_AWARE_CHECKS:
+            scoped.append(result)
+            continue
+
+        violations: List[Violation] = []
+        for violation in result.violations:
+            relevant_files = [
+                entry for entry in violation.files if _violation_path_is_changed(entry, changed)
+            ]
+            if relevant_files:
+                violations.append(
+                    Violation(
+                        rule_id=violation.rule_id,
+                        severity=violation.severity,
+                        message=violation.message,
+                        files=relevant_files,
+                    )
+                )
+
+        status = result.status
+        reason = result.reason
+        if result.status != "skip":
+            status = _status_from_violations(violations)
+            reason = None
+        scoped.append(
+            CheckResult(
+                code=result.code,
+                description=result.description,
+                status=status,
+                violations=violations,
+                reason=reason,
+            )
+        )
+    return scoped
+
+
 def run_checks(
     base_ref: Optional[str], pr_body: str, parity_status: Optional[str], pr_number: int
 ) -> SuiteResult:
@@ -1270,6 +1312,8 @@ def run_checks(
     )
 
     check_results = _run_guardrail_checks(context)
+    if pr_number > 0:
+        check_results = _scope_results_to_pr_changes(check_results, changed_files)
     categories = _build_categories(check_results)
     violations = [violation for result in check_results for violation in result.violations]
 

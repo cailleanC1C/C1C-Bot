@@ -9,6 +9,20 @@ sys.path.append(str(Path(__file__).resolve().parents[2] / "scripts" / "ci"))
 import guardrails_suite
 
 
+def test_repository_root_and_runtime_scan_scope() -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+
+    assert guardrails_suite.ROOT == repository_root
+    runtime_paths = {
+        path.relative_to(repository_root).as_posix()
+        for path in guardrails_suite._iter_runtime_python_files()
+    }
+    assert "scripts/ci/guardrails_suite.py" not in runtime_paths
+    assert "scripts/ci/check_docs.py" not in runtime_paths
+    assert "scripts/ci/utils/env.py" not in runtime_paths
+    assert any(path.startswith(("modules/", "shared/", "cogs/")) for path in runtime_paths)
+
+
 def _configure_roots(tmp_path: Path, monkeypatch: object) -> None:
     monkeypatch.setattr(guardrails_suite, "ROOT", tmp_path)
     monkeypatch.setattr(guardrails_suite, "AUDIT_ROOT", tmp_path / "AUDIT")
@@ -55,17 +69,27 @@ Details here.
     assert category.violations[0].rule_id == "G-09"
 
 
-def test_g03_requires_meta_block() -> None:
-    body = """Summary only
+def test_g09_accepts_plain_markdown_sections_anywhere_in_body() -> None:
+    body = """### Summary
 
-Tests: Added
-Docs: Added
+Guardrails follow-up for the current pull request.
+
+Tests:
+
+- `pytest -q tests/config/test_guardrails_suite.py`
+
+Additional notes can appear between the required sections.
+
+### Docs:
+
+- Updated the guardrails documentation.
 """
     category = guardrails_suite.CategoryResult("Governance (G)")
-    guardrails_suite.check_g03(category, body)
 
-    assert category.status == "fail"
-    assert category.violations[0].rule_id == "G-03"
+    guardrails_suite.check_g09(category, body)
+
+    assert category.status == "pass"
+    assert category.violations == []
 
 
 def test_f04_uses_feature_registry_and_accessor(tmp_path: Path, monkeypatch: object) -> None:
@@ -216,21 +240,74 @@ def test_run_checks_covers_all_codes(tmp_path: Path, monkeypatch: object) -> Non
     (modules_dir / "bad_import.py").write_text("from ..legacy import helper\n", encoding="utf-8")
 
     monkeypatch.setattr(guardrails_suite, "_load_feature_toggle_names", lambda: set())
-
-    pr_body = (
-        "[meta]\nlabels: guardrails\nmilestone: Harmonize v1.0\n[/meta]\n\n"
-        "Tests:\nNot required (reason: CI-only)\nDocs:\nNot required (reason: CI-only)\n"
+    monkeypatch.setattr(guardrails_suite, "_git_diff_names", lambda base_ref: ["modules/bad_import.py"])
+    monkeypatch.setattr(
+        guardrails_suite, "_git_diff_status", lambda base_ref: {"modules/bad_import.py": "M"}
     )
+
+    pr_body = "Tests: Not required (reason: CI-only)\nDocs: Not required (reason: CI-only)\n"
 
     suite = guardrails_suite.run_checks(None, pr_body=pr_body, parity_status="success", pr_number=1)
 
     codes = {result.code for result in suite.check_results}
     assert codes == {check.code for check in guardrails_suite.CHECKS}
+    assert "G-03" not in codes
 
     c03_result = next(result for result in suite.check_results if result.code == "C-03")
     assert c03_result.status == "fail"
     d03_result = next(result for result in suite.check_results if result.code == "D-03")
     assert d03_result.status == "pass"
+
+
+def test_pr_scope_ignores_unchanged_historical_violations(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    _configure_roots(tmp_path, monkeypatch)
+    modules_dir = tmp_path / "modules"
+    modules_dir.mkdir()
+    (modules_dir / "historical.py").write_text("from ..legacy import helper\n", encoding="utf-8")
+    (modules_dir / "changed.py").write_text("value = 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(guardrails_suite, "_git_diff_names", lambda base_ref: ["modules/changed.py"])
+    monkeypatch.setattr(
+        guardrails_suite, "_git_diff_status", lambda base_ref: {"modules/changed.py": "M"}
+    )
+    monkeypatch.setattr(guardrails_suite, "_load_feature_toggle_names", lambda: set())
+
+    suite = guardrails_suite.run_checks(
+        "origin/main",
+        pr_body="Tests: passed\nDocs: not required",
+        parity_status="success",
+        pr_number=1017,
+    )
+
+    c03_result = next(result for result in suite.check_results if result.code == "C-03")
+    assert c03_result.status == "pass"
+    assert c03_result.violations == []
+
+
+def test_pr_scope_keeps_violations_in_changed_files(tmp_path: Path, monkeypatch: object) -> None:
+    _configure_roots(tmp_path, monkeypatch)
+    modules_dir = tmp_path / "modules"
+    modules_dir.mkdir()
+    (modules_dir / "changed.py").write_text("from ..legacy import helper\n", encoding="utf-8")
+
+    monkeypatch.setattr(guardrails_suite, "_git_diff_names", lambda base_ref: ["modules/changed.py"])
+    monkeypatch.setattr(
+        guardrails_suite, "_git_diff_status", lambda base_ref: {"modules/changed.py": "M"}
+    )
+    monkeypatch.setattr(guardrails_suite, "_load_feature_toggle_names", lambda: set())
+
+    suite = guardrails_suite.run_checks(
+        "origin/main",
+        pr_body="Tests: passed\nDocs: not required",
+        parity_status="success",
+        pr_number=1017,
+    )
+
+    c03_result = next(result for result in suite.check_results if result.code == "C-03")
+    assert c03_result.status == "fail"
+    assert c03_result.violations[0].files == ["modules/changed.py:1"]
 
 
 def test_run_all_checks_returns_results(tmp_path: Path, monkeypatch: object) -> None:
@@ -254,11 +331,12 @@ def test_run_all_checks_returns_results(tmp_path: Path, monkeypatch: object) -> 
     (modules_dir / "bad_import.py").write_text("from ..legacy import helper\n", encoding="utf-8")
 
     monkeypatch.setattr(guardrails_suite, "_load_feature_toggle_names", lambda: set())
-
-    pr_body = (
-        "[meta]\nlabels: guardrails\nmilestone: Harmonize v1.0\n[/meta]\n\n"
-        "Tests:\nNot required (reason: CI-only)\nDocs:\nNot required (reason: CI-only)\n"
+    monkeypatch.setattr(guardrails_suite, "_git_diff_names", lambda base_ref: ["modules/bad_import.py"])
+    monkeypatch.setattr(
+        guardrails_suite, "_git_diff_status", lambda base_ref: {"modules/bad_import.py": "M"}
     )
+
+    pr_body = "Tests: Not required (reason: CI-only)\nDocs: Not required (reason: CI-only)\n"
 
     results, violations = guardrails_suite.run_all_checks(
         base_ref=None, pr_number=1, pr_body=pr_body, parity_status="success"

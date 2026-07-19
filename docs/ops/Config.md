@@ -50,6 +50,7 @@ Missing any **Required** key causes the bot to exit with an error at startup. If
 | `REFRESH_TIMES` | csv | `02:00,10:00,18:00` | Optional daily refresh windows (HH:MM, comma separated). |
 | `PORT` | int | `10000` | Render injects this automatically; local runs fall back to 10000. |
 | `LOG_LEVEL` | string | 'INFO' | Python logging level. |
+| `LOG_MESSAGE_CONTENT` | bool | `false` | Includes sanitized message content in logs when enabled. |
 | `LOG_CHANNEL_ID` | snowflake | — | Required for Discord channel logging. If unset or empty, logging to Discord is disabled and a one-time startup warning is emitted. No implicit defaults. |
 
 ### Google Sheets access
@@ -72,6 +73,7 @@ Missing any **Required** key causes the bot to exit with an error at startup. If
 | `SHEETS_CACHE_TTL_SEC` | int | `900` | TTL for cached worksheet values. |
 | `SHEETS_CONFIG_CACHE_TTL_SEC` | int | matches `SHEETS_CACHE_TTL_SEC` | TTL for cached worksheet metadata; defaults to the value above. |
 | `SHEETS_EXPORT_DELAY_MS` | int | `0` | Optional throttle (milliseconds) applied after each Google Sheets/Drive export (PDF/PNG). |
+| `SHEETS_READ_AUDIT_LOGGING` | bool | `false` | Enables temporary structured logical Sheets read audit logging. |
 
 Async handlers must import Sheets helpers from `shared.sheets.async_facade`; the
 sync modules remain available for non-async scripts and cache warmers.
@@ -99,11 +101,14 @@ sync modules remain available for non-async scripts and cache warmers.
 | `SERVER_MAP_CHANNEL_ID` | snowflake | — | Discord channel hosting the server map embed when the SERVER_MAP toggle is enabled. |
 | `SERVER_MAP_CATEGORY_BLACKLIST` | csv | — | Comma-separated Discord category IDs hidden from the rendered server map. |
 | `SERVER_MAP_CHANNEL_BLACKLIST` | csv | — | Comma-separated Discord channel IDs hidden from the server map, even when their parent category is visible. |
+| `PERMS_BLACKLIST_CHANNEL_IDS` | csv | — | Channel IDs excluded from the permissions UI. |
+| `PERMS_BLACKLIST_CATEGORY_IDS` | csv | — | Category IDs, including their child channels, excluded from the permissions UI. |
 | `WHO_WE_ARE_CHANNEL_ID` | snowflake | — | Discord channel ID used by the `!whoweare` role map command. |
 | `PANEL_THREAD_MODE` | enum | `same` | `same` posts panels in the invoking channel; `fixed` routes to a dedicated thread. |
 | `PANEL_FIXED_THREAD_ID` | snowflake | — | Thread used when `PANEL_THREAD_MODE=fixed`. |
 | `RAID_ROLE_ID` | snowflake | — | Raid role granted to active clan members. |
 | `WANDERING_SOULS_ROLE_ID` | snowflake | — | Role for members without clan tags. |
+| `WANDERING_SOULS_EXCLUDE_ROLE_ID` | snowflake | — | Role excluded from Wandering Souls investigation results. |
 | `VISITOR_ROLE_ID` | snowflake | — | Visitor role used during welcome ticketing. |
 | `CLAN_ROLE_IDS` | csv | — | Comma-separated list of all clan-tag role IDs. |
 | `ADMIN_AUDIT_DEST_ID` | snowflake | — | Channel or thread receiving the housekeeping role/visitor audit. |
@@ -156,15 +161,11 @@ The Achievement Collector reads its role definitions from `ACHIEVEMENTS_SHEET_ID
 | `CLAN_TAGS_CACHE_TTL_SEC` | int | `3600` | TTL for cached clan tags. |
 | `REPORT_DAILY_POST_TIME` | HH:MM | `09:30` | UTC time for the Daily Recruiter Update scheduler. |
 | `SERVER_MAP_REFRESH_DAYS` | int | `30` | Minimum days between scheduled server map refreshes; enforced alongside sheet runtime state. |
-| `HOUSEKEEPING_KEEPALIVE_ENABLED` | Feature Toggles tab bool | — | Required sheet toggle for thread keepalive; missing/blank/invalid disables scheduling without Config or ENV fallback. |
-| `HOUSEKEEPING_KEEPALIVE_TAB` | Config tab string | — | Required name of the keepalive target tab; no code default or fallback tab name. |
-| `HOUSEKEEPING_KEEPALIVE_DEFAULT_MESSAGE` | Config tab string | — | Required global fallback keepalive message; blank means stale rows without row/parent messages are skipped safely. |
-| `HOUSEKEEPING_KEEPALIVE_STALE_AFTER_HOURS` | Config tab number | — | Required inactivity threshold before posting into a thread. |
-| `HOUSEKEEPING_KEEPALIVE_RUN_EVERY_HOURS` | Config tab number | — | Required scheduler cadence for checking the keepalive sheet. |
-| `HOUSEKEEPING_CLEANUP_ENABLED` | Feature Toggles tab bool | — | Required sheet toggle for housekeeping cleanup; missing/blank/invalid disables scheduling without Config or ENV fallback. |
-| `HOUSEKEEPING_CLEANUP_TAB` | Config tab string | — | Required cleanup target tab name; no code default or fallback tab name. |
-| `HOUSEKEEPING_CLEANUP_RUN_EVERY_HOURS` | Config tab number | — | Required positive scheduler cadence for cleanup checks. |
-| `HOUSEKEEPING_CLEANUP_DRY_RUN` | Config tab bool | — | Required TRUE/FALSE flag; TRUE scans and writes status without deleting messages. |
+| `CLEANUP_THREAD_IDS` | csv | — | Threads to sweep of non-pinned messages. |
+| `CLEANUP_INTERVAL_HOURS` | number | `24` | Interval between cleanup sweeps. |
+| `KEEPALIVE_CHANNEL_IDS` | csv | — | Channels whose threads should be kept alive. |
+| `KEEPALIVE_THREAD_IDS` | csv | — | Individual threads that should be kept alive. |
+| `KEEPALIVE_INTERVAL_HOURS` | number | `144` | Maximum thread idle time before a heartbeat. |
 
 ### Media rendering
 | Key | Type | Default | Notes |
@@ -210,6 +211,18 @@ The `SERVER_MAP` FeatureToggle in the FeatureToggles worksheet still gates the a
 Permissions UI blacklist keys are also environment variables:
 - `PERMS_BLACKLIST_CHANNEL_IDS` — comma-separated channel IDs excluded from `!perm`.
 - `PERMS_BLACKLIST_CATEGORY_IDS` — comma-separated category IDs excluded from `!perm` (and their child channels).
+
+### Housekeeping sheet keys
+
+- `HOUSEKEEPING_KEEPALIVE_ENABLED` — Feature Toggles tab flag for thread keepalive.
+- `HOUSEKEEPING_KEEPALIVE_TAB` — Config tab name of the keepalive target tab.
+- `HOUSEKEEPING_KEEPALIVE_DEFAULT_MESSAGE` — Config tab fallback keepalive message.
+- `HOUSEKEEPING_KEEPALIVE_STALE_AFTER_HOURS` — Config tab inactivity threshold.
+- `HOUSEKEEPING_KEEPALIVE_RUN_EVERY_HOURS` — Config tab keepalive scheduler cadence.
+- `HOUSEKEEPING_CLEANUP_ENABLED` — Feature Toggles tab flag for cleanup.
+- `HOUSEKEEPING_CLEANUP_TAB` — Config tab name of the cleanup target tab.
+- `HOUSEKEEPING_CLEANUP_RUN_EVERY_HOURS` — Config tab cleanup scheduler cadence.
+- `HOUSEKEEPING_CLEANUP_DRY_RUN` — Config tab dry-run flag.
 
 ### Recruitment sheet keys
 - 'CLANS_TAB'
@@ -424,4 +437,4 @@ Feature enable/disable is always sourced from the FeatureToggles worksheet; ENV 
 
 > **Template note:** The `.env.example` file in this directory mirrors the tables below. Treat that file as the canonical template for new deployments and update both assets together.
 
-Doc last updated: 2026-06-08 (v0.9.8.2)
+Doc last updated: 2026-07-19 (v0.9.8.2)
