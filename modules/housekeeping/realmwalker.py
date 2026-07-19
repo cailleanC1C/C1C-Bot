@@ -17,6 +17,8 @@ log = logging.getLogger("c1c.housekeeping.realmwalker")
 ACCESS_ROLE_KEY = "REALMWALKER_ACCESS_ROLE_ID"
 GAME_ROLES_KEY = "REALMWALKER_GAME_ROLE_IDS"
 FIX_REASON = "Housekeeping RealmWalker access audit"
+ROLE_ID_RE = re.compile(r"\d+")
+ROLE_ID_LENGTH = 19
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,17 +60,16 @@ def _parse_role_id(value: str | None) -> int | None:
 
 
 def _parse_role_ids(value: str | None) -> tuple[set[int], list[str]]:
-    """Parse role IDs separated by commas or whitespace."""
+    """Extract 19-digit role IDs, including IDs joined without separators."""
     role_ids: set[int] = set()
     invalid: list[str] = []
-    for item in re.split(r"[,\s]+", value or ""):
-        if not item:
+    for match in ROLE_ID_RE.finditer(value or ""):
+        raw_match = match.group(0)
+        if len(raw_match) < ROLE_ID_LENGTH or len(raw_match) % ROLE_ID_LENGTH:
+            invalid.append(raw_match)
             continue
-        role_id = _parse_role_id(item)
-        if role_id is None:
-            invalid.append(item)
-        else:
-            role_ids.add(role_id)
+        for start in range(0, len(raw_match), ROLE_ID_LENGTH):
+            role_ids.add(int(raw_match[start : start + ROLE_ID_LENGTH]))
     return role_ids, invalid
 
 

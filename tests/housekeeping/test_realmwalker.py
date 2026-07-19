@@ -276,12 +276,18 @@ def test_config_resolution_still_uses_recruitment_config_helper(monkeypatch):
 
     async def get_config(key, default=None):
         calls.append((key, default))
-        return "10" if key == realmwalker.ACCESS_ROLE_KEY else "20,21"
+        return (
+            "10"
+            if key == realmwalker.ACCESS_ROLE_KEY
+            else "1234567890123456789,2234567890123456789"
+        )
 
     monkeypatch.setattr(realmwalker.recruitment, "get_config_value_async", get_config)
     config, error = asyncio.run(realmwalker.resolve_config())
     assert error is None
-    assert config == realmwalker.RealmWalkerConfig(10, frozenset({20, 21}))
+    assert config == realmwalker.RealmWalkerConfig(
+        10, frozenset({1234567890123456789, 2234567890123456789})
+    )
     assert [key for key, _ in calls] == [
         "REALMWALKER_ACCESS_ROLE_ID",
         "REALMWALKER_GAME_ROLE_IDS",
@@ -318,18 +324,55 @@ def test_config_resolution_parses_comma_separated_game_role_ids(monkeypatch):
 
 
 def test_config_resolution_tolerates_whitespace_and_newlines(monkeypatch):
+    game_ids = (1234567890123456789, 2234567890123456789, 3234567890123456789)
+
     async def get_config(key, default=None):
         if key == realmwalker.ACCESS_ROLE_KEY:
             return "10"
-        return " 20  21\n22\n 23 "
+        return f" {game_ids[0]}  {game_ids[1]}\n{game_ids[2]} "
 
     monkeypatch.setattr(realmwalker.recruitment, "get_config_value_async", get_config)
     config, error = asyncio.run(realmwalker.resolve_config())
 
     assert error is None
-    assert config == realmwalker.RealmWalkerConfig(
-        access_role_id=10, game_role_ids=frozenset({20, 21, 22, 23})
+    assert config == realmwalker.RealmWalkerConfig(10, frozenset(game_ids))
+
+
+def test_parse_role_ids_accepts_semicolons_mentions_and_deduplicates():
+    first = 1234567890123456789
+    second = 2234567890123456789
+
+    parsed, invalid = realmwalker._parse_role_ids(
+        f"{first};<@&{second}>;<@&{first}>"
     )
+
+    assert parsed == {first, second}
+    assert invalid == []
+
+
+def test_parse_role_ids_splits_a_concatenated_digit_run():
+    game_ids = (1234567890123456789, 2234567890123456789, 3234567890123456789)
+
+    parsed, invalid = realmwalker._parse_role_ids("".join(map(str, game_ids)))
+
+    assert parsed == set(game_ids)
+    assert invalid == []
+
+
+def test_parse_role_ids_marks_malformed_long_digit_run_invalid():
+    malformed = "12345678901234567890"
+
+    parsed, invalid = realmwalker._parse_role_ids(malformed)
+
+    assert parsed == set()
+    assert invalid == [malformed]
+
+
+def test_parse_role_ids_marks_short_digit_run_invalid():
+    parsed, invalid = realmwalker._parse_role_ids("12345")
+
+    assert parsed == set()
+    assert invalid == ["12345"]
 
 
 def test_unresolved_game_role_ids_are_reported_individually():
@@ -410,20 +453,29 @@ def test_access_role_config_rejects_a_role_id_list(monkeypatch):
 def test_manual_fix_uses_valid_ids_and_warns_for_invalid_parsed_config(
     monkeypatch,
 ):
+    access_id = 1234567890123456789
+    game_id = 2234567890123456789
+    second_game_id = 3234567890123456789
     add_called = False
 
     async def add_roles(*_args, **_kwargs):
         nonlocal add_called
         add_called = True
 
-    affected = member(1, [role(20, "WoW")])
+    affected = member(1, [role(game_id, "WoW")])
     affected.add_roles = add_roles
 
     async def get_config(key, default=None):
-        return "10" if key == realmwalker.ACCESS_ROLE_KEY else "20,not-a-role,21"
+        if key == realmwalker.ACCESS_ROLE_KEY:
+            return str(access_id)
+        return f"{game_id},12345,{second_game_id}"
 
     monkeypatch.setattr(realmwalker.recruitment, "get_config_value_async", get_config)
-    roles = {10: role(10, "RealmWalker"), 20: affected.roles[0], 21: role(21, "GW2")}
+    roles = {
+        access_id: role(access_id, "RealmWalker"),
+        game_id: affected.roles[0],
+        second_game_id: role(second_game_id, "GW2"),
+    }
 
     async def fetched_members():
         yield affected
@@ -441,7 +493,7 @@ def test_manual_fix_uses_valid_ids_and_warns_for_invalid_parsed_config(
     asyncio.run(RealmWalkerAuditCog.audit_realmwalker.callback(cog, ctx, "fix"))
 
     assert add_called is True
-    assert "contains invalid values: `not-a-role`" in (
+    assert "contains invalid values: `12345`" in (
         sent[0]["embed"].description or ""
     )
 
