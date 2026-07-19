@@ -320,7 +320,12 @@ def check_s02(category: CategoryResult) -> None:
 def check_s03(category: CategoryResult) -> None:
     pattern = re.compile(r"@(commands\.|bot\.|tree\.|app_commands\.)command")
     hits = _match_paths(_iter_python_files(), pattern)
-    allowed_command_paths = ("cogs/", "packages/c1c-coreops/", "tests/")
+    allowed_command_paths = (
+        "cogs/",
+        "packages/c1c-coreops/src/c1c_coreops/cog.py:",
+        "packages/c1c-coreops/src/c1c_coreops/commands/",
+        "tests/",
+    )
     filtered = [h for h in hits if not h.startswith(allowed_command_paths)]
     if filtered:
         category.add(Violation("S-03", "error", "Command decorators must live under cogs/", filtered))

@@ -121,6 +121,14 @@ def _forbidden_call_name(call: ast.Call, aliases: ImportAliases) -> str | None:
                 return None
             if module_name in aliases.forbidden_modules:
                 return func.attr
+        if (
+            func.attr == "reload_config"
+            and isinstance(func.value, ast.Attribute)
+            and func.value.attr == "config"
+            and isinstance(func.value.value, ast.Name)
+            and func.value.value.id in aliases.forbidden_modules
+        ):
+            return func.attr
         if func.attr in SCOPED_FORBIDDEN_HELPERS:
             return None
         return func.attr
@@ -178,6 +186,16 @@ def test_guardrail_detects_directly_imported_sync_config_reload() -> None:
         "from shared.config import reload_config\n"
         "async def command():\n"
         "    reload_config()\n"
+    )
+
+    assert calls == ["reload_config"]
+
+
+def test_guardrail_detects_fully_qualified_sync_config_reload() -> None:
+    calls = _forbidden_calls(
+        "import shared.config\n"
+        "async def command():\n"
+        "    shared.config.reload_config()\n"
     )
 
     assert calls == ["reload_config"]
