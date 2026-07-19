@@ -95,8 +95,14 @@ def _setup_watcher(monkeypatch):
     monkeypatch.setattr("modules.onboarding.watcher_promo.get_promo_channel_id", lambda: 123)
     monkeypatch.setattr("modules.onboarding.watcher_promo.get_ticket_tool_bot_id", lambda: 555)
     monkeypatch.setattr("modules.onboarding.watcher_promo.thread_scopes.is_promo_parent", lambda *_: True)
-    monkeypatch.setattr("modules.onboarding.watcher_promo.onboarding_sessions.get_by_thread_id", lambda *_: None)
-    monkeypatch.setattr("modules.onboarding.watcher_promo.onboarding_sessions.mark_completed", lambda *_: True)
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_promo.onboarding_sessions.aget_by_thread_id",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "modules.onboarding.watcher_promo.onboarding_sessions.amark_completed",
+        AsyncMock(return_value=True),
+    )
     monkeypatch.setattr("modules.onboarding.watcher_promo.discord.Thread", DummyThread)
     return PromoTicketWatcher(bot=DummyBot())
 
