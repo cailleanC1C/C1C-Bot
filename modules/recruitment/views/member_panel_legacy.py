@@ -1,4 +1,9 @@
-"""Legacy member search panel restored for ``!clansearch``."""
+"""Active member search panel implementation for ``!clansearch``.
+
+Despite the ``_legacy`` filename, this module is the live implementation and is
+retained intentionally. Any cleanup must happen in a separate,
+behavior-preserving migration PR that first rewires the command path and tests.
+"""
 
 from __future__ import annotations
 

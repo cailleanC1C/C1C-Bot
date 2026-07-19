@@ -114,6 +114,12 @@ ledger stays synchronized and the 🧭 placement log captures before/after value
 for `E`, `AF`, `AH`, and `AI`.
 
 ### Recruiter & member search surfaces
+- Despite its filename, `modules/recruitment/views/member_panel_legacy.py` is
+  the currently active member-panel implementation: `cogs/recruitment_member.py`
+  wires `!clansearch` to its controller, the recruitment views package re-exports
+  its controller and state, and the member clan-search tests exercise it. It is
+  retained intentionally and must not be deleted or renamed until a separate,
+  behavior-preserving migration PR rewires the command path and tests.
 - `!clanmatch` (recruiter view) and `!clansearch` (member view) both render as
 two persistent messages inside the recruiter thread: one for filters, one for
 results. When filters change, the module edits both messages in-place. Results
@@ -173,4 +179,4 @@ event loop.
 - [`docs/adr/ADR-0017-Reservations-Placement-Schema.md`](../adr/ADR-0017-Reservations-Placement-Schema.md)
 - [`docs/adr/ADR-0018_DailyRecruiterUpdate.md`](../adr/ADR-0018_DailyRecruiterUpdate.md)
 
-Doc last updated: 2025-12-04 (v0.9.8.2)
+Doc last updated: 2026-07-19 (v0.9.8.2)
