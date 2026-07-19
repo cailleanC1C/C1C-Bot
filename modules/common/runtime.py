@@ -1316,6 +1316,7 @@ class Runtime:
         from cogs import housekeeping_achievement_collector
         from cogs import housekeeping_wandering_souls
         from cogs import housekeeping_c1c_ad
+        from cogs import housekeeping_realmwalker
         from cogs import recruitment_clan_ads
         from modules.housekeeping import cleanup as housekeeping_cleanup_commands
         from modules.onboarding import ops_check as onboarding_ops_check
@@ -1365,6 +1366,9 @@ class Runtime:
 
         await housekeeping_c1c_ad.setup(self.bot)
         log.info("modules: c1c_ad command registered")
+
+        await housekeeping_realmwalker.setup(self.bot)
+        log.info("modules: RealmWalker audit command registered")
 
         await recruitment_clan_ads.setup(self.bot)
         log.info("modules: clan_ads command registered")

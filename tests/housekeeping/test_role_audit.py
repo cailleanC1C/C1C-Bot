@@ -18,7 +18,9 @@ def test_classify_roles_covers_stray_and_wander_cases():
     clan_roles = {10, 11}
 
     assert (
-        role_audit._classify_roles({1}, raid_role_id=1, wanderer_role_id=2, clan_role_ids=clan_roles)
+        role_audit._classify_roles(
+            {1}, raid_role_id=1, wanderer_role_id=2, clan_role_ids=clan_roles
+        )
         == "stray"
     )
     assert (
@@ -42,7 +44,12 @@ def test_classify_roles_covers_stray_and_wander_cases():
 
 
 def test_render_report_formats_all_sections():
-    member = DummyMember(id=1, name="tester", roles=[], joined_at=datetime(2026, 4, 18, tzinfo=timezone.utc))
+    member = DummyMember(
+        id=1,
+        name="tester",
+        roles=[],
+        joined_at=datetime(2026, 4, 18, tzinfo=timezone.utc),
+    )
     clan_role = DummyRole(id=10, name="ClanTag")
     ticket = SimpleNamespace(name="W0001-test", url="https://discord.com/channels/1/2")
 
@@ -87,7 +94,12 @@ def test_render_report_uses_unknown_join_date_when_missing():
 
 
 def test_render_report_apply_mode_includes_actions_and_failures():
-    member = DummyMember(id=1, name="tester", roles=[], joined_at=datetime(2026, 4, 18, tzinfo=timezone.utc))
+    member = DummyMember(
+        id=1,
+        name="tester",
+        roles=[],
+        joined_at=datetime(2026, 4, 18, tzinfo=timezone.utc),
+    )
     summary = role_audit.AuditResult(
         checked=2,
         auto_fixed_strays=[member],
@@ -114,8 +126,15 @@ def test_render_report_apply_mode_includes_actions_and_failures():
 
 
 def test_render_report_dry_run_wording_and_footer():
-    member = DummyMember(id=1, name="tester", roles=[], joined_at=datetime(2026, 4, 18, tzinfo=timezone.utc))
-    summary = role_audit.AuditResult(checked=9, auto_fixed_strays=[member], auto_fixed_wanderers=[member])
+    member = DummyMember(
+        id=1,
+        name="tester",
+        roles=[],
+        joined_at=datetime(2026, 4, 18, tzinfo=timezone.utc),
+    )
+    summary = role_audit.AuditResult(
+        checked=9, auto_fixed_strays=[member], auto_fixed_wanderers=[member]
+    )
     embed = role_audit._render_report(
         summary=summary,
         raid_role_name="raid",
@@ -133,7 +152,15 @@ def test_render_report_dry_run_wording_and_footer():
 def test_only_everyone_section_includes_non_bot_member():
     guild = SimpleNamespace(id=100)
     everyone = DummyRole(id=100, name="@everyone")
-    member = DummyMember(id=1, name="roleless", display_name="Role Less", guild=guild, roles=[everyone], bot=False)
+    member = DummyMember(
+        id=1,
+        name="roleless",
+        display_name="Role Less",
+        guild=guild,
+        roles=[everyone],
+        bot=False,
+        joined_at=datetime.now(timezone.utc),
+    )
     summary = role_audit.AuditResult(checked=1, members_only_everyone=[member])
 
     embed = role_audit._render_report(
@@ -144,6 +171,20 @@ def test_only_everyone_section_includes_non_bot_member():
     assert "Members with only @everyone" in description
     assert "<@1>" in description
     assert "Role Less" in description
+    assert (
+        datetime.now(timezone.utc).strftime("joined %Y-%m-%d (0d ago)") in description
+    )
+
+
+def test_only_everyone_section_unknown_join_date():
+    member = DummyMember(
+        id=1, name="roleless", display_name="Role Less", joined_at=None
+    )
+    summary = role_audit.AuditResult(checked=1, members_only_everyone=[member])
+    embed = role_audit._render_report(
+        summary=summary, raid_role_name="Raid", wanderer_role_name="Wandering Souls"
+    )
+    assert "<@1> – Role Less – joined unknown" in (embed.description or "")
 
 
 def test_only_everyone_helper_excludes_members_with_other_roles_and_bots():
@@ -173,7 +214,9 @@ def test_render_report_large_roleless_set_splits_without_omitting_members():
         )
         for idx in range(1, 220)
     ]
-    summary = role_audit.AuditResult(checked=len(members), members_only_everyone=members)
+    summary = role_audit.AuditResult(
+        checked=len(members), members_only_everyone=members
+    )
 
     embeds = role_audit._render_report_embeds(
         summary=summary, raid_role_name="Raid", wanderer_role_name="Wandering Souls"

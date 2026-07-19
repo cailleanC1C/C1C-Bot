@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Scheduled audit for roles and visitor ticket hygiene."""
+
+from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
@@ -11,6 +11,7 @@ import discord
 from discord.ext import commands
 
 from modules.community.fusion import role_cleanup as fusion_role_cleanup
+from modules.housekeeping import realmwalker
 from modules.common.embeds import get_embed_colour
 from modules.common.tickets import TicketThread, fetch_ticket_threads
 from shared.config import (
@@ -51,10 +52,18 @@ class AuditResult:
     wanderers_with_clans: list[tuple[discord.Member, list[discord.Role]]] | None = None
     visitors_no_ticket: list[discord.Member] | None = None
     visitors_closed_only: list[tuple[discord.Member, list[TicketThread]]] | None = None
-    visitors_extra_roles: list[tuple[discord.Member, list[discord.Role], list[TicketThread]]] | None = None
+    visitors_extra_roles: (
+        list[tuple[discord.Member, list[discord.Role], list[TicketThread]]] | None
+    ) = None
     members_only_everyone: list[discord.Member] | None = None
-    fusion_role_cleanup: list[fusion_role_cleanup.FusionRoleCleanupSummary] | None = None
-    proposed_role_mutations: list[tuple[discord.Member, list[discord.Role], list[discord.Role]]] | None = None
+    realmwalker_issues: list[realmwalker.RealmWalkerIssue] | None = None
+    realmwalker_warning: str | None = None
+    fusion_role_cleanup: list[fusion_role_cleanup.FusionRoleCleanupSummary] | None = (
+        None
+    )
+    proposed_role_mutations: (
+        list[tuple[discord.Member, list[discord.Role], list[discord.Role]]] | None
+    ) = None
     action_roles_removed: list[str] | None = None
     action_roles_added: list[str] | None = None
     action_users_kicked: list[str] | None = None
@@ -66,7 +75,11 @@ def _member_roles(member: discord.Member) -> set[int]:
 
 
 def _classify_roles(
-    member_roles: set[int], *, raid_role_id: int, wanderer_role_id: int, clan_role_ids: set[int]
+    member_roles: set[int],
+    *,
+    raid_role_id: int,
+    wanderer_role_id: int,
+    clan_role_ids: set[int],
 ) -> str:
     has_raid = raid_role_id in member_roles
     has_wanderer = wanderer_role_id in member_roles
@@ -82,7 +95,10 @@ def _classify_roles(
 
 
 def _extra_roles(member: discord.Member, visitor_role_id: int) -> list[discord.Role]:
-    visitor_and_everyone = {visitor_role_id, getattr(getattr(member, "guild", None), "id", -1)}
+    visitor_and_everyone = {
+        visitor_role_id,
+        getattr(getattr(member, "guild", None), "id", -1),
+    }
     extras: list[discord.Role] = []
     for role in getattr(member, "roles", []):
         if getattr(role, "id", 0) in visitor_and_everyone:
@@ -143,7 +159,10 @@ async def _apply_role_changes(
     scheduled_actors = {"scheduled", "background", "cron", "startup", "ready"}
     if dry_run or actor_normalized in scheduled_actors:
         return True, None
-    before_roles = [getattr(role, "name", str(getattr(role, "id", "unknown"))) for role in getattr(member, "roles", [])]
+    before_roles = [
+        getattr(role, "name", str(getattr(role, "id", "unknown")))
+        for role in getattr(member, "roles", [])
+    ]
     try:
         if remove:
             await member.remove_roles(*remove, reason=ROLE_AUDIT_REASON)
@@ -162,17 +181,25 @@ async def _apply_role_changes(
             extra={"member_id": getattr(member, "id", None), "error": str(exc)},
         )
         return False, str(exc)
-    after_roles = [getattr(role, "name", str(getattr(role, "id", "unknown"))) for role in getattr(member, "roles", [])]
+    after_roles = [
+        getattr(role, "name", str(getattr(role, "id", "unknown")))
+        for role in getattr(member, "roles", [])
+    ]
     log.info(
         "role audit mutation applied",
         extra={
             "actor": actor,
             "member_id": getattr(member, "id", None),
-            "member_name": getattr(member, "display_name", None) or getattr(member, "name", None),
+            "member_name": getattr(member, "display_name", None)
+            or getattr(member, "name", None),
             "before_roles": before_roles,
             "after_roles": after_roles,
-            "remove_roles": [getattr(r, "name", str(getattr(r, "id", "unknown"))) for r in remove],
-            "add_roles": [getattr(r, "name", str(getattr(r, "id", "unknown"))) for r in add],
+            "remove_roles": [
+                getattr(r, "name", str(getattr(r, "id", "unknown"))) for r in remove
+            ],
+            "add_roles": [
+                getattr(r, "name", str(getattr(r, "id", "unknown"))) for r in add
+            ],
             "reason": ROLE_AUDIT_REASON,
             "success": True,
         },
@@ -192,6 +219,8 @@ async def _audit_guild(
     wanderer_role_name: str,
     actor: str = "manual",
     dry_run: bool = True,
+    realmwalker_config: realmwalker.RealmWalkerConfig | None = None,
+    realmwalker_warning: str | None = None,
 ) -> AuditResult | None:
     raid_role = guild.get_role(raid_role_id)
     wanderer_role = guild.get_role(wanderer_role_id)
@@ -208,10 +237,17 @@ async def _audit_guild(
         )
         return None
 
+    full_members_loaded = True
     try:
         members = [member async for member in guild.fetch_members(limit=None)]
     except Exception:
+        full_members_loaded = False
         members = list(getattr(guild, "members", []))
+        log.warning(
+            "role audit full member fetch failed; RealmWalker scan skipped",
+            exc_info=True,
+            extra={"guild_id": getattr(guild, "id", None)},
+        )
 
     tickets = await fetch_ticket_threads(
         bot,
@@ -225,7 +261,11 @@ async def _audit_guild(
         for member_id in ticket.member_ids:
             ticket_map.setdefault(int(member_id), []).append(ticket)
 
-    clan_lookup = {role.id: role for role in getattr(guild, "roles", []) if role.id in clan_role_ids}
+    clan_lookup = {
+        role.id: role
+        for role in getattr(guild, "roles", [])
+        if role.id in clan_role_ids
+    }
 
     result = AuditResult(
         checked=len(members),
@@ -236,12 +276,40 @@ async def _audit_guild(
         visitors_closed_only=[],
         visitors_extra_roles=[],
         members_only_everyone=[],
+        realmwalker_issues=[],
+        realmwalker_warning=realmwalker_warning,
         proposed_role_mutations=[],
         action_roles_removed=[],
         action_roles_added=[],
         action_users_kicked=[],
         action_failed_or_skipped=[],
     )
+
+    if realmwalker_config is not None and not full_members_loaded:
+        result.realmwalker_warning = "RealmWalker audit was skipped because the full member list could not be loaded."
+    elif realmwalker_config is not None:
+        access_role = guild.get_role(realmwalker_config.access_role_id)
+        missing_game_ids = sorted(
+            role_id
+            for role_id in realmwalker_config.game_role_ids
+            if guild.get_role(role_id) is None
+        )
+        if access_role is None or missing_game_ids:
+            result.realmwalker_warning = (
+                "RealmWalker audit roles could not be resolved in this guild."
+            )
+            log.warning(
+                "RealmWalker audit role config unresolved",
+                extra={
+                    "guild_id": getattr(guild, "id", None),
+                    "access_role_found": access_role is not None,
+                    "missing_game_role_count": len(missing_game_ids),
+                },
+            )
+        else:
+            result.realmwalker_issues.extend(
+                realmwalker.scan_members(members, realmwalker_config).issues
+            )
 
     for member in members:
         member_roles = _member_roles(member)
@@ -255,7 +323,9 @@ async def _audit_guild(
             clan_role_ids=clan_role_ids,
         )
         if classification == "stray":
-            result.proposed_role_mutations.append((member, [raid_role], [wanderer_role]))
+            result.proposed_role_mutations.append(
+                (member, [raid_role], [wanderer_role])
+            )
             changed, error = await _apply_role_changes(
                 member,
                 actor=actor,
@@ -299,7 +369,11 @@ async def _audit_guild(
             continue
 
         if classification == "wander_with_clan":
-            clan_roles = [clan_lookup[role_id] for role_id in member_roles & clan_role_ids if role_id in clan_lookup]
+            clan_roles = [
+                clan_lookup[role_id]
+                for role_id in member_roles & clan_role_ids
+                if role_id in clan_lookup
+            ]
             result.wanderers_with_clans.append((member, clan_roles))
 
         if visitor_role_id not in member_roles:
@@ -331,6 +405,16 @@ def _format_joined_date(member: discord.abc.User) -> str:
     if not joined_at:
         return "unknown"
     return joined_at.strftime("%Y-%m-%d")
+
+
+def _format_joined_with_age(member: discord.abc.User) -> str:
+    joined_at = getattr(member, "joined_at", None)
+    if not joined_at:
+        return "joined unknown"
+    if joined_at.tzinfo is None:
+        joined_at = joined_at.replace(tzinfo=timezone.utc)
+    days = max(0, (datetime.now(timezone.utc).date() - joined_at.date()).days)
+    return f"joined {joined_at.strftime('%Y-%m-%d')} ({days}d ago)"
 
 
 def _build_fusion_cleanup_lines(
@@ -381,7 +465,9 @@ def _build_report_sections(
         for member, clan_roles in (summary.wanderers_with_clans or [])
     ]
     if manual_lines:
-        detected_sections.append(("2) Manual review – Wandering Souls with clan tags", manual_lines))
+        detected_sections.append(
+            ("2) Manual review – Wandering Souls with clan tags", manual_lines)
+        )
 
     visitor_no_ticket = [
         f"• {_format_member(member)} – joined {_format_joined_date(member)} – no ticket found"
@@ -395,7 +481,9 @@ def _build_report_sections(
         for member, tickets in (summary.visitors_closed_only or [])
     ]
     if visitor_closed_only:
-        detected_sections.append(("4) Visitors with only closed tickets", visitor_closed_only))
+        detected_sections.append(
+            ("4) Visitors with only closed tickets", visitor_closed_only)
+        )
 
     visitor_extra_roles = [
         f"• {_format_member(member)} – Roles: {_format_roles(roles)} – Tickets: {_format_ticket_links(tickets)}"
@@ -405,15 +493,31 @@ def _build_report_sections(
         detected_sections.append(("5) Visitors with extra roles", visitor_extra_roles))
 
     only_everyone_lines = [
-        f"• {_format_member_with_username(member)}"
+        f"• {_format_member_with_username(member)} – {_format_joined_with_age(member)}"
         for member in (summary.members_only_everyone or [])
     ]
     if only_everyone_lines:
-        detected_sections.append(("6) Members with only @everyone", only_everyone_lines))
+        detected_sections.append(
+            ("6) Members with only @everyone", only_everyone_lines)
+        )
+
+    realmwalker_lines = [
+        realmwalker.format_issue(issue) for issue in (summary.realmwalker_issues or [])
+    ]
+    if realmwalker_lines:
+        realmwalker_lines.append("")
+        realmwalker_lines.append(
+            "Run `!audit realmwalker fix` to add RealmWalker to these members."
+        )
+        detected_sections.append(("7) Missing RealmWalker access", realmwalker_lines))
+    if summary.realmwalker_warning:
+        detected_sections.append(
+            ("RealmWalker audit warning", [f"• {summary.realmwalker_warning}"])
+        )
 
     fusion_lines = _build_fusion_cleanup_lines(summary.fusion_role_cleanup or [])
     if fusion_lines:
-        detected_sections.append(("7) Fusion role cleanup", fusion_lines))
+        detected_sections.append(("8) Fusion role cleanup", fusion_lines))
 
     if summary.action_roles_removed:
         action_sections.append(("6) Roles removed", summary.action_roles_removed))
@@ -422,7 +526,9 @@ def _build_report_sections(
     if summary.action_users_kicked:
         action_sections.append(("8) Users kicked", summary.action_users_kicked))
     if summary.action_failed_or_skipped:
-        action_sections.append(("9) Failed / skipped actions", summary.action_failed_or_skipped))
+        action_sections.append(
+            ("9) Failed / skipped actions", summary.action_failed_or_skipped)
+        )
 
     return detected_sections, action_sections
 
@@ -430,7 +536,9 @@ def _build_report_sections(
 _SAFE_DESCRIPTION_LIMIT = 3800
 
 
-def _section_blocks(sections: Sequence[tuple[str, list[str]]], *, heading: str) -> list[list[str]]:
+def _section_blocks(
+    sections: Sequence[tuple[str, list[str]]], *, heading: str
+) -> list[list[str]]:
     if not sections:
         return []
     blocks: list[list[str]] = [["━━━━━━━━━━━━", heading, "━━━━━━━━━━━━", ""]]
@@ -544,23 +652,44 @@ async def run_role_and_visitor_audit(
     clan_role_ids = get_clan_role_ids()
     dest_id, dest_source = resolve_audit_destination()
 
-    if not all((raid_role_id, wanderer_role_id, visitor_role_id, clan_role_ids, dest_id)):
+    if not all(
+        (raid_role_id, wanderer_role_id, visitor_role_id, clan_role_ids, dest_id)
+    ):
         return False, "config-missing"
 
     if not (get_welcome_channel_id() or get_promo_channel_id()):
         return False, "ticket-channels-missing"
 
     allowed = get_allowed_guild_ids()
-    target_guilds = [guild for guild in bot.guilds if not allowed or guild.id in allowed]
+    target_guilds = [
+        guild for guild in bot.guilds if not allowed or guild.id in allowed
+    ]
     if not target_guilds:
         return False, "no-guilds"
+
+    try:
+        realmwalker_config, realmwalker_warning = await realmwalker.resolve_config()
+    except Exception as exc:
+        realmwalker_config = None
+        realmwalker_warning = "RealmWalker audit config could not be loaded."
+        log.warning(
+            "RealmWalker audit config lookup failed",
+            exc_info=True,
+            extra={"error": str(exc)},
+        )
+    if realmwalker_warning:
+        log.warning(
+            "RealmWalker audit config invalid", extra={"reason": realmwalker_warning}
+        )
 
     raid_role_name = "Raid"
     wanderer_role_name = "Wandering Souls"
     actor_normalized = (actor or "").strip().lower()
     scheduled_actors = {"scheduled", "background", "cron", "startup", "ready"}
     try:
-        fusion_cleanup_summaries = await fusion_role_cleanup.load_unreported_role_cleanup_summaries()
+        fusion_cleanup_summaries = (
+            await fusion_role_cleanup.load_unreported_role_cleanup_summaries()
+        )
     except Exception as exc:
         log.warning(
             "failed to load fusion role cleanup summaries",
@@ -572,7 +701,9 @@ async def run_role_and_visitor_audit(
             },
             exc_info=True,
         )
-        fusion_cleanup_summaries = fusion_role_cleanup.get_recent_role_cleanup_summaries()
+        fusion_cleanup_summaries = (
+            fusion_role_cleanup.get_recent_role_cleanup_summaries()
+        )
     aggregated = AuditResult(
         checked=0,
         auto_fixed_strays=[],
@@ -582,6 +713,8 @@ async def run_role_and_visitor_audit(
         visitors_closed_only=[],
         visitors_extra_roles=[],
         members_only_everyone=[],
+        realmwalker_issues=[],
+        realmwalker_warning=realmwalker_warning,
         fusion_role_cleanup=fusion_cleanup_summaries,
         proposed_role_mutations=[],
         action_roles_removed=[],
@@ -609,6 +742,8 @@ async def run_role_and_visitor_audit(
             wanderer_role_name=wanderer_role_name,
             actor=actor,
             dry_run=dry_run,
+            realmwalker_config=realmwalker_config,
+            realmwalker_warning=realmwalker_warning,
         )
         if result is None:
             continue
@@ -621,17 +756,24 @@ async def run_role_and_visitor_audit(
         aggregated.visitors_closed_only.extend(result.visitors_closed_only or [])
         aggregated.visitors_extra_roles.extend(result.visitors_extra_roles or [])
         aggregated.members_only_everyone.extend(result.members_only_everyone or [])
+        aggregated.realmwalker_issues.extend(result.realmwalker_issues or [])
+        if result.realmwalker_warning:
+            aggregated.realmwalker_warning = result.realmwalker_warning
         aggregated.proposed_role_mutations.extend(result.proposed_role_mutations or [])
         aggregated.action_roles_removed.extend(result.action_roles_removed or [])
         aggregated.action_roles_added.extend(result.action_roles_added or [])
         aggregated.action_users_kicked.extend(result.action_users_kicked or [])
-        aggregated.action_failed_or_skipped.extend(result.action_failed_or_skipped or [])
+        aggregated.action_failed_or_skipped.extend(
+            result.action_failed_or_skipped or []
+        )
 
     if aggregated.checked == 0:
         return False, "no-members"
 
     proposed_adds = len(aggregated.auto_fixed_strays or [])
-    proposed_removes = len(aggregated.auto_fixed_strays or []) + len(aggregated.auto_fixed_wanderers or [])
+    proposed_removes = len(aggregated.auto_fixed_strays or []) + len(
+        aggregated.auto_fixed_wanderers or []
+    )
     if dry_run or actor_normalized in scheduled_actors:
         log.info(
             "role audit mutations skipped",
@@ -647,7 +789,10 @@ async def run_role_and_visitor_audit(
                 "proposed_remove_count": proposed_removes,
             },
         )
-    elif len(aggregated.proposed_role_mutations or []) > max_mutations and not allow_over_cap:
+    elif (
+        len(aggregated.proposed_role_mutations or []) > max_mutations
+        and not allow_over_cap
+    ):
         log.warning(
             "role audit apply aborted due to mutation cap",
             extra={
@@ -696,7 +841,9 @@ async def run_role_and_visitor_audit(
         return False, f"send:{type(exc).__name__}"
     if actor_normalized == "scheduled":
         try:
-            await fusion_role_cleanup.mark_role_cleanup_summaries_reported(fusion_cleanup_summaries)
+            await fusion_role_cleanup.mark_role_cleanup_summaries_reported(
+                fusion_cleanup_summaries
+            )
         except Exception as exc:
             log.warning(
                 "failed to mark fusion role cleanup summaries reported",
@@ -724,7 +871,9 @@ async def preview_role_audit_mutations(
     visitor_role_id = get_visitor_role_id()
     clan_role_ids = get_clan_role_ids()
     allowed = get_allowed_guild_ids()
-    target_guilds = [guild for guild in bot.guilds if not allowed or guild.id in allowed]
+    target_guilds = [
+        guild for guild in bot.guilds if not allowed or guild.id in allowed
+    ]
     combined = AuditResult(
         checked=0,
         auto_fixed_strays=[],
