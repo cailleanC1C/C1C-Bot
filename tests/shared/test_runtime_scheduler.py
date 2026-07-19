@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from datetime import datetime, timezone
 
 import pytest
 
@@ -11,6 +12,104 @@ os.environ.setdefault("RECRUITMENT_SHEET_ID", "sheet-id")
 
 
 from modules.common import runtime
+
+
+def test_scheduler_report_uses_live_registered_jobs() -> None:
+    scheduler = runtime.Scheduler()
+    job = scheduler.every(hours=3, name="cache_refresh:clans", tag="cache")
+    job.next_run = datetime(2026, 7, 20, 3, tzinfo=timezone.utc)
+
+    assert runtime.scheduler_report_lines(scheduler) == [
+        "🧭 Scheduler",
+        "• cache_refresh:clans=registered • cadence=3h • next=2026-07-20 03:00 UTC",
+    ]
+
+
+def test_scheduler_report_does_not_execute_job_runner() -> None:
+    scheduler = runtime.Scheduler()
+    scheduler.every(minutes=15, name="safe_report")
+    calls = 0
+
+    async def runner() -> None:
+        nonlocal calls
+        calls += 1
+
+    # The callback is deliberately never passed to ``do``: reporting only
+    # inspects the live registration object.
+    lines = runtime.scheduler_report_lines(scheduler)
+
+    assert calls == 0
+    assert "safe_report=registered" in lines[1]
+
+
+def test_scheduler_report_includes_actual_skip_reason() -> None:
+    scheduler = runtime.Scheduler()
+    scheduler.record_registration_skip("optional_job", "feature toggle is disabled")
+
+    assert runtime.scheduler_report_lines(scheduler)[1] == (
+        "• optional_job=not registered • reason=feature toggle is disabled"
+    )
+
+
+def test_scheduler_config_failure_is_not_registered_or_executed() -> None:
+    scheduler = runtime.Scheduler()
+    calls = 0
+
+    def load_config() -> None:
+        nonlocal calls
+        calls += 1
+        raise ValueError("invalid cadence")
+
+    try:
+        load_config()
+    except ValueError as exc:
+        scheduler.record_registration_skip(
+            "broken_job", f"config load failed: {type(exc).__name__}"
+        )
+
+    assert calls == 1
+    assert scheduler.jobs == []
+    assert runtime.scheduler_report_lines(scheduler)[1] == (
+        "• broken_job=not registered • reason=config load failed: ValueError"
+    )
+
+
+@pytest.mark.parametrize(
+    ("job_name", "failure_reason", "generic_reason"),
+    [
+        (
+            "c1c_ad",
+            "config read failed: RuntimeError",
+            "C1C_AD_REFRESH_DAYS is not configured",
+        ),
+        (
+            "clan_ads",
+            "feature toggle read failed: RuntimeError",
+            "feature toggle is disabled",
+        ),
+        (
+            "clan_ads",
+            "config load failed: RuntimeError",
+            "scheduler interval is not configured",
+        ),
+        (
+            "housekeeping_keepalive",
+            "config load failed: RuntimeError",
+            "required config is missing, invalid, or disabled",
+        ),
+    ],
+)
+def test_scheduler_report_preserves_failure_before_normalized_fallback(
+    job_name: str, failure_reason: str, generic_reason: str
+) -> None:
+    scheduler = runtime.Scheduler()
+
+    scheduler.record_registration_skip(job_name, failure_reason)
+    scheduler.record_registration_skip(job_name, generic_reason)
+
+    report = "\n".join(runtime.scheduler_report_lines(scheduler))
+    assert failure_reason in report
+    assert generic_reason not in report
 
 
 def test_scheduler_job_exception_does_not_cancel(
@@ -40,7 +139,9 @@ def test_scheduler_job_exception_does_not_cancel(
         await scheduler.shutdown()
 
         assert attempt["count"] >= 2
-        assert any("recurring job error" in record.getMessage() for record in caplog.records)
+        assert any(
+            "recurring job error" in record.getMessage() for record in caplog.records
+        )
 
     asyncio.run(runner())
 

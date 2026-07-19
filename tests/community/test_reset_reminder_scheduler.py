@@ -123,10 +123,16 @@ def test_schedule_reset_jobs_is_idempotent(monkeypatch) -> None:
 
 
 def test_schedule_reset_jobs_not_registered_when_disabled(monkeypatch) -> None:
-    runtime = SimpleNamespace(bot=SimpleNamespace(), scheduler=_FakeScheduler())
+    skipped = []
+    runtime = SimpleNamespace(
+        bot=SimpleNamespace(),
+        scheduler=_FakeScheduler(),
+        _record_scheduler_skip=lambda name, reason: skipped.append((name, reason)),
+    )
     monkeypatch.setattr(scheduler, "_is_feature_enabled", lambda: False)
     scheduler.schedule_reset_reminder_jobs(runtime)
     assert runtime.scheduler.jobs == []
+    assert skipped == [("reset_reminders", "feature toggle is disabled")]
 
 
 def test_schedule_reset_jobs_registered_when_enabled(monkeypatch) -> None:
