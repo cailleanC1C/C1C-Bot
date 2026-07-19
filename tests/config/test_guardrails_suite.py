@@ -118,6 +118,22 @@ def test_f04_uses_feature_registry_and_accessor(tmp_path: Path, monkeypatch: obj
     assert category.violations[0].files == ["recruiter_panel"]
 
 
+def test_feature_checks_degrade_quietly_when_registry_is_unavailable(
+    monkeypatch: object, caplog: object
+) -> None:
+    monkeypatch.setattr(guardrails_suite, "_load_feature_toggle_names", lambda: set())
+    context = guardrails_suite.GuardrailContext({}, [], "", None, 0)
+    runners = {
+        check.code: check.runner for check in guardrails_suite.CHECKS if check.code in {"F-01", "F-04"}
+    }
+
+    results = [runners[code](context) for code in ("F-01", "F-04")]
+
+    assert [result.status for result in results] == ["pass", "pass"]
+    assert all(result.reason is None for result in results)
+    assert "feature toggle registry" not in caplog.text.lower()
+
+
 def test_summary_reports_guardrail_health(tmp_path: Path, monkeypatch: object) -> None:
     _configure_roots(tmp_path, monkeypatch)
 
