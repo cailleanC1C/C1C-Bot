@@ -21,7 +21,9 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 from scripts.ci.utils.env import get_env, get_env_path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+# ``guardrails_suite.py`` lives in ``scripts/ci``; guardrails must scan from the
+# repository root rather than treating ``scripts`` as the application root.
+ROOT = Path(__file__).resolve().parents[2]
 AUDIT_ROOT = ROOT / "AUDIT"
 DOCS_ROOT = ROOT / "docs"
 

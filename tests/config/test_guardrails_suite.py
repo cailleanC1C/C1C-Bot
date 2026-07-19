@@ -9,6 +9,20 @@ sys.path.append(str(Path(__file__).resolve().parents[2] / "scripts" / "ci"))
 import guardrails_suite
 
 
+def test_repository_root_and_runtime_scan_scope() -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+
+    assert guardrails_suite.ROOT == repository_root
+    runtime_paths = {
+        path.relative_to(repository_root).as_posix()
+        for path in guardrails_suite._iter_runtime_python_files()
+    }
+    assert "scripts/ci/guardrails_suite.py" not in runtime_paths
+    assert "scripts/ci/check_docs.py" not in runtime_paths
+    assert "scripts/ci/utils/env.py" not in runtime_paths
+    assert any(path.startswith(("modules/", "shared/", "cogs/")) for path in runtime_paths)
+
+
 def _configure_roots(tmp_path: Path, monkeypatch: object) -> None:
     monkeypatch.setattr(guardrails_suite, "ROOT", tmp_path)
     monkeypatch.setattr(guardrails_suite, "AUDIT_ROOT", tmp_path / "AUDIT")

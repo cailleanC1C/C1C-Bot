@@ -75,7 +75,7 @@ Collaboration Contract and core infra conventions.
 * [`OnboardingFlows.md`](ops/OnboardingFlows.md) — onboarding flow catalogue, routing rules, and ticket state transitions.
 * [`PromoTickets.md`](ops/PromoTickets.md) — promo ticket creation flow, gating rules, and state lifecycle.
 * [`Welcome_Summary_Spec.md`](ops/Welcome_Summary_Spec.md) — welcome summary embed specification and handoff rules.
-* [`housekeeping_mirralith_overview.md`](housekeeping_mirralith_overview.md) — Mirralith and cluster overview autoposter housekeeping job.
+* [`housekeeping_mirralith_overview.md`](modules/housekeeping_mirralith_overview.md) — Mirralith and cluster overview autoposter housekeeping job.
 * [`PermCommandQuickstart.md`](ops/PermCommandQuickstart.md) — quickstart for the `!perm` Permissions UI.
 * [`modules/ShardTracker.md`](ops/modules/ShardTracker.md) — shard & mercy tracker runbook, channel/thread routing, and mercy math reference.
 * [`Promo_Summary_Spec.md`](ops/Promo_Summary_Spec.md) — promo summary embeds readability spec and per-flow layout mapping.
@@ -83,12 +83,15 @@ Collaboration Contract and core infra conventions.
 * Automated server map posts keep `#server-map` in sync with live categories. Configuration (`SERVER_MAP_*`) lives in [`ops/Config.md`](ops/Config.md); log formats are in [`ops/Logging.md`](ops/Logging.md). The rendered post now starts with an `🧭 Server Map` intro that lists uncategorized channels up top, and staff-only sections can be hidden via the Config blacklists.
 
 ## Community features
-* [`Community Reaction Roles`](community_reaction_roles.md) – sheet-driven reaction role wiring with optional channel/thread scoping.
+* [`Community Reaction Roles`](modules/community_reaction_roles.md) – sheet-driven reaction role wiring with optional channel/thread scoping.
 * C1C Leagues Autoposter – weekly boards & announcement for Legendary, Rising Stars, Stormforged.
 
 ## Audit & flow reports
-* [`housekeeping.md`](housekeeping.md) – role/visitor housekeeping audit emitted with the Daily Recruiter Update cadence.
-* [`welcome_ticket_flow_audit.md`](welcome_ticket_flow_audit.md) – behavioural audit for welcome ticket flow closure and placement logic.
+* [`housekeeping.md`](modules/housekeeping.md) – role/visitor housekeeping operations and audit behavior.
+* [`housekeeping role/visitor audit`](audits/housekeeping_role_visitor_audit.md) – audit of role and visitor housekeeping behavior.
+* [`refresh-all bucket audit`](audits/refresh_all_bucket_audit.md) – audit of refresh-all cache bucket coverage.
+* [`shard tracker mystery remnants`](investigations/shard_tracker_mystery_remnants.md) – investigation notes for shard tracker remnants.
+* [`Sheets read audit`](sheets_read_audit.md) – audit of logical Sheets read activity.
 
 ## Module Deep Dives `/docs/modules/` 
 * [`CoreOps.md`](modules/CoreOps.md) — CoreOps responsibilities, scheduler contracts, and cache façade expectations.
@@ -120,4 +123,4 @@ Each module has a **dedicated deep-dive file** describing its scope, flows, data
 ## Cross-References
 * [`docs/contracts/CollaborationContract.md`](contracts/CollaborationContract.md) documents contributor responsibilities and embeds this index under “Documentation Discipline.”
 
-Doc last updated: 2025-12-31 (v0.9.8.2)
+Doc last updated: 2026-07-19 (v0.9.8.2)
