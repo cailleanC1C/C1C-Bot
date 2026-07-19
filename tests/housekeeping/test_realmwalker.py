@@ -160,7 +160,11 @@ def test_manual_report_aborts_instead_of_claiming_clean_on_member_load_failure(
         yield  # pragma: no cover
 
     guild = SimpleNamespace(
-        members=[], fetch_members=lambda **_kwargs: failing_members()
+        members=[],
+        fetch_members=lambda **_kwargs: failing_members(),
+        get_role=lambda role_id: role(
+            role_id, "RealmWalker" if role_id == 10 else "WoW"
+        ),
     )
     sent = []
 
@@ -178,6 +182,95 @@ def test_manual_report_aborts_instead_of_claiming_clean_on_member_load_failure(
     description = sent[0]["embed"].description or ""
     assert MEMBER_LOAD_ERROR in description
     assert "No RealmWalker access issues found" not in description
+
+
+def test_manual_audit_aborts_when_game_role_does_not_resolve(monkeypatch):
+    roles = {10: role(10, "RealmWalker")}
+    guild = SimpleNamespace(get_role=roles.get)
+    sent = []
+
+    async def send(**kwargs):
+        sent.append(kwargs)
+
+    async def config():
+        return realmwalker.RealmWalkerConfig(10, frozenset({20, 21})), None
+
+    monkeypatch.setattr(realmwalker, "resolve_config", config)
+    ctx = SimpleNamespace(guild=guild, send=send)
+    cog = RealmWalkerAuditCog(SimpleNamespace())
+    asyncio.run(RealmWalkerAuditCog.audit_realmwalker.callback(cog, ctx, ""))
+
+    description = sent[0]["embed"].description or ""
+    assert "`20`, `21`" in description
+    assert "No RealmWalker access issues found" not in description
+
+
+def test_manual_fix_does_not_mutate_when_role_config_is_invalid(monkeypatch):
+    affected = member(1, [role(20, "WoW")])
+    add_called = False
+
+    async def add_roles(*_args, **_kwargs):
+        nonlocal add_called
+        add_called = True
+
+    affected.add_roles = add_roles
+    guild = SimpleNamespace(
+        get_role=lambda role_id: role(10, "RealmWalker")
+        if role_id == 10
+        else None
+    )
+    sent = []
+
+    async def send(**kwargs):
+        sent.append(kwargs)
+
+    async def config():
+        return realmwalker.RealmWalkerConfig(10, frozenset({20})), None
+
+    monkeypatch.setattr(realmwalker, "resolve_config", config)
+    ctx = SimpleNamespace(guild=guild, send=send)
+    cog = RealmWalkerAuditCog(SimpleNamespace())
+    asyncio.run(RealmWalkerAuditCog.audit_realmwalker.callback(cog, ctx, "fix"))
+
+    assert add_called is False
+    assert "No roles were changed" in (sent[0]["embed"].description or "")
+
+
+def test_clean_manual_result_includes_resolved_role_summary(monkeypatch):
+    roles = {
+        10: role(10, "RealmWalker"),
+        20: role(20, "WoW"),
+        21: role(21, "Guild Wars 2"),
+    }
+
+    async def fetched_members():
+        yield member(1, [roles[10], roles[20]])
+
+    guild = SimpleNamespace(
+        get_role=roles.get, fetch_members=lambda **_kwargs: fetched_members()
+    )
+    sent = []
+
+    async def send(**kwargs):
+        sent.append(kwargs)
+
+    async def config():
+        return realmwalker.RealmWalkerConfig(10, frozenset({20, 21})), None
+
+    monkeypatch.setattr(realmwalker, "resolve_config", config)
+    ctx = SimpleNamespace(guild=guild, send=send)
+    cog = RealmWalkerAuditCog(SimpleNamespace())
+    asyncio.run(RealmWalkerAuditCog.audit_realmwalker.callback(cog, ctx, ""))
+
+    embed = sent[0]["embed"]
+    assert "No RealmWalker access issues found" in (embed.description or "")
+    summary = embed.fields[0].value
+    assert "RealmWalker (`10`)" in summary
+    assert "WoW (`20`)" in summary
+    assert "Guild Wars 2 (`21`)" in summary
+    assert sent[0]["allowed_mentions"].everyone is False
+    assert sent[0]["allowed_mentions"].users is False
+    assert sent[0]["allowed_mentions"].roles is False
 
 
 def test_config_resolution_still_uses_recruitment_config_helper(monkeypatch):
