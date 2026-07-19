@@ -237,10 +237,17 @@ async def _audit_guild(
         )
         return None
 
+    full_members_loaded = True
     try:
         members = [member async for member in guild.fetch_members(limit=None)]
     except Exception:
+        full_members_loaded = False
         members = list(getattr(guild, "members", []))
+        log.warning(
+            "role audit full member fetch failed; RealmWalker scan skipped",
+            exc_info=True,
+            extra={"guild_id": getattr(guild, "id", None)},
+        )
 
     tickets = await fetch_ticket_threads(
         bot,
@@ -278,7 +285,9 @@ async def _audit_guild(
         action_failed_or_skipped=[],
     )
 
-    if realmwalker_config is not None:
+    if realmwalker_config is not None and not full_members_loaded:
+        result.realmwalker_warning = "RealmWalker audit was skipped because the full member list could not be loaded."
+    elif realmwalker_config is not None:
         access_role = guild.get_role(realmwalker_config.access_role_id)
         missing_game_ids = sorted(
             role_id

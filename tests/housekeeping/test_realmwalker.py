@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import discord
 
 from modules.housekeeping import realmwalker, role_audit
+from cogs.housekeeping_realmwalker import MEMBER_LOAD_ERROR, RealmWalkerAuditCog
 
 
 class Member(SimpleNamespace):
@@ -110,3 +111,136 @@ def test_daily_config_warning_renders_without_crashing():
         summary=summary, raid_role_name="Raid", wanderer_role_name="Wandering Souls"
     )
     assert "RealmWalker audit warning" in (embed.description or "")
+
+
+def test_manual_fix_aborts_with_embed_when_full_member_load_fails(monkeypatch):
+    cached = member(1, [role(20, "WoW")])
+    add_called = False
+
+    async def add_roles(*_args, **_kwargs):
+        nonlocal add_called
+        add_called = True
+
+    cached.add_roles = add_roles
+
+    async def failing_members():
+        raise RuntimeError("member fetch failed")
+        yield  # pragma: no cover
+
+    guild = SimpleNamespace(
+        members=[cached],
+        fetch_members=lambda **_kwargs: failing_members(),
+        get_role=lambda _role_id: role(10, "RealmWalker"),
+    )
+    sent = []
+
+    async def send(**kwargs):
+        sent.append(kwargs)
+
+    ctx = SimpleNamespace(guild=guild, send=send)
+
+    async def config():
+        return realmwalker.RealmWalkerConfig(10, frozenset({20})), None
+
+    monkeypatch.setattr(realmwalker, "resolve_config", config)
+    cog = RealmWalkerAuditCog(SimpleNamespace())
+    asyncio.run(RealmWalkerAuditCog.audit_realmwalker.callback(cog, ctx, "fix"))
+
+    assert add_called is False
+    assert len(sent) == 1
+    assert MEMBER_LOAD_ERROR in (sent[0]["embed"].description or "")
+    assert "No roles were changed" in (sent[0]["embed"].description or "")
+
+
+def test_manual_report_aborts_instead_of_claiming_clean_on_member_load_failure(
+    monkeypatch,
+):
+    async def failing_members():
+        raise RuntimeError("member fetch failed")
+        yield  # pragma: no cover
+
+    guild = SimpleNamespace(
+        members=[], fetch_members=lambda **_kwargs: failing_members()
+    )
+    sent = []
+
+    async def send(**kwargs):
+        sent.append(kwargs)
+
+    async def config():
+        return realmwalker.RealmWalkerConfig(10, frozenset({20})), None
+
+    monkeypatch.setattr(realmwalker, "resolve_config", config)
+    cog = RealmWalkerAuditCog(SimpleNamespace())
+    ctx = SimpleNamespace(guild=guild, send=send)
+    asyncio.run(RealmWalkerAuditCog.audit_realmwalker.callback(cog, ctx, ""))
+
+    description = sent[0]["embed"].description or ""
+    assert MEMBER_LOAD_ERROR in description
+    assert "No RealmWalker access issues found" not in description
+
+
+def test_config_resolution_still_uses_recruitment_config_helper(monkeypatch):
+    calls = []
+
+    async def get_config(key, default=None):
+        calls.append((key, default))
+        return "10" if key == realmwalker.ACCESS_ROLE_KEY else "20,21"
+
+    monkeypatch.setattr(realmwalker.recruitment, "get_config_value_async", get_config)
+    config, error = asyncio.run(realmwalker.resolve_config())
+    assert error is None
+    assert config == realmwalker.RealmWalkerConfig(10, frozenset({20, 21}))
+    assert [key for key, _ in calls] == [
+        "REALMWALKER_ACCESS_ROLE_ID",
+        "REALMWALKER_GAME_ROLE_IDS",
+    ]
+
+
+def test_daily_realmwalker_scan_warns_instead_of_using_partial_cache(monkeypatch):
+    roles = {
+        role_id: role(role_id, name)
+        for role_id, name in (
+            (1, "Raid"),
+            (2, "Wandering Souls"),
+            (3, "Visitor"),
+            (10, "RealmWalker"),
+            (20, "WoW"),
+        )
+    }
+    cached = member(1, [roles[20]])
+
+    async def failing_members():
+        raise RuntimeError("member fetch failed")
+        yield  # pragma: no cover
+
+    guild = SimpleNamespace(
+        id=100,
+        members=[cached],
+        roles=list(roles.values()),
+        fetch_members=lambda **_kwargs: failing_members(),
+        get_role=lambda role_id: roles.get(role_id),
+    )
+    cached.guild = guild
+
+    async def no_tickets(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(role_audit, "fetch_ticket_threads", no_tickets)
+    result = asyncio.run(
+        role_audit._audit_guild(
+            SimpleNamespace(),
+            guild,
+            raid_role_id=1,
+            wanderer_role_id=2,
+            visitor_role_id=3,
+            clan_role_ids={99},
+            raid_role_name="Raid",
+            wanderer_role_name="Wandering Souls",
+            realmwalker_config=realmwalker.RealmWalkerConfig(10, frozenset({20})),
+        )
+    )
+
+    assert result is not None
+    assert result.realmwalker_issues == []
+    assert "full member list could not be loaded" in (result.realmwalker_warning or "")

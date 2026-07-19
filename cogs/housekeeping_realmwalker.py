@@ -12,6 +12,11 @@ from modules.housekeeping import realmwalker
 
 log = logging.getLogger("c1c.housekeeping.realmwalker.cog")
 
+MEMBER_LOAD_ERROR = (
+    "The full member list could not be loaded, so the RealmWalker audit was aborted. "
+    "No roles were changed."
+)
+
 
 class RealmWalkerAuditCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
@@ -63,9 +68,15 @@ class RealmWalkerAuditCog(commands.Cog):
             members = [member async for member in guild.fetch_members(limit=None)]
         except Exception:
             log.warning(
-                "RealmWalker member fetch failed; using guild cache", exc_info=True
+                "RealmWalker audit aborted; full member fetch failed", exc_info=True
             )
-            members = list(guild.members)
+            await ctx.send(
+                embed=realmwalker.build_embeds(
+                    realmwalker.RealmWalkerAuditResult(), error=MEMBER_LOAD_ERROR
+                )[0],
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
         result = realmwalker.scan_members(members, config)
         if action.lower() == "fix":
             fixed = await realmwalker.fix_issues(
