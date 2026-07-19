@@ -1,4 +1,4 @@
-name: Repository Guardrails
+name: 01 - Repository Guardrails
 
 on:
   push:
