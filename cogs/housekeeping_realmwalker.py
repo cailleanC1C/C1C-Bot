@@ -50,7 +50,8 @@ class RealmWalkerAuditCog(commands.Cog):
                 embed=realmwalker.build_embeds(
                     realmwalker.RealmWalkerAuditResult(),
                     error="Usage: `!audit realmwalker [fix]`",
-                )[0]
+                )[0],
+                allowed_mentions=discord.AllowedMentions.none(),
             )
             return
         config, error = await realmwalker.resolve_config()
@@ -59,11 +60,25 @@ class RealmWalkerAuditCog(commands.Cog):
             await ctx.send(
                 embed=realmwalker.build_embeds(
                     realmwalker.RealmWalkerAuditResult(), error=error
-                )[0]
+                )[0],
+                allowed_mentions=discord.AllowedMentions.none(),
             )
             return
         guild = ctx.guild
         assert guild is not None
+        resolved_roles, role_error = realmwalker.resolve_guild_roles(guild, config)
+        if resolved_roles is None:
+            log.warning(
+                "RealmWalker audit role config unresolved",
+                extra={"reason": role_error},
+            )
+            await ctx.send(
+                embed=realmwalker.build_embeds(
+                    realmwalker.RealmWalkerAuditResult(), error=role_error
+                )[0],
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
         try:
             members = [member async for member in guild.fetch_members(limit=None)]
         except Exception:
@@ -80,11 +95,15 @@ class RealmWalkerAuditCog(commands.Cog):
         result = realmwalker.scan_members(members, config)
         if action.lower() == "fix":
             fixed = await realmwalker.fix_issues(
-                result.issues, guild.get_role(config.access_role_id)
+                result.issues, resolved_roles.access_role
             )
             fixed.checked = result.checked
             result = fixed
-        for embed in realmwalker.build_embeds(result, fixing=action.lower() == "fix"):
+        for embed in realmwalker.build_embeds(
+            result,
+            fixing=action.lower() == "fix",
+            resolved_roles=resolved_roles,
+        ):
             await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 

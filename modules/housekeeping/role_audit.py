@@ -288,22 +288,16 @@ async def _audit_guild(
     if realmwalker_config is not None and not full_members_loaded:
         result.realmwalker_warning = "RealmWalker audit was skipped because the full member list could not be loaded."
     elif realmwalker_config is not None:
-        access_role = guild.get_role(realmwalker_config.access_role_id)
-        missing_game_ids = sorted(
-            role_id
-            for role_id in realmwalker_config.game_role_ids
-            if guild.get_role(role_id) is None
+        resolved_roles, role_error = realmwalker.resolve_guild_roles(
+            guild, realmwalker_config
         )
-        if access_role is None or missing_game_ids:
-            result.realmwalker_warning = (
-                "RealmWalker audit roles could not be resolved in this guild."
-            )
+        if resolved_roles is None:
+            result.realmwalker_warning = role_error
             log.warning(
                 "RealmWalker audit role config unresolved",
                 extra={
                     "guild_id": getattr(guild, "id", None),
-                    "access_role_found": access_role is not None,
-                    "missing_game_role_count": len(missing_game_ids),
+                    "reason": role_error,
                 },
             )
         else:

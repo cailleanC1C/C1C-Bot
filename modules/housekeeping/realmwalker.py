@@ -25,6 +25,14 @@ class RealmWalkerConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedRealmWalkerRoles:
+    """The configured roles proven to exist in a particular guild."""
+
+    access_role: discord.Role
+    game_roles: tuple[discord.Role, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RealmWalkerIssue:
     member: discord.Member
     matched_game_roles: tuple[discord.Role, ...]
@@ -73,6 +81,34 @@ async def resolve_config() -> tuple[RealmWalkerConfig | None, str | None]:
             details.append(f"{GAME_ROLES_KEY} contains invalid values")
         return None, "; ".join(details)
     return RealmWalkerConfig(access_id, frozenset(game_ids)), None
+
+
+def resolve_guild_roles(
+    guild: discord.Guild, config: RealmWalkerConfig
+) -> tuple[ResolvedRealmWalkerRoles | None, str | None]:
+    """Resolve every configured role against ``guild`` or return an admin error."""
+    access_role = guild.get_role(config.access_role_id)
+    if access_role is None:
+        return None, (
+            f"Access role `{config.access_role_id}` configured by `{ACCESS_ROLE_KEY}` "
+            "could not be resolved in this guild. No roles were changed."
+        )
+
+    game_roles: list[discord.Role] = []
+    missing_ids: list[int] = []
+    for role_id in sorted(config.game_role_ids):
+        resolved = guild.get_role(role_id)
+        if resolved is None:
+            missing_ids.append(role_id)
+        else:
+            game_roles.append(resolved)
+    if missing_ids:
+        unresolved = ", ".join(f"`{role_id}`" for role_id in missing_ids)
+        return None, (
+            f"Game role IDs configured by `{GAME_ROLES_KEY}` could not be resolved "
+            f"in this guild: {unresolved}. No roles were changed."
+        )
+    return ResolvedRealmWalkerRoles(access_role, tuple(game_roles)), None
 
 
 def scan_members(
@@ -130,7 +166,11 @@ def format_issue(issue: RealmWalkerIssue) -> str:
 
 
 def build_embeds(
-    result: RealmWalkerAuditResult, *, fixing: bool = False, error: str | None = None
+    result: RealmWalkerAuditResult,
+    *,
+    fixing: bool = False,
+    error: str | None = None,
+    resolved_roles: ResolvedRealmWalkerRoles | None = None,
 ) -> list[discord.Embed]:
     """Render bounded, mention-safe manual command output."""
     if error:
@@ -172,6 +212,16 @@ def build_embeds(
         embed = discord.Embed(
             title=title, description=chunk, colour=get_embed_colour("admin")
         )
+        if resolved_roles is not None:
+            access = resolved_roles.access_role
+            games = ", ".join(
+                f"{role.name} (`{role.id}`)" for role in resolved_roles.game_roles
+            )
+            embed.add_field(
+                name="Resolved role config",
+                value=f"**Access role:** {access.name} (`{access.id}`)\n**Game roles:** {games}",
+                inline=False,
+            )
         affected = len(result.issues)
         footer = f"Checked: {result.checked} members • Affected: {affected}"
         if fixing:
@@ -185,9 +235,11 @@ __all__ = [
     "RealmWalkerAuditResult",
     "RealmWalkerConfig",
     "RealmWalkerIssue",
+    "ResolvedRealmWalkerRoles",
     "build_embeds",
     "fix_issues",
     "format_issue",
     "resolve_config",
+    "resolve_guild_roles",
     "scan_members",
 ]
