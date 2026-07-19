@@ -6,4 +6,5 @@ __all__ = [
     "mirralith_overview",
     "achievements",
     "role_audit",
+    "realmwalker",
 ]
