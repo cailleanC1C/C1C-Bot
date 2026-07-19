@@ -54,12 +54,14 @@ class RealmWalkerAuditCog(commands.Cog):
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return
-        config, error = await realmwalker.resolve_config()
+        config, config_warning = await realmwalker.resolve_config()
         if config is None:
-            log.warning("RealmWalker audit config invalid", extra={"reason": error})
+            log.warning(
+                "RealmWalker audit config invalid", extra={"reason": config_warning}
+            )
             await ctx.send(
                 embed=realmwalker.build_embeds(
-                    realmwalker.RealmWalkerAuditResult(), error=error
+                    realmwalker.RealmWalkerAuditResult(), error=config_warning
                 )[0],
                 allowed_mentions=discord.AllowedMentions.none(),
             )
@@ -79,6 +81,14 @@ class RealmWalkerAuditCog(commands.Cog):
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             return
+        warning = (
+            "; ".join(item for item in (config_warning, role_error) if item) or None
+        )
+        if warning:
+            log.warning(
+                "RealmWalker audit role config partially unresolved",
+                extra={"reason": warning},
+            )
         try:
             members = [member async for member in guild.fetch_members(limit=None)]
         except Exception:
@@ -103,6 +113,7 @@ class RealmWalkerAuditCog(commands.Cog):
             result,
             fixing=action.lower() == "fix",
             resolved_roles=resolved_roles,
+            warning=warning,
         ):
             await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 

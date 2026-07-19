@@ -301,6 +301,17 @@ async def _audit_guild(
                 },
             )
         else:
+            if role_error:
+                result.realmwalker_warning = "; ".join(
+                    item for item in (result.realmwalker_warning, role_error) if item
+                )
+                log.warning(
+                    "RealmWalker audit role config partially unresolved",
+                    extra={
+                        "guild_id": getattr(guild, "id", None),
+                        "reason": role_error,
+                    },
+                )
             result.realmwalker_issues.extend(
                 realmwalker.scan_members(members, realmwalker_config).issues
             )
