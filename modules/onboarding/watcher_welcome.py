@@ -472,7 +472,7 @@ async def persist_session_for_thread(
     created = _normalize_dt(created_at)
 
     try:
-        onboarding_sessions.upsert_session(
+        await onboarding_sessions.aupsert_session(
             thread_id=text_thread_id,
             thread_name=thread_name,
             user_id=text_user_id,
@@ -1751,9 +1751,9 @@ def _welcome_backfill_row_timestamp(values: dict[str, str]) -> tuple[datetime | 
     return None, None
 
 
-def _finalization_state_from_welcome_row(row_values: object) -> dict[str, str]:
+async def _finalization_state_from_welcome_row(row_values: object) -> dict[str, str]:
     try:
-        return onboarding_sheets.get_ticket_finalization_state("welcome", row_values)  # type: ignore[arg-type]
+        return await onboarding_sheets.aget_ticket_finalization_state("welcome", row_values)  # type: ignore[arg-type]
     except Exception:
         log.exception("welcome finalization state unavailable")
         return {}
@@ -3670,7 +3670,7 @@ class WelcomeTicketWatcher(commands.Cog):
             return context
 
         try:
-            session_row = onboarding_sessions.get_by_thread_id(getattr(thread, "id", None))
+            session_row = await onboarding_sessions.aget_by_thread_id(getattr(thread, "id", None))
         except Exception:
             session_row = None
         if session_row:
@@ -4180,7 +4180,7 @@ class WelcomeTicketWatcher(commands.Cog):
                 return
 
             phase = "auto_close_session_check"
-            session_row = onboarding_sessions.get_by_thread_id(getattr(after, "id", None))
+            session_row = await onboarding_sessions.aget_by_thread_id(getattr(after, "id", None))
             if session_row and session_row.get("auto_closed_at"):
                 context.state = "closed"
                 return
@@ -4294,7 +4294,7 @@ class WelcomeTicketWatcher(commands.Cog):
 
         row_values: List[str] | None = row_info[1] if row_info else None
         if row_values:
-            final_state = _finalization_state_from_welcome_row(row_values)
+            final_state = await _finalization_state_from_welcome_row(row_values)
             if (final_state.get("finalization_status") or "").lower() == "done":
                 log.info("close_already_finalized", extra={"flow": "welcome", "trigger": reason, "thread_id": getattr(thread, "id", None), "ticket": context.ticket_number})
                 await _send_placement_log_line(flow="welcome", outcome="already_done", ticket=context.ticket_number, player=context.username, trigger=reason, action="skipped")
@@ -4460,7 +4460,7 @@ class WelcomeTicketWatcher(commands.Cog):
         context.close_source = "manual_fallback" if manual else "ticket_tool"
         try:
             row_info = await asyncio.to_thread(onboarding_sheets.find_welcome_row, context.ticket_number)
-            if row_info and (_finalization_state_from_welcome_row(row_info[1]).get("finalization_status") or "").lower() == "done":
+            if row_info and ((await _finalization_state_from_welcome_row(row_info[1])).get("finalization_status") or "").lower() == "done":
                 log.info("close_already_finalized", extra={"flow": "welcome", "trigger": context.close_source, "thread_id": getattr(thread, "id", None), "ticket": context.ticket_number})
                 await _send_placement_log_line(flow="welcome", outcome="already_done", ticket=context.ticket_number, player=context.username, trigger=context.close_source, action="skipped")
                 return
@@ -4549,7 +4549,7 @@ class WelcomeTicketWatcher(commands.Cog):
             existing_for_state = await asyncio.to_thread(onboarding_sheets.find_welcome_row, context.ticket_number)
             if not existing_for_state:
                 raise RuntimeError(f"welcome finalization row not found for ticket={context.ticket_number}")
-            finalization_state = onboarding_sheets.get_ticket_finalization_state("welcome", existing_for_state[1])
+            finalization_state = await onboarding_sheets.aget_ticket_finalization_state("welcome", existing_for_state[1])
             if (finalization_state.get("finalization_status") or "").lower() == "done":
                 log.info("close_already_finalized", extra={"flow": "welcome", "trigger": source, "thread_id": getattr(thread, "id", None), "ticket": context.ticket_number})
                 await _send_placement_log_line(flow="welcome", outcome="already_done", ticket=context.ticket_number, player=context.username, destination=final_tag, trigger=source, action="skipped")
@@ -5098,7 +5098,7 @@ class WelcomeTicketWatcher(commands.Cog):
                 summary["skipped_old"] += 1
                 log.debug("close_backfill_skip_old", extra={"flow": "welcome", "thread_id": thread_id, "ticket": ticket, "timestamp_source": stamp_source, "window_hours": window_hours})
                 continue
-            state = _finalization_state_from_welcome_row(values)
+            state = await _finalization_state_from_welcome_row(values)
             if (state.get("finalization_status") or "").lower() == "done":
                 summary["already_done"] += 1
                 continue

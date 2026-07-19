@@ -173,9 +173,9 @@ def _promo_headers_for_write(*, ticket: str | None = None) -> list[str]:
         raise
 
 
-def _source_clan_from_promo_values(values: dict[str, str], *, ticket: str | None = None) -> str:
+async def _source_clan_from_promo_values(values: dict[str, str], *, ticket: str | None = None) -> str:
     try:
-        source_header = onboarding_sheets.get_promo_source_clan_tag_header()
+        source_header = await onboarding_sheets.aget_promo_source_clan_tag_header()
     except Exception:
         log.exception(
             "promo source clan header mapping unavailable; cannot read source clan",
@@ -192,11 +192,11 @@ def _source_clan_from_promo_values(values: dict[str, str], *, ticket: str | None
 
 
 
-def _promo_finalization_state(row_values: dict[str, str] | list[str] | None) -> dict[str, str]:
+async def _promo_finalization_state(row_values: dict[str, str] | list[str] | None) -> dict[str, str]:
     if not row_values:
         return {}
     try:
-        return onboarding_sheets.get_ticket_finalization_state("promo", row_values)
+        return await onboarding_sheets.aget_ticket_finalization_state("promo", row_values)
     except Exception:
         log.exception("promo finalization state unavailable")
         if isinstance(row_values, dict):
@@ -573,7 +573,7 @@ class PromoTicketWatcher(commands.Cog):
         parts = None
         session_row = None
         try:
-            session_row = onboarding_sessions.get_by_thread_id(getattr(thread, "id", None))
+            session_row = await onboarding_sessions.aget_by_thread_id(getattr(thread, "id", None))
         except Exception:
             session_row = None
         if session_row:
@@ -615,7 +615,7 @@ class PromoTicketWatcher(commands.Cog):
             )
             context.username = normalize_promo_username(values.get("username") or context.username, context.ticket_number) or context.username
             context.clan_tag = values.get("clantag", "") or context.clan_tag
-            context.source_clan_tag = _source_clan_from_promo_values(values, ticket=ticket) or context.source_clan_tag
+            context.source_clan_tag = await _source_clan_from_promo_values(values, ticket=ticket) or context.source_clan_tag
             context.clan_name = values.get("clan name", "") or context.clan_name
             context.progression = values.get("progression", "") or context.progression
             context.join_month = values.get("join_month", "") or context.join_month
@@ -667,7 +667,7 @@ class PromoTicketWatcher(commands.Cog):
             _, values = found
             context.username = normalize_promo_username(values.get("username") or context.username, context.ticket_number) or context.username
             context.clan_tag = values.get("clantag", "") or context.clan_tag
-            context.source_clan_tag = _source_clan_from_promo_values(values, ticket=parts.ticket_code) or context.source_clan_tag
+            context.source_clan_tag = await _source_clan_from_promo_values(values, ticket=parts.ticket_code) or context.source_clan_tag
             context.clan_name = values.get("clan name", "") or context.clan_name
             context.progression = values.get("progression", "") or context.progression
             context.thread_created = values.get("thread created", "") or context.thread_created
@@ -819,7 +819,7 @@ class PromoTicketWatcher(commands.Cog):
             _, values = found
             context.username = normalize_promo_username(values.get("username") or context.username, context.ticket_number) or context.username
             context.clan_tag = values.get("clantag", "") or context.clan_tag
-            context.source_clan_tag = _source_clan_from_promo_values(values, ticket=context.ticket_number) or context.source_clan_tag
+            context.source_clan_tag = await _source_clan_from_promo_values(values, ticket=context.ticket_number) or context.source_clan_tag
             context.clan_name = values.get("clan name", "") or context.clan_name
             context.progression = values.get("progression", "") or context.progression
             context.thread_created = values.get("thread created", "") or context.thread_created
@@ -847,8 +847,8 @@ class PromoTicketWatcher(commands.Cog):
             return False
         row_no = found[0] if found else None
         values = found[1] if found else {}
-        before_state = _promo_finalization_state(values)
-        existing_source = _source_clan_from_promo_values(values, ticket=context.ticket_number) if values else ""
+        before_state = await _promo_finalization_state(values)
+        existing_source = await _source_clan_from_promo_values(values, ticket=context.ticket_number) if values else ""
         if existing_source:
             context.source_clan_tag = existing_source.strip().upper()
             _promo_log_transition("source_persist_skipped", thread=thread, context=context, actor=actor, raw_message_content=raw_message_content, metadata_row_number=row_no, finalization_status_before=before_state.get("finalization_status"), finalization_status_after=before_state.get("finalization_status"), write_skipped=True, reason="source_already_persisted")
@@ -890,7 +890,7 @@ class PromoTicketWatcher(commands.Cog):
         trigger = trigger or getattr(context, "close_trigger", "ticket_tool")
         try:
             found = await asyncio.to_thread(onboarding_sheets.find_promo_row, context.ticket_number)
-            if found and (_promo_finalization_state(found[1]).get("finalization_status") or "").lower() == "done":
+            if found and ((await _promo_finalization_state(found[1])).get("finalization_status") or "").lower() == "done":
                 log.info("close_already_finalized", extra={"flow": "promo", "trigger": trigger, "thread_id": getattr(thread, "id", None), "ticket": context.ticket_number})
                 await _send_placement_log_line(flow="promo", outcome="already_done", ticket=context.ticket_number, player=context.username, trigger=trigger, action="skipped")
                 return
@@ -1088,7 +1088,7 @@ class PromoTicketWatcher(commands.Cog):
             return
         if found:
             row_no, values = found
-            persisted_source = _source_clan_from_promo_values(values, ticket=context.ticket_number)
+            persisted_source = await _source_clan_from_promo_values(values, ticket=context.ticket_number)
             if persisted_source:
                 context.source_clan_tag = persisted_source.strip().upper()
             elif context.source_clan_tag:
@@ -1161,7 +1161,7 @@ class PromoTicketWatcher(commands.Cog):
             found_state = await asyncio.to_thread(onboarding_sheets.find_promo_row, context.ticket_number)
             if not found_state:
                 raise RuntimeError(f"promo finalization row not found for ticket={context.ticket_number}")
-            finalization_state = onboarding_sheets.get_ticket_finalization_state("promo", found_state[1])
+            finalization_state = await onboarding_sheets.aget_ticket_finalization_state("promo", found_state[1])
             if (finalization_state.get("finalization_status") or "").lower() == "done":
                 log.info("close_already_finalized", extra={"flow": "promo", "trigger": trigger, "thread_id": getattr(thread, "id", None), "ticket": context.ticket_number})
                 await _send_placement_log_line(flow="promo", outcome="already_done", ticket=context.ticket_number, player=context.username, source=context.source_clan_tag, destination=context.clan_tag, trigger=trigger, action="skipped")
@@ -1209,7 +1209,7 @@ class PromoTicketWatcher(commands.Cog):
                     },
                 )
 
-        persisted_source = _source_clan_from_promo_values(found_state[1], ticket=context.ticket_number) if found_state else ""
+        persisted_source = await _source_clan_from_promo_values(found_state[1], ticket=context.ticket_number) if found_state else ""
         if persisted_source:
             context.source_clan_tag = persisted_source.strip().upper()
         elif (context.source_clan_tag or "").strip().upper() and (context.source_clan_tag or "").strip().upper() != _NO_PLACEMENT_TAG and context.state == "awaiting_destination_clan":
@@ -1484,7 +1484,7 @@ class PromoTicketWatcher(commands.Cog):
         )
         log.info("close_finalization_completed", extra={"flow": "promo", "trigger": trigger, "thread_id": getattr(thread, "id", None), "ticket": ticket_id_final, "finalization_status": finalization_status, "reservation_status": reservation_status, "clan_update_status": clan_update_status})
         try:
-            onboarding_sessions.mark_completed(getattr(thread, "id", 0))
+            await onboarding_sessions.amark_completed(getattr(thread, "id", 0))
         except Exception:
             log.exception(
                 "promo watcher: failed to mark onboarding session complete",
@@ -1621,7 +1621,7 @@ class PromoTicketWatcher(commands.Cog):
         if getattr(after, "id", None) in self._auto_closed_threads:
             context.state = "closed"
             return
-        session_row = onboarding_sessions.get_by_thread_id(getattr(after, "id", None))
+        session_row = await onboarding_sessions.aget_by_thread_id(getattr(after, "id", None))
         if session_row and session_row.get("auto_closed_at"):
             return
         trigger = ""
@@ -1944,7 +1944,7 @@ class PromoTicketWatcher(commands.Cog):
                     },
                 )
                 continue
-            state = _promo_finalization_state(values)
+            state = await _promo_finalization_state(values)
             if (state.get("finalization_status") or "").lower() == "done":
                 summary["already_done"] += 1
                 continue

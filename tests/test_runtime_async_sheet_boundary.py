@@ -10,6 +10,7 @@ SYNC_SHEETS_CORE_MODULE = "shared.sheets.core"
 SYNC_CONFIG_MODULE = "shared.config"
 LEAGUES_CONFIG_MODULE = "modules.community.leagues.config"
 ONBOARDING_SHEETS_MODULE = "shared.sheets.onboarding"
+ONBOARDING_SESSIONS_MODULE = "shared.sheets.onboarding_sessions"
 RECRUITMENT_SHEETS_MODULE = "shared.sheets.recruitment"
 
 FORBIDDEN_SYNC_HELPERS = {
@@ -25,6 +26,15 @@ FORBIDDEN_SYNC_HELPERS = {
     f"{SYNC_CONFIG_MODULE}._load_milestones_config_values",
     f"{LEAGUES_CONFIG_MODULE}.load_league_bundles",
     f"{ONBOARDING_SHEETS_MODULE}._read_onboarding_config",
+    f"{ONBOARDING_SHEETS_MODULE}.get_ticket_finalization_state",
+    f"{ONBOARDING_SHEETS_MODULE}.get_finalization_headers",
+    f"{ONBOARDING_SHEETS_MODULE}.get_promo_source_clan_tag_header",
+    f"{ONBOARDING_SESSIONS_MODULE}.get_by_thread_id",
+    f"{ONBOARDING_SESSIONS_MODULE}.load_all",
+    f"{ONBOARDING_SESSIONS_MODULE}.update_existing",
+    f"{ONBOARDING_SESSIONS_MODULE}.upsert_session",
+    f"{ONBOARDING_SESSIONS_MODULE}.mark_completed",
+    f"{ONBOARDING_SESSIONS_MODULE}.missing_columns",
     f"{RECRUITMENT_SHEETS_MODULE}.get_config_value",
     f"{RECRUITMENT_SHEETS_MODULE}.get_clan_header_row",
     f"{RECRUITMENT_SHEETS_MODULE}.fetch_clans",
@@ -51,6 +61,7 @@ MODULE_ALIAS_TARGETS = {
     SYNC_CONFIG_MODULE,
     LEAGUES_CONFIG_MODULE,
     ONBOARDING_SHEETS_MODULE,
+    ONBOARDING_SESSIONS_MODULE,
     RECRUITMENT_SHEETS_MODULE,
     "shared.sheets.async_core",
     "asyncio",
@@ -61,6 +72,7 @@ DIRECT_IMPORT_MODULES = {
     SYNC_CONFIG_MODULE,
     LEAGUES_CONFIG_MODULE,
     ONBOARDING_SHEETS_MODULE,
+    ONBOARDING_SESSIONS_MODULE,
     RECRUITMENT_SHEETS_MODULE,
     "shared.sheets.async_core",
 }
@@ -88,6 +100,8 @@ class _RuntimeBoundaryVisitor(ast.NodeVisitor):
                 self.aliases[local] = SYNC_SHEETS_CORE_MODULE
             elif node.module == "shared.sheets" and alias.name == "onboarding":
                 self.aliases[local] = ONBOARDING_SHEETS_MODULE
+            elif node.module == "shared.sheets" and alias.name == "onboarding_sessions":
+                self.aliases[local] = ONBOARDING_SESSIONS_MODULE
             elif node.module == "shared.sheets" and alias.name == "recruitment":
                 self.aliases[local] = RECRUITMENT_SHEETS_MODULE
             elif node.module == "shared" and alias.name == "config":

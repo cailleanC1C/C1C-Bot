@@ -169,6 +169,16 @@ async def aload_all(*, timeout: float | None = 15.0) -> list[Dict[str, Any]]:
     return _load_all_from_rows(rows)
 
 
+async def aget_by_thread_id(
+    thread_id: int | str | None, *, timeout: float | None = 15.0
+) -> Optional[Dict[str, Any]]:
+    """Async-safe counterpart to :func:`get_by_thread_id`."""
+
+    if thread_id is None:
+        return None
+    return await aload(int(thread_id), timeout=timeout)
+
+
 def save(payload: Dict[str, Any], *, allow_create: bool = True) -> bool:
     worksheet = _sheet()
     rows = worksheet.get_all_values()
@@ -292,10 +302,51 @@ def upsert_session(
     return save(payload)
 
 
+async def aupsert_session(
+    *,
+    thread_id: int,
+    thread_name: str,
+    user_id: int | str,
+    panel_message_id: int | None = None,
+    updated_at: datetime | None = None,
+    timeout: float | None = 15.0,
+) -> bool:
+    """Create or replace an onboarding session without blocking the event loop."""
+
+    payload: Dict[str, Any] = {
+        "thread_id": str(thread_id),
+        "thread_name": thread_name,
+        "user_id": str(user_id),
+        "panel_message_id": _id_text(panel_message_id),
+        "step_index": 0,
+        "completed": False,
+        "completed_at": None,
+        "answers": {},
+        "first_reminder_at": "",
+        "warning_sent_at": "",
+        "auto_closed_at": "",
+        "updated_at": updated_at or _now_iso(),
+    }
+    return await asave(payload, timeout=timeout)
+
+
 def update_existing(thread_id: int | str, payload: Dict[str, Any]) -> bool:
     payload = dict(payload)
     payload.setdefault("thread_id", str(thread_id))
     return save(payload, allow_create=False)
+
+
+async def aupdate_existing(
+    thread_id: int | str,
+    payload: Dict[str, Any],
+    *,
+    timeout: float | None = 15.0,
+) -> bool:
+    """Update an existing onboarding session without blocking the event loop."""
+
+    payload = dict(payload)
+    payload.setdefault("thread_id", str(thread_id))
+    return await asave(payload, allow_create=False, timeout=timeout)
 
 
 def mark_completed(
@@ -313,6 +364,28 @@ def mark_completed(
             "answers": answers or {},
             "updated_at": timestamp,
         },
+    )
+
+
+async def amark_completed(
+    thread_id: int | str,
+    *,
+    completed_at: datetime | str | None = None,
+    answers: Dict[str, Any] | None = None,
+    timeout: float | None = 15.0,
+) -> bool:
+    """Mark an onboarding session complete without blocking the event loop."""
+
+    timestamp = completed_at or _now_iso()
+    return await aupdate_existing(
+        thread_id,
+        {
+            "completed": True,
+            "completed_at": timestamp,
+            "answers": answers or {},
+            "updated_at": timestamp,
+        },
+        timeout=timeout,
     )
 
 
@@ -343,6 +416,23 @@ def missing_columns(columns: Iterable[str]) -> set[str]:
 
     worksheet = _sheet()
     rows = worksheet.get_all_values()
+    header = _validated_header(rows[0] if rows else [])
+    if header is None:
+        return set(columns)
+    header_map = _header_index_map(header)
+    return {
+        str(column).strip()
+        for column in columns
+        if str(column).strip().lower() not in header_map
+    }
+
+
+async def amissing_columns(
+    columns: Iterable[str], *, timeout: float | None = 15.0
+) -> set[str]:
+    """Return missing live session columns without blocking the event loop."""
+
+    rows = await _aload_rows(timeout=timeout)
     header = _validated_header(rows[0] if rows else [])
     if header is None:
         return set(columns)
