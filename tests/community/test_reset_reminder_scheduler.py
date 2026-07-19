@@ -10,12 +10,16 @@ from modules.community.reset_reminders import scheduler
 
 
 class _FakeJob:
-    def __init__(self, *, name: str) -> None:
+    def __init__(self, *, name: str, next_run=None) -> None:
         self.name = name
+        self.next_run = next_run
         self._runner = None
 
     def do(self, runner):
         self._runner = runner
+
+    def reschedule(self, next_run):
+        self.next_run = next_run
 
 
 class _FakeScheduler:
@@ -29,6 +33,16 @@ class _FakeScheduler:
 
     def spawn(self, coro, **_kwargs):
         coro.close()
+
+    def at(self, next_run, **kwargs):
+        name = kwargs["name"]
+        existing = next((job for job in self.jobs if job.name == name), None)
+        if existing is not None:
+            existing.reschedule(next_run)
+            return existing
+        job = _FakeJob(name=name, next_run=next_run)
+        self.jobs.append(job)
+        return job
 
 
 class _DummyMessage:
@@ -473,6 +487,38 @@ def _make_reset_reminder(**overrides):
     }
     values.update(overrides)
     return scheduler.ResetReminder(**values)
+
+
+def test_due_job_catches_up_once_then_backs_off_if_target_remains_missing(
+    monkeypatch,
+) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    reminder = _make_reset_reminder(
+        next_scheduled_post_utc=now - dt.timedelta(minutes=5)
+    )
+    scheduler._last_successful_load["records"] = [
+        scheduler._ResetReminderRecord(row_number=7, reminder=reminder)
+    ]
+    runtime = SimpleNamespace(bot=SimpleNamespace(), scheduler=_FakeScheduler())
+    process = 0
+
+    async def _no_op(_bot):
+        nonlocal process
+        process += 1
+
+    monkeypatch.setattr(scheduler, "process_reset_reminders", _no_op)
+
+    asyncio.run(scheduler.reconcile_reset_reminder_jobs(runtime))
+    job = next(job for job in runtime.scheduler.jobs if job.name == "reset_reminders")
+    assert job.next_run <= dt.datetime.now(dt.timezone.utc)
+    asyncio.run(job._runner())
+
+    # Reconcile/load and one immediate due attempt; a missing target or send
+    # failure leaves the cached timestamp overdue, but cannot hot-loop.
+    assert process == 2
+    assert job.next_run >= dt.datetime.now(dt.timezone.utc) + dt.timedelta(
+        minutes=14, seconds=59
+    )
 
 
 def _run_reset_process(monkeypatch, reminder, now):

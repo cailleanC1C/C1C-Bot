@@ -49,6 +49,7 @@ _LOAD_FAILURE_ALERT_COOLDOWN_SEC = 1800.0
 _LOAD_FAILURE_ALERT_THRESHOLD = 3
 _LOAD_RETRY_ATTEMPTS = 2
 _LOAD_RETRY_BACKOFF_SEC = 0.5
+_DUE_JOB_RETRY_DELAY = dt.timedelta(minutes=15)
 _load_failure_state: dict[str, Any] = {
     "key": None,
     "last_alert": 0.0,
@@ -1253,7 +1254,11 @@ async def reconcile_reset_reminder_jobs(runtime: "Runtime") -> None:
 
     async def _runner() -> None:
         await process_reset_reminders(runtime.bot)
-        job.reschedule(_earliest_cached_due())
+        now_utc = _utc_now()
+        next_due = _earliest_cached_due()
+        if next_due is not None and next_due <= now_utc:
+            next_due = now_utc + _DUE_JOB_RETRY_DELAY
+        job.reschedule(next_due)
 
     job.do(_runner)
 

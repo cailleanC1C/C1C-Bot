@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from modules.common.runtime import Runtime
 
 log = logging.getLogger("c1c.community.fusion.scheduler")
+_DUE_JOB_RETRY_DELAY = dt.timedelta(minutes=15)
 
 
 def _next_daily(now: dt.datetime, *, hour: int = 0, minute: int = 15) -> dt.datetime:
@@ -27,7 +28,9 @@ def _next_daily(now: dt.datetime, *, hour: int = 0, minute: int = 15) -> dt.date
     return candidate if candidate > now else candidate + dt.timedelta(days=1)
 
 
-async def reconcile_fusion_jobs(runtime: "Runtime") -> None:
+async def reconcile_fusion_jobs(
+    runtime: "Runtime", *, include_cleanup_catchup: bool = True
+) -> None:
     """Rebuild event-driven Fusion due times from the current cached sheet data."""
     now = dt.datetime.now(dt.timezone.utc)
     target = await fusion_sheets.get_publishable_fusion()
@@ -54,13 +57,16 @@ async def reconcile_fusion_jobs(runtime: "Runtime") -> None:
                     )
 
     if published:
-        boundaries = [
-            value
-            for row in published
-            for value in (row.start_at_utc, row.end_at_utc)
-            if value > now
-        ]
-        refresh_due = min([_next_daily(now), *boundaries])
+        event_boundaries: list[dt.datetime] = []
+        for row in published:
+            events = await fusion_sheets.get_fusion_events(row.fusion_id)
+            for event in events:
+                timing = fusion_sheets.get_valid_event_timing(
+                    event, for_helper="fusion_announcement_refresh_scheduler"
+                )
+                if timing is not None:
+                    event_boundaries.extend(value for value in timing if value > now)
+        refresh_due = min(event_boundaries) if event_boundaries else _next_daily(now)
         specs.append(
             (
                 "fusion_announcement_refresh",
@@ -69,12 +75,18 @@ async def reconcile_fusion_jobs(runtime: "Runtime") -> None:
                 lambda: process_fusion_announcement_refreshes(runtime.bot),
             )
         )
-        end_times = [row.end_at_utc for row in published if row.end_at_utc > now]
-        if end_times:
+        ended = [row for row in published if row.end_at_utc <= now]
+        future_end_times = [row.end_at_utc for row in published if row.end_at_utc > now]
+        cleanup_due = (
+            now
+            if ended and include_cleanup_catchup
+            else (min(future_end_times) if future_end_times else None)
+        )
+        if cleanup_due is not None:
             specs.append(
                 (
                     "fusion_role_cleanup",
-                    min(end_times),
+                    cleanup_due,
                     "event end",
                     lambda: process_ended_fusion_role_cleanup(runtime.bot),
                 )
@@ -85,9 +97,17 @@ async def reconcile_fusion_jobs(runtime: "Runtime") -> None:
             due, tag="fusion", component="community", name=name, cadence_label=label
         )
 
-        async def runner(job=job, callback=callback) -> None:
+        async def runner(job=job, callback=callback, name=name) -> None:
             await callback()
-            await reconcile_fusion_jobs(runtime)
+            await reconcile_fusion_jobs(
+                runtime,
+                include_cleanup_catchup=name != "fusion_role_cleanup",
+            )
+            if name == "fusion_grouped_reminders":
+                completed_at = dt.datetime.now(dt.timezone.utc)
+                next_due = job.next_run
+                if next_due is not None and next_due <= completed_at:
+                    job.reschedule(completed_at + _DUE_JOB_RETRY_DELAY)
 
         job.do(runner)
 

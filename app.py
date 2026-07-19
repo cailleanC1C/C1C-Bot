@@ -186,7 +186,9 @@ CRON_JOB_NAMES = (
     "cleanup_watcher",
     "housekeeping_keepalive",
     "mirralith_overview",
-    "fusion_reminders",
+    "fusion_grouped_reminders",
+    "fusion_announcement_refresh",
+    "fusion_role_cleanup",
 )
 
 bot = commands.Bot(
