@@ -57,39 +57,34 @@ def test_d02_requires_footer(tmp_path: Path, monkeypatch: object) -> None:
     assert category.violations[0].rule_id == "D-02"
 
 
-def test_g09_enforces_tests_and_docs_blocks() -> None:
-    body = """Summary
+def test_pr_body_metadata_is_not_a_guardrail() -> None:
+    codes = {check.code for check in guardrails_suite.CHECKS}
 
-Details here.
-"""
-    category = guardrails_suite.CategoryResult("Governance (G)")
-    guardrails_suite.check_g09(category, body)
-
-    assert category.status == "fail"
-    assert category.violations[0].rule_id == "G-09"
+    assert "G-09" not in codes
 
 
-def test_g09_accepts_plain_markdown_sections_anywhere_in_body() -> None:
-    body = """### Summary
+def test_d09_and_d10_ignore_pr_body_metadata() -> None:
+    tests_category = guardrails_suite.CategoryResult("Docs (D)")
+    docs_category = guardrails_suite.CategoryResult("Docs (D)")
 
-Guardrails follow-up for the current pull request.
+    guardrails_suite.check_d09(tests_category, ["modules/example.py"])
+    guardrails_suite.check_d10(docs_category, ["modules/example.py"])
 
-Tests:
+    assert tests_category.status == "fail"
+    assert tests_category.violations[0].message == "Runtime changes require tests"
+    assert docs_category.status == "fail"
+    assert docs_category.violations[0].message == "User-facing changes require docs"
 
-- `pytest -q tests/config/test_guardrails_suite.py`
 
-Additional notes can appear between the required sections.
+def test_ci_only_change_needs_no_pr_body_metadata() -> None:
+    tests_category = guardrails_suite.CategoryResult("Docs (D)")
+    docs_category = guardrails_suite.CategoryResult("Docs (D)")
 
-### Docs:
+    guardrails_suite.check_d09(tests_category, [".github/workflows/test.yml"])
+    guardrails_suite.check_d10(docs_category, [".github/workflows/test.yml"])
 
-- Updated the guardrails documentation.
-"""
-    category = guardrails_suite.CategoryResult("Governance (G)")
-
-    guardrails_suite.check_g09(category, body)
-
-    assert category.status == "pass"
-    assert category.violations == []
+    assert tests_category.status == "pass"
+    assert docs_category.status == "pass"
 
 
 def test_f04_uses_feature_registry_and_accessor(tmp_path: Path, monkeypatch: object) -> None:
@@ -315,7 +310,7 @@ def test_run_checks_covers_all_codes(tmp_path: Path, monkeypatch: object) -> Non
         guardrails_suite, "_git_diff_status", lambda base_ref: {"modules/bad_import.py": "M"}
     )
 
-    pr_body = "Tests: Not required (reason: CI-only)\nDocs: Not required (reason: CI-only)\n"
+    pr_body = "Summary only; no verification metadata."
 
     suite = guardrails_suite.run_checks(None, pr_body=pr_body, parity_status="success", pr_number=1)
 
@@ -346,7 +341,7 @@ def test_pr_scope_ignores_unchanged_historical_violations(
 
     suite = guardrails_suite.run_checks(
         "origin/main",
-        pr_body="Tests: passed\nDocs: not required",
+        pr_body="Summary only; no verification metadata.",
         parity_status="success",
         pr_number=1017,
     )
@@ -370,7 +365,7 @@ def test_pr_scope_keeps_violations_in_changed_files(tmp_path: Path, monkeypatch:
 
     suite = guardrails_suite.run_checks(
         "origin/main",
-        pr_body="Tests: passed\nDocs: not required",
+        pr_body="Summary only; no verification metadata.",
         parity_status="success",
         pr_number=1017,
     )
@@ -406,7 +401,7 @@ def test_run_all_checks_returns_results(tmp_path: Path, monkeypatch: object) -> 
         guardrails_suite, "_git_diff_status", lambda base_ref: {"modules/bad_import.py": "M"}
     )
 
-    pr_body = "Tests: Not required (reason: CI-only)\nDocs: Not required (reason: CI-only)\n"
+    pr_body = "Summary only; no verification metadata."
 
     results, violations = guardrails_suite.run_all_checks(
         base_ref=None, pr_number=1, pr_body=pr_body, parity_status="success"

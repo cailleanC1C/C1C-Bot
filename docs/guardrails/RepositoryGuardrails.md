@@ -96,7 +96,7 @@ Every audit and CI check validates against this document.
     • `tests/integration/**` (cross-module flows)
     • `tests/config/**` (config-loading behaviour)
 
-  Exceptions are allowed only for docs-only, CI-only, or comment/typo fixes, and must be explicitly justified in the PR body. Silent omissions fail guardrails.
+  Docs-only and CI-only changes do not trigger this rule. Runtime changes must include tests; PR-body declarations are not used as a substitute.
 - **D-10 User-Facing Behaviour = Mandatory Doc Updates:**
   If a PR changes commands, help text, onboarding questions, summary formatting, watcher
   schedules, feature toggles, or any user-visible flow, the PR **must** update the relevant
@@ -120,18 +120,6 @@ Every audit and CI check validates against this document.
 - **G-06 Naming:** Filenames are `lower_snake_case.md` (no spaces, no “Phase”).
 - **G-07 CI Required:** Guardrail checks must be required status checks on PRs.
 - **G-08 Secrets:** No secrets in repo or `.env.example`; use deployment envs.
-- **G-09 PR Requirements — Tests/Docs Declaration** Every PR body must contain a section explicitly stating whether tests and docs were updated.
-    One of the following formats is required:
-    Tests:
-    Updated: <file-path>
-    Docs:
-    Updated: <file-path>
-      or (for allowed exceptions):
-    Tests:
-    Not required (reason: docs-only / CI-only / comment-only)
-    Docs:
-    Not required (reason: non-user-facing change)
-
 ### Guardrails CI automation
 
 - The Repository Guardrails suite always runs to completion and writes both `guardrails_status` (`ok` / `fail`) and a markdown summary file.

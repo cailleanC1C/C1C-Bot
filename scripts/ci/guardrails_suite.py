@@ -724,34 +724,20 @@ def check_d06(category: CategoryResult, diff_status: Dict[str, str]) -> None:
         category.add(Violation("D-06", "error", "CHANGELOG must reference new AUDIT entries", missing))
 
 
-def _parse_block(body: str, label: str) -> Optional[str]:
-    pattern = re.compile(rf"{label}:\s*(.+)", re.IGNORECASE)
-    match = pattern.search(body)
-    if match:
-        return match.group(1).strip()
-    return None
-
-
-def check_d09(category: CategoryResult, changed_files: List[str], pr_body: str) -> None:
+def check_d09(category: CategoryResult, changed_files: List[str]) -> None:
     runtime_touched = any(f.startswith(("modules/", "shared/", "coreops/")) for f in changed_files)
     tests_touched = any(f.startswith("tests/") for f in changed_files)
-    if not runtime_touched:
+    if not runtime_touched or tests_touched:
         return
-    tests_block = _parse_block(pr_body, "Tests") or ""
-    if tests_touched or tests_block:
-        return
-    category.add(Violation("D-09", "error", "Runtime changes require tests or Tests: declaration", changed_files))
+    category.add(Violation("D-09", "error", "Runtime changes require tests", changed_files))
 
 
-def check_d10(category: CategoryResult, changed_files: List[str], pr_body: str) -> None:
+def check_d10(category: CategoryResult, changed_files: List[str]) -> None:
     user_flow_change = any(f.startswith("cogs/") or f.startswith("modules/") for f in changed_files)
     docs_changed = any(f.startswith("docs/") for f in changed_files)
-    if not user_flow_change:
+    if not user_flow_change or docs_changed:
         return
-    docs_block = _parse_block(pr_body, "Docs") or ""
-    if docs_changed or docs_block:
-        return
-    category.add(Violation("D-10", "error", "User-facing changes require docs or Docs: declaration", changed_files))
+    category.add(Violation("D-10", "error", "User-facing changes require docs", changed_files))
 
 
 def _parity_violation(parity_status: Optional[str]) -> tuple[List[Violation], Optional[str]]:
@@ -779,18 +765,6 @@ def check_g06(category: CategoryResult, diff_status: Dict[str, str]) -> None:
             bad.append(doc)
     if bad:
         category.add(Violation("G-06", "error", "New docs must be lower_snake_case and avoid Phase", bad))
-
-
-def check_g09(category: CategoryResult, pr_body: str) -> None:
-    def _has_section(label: str) -> bool:
-        pattern = re.compile(
-            rf"^\s*(?:#{{1,6}}\s+)?{re.escape(label)}:\s*(?:\S.*)?$",
-            re.IGNORECASE | re.MULTILINE,
-        )
-        return pattern.search(pr_body) is not None
-
-    if not _has_section("Tests") or not _has_section("Docs"):
-        category.add(Violation("G-09", "error", "PR body must declare Tests: and Docs: sections", []))
 
 
 def _build_guardrail_checks() -> List[GuardrailCheck]:
@@ -1001,23 +975,23 @@ def _build_guardrail_checks() -> List[GuardrailCheck]:
         ),
         GuardrailCheck(
             "D-09",
-            "Runtime changes require tests or Tests: declaration",
+            "Runtime changes require tests",
             _build_pr_only_check(
                 "D-09",
-                "Runtime changes require tests or Tests: declaration",
+                "Runtime changes require tests",
                 lambda ctx: _collect_category_violations(
-                    ctx, "d09", check_d09, ctx.changed_files, ctx.pr_body
+                    ctx, "d09", check_d09, ctx.changed_files
                 ),
             ),
         ),
         GuardrailCheck(
             "D-10",
-            "User-facing changes require docs or Docs: declaration",
+            "User-facing changes require docs",
             _build_pr_only_check(
                 "D-10",
-                "User-facing changes require docs or Docs: declaration",
+                "User-facing changes require docs",
                 lambda ctx: _collect_category_violations(
-                    ctx, "d10", check_d10, ctx.changed_files, ctx.pr_body
+                    ctx, "d10", check_d10, ctx.changed_files
                 ),
             ),
         ),
@@ -1028,15 +1002,6 @@ def _build_guardrail_checks() -> List[GuardrailCheck]:
                 "G-06",
                 "New docs must be lower_snake_case and avoid Phase",
                 _collect_category_violations(ctx, "g06", check_g06, ctx.diff_status),
-            ),
-        ),
-        GuardrailCheck(
-            "G-09",
-            "PR body must declare Tests: and Docs: sections",
-            _build_pr_only_check(
-                "G-09",
-                "PR body must declare Tests: and Docs: sections",
-                lambda ctx: _collect_category_violations(ctx, "g09", check_g09, ctx.pr_body),
             ),
         ),
     ]
@@ -1320,7 +1285,7 @@ def _run_guardrail_checks(context: GuardrailContext) -> List[CheckResult]:
 # truth. All other checks are scoped to files changed by the PR so historical
 # violations elsewhere in the repository remain visible to dedicated audits
 # without blocking an unrelated change.
-PR_GLOBAL_CHECKS = {"D-03", "D-04", "D-08", "G-09"}
+PR_GLOBAL_CHECKS = {"D-03", "D-04", "D-08"}
 PR_DIFF_AWARE_CHECKS = {"S-07", "D-06", "D-09", "D-10", "G-06"}
 
 
