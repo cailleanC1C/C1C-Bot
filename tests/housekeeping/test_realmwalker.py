@@ -215,9 +215,7 @@ def test_manual_fix_does_not_mutate_when_role_config_is_invalid(monkeypatch):
 
     affected.add_roles = add_roles
     guild = SimpleNamespace(
-        get_role=lambda role_id: role(10, "RealmWalker")
-        if role_id == 10
-        else None
+        get_role=lambda role_id: role(10, "RealmWalker") if role_id == 10 else None
     )
     sent = []
 
@@ -288,6 +286,114 @@ def test_config_resolution_still_uses_recruitment_config_helper(monkeypatch):
         "REALMWALKER_ACCESS_ROLE_ID",
         "REALMWALKER_GAME_ROLE_IDS",
     ]
+
+
+def test_config_resolution_parses_comma_separated_game_role_ids(monkeypatch):
+    game_ids = (
+        1448269393082454076,
+        1447924607842652232,
+        1447919520751681548,
+        1298349996374229045,
+        1447924492776116316,
+        1447924956519469067,
+        1447924705892892733,
+    )
+
+    async def get_config(key, default=None):
+        if key == realmwalker.ACCESS_ROLE_KEY:
+            return "1450000000000000000"
+        return ",".join(str(role_id) for role_id in game_ids)
+
+    monkeypatch.setattr(realmwalker.recruitment, "get_config_value_async", get_config)
+    config, error = asyncio.run(realmwalker.resolve_config())
+
+    assert error is None
+    assert config is not None
+    assert config.access_role_id == 1450000000000000000
+    assert config.game_role_ids == frozenset(game_ids)
+
+
+def test_config_resolution_tolerates_whitespace_and_newlines(monkeypatch):
+    async def get_config(key, default=None):
+        if key == realmwalker.ACCESS_ROLE_KEY:
+            return "10"
+        return " 20,  21 ,\n22\n 23 "
+
+    monkeypatch.setattr(realmwalker.recruitment, "get_config_value_async", get_config)
+    config, error = asyncio.run(realmwalker.resolve_config())
+
+    assert error is None
+    assert config == realmwalker.RealmWalkerConfig(
+        access_role_id=10, game_role_ids=frozenset({20, 21, 22, 23})
+    )
+
+
+def test_unresolved_game_role_ids_are_reported_individually():
+    access_id = 1298349996374229045
+    game_ids = frozenset({1448269393082454076, 1447924607842652232})
+    guild = SimpleNamespace(
+        get_role=lambda role_id: (
+            role(access_id, "RealmWalker") if role_id == access_id else None
+        )
+    )
+
+    resolved, error = realmwalker.resolve_guild_roles(
+        guild, realmwalker.RealmWalkerConfig(access_id, game_ids)
+    )
+
+    assert resolved is None
+    assert error is not None
+    assert "`1448269393082454076`" in error
+    assert "`1447924607842652232`" in error
+    assert "`, `" in error
+    assert "14482693930824540761447924607842652232" not in error
+
+
+def test_access_role_config_rejects_a_role_id_list(monkeypatch):
+    async def get_config(key, default=None):
+        return "10,11" if key == realmwalker.ACCESS_ROLE_KEY else "20,21"
+
+    monkeypatch.setattr(realmwalker.recruitment, "get_config_value_async", get_config)
+    config, error = asyncio.run(realmwalker.resolve_config())
+
+    assert config is None
+    assert error is not None
+    assert "REALMWALKER_ACCESS_ROLE_ID is missing or invalid" in error
+
+
+def test_manual_fix_aborts_before_member_mutation_for_invalid_parsed_config(
+    monkeypatch,
+):
+    add_called = False
+
+    async def add_roles(*_args, **_kwargs):
+        nonlocal add_called
+        add_called = True
+
+    affected = member(1, [role(20, "WoW")])
+    affected.add_roles = add_roles
+
+    async def get_config(key, default=None):
+        return "10" if key == realmwalker.ACCESS_ROLE_KEY else "20,not-a-role,21"
+
+    monkeypatch.setattr(realmwalker.recruitment, "get_config_value_async", get_config)
+    guild = SimpleNamespace(
+        members=[affected],
+        get_role=lambda _role_id: (_ for _ in ()).throw(
+            AssertionError("role resolution must not run for invalid config")
+        ),
+    )
+    sent = []
+
+    async def send(**kwargs):
+        sent.append(kwargs)
+
+    cog = RealmWalkerAuditCog(SimpleNamespace())
+    ctx = SimpleNamespace(guild=guild, send=send)
+    asyncio.run(RealmWalkerAuditCog.audit_realmwalker.callback(cog, ctx, "fix"))
+
+    assert add_called is False
+    assert "contains invalid values" in (sent[0]["embed"].description or "")
 
 
 def test_daily_realmwalker_scan_warns_instead_of_using_partial_cache(monkeypatch):

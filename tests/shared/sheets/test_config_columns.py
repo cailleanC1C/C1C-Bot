@@ -13,6 +13,19 @@ def test_recruitment_config_parser_uses_only_key_and_value_columns():
     assert parsed.get("reports_tab") is None
 
 
+def test_recruitment_config_parser_preserves_comma_separated_role_ids():
+    role_ids = (
+        "1448269393082454076,1447924607842652232,"
+        "1447919520751681548,1298349996374229045"
+    )
+
+    parsed = recruitment._parse_config_records(
+        [{"Key": "REALMWALKER_GAME_ROLE_IDS", "Value": role_ids}]
+    )
+
+    assert parsed["realmwalker_game_role_ids"] == role_ids
+
+
 def test_config_service_keeps_runtime_payload_to_key_value_columns():
     rows = [
         {
