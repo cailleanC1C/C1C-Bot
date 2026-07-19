@@ -49,8 +49,17 @@ _LOAD_FAILURE_ALERT_COOLDOWN_SEC = 1800.0
 _LOAD_FAILURE_ALERT_THRESHOLD = 3
 _LOAD_RETRY_ATTEMPTS = 2
 _LOAD_RETRY_BACKOFF_SEC = 0.5
-_load_failure_state: dict[str, Any] = {"key": None, "last_alert": 0.0, "failures": 0, "alert_sent": False}
-_last_successful_load: dict[str, Any] = {"tab_name": None, "header_map": None, "records": None}
+_load_failure_state: dict[str, Any] = {
+    "key": None,
+    "last_alert": 0.0,
+    "failures": 0,
+    "alert_sent": False,
+}
+_last_successful_load: dict[str, Any] = {
+    "tab_name": None,
+    "header_map": None,
+    "records": None,
+}
 _next_sheet_load_after_utc: dt.datetime | None = None
 _PROCESS_LOCK = asyncio.Lock()
 _REQUIRED_COLUMNS: tuple[str, ...] = (
@@ -114,7 +123,9 @@ def _replace_cached_record(
     replaced = False
     for record in records:
         if record.row_number == row_number:
-            updated.append(_ResetReminderRecord(row_number=row_number, reminder=reminder))
+            updated.append(
+                _ResetReminderRecord(row_number=row_number, reminder=reminder)
+            )
             replaced = True
         else:
             updated.append(record)
@@ -228,7 +239,9 @@ def _resolve_header_map(header: list[Any]) -> dict[str, int]:
     return indices
 
 
-async def _load_reset_reminder_records(*, active_only: bool) -> tuple[str, dict[str, int], list[_ResetReminderRecord]]:
+async def _load_reset_reminder_records(
+    *, active_only: bool
+) -> tuple[str, dict[str, int], list[_ResetReminderRecord]]:
     stage = "config_load"
     started = time.monotonic()
     tab_name = "unknown"
@@ -236,7 +249,10 @@ async def _load_reset_reminder_records(*, active_only: bool) -> tuple[str, dict[
         tab_name = await _tab_name()
         sheet_id = _sheet_id()
         stage = "sheet_fetch"
-        log.info("reset reminder sheet load started", extra={"tab": tab_name, "active_only": active_only})
+        log.info(
+            "reset reminder sheet load started",
+            extra={"tab": tab_name, "active_only": active_only},
+        )
         matrix = await afetch_values(sheet_id, tab_name)
         if not matrix:
             return tab_name, {}, []
@@ -266,7 +282,9 @@ async def _load_reset_reminder_records(*, active_only: bool) -> tuple[str, dict[
                 reset_id=_cell(row, header_map["reset_id"]),
                 label=_cell(row, header_map["label"]),
                 status=status,
-                reference_date_utc=_parse_dt(_cell(row, header_map["reference_date_utc"])),
+                reference_date_utc=_parse_dt(
+                    _cell(row, header_map["reference_date_utc"])
+                ),
                 cycle_days=cycle_days,
                 lead_minutes=lead_minutes,
                 role_id=role_id,
@@ -277,12 +295,20 @@ async def _load_reset_reminder_records(*, active_only: bool) -> tuple[str, dict[
                 embed_footer=_cell(row, header_map["embed_footer"]),
                 button_label_opt_in=_cell(row, header_map["button_label_opt_in"]),
                 button_label_opt_out=_cell(row, header_map["button_label_opt_out"]),
-                last_sent_for_reset_utc=_parse_dt_optional(_cell(row, header_map["last_sent_for_reset_utc"])),
-                next_scheduled_post_utc=_parse_dt_optional(_cell(row, header_map["next_scheduled_post_utc"])),
-                last_message_id=_parse_optional_int(_cell(row, header_map["last_message_id"])),
+                last_sent_for_reset_utc=_parse_dt_optional(
+                    _cell(row, header_map["last_sent_for_reset_utc"])
+                ),
+                next_scheduled_post_utc=_parse_dt_optional(
+                    _cell(row, header_map["next_scheduled_post_utc"])
+                ),
+                last_message_id=_parse_optional_int(
+                    _cell(row, header_map["last_message_id"])
+                ),
                 emoji_name_or_id=_cell(row, header_map["emojinameorid"]),
             )
-            records.append(_ResetReminderRecord(row_number=row_number, reminder=reminder))
+            records.append(
+                _ResetReminderRecord(row_number=row_number, reminder=reminder)
+            )
         except Exception as exc:
             reason = type(exc).__name__
             invalid_rows.append(
@@ -292,10 +318,17 @@ async def _load_reset_reminder_records(*, active_only: bool) -> tuple[str, dict[
                     "reason": reason,
                 }
             )
-            log.exception("invalid reset reminder row skipped", extra={"tab": tab_name, "row_number": row_number})
+            log.exception(
+                "invalid reset reminder row skipped",
+                extra={"tab": tab_name, "row_number": row_number},
+            )
             continue
 
-    valid_active_count = len(records) if active_only else sum(1 for r in records if r.reminder.status.lower() == "active")
+    valid_active_count = (
+        len(records)
+        if active_only
+        else sum(1 for r in records if r.reminder.status.lower() == "active")
+    )
     log.info(
         "reset reminder rows loaded",
         extra={
@@ -319,12 +352,16 @@ async def _load_reset_reminder_records(*, active_only: bool) -> tuple[str, dict[
                     f"⚠️ Reset reminders — invalid active rows skipped • tab={tab_name} • count={len(invalid_rows)} • {detail}"
                 )
             except Exception:
-                log.warning("failed to send reset reminder invalid-row ops alert", exc_info=True)
+                log.warning(
+                    "failed to send reset reminder invalid-row ops alert", exc_info=True
+                )
 
     return tab_name, header_map, records
 
 
-def _next_reset_description(base_description: str, reset_time_utc: dt.datetime | None) -> str:
+def _next_reset_description(
+    base_description: str, reset_time_utc: dt.datetime | None
+) -> str:
     if reset_time_utc is None:
         return base_description
     unix_seconds = int(reset_time_utc.astimezone(dt.timezone.utc).timestamp())
@@ -338,7 +375,9 @@ def _reset_reminder_footer(
     reset_time_utc: dt.datetime,
     cycle_days: int,
 ) -> str:
-    following_cycle_reset_time = reset_time_utc.astimezone(dt.timezone.utc) + dt.timedelta(days=cycle_days)
+    following_cycle_reset_time = reset_time_utc.astimezone(
+        dt.timezone.utc
+    ) + dt.timedelta(days=cycle_days)
     following_cycle_text = (
         "Following cycle reset: "
         f"{following_cycle_reset_time.strftime('%Y-%m-%d %H:%M UTC')}"
@@ -354,7 +393,9 @@ def _custom_emoji_id(value: str) -> int | None:
     return int(match.group(2))
 
 
-def _resolve_custom_emoji(target: discord.abc.Messageable | None, value: str | None) -> discord.Emoji | None:
+def _resolve_custom_emoji(
+    target: discord.abc.Messageable | None, value: str | None
+) -> discord.Emoji | None:
     text = str(value or "").strip()
     if not text:
         return None
@@ -387,11 +428,15 @@ def _is_direct_image_url(value: str) -> bool:
 
 
 def _reset_image_filename(reminder: ResetReminder, extension: str) -> str:
-    safe_reset_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", reminder.reset_id or "reset_reminder").strip("._")
+    safe_reset_id = re.sub(
+        r"[^A-Za-z0-9_.-]+", "_", reminder.reset_id or "reset_reminder"
+    ).strip("._")
     return f"{safe_reset_id or 'reset_reminder'}_icon.{extension}"
 
 
-async def _download_image_url_to_file(url: str, *, reminder: ResetReminder) -> discord.File | None:
+async def _download_image_url_to_file(
+    url: str, *, reminder: ResetReminder
+) -> discord.File | None:
     timeout = aiohttp.ClientTimeout(total=_RESET_IMAGE_DOWNLOAD_TIMEOUT_SEC)
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -399,16 +444,29 @@ async def _download_image_url_to_file(url: str, *, reminder: ResetReminder) -> d
                 if response.status < 200 or response.status >= 300:
                     log.warning(
                         "reset reminder image URL download failed",
-                        extra={"reset_id": reminder.reset_id, "image_value": url, "status": response.status},
+                        extra={
+                            "reset_id": reminder.reset_id,
+                            "image_value": url,
+                            "status": response.status,
+                        },
                     )
                     return None
 
-                content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+                content_type = (
+                    str(response.headers.get("Content-Type") or "")
+                    .split(";", 1)[0]
+                    .strip()
+                    .lower()
+                )
                 extension = _SUPPORTED_IMAGE_CONTENT_TYPES.get(content_type)
                 if extension is None:
                     log.warning(
                         "reset reminder image URL rejected; non-image or unsupported content type",
-                        extra={"reset_id": reminder.reset_id, "image_value": url, "content_type": content_type},
+                        extra={
+                            "reset_id": reminder.reset_id,
+                            "image_value": url,
+                            "content_type": content_type,
+                        },
                     )
                     return None
 
@@ -419,7 +477,9 @@ async def _download_image_url_to_file(url: str, *, reminder: ResetReminder) -> d
                         extra={"reset_id": reminder.reset_id, "image_value": url},
                     )
                     return None
-                return discord.File(io.BytesIO(raw), filename=_reset_image_filename(reminder, extension))
+                return discord.File(
+                    io.BytesIO(raw), filename=_reset_image_filename(reminder, extension)
+                )
     except Exception:
         log.warning(
             "reset reminder image URL download failed",
@@ -466,7 +526,9 @@ async def _reset_image_to_file(
         return None
 
     extension = "gif" if bool(getattr(emoji, "animated", False)) else "png"
-    return discord.File(io.BytesIO(raw), filename=_reset_image_filename(reminder, extension))
+    return discord.File(
+        io.BytesIO(raw), filename=_reset_image_filename(reminder, extension)
+    )
 
 
 def _utc_now(now: dt.datetime | None = None) -> dt.datetime:
@@ -495,11 +557,15 @@ def _next_reminder_from_anchor(
     return first_reminder_time + cycles_ahead * cycle
 
 
-def _reset_time_for_scheduled_post(reminder_time_utc: dt.datetime, lead_minutes: int) -> dt.datetime:
+def _reset_time_for_scheduled_post(
+    reminder_time_utc: dt.datetime, lead_minutes: int
+) -> dt.datetime:
     return reminder_time_utc + dt.timedelta(minutes=lead_minutes)
 
 
-def _following_reminder_time(reminder_time_utc: dt.datetime, cycle_days: int) -> dt.datetime:
+def _following_reminder_time(
+    reminder_time_utc: dt.datetime, cycle_days: int
+) -> dt.datetime:
     return reminder_time_utc + dt.timedelta(days=cycle_days)
 
 
@@ -518,12 +584,16 @@ def _advance_reminder_until_reset_future(
 
 async def register_persistent_reset_views(bot: commands.Bot) -> None:
     if not _is_feature_enabled():
-        log.info("reset reminders disabled via feature toggle; skipping persistent view registration")
+        log.info(
+            "reset reminders disabled via feature toggle; skipping persistent view registration"
+        )
         return
     try:
         _, _, records = await _load_reset_reminder_records(active_only=True)
     except Exception:
-        log.exception("failed to load reset reminders for persistent views; skipping reset reminder views")
+        log.exception(
+            "failed to load reset reminders for persistent views; skipping reset reminder views"
+        )
         return
     for record in records:
         reminder = record.reminder
@@ -555,7 +625,9 @@ async def _record_load_failure(exc: Exception) -> None:
     now = time.monotonic()
     previous_key = state.get("key")
     state["key"] = key
-    state["failures"] = (int(state.get("failures") or 0) + 1) if previous_key == key else 1
+    state["failures"] = (
+        (int(state.get("failures") or 0) + 1) if previous_key == key else 1
+    )
 
     stage = getattr(exc, "reset_reminder_stage", "unknown")
     tab = getattr(exc, "reset_reminder_tab", "unknown")
@@ -566,24 +638,35 @@ async def _record_load_failure(exc: Exception) -> None:
         "tab": tab,
         "operation": stage,
         "timeout_type": type(exc).__name__ if isinstance(exc, TimeoutError) else "",
-        "elapsed_s": round(float(elapsed), 3) if isinstance(elapsed, (int, float)) else None,
+        "elapsed_s": (
+            round(float(elapsed), 3) if isinstance(elapsed, (int, float)) else None
+        ),
         "failure_count": state["failures"],
         "exception_type": type(exc).__name__,
         "exception_message": str(exc),
     }
     if previous_key != key or int(state["failures"]) == 1:
-        log.error("failed to load reset reminders; scheduler tick skipped", extra=log_extra, exc_info=(type(exc), exc, exc.__traceback__))
+        log.error(
+            "failed to load reset reminders; scheduler tick skipped",
+            extra=log_extra,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
     else:
         log.info("repeated reset reminder load failure suppressed", extra=log_extra)
 
     last_alert = float(state.get("last_alert") or 0.0)
     should_send = int(state["failures"]) >= _LOAD_FAILURE_ALERT_THRESHOLD and (
-        not bool(state.get("alert_sent")) or previous_key != key or now - last_alert >= _LOAD_FAILURE_ALERT_COOLDOWN_SEC
+        not bool(state.get("alert_sent"))
+        or previous_key != key
+        or now - last_alert >= _LOAD_FAILURE_ALERT_COOLDOWN_SEC
     )
     if should_send:
         state["last_alert"] = now
         state["alert_sent"] = True
-        log.warning("reset reminder Discord warning sent", extra={"consecutive_failures": state["failures"]})
+        log.warning(
+            "reset reminder Discord warning sent",
+            extra={"consecutive_failures": state["failures"]},
+        )
         await _send_ops_log(
             "⚠️ Reset reminders failed to load after repeated ticks; scheduler tick skipped. "
             f"See app logs. error={type(exc).__name__} consecutive_failures={state['failures']}"
@@ -591,7 +674,10 @@ async def _record_load_failure(exc: Exception) -> None:
     else:
         log.info(
             "reset reminder Discord warning suppressed",
-            extra={"consecutive_failures": state["failures"], "threshold": _LOAD_FAILURE_ALERT_THRESHOLD},
+            extra={
+                "consecutive_failures": state["failures"],
+                "threshold": _LOAD_FAILURE_ALERT_THRESHOLD,
+            },
         )
 
 
@@ -599,14 +685,26 @@ async def _record_load_success() -> None:
     failures = int(_load_failure_state.get("failures") or 0)
     alert_sent = bool(_load_failure_state.get("alert_sent"))
     if failures > 0 and alert_sent:
-        log.info("reset reminder recovery message sent", extra={"consecutive_failures": failures})
-        await _send_ops_log(f"✅ Reset reminders loaded again after {failures} failed tick(s).")
+        log.info(
+            "reset reminder recovery message sent",
+            extra={"consecutive_failures": failures},
+        )
+        await _send_ops_log(
+            f"✅ Reset reminders loaded again after {failures} failed tick(s)."
+        )
     elif failures > 0:
-        log.info("reset reminder recovery message suppressed", extra={"consecutive_failures": failures})
-    _load_failure_state.update({"key": None, "last_alert": 0.0, "failures": 0, "alert_sent": False})
+        log.info(
+            "reset reminder recovery message suppressed",
+            extra={"consecutive_failures": failures},
+        )
+    _load_failure_state.update(
+        {"key": None, "last_alert": 0.0, "failures": 0, "alert_sent": False}
+    )
 
 
-async def _resolve_target_channel(bot: commands.Bot, reminder: ResetReminder) -> discord.abc.Messageable | None:
+async def _resolve_target_channel(
+    bot: commands.Bot, reminder: ResetReminder
+) -> discord.abc.Messageable | None:
     base_channel = bot.get_channel(reminder.channel_id)
     if base_channel is None:
         try:
@@ -614,7 +712,10 @@ async def _resolve_target_channel(bot: commands.Bot, reminder: ResetReminder) ->
         except Exception as exc:
             log.exception(
                 "reset reminder target channel fetch failed",
-                extra={"reset_id": reminder.reset_id, "channel_id": reminder.channel_id},
+                extra={
+                    "reset_id": reminder.reset_id,
+                    "channel_id": reminder.channel_id,
+                },
             )
             await _send_ops_log(
                 "⚠️ Reset reminder target fetch failed "
@@ -646,7 +747,11 @@ async def _resolve_target_channel(bot: commands.Bot, reminder: ResetReminder) ->
             return thread
         log.warning(
             "reset reminder target thread is not messageable",
-            extra={"reset_id": reminder.reset_id, "channel_id": reminder.channel_id, "thread_id": reminder.thread_id},
+            extra={
+                "reset_id": reminder.reset_id,
+                "channel_id": reminder.channel_id,
+                "thread_id": reminder.thread_id,
+            },
         )
         await _send_ops_log(
             "⚠️ Reset reminder thread is not messageable "
@@ -719,12 +824,16 @@ async def _update_row_after_send(
     )
 
 
-async def _load_reset_reminder_records_resilient(*, active_only: bool) -> tuple[str, dict[str, int], list[_ResetReminderRecord], bool]:
+async def _load_reset_reminder_records_resilient(
+    *, active_only: bool
+) -> tuple[str, dict[str, int], list[_ResetReminderRecord], bool]:
     last_exc: Exception | None = None
     for attempt in range(1, _LOAD_RETRY_ATTEMPTS + 1):
         started = time.monotonic()
         try:
-            tab_name, header_map, records = await _load_reset_reminder_records(active_only=active_only)
+            tab_name, header_map, records = await _load_reset_reminder_records(
+                active_only=active_only
+            )
         except TimeoutError as exc:
             last_exc = exc
             log.warning(
@@ -742,10 +851,15 @@ async def _load_reset_reminder_records_resilient(*, active_only: bool) -> tuple[
             break
         except Exception:
             raise
-        _last_successful_load.update({"tab_name": tab_name, "header_map": header_map, "records": records})
+        _last_successful_load.update(
+            {"tab_name": tab_name, "header_map": header_map, "records": records}
+        )
         log.info(
             "reset reminder sheet load succeeded",
-            extra={"attempt": attempt, "load_duration_ms": round((time.monotonic() - started) * 1000, 1)},
+            extra={
+                "attempt": attempt,
+                "load_duration_ms": round((time.monotonic() - started) * 1000, 1),
+            },
         )
         return tab_name, header_map, records, False
 
@@ -772,10 +886,14 @@ async def _load_reset_reminder_records_resilient(*, active_only: bool) -> tuple[
     raise RuntimeError("reset reminder sheet load failed")
 
 
-async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None = None) -> None:
+async def process_reset_reminders(
+    bot: commands.Bot, *, now: dt.datetime | None = None
+) -> None:
     global _next_sheet_load_after_utc
     if not _is_feature_enabled():
-        log.debug("reset reminders disabled via feature toggle; skipping scheduler tick")
+        log.debug(
+            "reset reminders disabled via feature toggle; skipping scheduler tick"
+        )
         return
     if _PROCESS_LOCK.locked():
         log.info("reset reminder processing already running; skipping overlapping tick")
@@ -818,20 +936,27 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
             )
         else:
             try:
-                tab_name, header_map, records, used_cached_rows = await _load_reset_reminder_records_resilient(active_only=True)
+                tab_name, header_map, records, used_cached_rows = (
+                    await _load_reset_reminder_records_resilient(active_only=True)
+                )
             except Exception as exc:
                 await _record_load_failure(exc)
                 return
             _set_next_sheet_load_after_from_records(records, now_utc)
 
         if used_cached_rows and not used_due_cache:
-            synthetic = TimeoutError("reset reminder sheet load failed; cached rows used")
+            synthetic = TimeoutError(
+                "reset reminder sheet load failed; cached rows used"
+            )
             setattr(synthetic, "reset_reminder_stage", "sheet_fetch")
             setattr(synthetic, "reset_reminder_tab", tab_name)
             await _record_load_failure(synthetic)
             log.info(
                 "reset reminder scheduler continuing with cached rows",
-                extra={"cached_rows": len(records), "consecutive_failed_ticks": _load_failure_state.get("failures")},
+                extra={
+                    "cached_rows": len(records),
+                    "consecutive_failed_ticks": _load_failure_state.get("failures"),
+                },
             )
         elif not used_due_cache:
             await _record_load_success()
@@ -843,13 +968,20 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
             reminder = record.reminder
 
             if reminder.cycle_days <= 0:
-                log.warning("reset reminder skipped; cycle_days must be > 0", extra={"reset_id": reminder.reset_id})
+                log.warning(
+                    "reset reminder skipped; cycle_days must be > 0",
+                    extra={"reset_id": reminder.reset_id},
+                )
                 continue
 
             if reminder.role_id <= 0 or reminder.channel_id <= 0:
                 log.warning(
                     "reset reminder skipped; missing role/channel",
-                    extra={"reset_id": reminder.reset_id, "role_id": reminder.role_id, "channel_id": reminder.channel_id},
+                    extra={
+                        "reset_id": reminder.reset_id,
+                        "role_id": reminder.role_id,
+                        "channel_id": reminder.channel_id,
+                    },
                 )
                 continue
 
@@ -882,9 +1014,14 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                     continue
 
                 reminder_time = reminder.next_scheduled_post_utc
-                reset_time = _reset_time_for_scheduled_post(reminder_time, reminder.lead_minutes)
+                reset_time = _reset_time_for_scheduled_post(
+                    reminder_time, reminder.lead_minutes
+                )
             except Exception:
-                log.exception("reset reminder skipped; failed to compute cycle", extra={"reset_id": reminder.reset_id})
+                log.exception(
+                    "reset reminder skipped; failed to compute cycle",
+                    extra={"reset_id": reminder.reset_id},
+                )
                 continue
 
             if now_utc < reminder_time:
@@ -928,11 +1065,16 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                 except Exception:
                     log.exception(
                         "reset reminder next scheduled update failed",
-                        extra={"reset_id": reminder.reset_id, "row_number": record.row_number},
+                        extra={
+                            "reset_id": reminder.reset_id,
+                            "row_number": record.row_number,
+                        },
                     )
                 continue
 
-            following_reminder_time = _following_reminder_time(reminder_time, reminder.cycle_days)
+            following_reminder_time = _following_reminder_time(
+                reminder_time, reminder.cycle_days
+            )
             if reminder.last_sent_for_reset_utc == reset_time:
                 if reminder.next_scheduled_post_utc != following_reminder_time:
                     try:
@@ -955,7 +1097,10 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                     except Exception:
                         log.exception(
                             "reset reminder next scheduled update failed",
-                            extra={"reset_id": reminder.reset_id, "row_number": record.row_number},
+                            extra={
+                                "reset_id": reminder.reset_id,
+                                "row_number": record.row_number,
+                            },
                         )
                 continue
 
@@ -982,12 +1127,17 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                 except Exception:
                     log.debug(
                         "failed to delete old reset reminder",
-                        extra={"reset_id": reminder.reset_id, "last_message_id": reminder.last_message_id},
+                        extra={
+                            "reset_id": reminder.reset_id,
+                            "last_message_id": reminder.last_message_id,
+                        },
                     )
 
             embed = discord.Embed(
                 title=reminder.embed_title or reminder.label,
-                description=_next_reset_description(reminder.embed_description, reset_time),
+                description=_next_reset_description(
+                    reminder.embed_description, reset_time
+                ),
                 color=get_embed_colour("community"),
             )
             embed.set_footer(
@@ -1036,7 +1186,9 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                 )
                 continue
 
-            following_reminder_time = _following_reminder_time(reminder_time, reminder.cycle_days)
+            following_reminder_time = _following_reminder_time(
+                reminder_time, reminder.cycle_days
+            )
             records = _record_reset_reminder_discord_send_in_memory(
                 records,
                 record,
@@ -1073,20 +1225,62 @@ async def process_reset_reminders(bot: commands.Bot, *, now: dt.datetime | None 
                 )
 
 
-def schedule_reset_reminder_jobs(runtime: "Runtime") -> None:
-    if not _is_feature_enabled():
-        log.info("reset reminders disabled via feature toggle; scheduler job not registered")
-        return
-    if any(getattr(job, "name", None) == "reset_reminders" for job in runtime.scheduler.jobs):
-        log.info("reset reminder scheduler already registered; skipping duplicate job")
-        return
+def _earliest_cached_due() -> dt.datetime | None:
+    records = _last_successful_load.get("records")
+    if not isinstance(records, list):
+        return None
+    values = [
+        record.reminder.next_scheduled_post_utc
+        for record in records
+        if record.reminder.next_scheduled_post_utc is not None
+    ]
+    return min(values) if values else None
 
-    job = runtime.scheduler.every(minutes=1.0, tag="community", name="reset_reminders")
+
+async def reconcile_reset_reminder_jobs(runtime: "Runtime") -> None:
+    """Load active rows, fill missing due values, and arm the earliest due job."""
+    global _next_sheet_load_after_utc
+    _next_sheet_load_after_utc = None
+    await process_reset_reminders(runtime.bot)
+    due = _earliest_cached_due()
+    job = runtime.scheduler.at(
+        due,
+        tag="community",
+        component="community",
+        name="reset_reminders",
+        cadence_label="next reset reminder",
+    )
 
     async def _runner() -> None:
         await process_reset_reminders(runtime.bot)
+        job.reschedule(_earliest_cached_due())
 
     job.do(_runner)
+
+
+def schedule_reset_reminder_jobs(runtime: "Runtime") -> None:
+    if not _is_feature_enabled():
+        log.info(
+            "reset reminders disabled via feature toggle; scheduler job not registered"
+        )
+        return
+    if any(
+        getattr(job, "name", None) == "reset_reminders_reconcile"
+        for job in runtime.scheduler.jobs
+    ):
+        log.info("reset reminder scheduler already registered; skipping duplicate job")
+        return
+    reconcile = runtime.scheduler.every(
+        hours=24,
+        tag="community",
+        component="community",
+        name="reset_reminders_reconcile",
+    )
+    reconcile.cadence_label = "daily reconcile"
+    reconcile.do(lambda: reconcile_reset_reminder_jobs(runtime))
+    runtime.scheduler.spawn(
+        reconcile_reset_reminder_jobs(runtime), name="reset_reminders_initial_reconcile"
+    )
 
 
 __all__ = [
@@ -1095,6 +1289,7 @@ __all__ = [
     "process_reset_reminders",
     "register_persistent_reset_views",
     "schedule_reset_reminder_jobs",
+    "reconcile_reset_reminder_jobs",
     "_load_failure_state",
     "_last_successful_load",
 ]

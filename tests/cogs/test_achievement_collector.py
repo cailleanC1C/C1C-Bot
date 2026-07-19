@@ -172,7 +172,7 @@ def test_preview_publish_rank_routing_embeds_allowed_mentions_and_cache(monkeypa
     monkeypatch.setenv("RAID_ROLE_ID", str(raid.id))
     current=Channel(); publish_ch=Channel(); bot=SimpleNamespace(get_channel=lambda cid: publish_ch, fetch_channel=None, wait_until_ready=lambda: None, is_closed=lambda: True)
     cog = AchievementCollectorCog(bot)
-    cog._scheduler.start = lambda: None
+    assert not hasattr(cog, "_scheduler")
     async def fake_config(): return cfg(channel_id=555, default_limit=5, max_limit=5, min_count=1)
     builds = {"n":0}
     async def fake_build(g, c):

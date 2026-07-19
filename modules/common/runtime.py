@@ -231,9 +231,16 @@ async def _startup_preload(bot: commands.Bot | None = None) -> StartupPreloadRep
             quota = is_sheets_rate_limited_error(exc)
             log.exception(
                 "startup preload refresh failed",
-                extra={"bucket": name, "quota_exhausted": quota, "exception_type": type(exc).__name__, "exception_message": str(exc)},
+                extra={
+                    "bucket": name,
+                    "quota_exhausted": quota,
+                    "exception_type": type(exc).__name__,
+                    "exception_message": str(exc),
+                },
             )
-            await send_log_message(f"❌ Startup refresh failed for {name}: {'quota_exhausted' if quota else exc}")
+            await send_log_message(
+                f"❌ Startup refresh failed for {name}: {'quota_exhausted' if quota else exc}"
+            )
             if quota:
                 break
             continue
@@ -871,12 +878,77 @@ class _CronJob:
         return self._scheduler.spawn(runner(), name=task_name)
 
 
+class _DueJob:
+    """A centrally visible job whose next run is supplied by its owner."""
+
+    def __init__(
+        self,
+        scheduler: "Scheduler",
+        *,
+        next_run: datetime | None,
+        tag: str | None,
+        name: str | None,
+        component: str | None,
+        cadence_label: str,
+    ) -> None:
+        self._scheduler = scheduler
+        self.tag = tag
+        self.name = name
+        self.component = component or "default"
+        self.next_run = next_run
+        self.cadence_label = cadence_label
+        self._changed = asyncio.Event()
+
+    @property
+    def schedule_label(self) -> str:
+        return self.cadence_label
+
+    def reschedule(self, next_run: datetime | None) -> None:
+        if next_run is not None and next_run.tzinfo is None:
+            next_run = next_run.replace(tzinfo=timezone.utc)
+        self.next_run = next_run
+        self._changed.set()
+
+    async def _wait(self) -> None:
+        while True:
+            self._changed.clear()
+            if self.next_run is None:
+                await self._changed.wait()
+                continue
+            delay = (self.next_run - datetime.now(timezone.utc)).total_seconds()
+            if delay <= 0:
+                return
+            try:
+                await asyncio.wait_for(self._changed.wait(), timeout=delay)
+            except asyncio.TimeoutError:
+                return
+
+    def do(self, callback: Callable[[], Awaitable[None]]) -> asyncio.Task:
+        async def runner() -> None:
+            while True:
+                await self._wait()
+                # Clear before invoking the callback. Owners explicitly calculate
+                # the following occurrence, so stale due times cannot busy-loop.
+                self.next_run = None
+                try:
+                    await callback()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception(
+                        "due-time job error",
+                        extra={"job_name": self.name, "tag": self.tag},
+                    )
+
+        return self._scheduler.spawn(runner(), name=self.name or "due_time_job")
+
+
 class Scheduler:
     """Very small asyncio task supervisor for background jobs."""
 
     def __init__(self) -> None:
         self._tasks: list[asyncio.Task] = []
-        self._jobs: list[_RecurringJob] = []
+        self._jobs: list[Any] = []
 
     def spawn(self, coro: Awaitable, *, name: Optional[str] = None) -> asyncio.Task:
         if name is not None:
@@ -939,8 +1011,34 @@ class Scheduler:
         self._jobs.append(job)
         return job
 
+    def at(
+        self,
+        next_run: datetime | None,
+        *,
+        tag: str | None = None,
+        name: str | None = None,
+        component: str | None = None,
+        cadence_label: str = "scheduled",
+    ) -> _DueJob:
+        if name is not None:
+            for existing in self._jobs:
+                if existing.name == name:
+                    if isinstance(existing, _DueJob):
+                        existing.reschedule(next_run)
+                    return existing
+        job = _DueJob(
+            self,
+            next_run=next_run,
+            tag=tag,
+            name=name,
+            component=component,
+            cadence_label=cadence_label,
+        )
+        self._jobs.append(job)
+        return job
+
     @property
-    def jobs(self) -> list[_RecurringJob]:
+    def jobs(self) -> list[Any]:
         return list(self._jobs)
 
     async def shutdown(self) -> None:
@@ -1519,7 +1617,11 @@ class Runtime:
                 self.startup_diag_mark(login_reached=login_reached)
 
                 should_retry, detail = _is_retryable_discord_start_failure(exc)
-                retry_allowed = should_retry and not login_reached and startup_attempt < max_attempts
+                retry_allowed = (
+                    should_retry
+                    and not login_reached
+                    and startup_attempt < max_attempts
+                )
 
                 _startup_phase_log(
                     "discord login",
@@ -1691,19 +1793,8 @@ class Runtime:
         )
         cleanup_logger.info(registration_summary)
 
-        async def registration_notice_runner() -> None:
-            try:
-                await send_log_message(f"🧹 {registration_summary}")
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                cleanup_logger.exception(
-                    "cleanup watcher registration notice failed; recurring cleanup remains scheduled"
-                )
-
-        self.scheduler.spawn(
-            registration_notice_runner(), name="cleanup_registration_notice"
-        )
+        # Registration is included in the final Scheduler startup message;
+        # avoid a routine Discord notice while startup is still in progress.
         successes.append(
             (
                 SimpleNamespace(
@@ -1765,7 +1856,9 @@ class Runtime:
         from modules.housekeeping import keepalive as housekeeping_keepalive
         from modules.housekeeping import mirralith_overview as housekeeping_mirralith
         from modules.housekeeping import c1c_ad as housekeeping_c1c_ad
-        from modules.housekeeping import guides_help_index as housekeeping_guides_help_index
+        from modules.housekeeping import (
+            guides_help_index as housekeeping_guides_help_index,
+        )
         from modules.recruitment import clan_ads as recruitment_clan_ads
         from modules.common import feature_flags
         from shared.sheets import recruitment as recruitment_sheets
@@ -1775,6 +1868,10 @@ class Runtime:
         from modules.community.shard_tracker.scheduler import schedule_shard_jobs
         from modules.community.reset_reminders.scheduler import (
             schedule_reset_reminder_jobs,
+        )
+        from modules.housekeeping.achievement_collector import (
+            parse_schedule,
+            resolve_config,
         )
 
         toggles = shared_config.features
@@ -1796,6 +1893,47 @@ class Runtime:
                 cadence_label=cadence,
             )
             successes.append((spec, job))
+
+        # Achievement Collector commands live in their cog, while scheduling is
+        # owned here so operational views have one complete source of truth.
+        collector_cog = self.bot.get_cog("AchievementCollectorCog")
+        if collector_cog is not None:
+            try:
+                collector_config = await resolve_config()
+                collector_next = parse_schedule(
+                    collector_config.schedule_rrule,
+                    collector_config.schedule_time_utc,
+                )
+            except Exception:
+                log.exception("achievement collector schedule configuration failed")
+            else:
+                collector_job = self.scheduler.at(
+                    collector_next,
+                    tag="housekeeping",
+                    component="housekeeping",
+                    name="achievement_collector",
+                    cadence_label="scheduled",
+                )
+
+                async def achievement_collector_runner() -> None:
+                    try:
+                        config = await resolve_config()
+                        await collector_cog.publish_scheduled(config)
+                    finally:
+                        try:
+                            config = await resolve_config()
+                            collector_job.reschedule(
+                                parse_schedule(
+                                    config.schedule_rrule, config.schedule_time_utc
+                                )
+                            )
+                        except Exception:
+                            log.exception("achievement collector reschedule failed")
+                            collector_job.reschedule(
+                                datetime.now(timezone.utc) + timedelta(hours=1)
+                            )
+
+                collector_job.do(achievement_collector_runner)
 
         await self._register_cleanup_scheduler(
             toggles=toggles,
@@ -1849,7 +1987,9 @@ class Runtime:
                     exc=exc,
                 )
             else:
-                log.exception("C1C ad refresh interval lookup failed; skipping schedule")
+                log.exception(
+                    "C1C ad refresh interval lookup failed; skipping schedule"
+                )
 
         if c1c_refresh_days and c1c_refresh_days > 0:
             c1c_ad_job = self.scheduler.every(
@@ -1933,8 +2073,10 @@ class Runtime:
         if toggles.housekeeping_enabled:
             keepalive_logger = logging.getLogger("c1c.housekeeping.keepalive")
             try:
-                keepalive_config = await housekeeping_keepalive.resolve_keepalive_config_async(
-                    keepalive_logger
+                keepalive_config = (
+                    await housekeeping_keepalive.resolve_keepalive_config_async(
+                        keepalive_logger
+                    )
                 )
             except Exception as exc:
                 keepalive_config = None

@@ -20,7 +20,6 @@ from modules.housekeeping import guides_help_index
 from shared.config import get_who_we_are_channel_id
 from shared.sheets import recruitment as recruitment_sheet
 
-
 log = logging.getLogger(__name__)
 
 CACHE_REFRESH_JOBS = {
@@ -38,8 +37,18 @@ HOUSEKEEPING_JOBS = {
     "cleanup_watcher",
     "housekeeping_keepalive",
     "guides_help_index_refresh",
+    "achievement_collector",
 }
-GROUP_ORDER = ("Cache Refresh", "recruitment", "housekeeping", "other")
+COMMUNITY_JOBS = {
+    "fusion_grouped_reminders",
+    "fusion_announcement_refresh",
+    "fusion_role_cleanup",
+    "fusion_daily_reconcile",
+    "reset_reminders",
+    "reset_reminders_reconcile",
+    "shard_weekly_reminders",
+}
+GROUP_ORDER = ("Cache Refresh", "Recruitment", "Housekeeping", "Community", "Other")
 
 
 def _format_interval_label(delta: timedelta) -> str:
@@ -59,10 +68,12 @@ def _group_for_job(job_name: str) -> str:
     if job_name in CACHE_REFRESH_JOBS:
         return "Cache Refresh"
     if job_name in RECRUITMENT_JOBS:
-        return "recruitment"
+        return "Recruitment"
     if job_name in HOUSEKEEPING_JOBS:
-        return "housekeeping"
-    return "other"
+        return "Housekeeping"
+    if job_name in COMMUNITY_JOBS:
+        return "Community"
+    return "Other"
 
 
 def _display_job_name(job_name: str, group_name: str) -> str:
@@ -149,7 +160,13 @@ def _build_scheduler_embeds(runtime, component: str | None) -> list[discord.Embe
             display_name = _display_job_name(job_name, group_name)
             next_label = _format_next_run(getattr(job, "next_run", None))
             interval = getattr(job, "interval", None)
-            cadence = _format_interval_label(interval) if interval else "every ?"
+            cadence = (
+                _format_interval_label(interval)
+                if interval
+                else getattr(job, "cadence_label", None)
+                or getattr(job, "schedule_label", None)
+                or "scheduled"
+            )
             entries.append(
                 [
                     f"• {display_name}",
@@ -167,10 +184,7 @@ def _build_scheduler_embeds(runtime, component: str | None) -> list[discord.Embe
 
     for name, value in fields:
         field_len = len(name) + len(value)
-        if (
-            field_count >= 25
-            or current_len + field_len + reserve > 6000
-        ):
+        if field_count >= 25 or current_len + field_len + reserve > 6000:
             current.set_footer(text=footer_text)
             embeds.append(current)
             current = discord.Embed(title=title, colour=embed_color)
@@ -185,6 +199,7 @@ def _build_scheduler_embeds(runtime, component: str | None) -> list[discord.Embe
         embeds.append(current)
 
     return embeds
+
 
 class AppAdmin(commands.Cog):
     """Lightweight administrative utilities for bot operators."""
@@ -354,7 +369,9 @@ class AppAdmin(commands.Cog):
         help="Show upcoming scheduled jobs. Optionally filter by component.",
     )
     @admin_only()
-    async def next_jobs(self, ctx: commands.Context, component: str | None = None) -> None:
+    async def next_jobs(
+        self, ctx: commands.Context, component: str | None = None
+    ) -> None:
         runtime = runtime_helpers.get_active_runtime()
         if runtime is None:
             await ctx.reply("Scheduler unavailable.", mention_author=False)
@@ -479,7 +496,9 @@ class AppAdmin(commands.Cog):
                 )
 
         try:
-            index_message = await target_channel.send(cluster_role_map.build_index_placeholder())
+            index_message = await target_channel.send(
+                cluster_role_map.build_index_placeholder()
+            )
         except discord.HTTPException as exc:
             reason = str(exc) or "index_send_failed"
             await ctx.reply(
@@ -498,7 +517,9 @@ class AppAdmin(commands.Cog):
                 embeds = cluster_role_map.build_category_embeds(category)
                 fallback_messages = []
                 if not embeds:
-                    fallback_messages = cluster_role_map.build_category_fallback_messages(category)
+                    fallback_messages = (
+                        cluster_role_map.build_category_fallback_messages(category)
+                    )
                 if not embeds and not fallback_messages:
                     continue
                 if embeds:
@@ -546,7 +567,9 @@ class AppAdmin(commands.Cog):
             empty_reason = None
 
         try:
-            final_index = cluster_role_map.build_index_message(jump_entries, empty_reason=empty_reason)
+            final_index = cluster_role_map.build_index_message(
+                jump_entries, empty_reason=empty_reason
+            )
             await index_message.edit(content=final_index)
         except discord.HTTPException as exc:
             reason = str(exc) or "index_edit_failed"
