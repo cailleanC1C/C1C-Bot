@@ -1,4 +1,4 @@
-name: 05-tests
+name: 02-tests
 
 on:
   push:
