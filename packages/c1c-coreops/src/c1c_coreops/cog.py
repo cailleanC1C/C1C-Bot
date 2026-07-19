@@ -286,6 +286,12 @@ def get_feature_toggles() -> Mapping[str, object]:
     return _ensure_config_module().get_feature_toggles()
 
 
+def reload_config() -> None:
+    """Reload configuration from the environment and Sheets."""
+
+    _ensure_config_module().reload_config()
+
+
 def redact_value(key: str, value: object) -> str:
     """Redact sensitive values for display."""
 
@@ -2028,7 +2034,7 @@ class CoreOpsCog(commands.Cog):
 
         start = time.monotonic()
         try:
-            await _ensure_config_module().areload_config()
+            reload_config()
         except Exception as exc:  # pragma: no cover - defensive guard
             msg, extra = sanitize_log(
                 f"{logfmt.LOG_EMOJI['lifecycle']} **CoreOps** — config reload failed",

@@ -76,7 +76,7 @@ class Reload(commands.Cog):
             return
         reboot = any(flag == "--reboot" for flag in flags)
         # Re-parse env + re-apply config invariants at runtime.
-        await cfg.areload_config()
+        cfg.reload_config()
         message = "✅ Configuration reloaded."
         if reboot:
             try:

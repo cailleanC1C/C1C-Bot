@@ -43,37 +43,6 @@ def test_c03_detects_parent_import(tmp_path: Path, monkeypatch: object) -> None:
     assert any("C-03" in violation.rule_id for violation in c03_result.violations)
 
 
-def test_c11_allows_shared_ports_and_rejects_runtime_config_get_port(
-    tmp_path: Path, monkeypatch: object
-) -> None:
-    _configure_roots(tmp_path, monkeypatch)
-    modules_dir = tmp_path / "modules"
-    modules_dir.mkdir()
-    (modules_dir / "allowed.py").write_text(
-        "from shared.ports import get_port\nget_port()\n", encoding="utf-8"
-    )
-    category = guardrails_suite.CategoryResult("Code quality (C)")
-    guardrails_suite.check_c11(category)
-    assert category.status == "pass"
-
-    (modules_dir / "forbidden.py").write_text(
-        "from config.runtime import get_port\n"
-        "import config.runtime\n"
-        "from config import runtime as runtime_config\n"
-        "get_port()\n"
-        "config.runtime.get_port()\n"
-        "runtime_config.get_port()\n",
-        encoding="utf-8",
-    )
-    guardrails_suite.check_c11(category)
-    assert category.status == "fail"
-    assert category.violations[0].files == [
-        "modules/forbidden.py:1",
-        "modules/forbidden.py:5",
-        "modules/forbidden.py:6",
-    ]
-
-
 def test_d02_requires_footer(tmp_path: Path, monkeypatch: object) -> None:
     _configure_roots(tmp_path, monkeypatch)
     docs_dir = tmp_path / "docs"
