@@ -1306,6 +1306,47 @@ class Runtime:
 
         return self.scheduler.spawn(runner(), name=name)
 
+    async def _refresh_feature_toggles(self) -> None:
+        """Refresh the shared toggle snapshot and defer one loud failure alert."""
+
+        from modules.common import feature_flags as features
+
+        try:
+            await features.refresh()
+        except Exception:  # pragma: no cover - refresh is fail-closed defensively
+            log.exception("feature toggle refresh failed")
+        try:
+            shared_config.update_feature_flags_snapshot(features.values())
+        except Exception:
+            log.exception("feature toggle snapshot update failed")
+
+        failure_reason = features.global_failure_reason()
+        if not failure_reason:
+            return
+
+        affected = (
+            "mirralith_overview_enabled (cogs.housekeeping_mirralith)",
+            "member_panel/recruiter_panel (recruitment search and panels)",
+            "clan_profile (cogs.recruitment_clan_profile)",
+            "recruitment_welcome (cogs.recruitment_welcome)",
+            "recruitment_reports (modules.recruitment.reports)",
+            "placement_target_select (modules.placement.target_select)",
+            "feature_reservations/placement_reservations (placement reservations)",
+            "welcome_watcher_enabled/promo_watcher_enabled/resume_command_enabled (onboarding)",
+            "ops_permissions_enabled (modules.ops.permissions_ui)",
+        )
+        alert = (
+            "❌ **Feature toggles unreadable** — feature toggles could not be read; "
+            "feature-gated modules were disabled/skipped for safety "
+            f"• reason={failure_reason}\n• affected={'; '.join(affected)}"
+        )
+        log.error(alert)
+        # The helper waits for Discord readiness; defer it so extension loading
+        # cannot deadlock startup before the ready event is dispatched.
+        asyncio.create_task(
+            self.send_log_message(alert), name="feature_toggle_failure_alert"
+        )
+
     async def load_extensions(self) -> None:
         """Load all feature modules into the shared bot instance."""
 
@@ -1333,17 +1374,8 @@ class Runtime:
         await coreops_cog.setup(self.bot)
         await app_admin.setup(self.bot)
 
+        await self._refresh_feature_toggles()
         from modules.common import feature_flags as features
-
-        try:
-            await features.refresh()
-        except Exception:
-            log.exception("feature toggle refresh failed")
-        else:
-            try:
-                shared_config.update_feature_flags_snapshot(features.values())
-            except Exception:
-                log.exception("feature toggle snapshot update failed")
 
         toggles = shared_config.features
 
