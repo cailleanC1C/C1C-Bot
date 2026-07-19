@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Sequence
 
@@ -48,6 +49,7 @@ class RealmWalkerAuditResult:
 
 
 def _parse_role_id(value: str | None) -> int | None:
+    """Parse one role ID without normalizing away list separators."""
     try:
         role_id = int((value or "").strip())
     except (TypeError, ValueError):
@@ -55,22 +57,27 @@ def _parse_role_id(value: str | None) -> int | None:
     return role_id if role_id > 0 else None
 
 
+def _parse_role_ids(value: str | None) -> tuple[set[int], list[str]]:
+    """Parse role IDs separated by commas or whitespace."""
+    role_ids: set[int] = set()
+    invalid: list[str] = []
+    for item in re.split(r"[,\s]+", value or ""):
+        if not item:
+            continue
+        role_id = _parse_role_id(item)
+        if role_id is None:
+            invalid.append(item)
+        else:
+            role_ids.add(role_id)
+    return role_ids, invalid
+
+
 async def resolve_config() -> tuple[RealmWalkerConfig | None, str | None]:
     """Resolve and validate RealmWalker role IDs from the existing Config tab."""
     access_value = await recruitment.get_config_value_async(ACCESS_ROLE_KEY, None)
     games_value = await recruitment.get_config_value_async(GAME_ROLES_KEY, None)
     access_id = _parse_role_id(access_value)
-    game_ids: set[int] = set()
-    invalid_games: list[str] = []
-    for item in (games_value or "").split(","):
-        item = item.strip()
-        if not item:
-            continue
-        role_id = _parse_role_id(item)
-        if role_id is None:
-            invalid_games.append(item)
-        else:
-            game_ids.add(role_id)
+    game_ids, invalid_games = _parse_role_ids(games_value)
     if access_id is None or not game_ids or invalid_games:
         details = []
         if access_id is None:
