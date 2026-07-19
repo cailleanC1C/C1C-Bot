@@ -73,6 +73,64 @@ _DISCORD_LOGIN_RETRY_MAX_WINDOW_SEC = 1800
 _DISCORD_LOGIN_RETRY_JITTER_RATIO = 0.2
 
 
+async def _refresh_feature_toggles() -> str | None:
+    """Refresh toggles and return the global failure reason, if any."""
+    from modules.common import feature_flags as features
+
+    try:
+        await features.refresh()
+    except Exception as exc:
+        log.exception("feature toggle refresh failed")
+        return f"Feature toggle refresh failed: {exc}"
+
+    failure_reason = features.status("runtime_startup").get("global_failure_reason")
+    if failure_reason:
+        return str(failure_reason)
+    try:
+        shared_config.update_feature_flags_snapshot(features.values())
+    except Exception:
+        log.exception("feature toggle snapshot update failed")
+    return None
+
+
+async def _load_community_extensions(
+    bot: commands.Bot,
+    *,
+    failure_reason: str | None,
+    skipped: list[str],
+) -> None:
+    """Load community extensions unless toggle state is globally unavailable."""
+    if failure_reason:
+        skipped.extend(COMMUNITY_EXTENSIONS)
+        for ext in COMMUNITY_EXTENSIONS:
+            human_log.human(
+                "warn",
+                "feature toggle refresh unavailable; skipping module",
+                feature_module=ext,
+                feature_key="community",
+            )
+        return
+
+    for ext in COMMUNITY_EXTENSIONS:
+        try:
+            await bot.load_extension(ext)
+        except Exception as exc:
+            human_log.human(
+                "warn",
+                "feature module load failed",
+                feature_module=ext,
+                feature_key="community",
+                error=str(exc),
+            )
+            continue
+        human_log.human(
+            "debug",
+            "feature module loaded",
+            feature_module=ext,
+            feature_key="community",
+        )
+
+
 class StartupPhaseError(RuntimeError):
     """Raised when a non-discord startup phase fails."""
 
@@ -1335,25 +1393,20 @@ class Runtime:
 
         from modules.common import feature_flags as features
 
-        try:
-            await features.refresh()
-        except Exception:
-            log.exception("feature toggle refresh failed")
-        else:
-            try:
-                shared_config.update_feature_flags_snapshot(features.values())
-            except Exception:
-                log.exception("feature toggle snapshot update failed")
+        failure_reason = await _refresh_feature_toggles()
+        skipped_for_toggle_failure: list[str] = []
 
         toggles = shared_config.features
 
         await onboarding_pkg.setup(self.bot)
 
-        if toggles.mirralith_overview_enabled:
+        if not failure_reason and toggles.mirralith_overview_enabled:
             await housekeeping_mirralith.setup(self.bot)
             log.info("modules: mirralith_overview enabled")
         else:
             log.info("modules: mirralith_overview disabled")
+            if failure_reason:
+                skipped_for_toggle_failure.append("cogs.housekeeping_mirralith")
 
         await housekeeping_achievements.setup(self.bot)
         log.info("modules: achievements command registered")
@@ -1379,6 +1432,13 @@ class Runtime:
         async def _load_feature_module(
             module_path: str, feature_keys: Sequence[str]
         ) -> None:
+            if failure_reason:
+                skipped_for_toggle_failure.append(module_path)
+                log.warning(
+                    "feature toggle refresh unavailable; skipping module",
+                    extra={"feature_module": module_path},
+                )
+                return
             enabled_keys = [key for key in feature_keys if features.is_enabled(key)]
             if not enabled_keys:
                 extra_info = {
@@ -1466,13 +1526,15 @@ class Runtime:
         await _load_feature_module("cogs.recruitment_member", ("member_panel",))
         await _load_feature_module("cogs.recruitment_recruiter", ("recruiter_panel",))
 
-        if features.is_enabled("clan_profile"):
+        if not failure_reason and features.is_enabled("clan_profile"):
             from cogs import recruitment_clan_profile
 
             await recruitment_clan_profile.setup(self.bot)
             log.info("modules: clan_profile enabled")
         else:
             log.info("modules: clan_profile disabled")
+            if failure_reason:
+                skipped_for_toggle_failure.append("cogs.recruitment_clan_profile")
 
         from cogs import clanrole_management
 
@@ -1499,30 +1561,49 @@ class Runtime:
         )
 
         await onboarding_ops_check.setup(self.bot)
-        if toggles.welcome_watcher_enabled:
+        if not failure_reason and toggles.welcome_watcher_enabled:
             await onboarding_reaction_fallback.setup(self.bot)
             await onboarding_welcome.setup(self.bot)
             log.info("modules: onboarding_welcome enabled")
         else:
             log.info("modules: onboarding_welcome disabled")
+            if failure_reason:
+                skipped_for_toggle_failure.extend(
+                    (
+                        "modules.onboarding.reaction_fallback",
+                        "modules.onboarding.watcher_welcome",
+                    )
+                )
 
-        if toggles.promo_watcher_enabled:
+        if not failure_reason and toggles.promo_watcher_enabled:
             await onboarding_promo.setup(self.bot)
             log.info("modules: onboarding_promo enabled")
         else:
             log.info("modules: onboarding_promo disabled")
+            if failure_reason:
+                skipped_for_toggle_failure.append(
+                    "modules.onboarding.watcher_promo"
+                )
 
-        if toggles.resume_command_enabled:
+        if not failure_reason and toggles.resume_command_enabled:
             await onboarding_cmd_resume.setup(self.bot)  # registers !onb resume
             log.info("modules: onboarding_resume enabled")
         else:
             log.info("modules: onboarding_resume disabled")
+            if failure_reason:
+                skipped_for_toggle_failure.append("modules.onboarding.cmd_resume")
 
-        if toggles.welcome_watcher_enabled or toggles.promo_watcher_enabled:
+        if not failure_reason and (
+            toggles.welcome_watcher_enabled or toggles.promo_watcher_enabled
+        ):
             await onboarding_cmd_finishplacement.setup(self.bot)
             log.info("modules: onboarding_finishplacement enabled")
         else:
             log.info("modules: onboarding_finishplacement disabled")
+            if failure_reason:
+                skipped_for_toggle_failure.append(
+                    "modules.onboarding.cmd_finishplacement"
+                )
 
         await ops_cog.setup(self.bot)
 
@@ -1554,25 +1635,18 @@ class Runtime:
                     feature_key="always_on",
                 )
 
-        for ext in COMMUNITY_EXTENSIONS:
-            try:
-                await self.bot.load_extension(ext)
-            except Exception as exc:
-                human_log.human(
-                    "warn",
-                    "feature module load failed",
-                    feature_module=ext,
-                    feature_key="community",
-                    error=str(exc),
-                )
-                continue
-            else:
-                human_log.human(
-                    "debug",
-                    "feature module loaded",
-                    feature_module=ext,
-                    feature_key="community",
-                )
+        await _load_community_extensions(
+            self.bot,
+            failure_reason=failure_reason,
+            skipped=skipped_for_toggle_failure,
+        )
+
+        if failure_reason:
+            affected = ", ".join(dict.fromkeys(skipped_for_toggle_failure))
+            await self.send_log_message(
+                "⚠️ **Feature toggles unavailable** — gated modules skipped"
+                f"\n• reason={failure_reason}\n• affected={affected}"
+            )
 
         # (Refresh commands now live directly in the CoreOps cog.)
 
