@@ -1274,6 +1274,9 @@ async def reconcile_reset_reminder_jobs(runtime: "Runtime") -> None:
 
 def schedule_reset_reminder_jobs(runtime: "Runtime") -> None:
     if not _is_feature_enabled():
+        record_skip = getattr(runtime, "_record_scheduler_skip", None)
+        if callable(record_skip):
+            record_skip("reset_reminders", "feature toggle is disabled")
         log.info(
             "reset reminders disabled via feature toggle; scheduler job not registered"
         )

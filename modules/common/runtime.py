@@ -2149,6 +2149,9 @@ class Runtime:
             )
         except Exception as exc:
             c1c_refresh_days = None
+            self._record_scheduler_skip(
+                "c1c_ad", f"config read failed: {type(exc).__name__}"
+            )
             if sheets_core._is_rate_limited_error(exc):
                 self._log_optional_scheduler_quota_skip(
                     logger=log,
@@ -2191,6 +2194,9 @@ class Runtime:
         try:
             clan_ads_enabled = feature_flags.is_enabled("clan_ads")
         except Exception as exc:
+            self._record_scheduler_skip(
+                "clan_ads", f"feature toggle read failed: {type(exc).__name__}"
+            )
             if sheets_core._is_rate_limited_error(exc):
                 self._log_optional_scheduler_quota_skip(
                     logger=log,
@@ -2209,6 +2215,9 @@ class Runtime:
             try:
                 clan_ads_config = await recruitment_clan_ads.load_config(force=True)
             except Exception as exc:
+                self._record_scheduler_skip(
+                    "clan_ads", f"config load failed: {type(exc).__name__}"
+                )
                 if sheets_core._is_rate_limited_error(exc):
                     self._log_optional_scheduler_quota_skip(
                         logger=log,
@@ -2257,6 +2266,10 @@ class Runtime:
                 )
             except Exception as exc:
                 keepalive_config = None
+                self._record_scheduler_skip(
+                    "housekeeping_keepalive",
+                    f"config load failed: {type(exc).__name__}",
+                )
                 if sheets_core._is_rate_limited_error(exc):
                     keepalive_logger.warning(
                         "thread keepalive config resolve hit Google Sheets quota/backoff; "

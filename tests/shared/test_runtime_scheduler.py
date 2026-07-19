@@ -74,6 +74,44 @@ def test_scheduler_config_failure_is_not_registered_or_executed() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("job_name", "failure_reason", "generic_reason"),
+    [
+        (
+            "c1c_ad",
+            "config read failed: RuntimeError",
+            "C1C_AD_REFRESH_DAYS is not configured",
+        ),
+        (
+            "clan_ads",
+            "feature toggle read failed: RuntimeError",
+            "feature toggle is disabled",
+        ),
+        (
+            "clan_ads",
+            "config load failed: RuntimeError",
+            "scheduler interval is not configured",
+        ),
+        (
+            "housekeeping_keepalive",
+            "config load failed: RuntimeError",
+            "required config is missing, invalid, or disabled",
+        ),
+    ],
+)
+def test_scheduler_report_preserves_failure_before_normalized_fallback(
+    job_name: str, failure_reason: str, generic_reason: str
+) -> None:
+    scheduler = runtime.Scheduler()
+
+    scheduler.record_registration_skip(job_name, failure_reason)
+    scheduler.record_registration_skip(job_name, generic_reason)
+
+    report = "\n".join(runtime.scheduler_report_lines(scheduler))
+    assert failure_reason in report
+    assert generic_reason not in report
+
+
 def test_scheduler_job_exception_does_not_cancel(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
