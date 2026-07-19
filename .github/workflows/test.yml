@@ -2,51 +2,104 @@ name: 02 - tests
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
 
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  tests:
+  collection:
+    name: Collect tests
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install deps
+      - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pytest pytest-asyncio aiohttp yarl
-      - name: Run tests
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
+          python -m pip install pytest pytest-asyncio pytest-timeout aiohttp yarl
+      - name: Collect tests
+        run: python -m pytest --collect-only -q
+
+  test-shards:
+    name: Tests / ${{ matrix.name }}
+    needs: collection
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: config-core-shared
+            paths: tests/config tests/coreops tests/docs tests/guardrails tests/scripts tests/common tests/integration tests/shared
+          - name: recruitment-placement
+            paths: tests/recruitment tests/placement
+          - name: onboarding-welcome
+            paths: tests/onboarding tests/welcome
+          - name: community-housekeeping
+            paths: tests/community tests/housekeeping tests/modules tests/cogs tests/test_*.py
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
+          python -m pip install pytest pytest-asyncio pytest-timeout aiohttp yarl
+      - name: Run ${{ matrix.name }} tests
         id: pytest
         continue-on-error: true
         run: |
           set -o pipefail
-          pytest -q 2>&1 | tee pytest.out
-      - name: Build tests summary
+          python -m pytest ${{ matrix.paths }} \
+            --maxfail=25 \
+            --durations=20 \
+            --timeout=180 \
+            --timeout-method=thread \
+            2>&1 | tee pytest-${{ matrix.name }}.out
+      - name: Upload ${{ matrix.name }} pytest output
         if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-${{ matrix.name }}
+          path: pytest-${{ matrix.name }}.out
+          if-no-files-found: warn
+      - name: Fail on test failures
+        if: steps.pytest.outcome != 'success'
+        run: exit 1
+
+  test-summary:
+    name: Test summary
+    if: always()
+    needs: [collection, test-shards]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Build test summary
         env:
-          STEP_OUTCOME: ${{ steps.pytest.outcome }}
+          COLLECTION_RESULT: ${{ needs.collection.result }}
+          SHARD_RESULT: ${{ needs.test-shards.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          if [ "${STEP_OUTCOME}" = "success" ]; then
-            MESSAGE="All tests passed.";
-          elif [ "${STEP_OUTCOME}" = "skipped" ]; then
-            MESSAGE="Test suite skipped.";
-          elif [ "${STEP_OUTCOME}" = "cancelled" ]; then
-            MESSAGE="Test run was cancelled.";
-          else
-            MESSAGE="Test failures detected. Review pytest.out for details.";
-          fi
-          python scripts/ci/write_summary.py \
-            --title "Test Suite" \
-            --status "${STEP_OUTCOME}" \
-            --message "${MESSAGE}" \
-            --detail "Command: pytest -q" \
-            --detail "Log: pytest.out" \
-            --output tests-summary.md
-      - name: Post tests summary comment
+          {
+            echo '## Test workflow summary'
+            echo
+            echo "- Collection result: **${COLLECTION_RESULT}**"
+            echo "- Shard result: **${SHARD_RESULT}**"
+            echo '- Shards: `config-core-shared`, `recruitment-placement`, `onboarding-welcome`, `community-housekeeping`'
+            echo "- Uploaded logs: open [this workflow run](${RUN_URL}) and download the \`pytest-<shard>\` artifacts."
+          } > tests-summary.md
+      - name: Post test summary comment
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
@@ -86,6 +139,3 @@ jobs:
             }
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Fail on test failures
-        if: steps.pytest.outcome == 'failure'
-        run: exit 1
