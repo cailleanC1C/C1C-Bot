@@ -1306,6 +1306,46 @@ class Runtime:
 
         return self.scheduler.spawn(runner(), name=name)
 
+    async def _refresh_feature_toggles(self) -> str | None:
+        """Refresh the shared toggle snapshot and return any global failure."""
+
+        from modules.common import feature_flags as features
+
+        try:
+            await features.refresh()
+        except Exception:  # pragma: no cover - refresh is fail-closed defensively
+            log.exception("feature toggle refresh failed")
+        try:
+            shared_config.update_feature_flags_snapshot(features.values())
+        except Exception:
+            log.exception("feature toggle snapshot update failed")
+
+        failure_reason = features.global_failure_reason()
+        return failure_reason
+
+    def _alert_feature_toggle_failure(
+        self,
+        failure_reason: str,
+        skipped: Sequence[tuple[str, Sequence[str]]],
+    ) -> None:
+        """Defer one alert describing the feature modules actually skipped."""
+
+        affected = "; ".join(
+            f"{module_path} (keys={','.join(feature_keys)})"
+            for module_path, feature_keys in skipped
+        )
+        alert = (
+            "❌ **Feature toggles unreadable:** feature toggles could not be read; "
+            "feature-gated modules were disabled/skipped for safety "
+            f"• reason={failure_reason}\n• affected={affected}"
+        )
+        log.error(alert)
+        # The helper waits for Discord readiness; defer it so extension loading
+        # cannot deadlock startup before the ready event is dispatched.
+        asyncio.create_task(
+            self.send_log_message(alert), name="feature_toggle_failure_alert"
+        )
+
     async def load_extensions(self) -> None:
         """Load all feature modules into the shared bot instance."""
 
@@ -1333,19 +1373,11 @@ class Runtime:
         await coreops_cog.setup(self.bot)
         await app_admin.setup(self.bot)
 
+        failure_reason = await self._refresh_feature_toggles()
         from modules.common import feature_flags as features
 
-        try:
-            await features.refresh()
-        except Exception:
-            log.exception("feature toggle refresh failed")
-        else:
-            try:
-                shared_config.update_feature_flags_snapshot(features.values())
-            except Exception:
-                log.exception("feature toggle snapshot update failed")
-
         toggles = shared_config.features
+        skipped_feature_modules: list[tuple[str, Sequence[str]]] = []
 
         await onboarding_pkg.setup(self.bot)
 
@@ -1354,6 +1386,10 @@ class Runtime:
             log.info("modules: mirralith_overview enabled")
         else:
             log.info("modules: mirralith_overview disabled")
+            if failure_reason:
+                skipped_feature_modules.append(
+                    ("cogs.housekeeping_mirralith", ("mirralith_overview_enabled",))
+                )
 
         await housekeeping_achievements.setup(self.bot)
         log.info("modules: achievements command registered")
@@ -1381,6 +1417,8 @@ class Runtime:
         ) -> None:
             enabled_keys = [key for key in feature_keys if features.is_enabled(key)]
             if not enabled_keys:
+                if failure_reason:
+                    skipped_feature_modules.append((module_path, feature_keys))
                 extra_info = {
                     "feature_module": module_path,
                     "feature_keys": list(feature_keys),
@@ -1473,6 +1511,10 @@ class Runtime:
             log.info("modules: clan_profile enabled")
         else:
             log.info("modules: clan_profile disabled")
+            if failure_reason:
+                skipped_feature_modules.append(
+                    ("cogs.recruitment_clan_profile", ("clan_profile",))
+                )
 
         from cogs import clanrole_management
 
@@ -1505,24 +1547,55 @@ class Runtime:
             log.info("modules: onboarding_welcome enabled")
         else:
             log.info("modules: onboarding_welcome disabled")
+            if failure_reason:
+                skipped_feature_modules.extend(
+                    (
+                        (
+                            "modules.onboarding.reaction_fallback",
+                            ("welcome_watcher_enabled",),
+                        ),
+                        (
+                            "modules.onboarding.watcher_welcome",
+                            ("welcome_watcher_enabled",),
+                        ),
+                    )
+                )
 
         if toggles.promo_watcher_enabled:
             await onboarding_promo.setup(self.bot)
             log.info("modules: onboarding_promo enabled")
         else:
             log.info("modules: onboarding_promo disabled")
+            if failure_reason:
+                skipped_feature_modules.append(
+                    (
+                        "modules.onboarding.watcher_promo",
+                        ("promo_watcher_enabled",),
+                    )
+                )
 
         if toggles.resume_command_enabled:
             await onboarding_cmd_resume.setup(self.bot)  # registers !onb resume
             log.info("modules: onboarding_resume enabled")
         else:
             log.info("modules: onboarding_resume disabled")
+            if failure_reason:
+                skipped_feature_modules.append(
+                    ("modules.onboarding.cmd_resume", ("resume_command_enabled",))
+                )
 
         if toggles.welcome_watcher_enabled or toggles.promo_watcher_enabled:
             await onboarding_cmd_finishplacement.setup(self.bot)
             log.info("modules: onboarding_finishplacement enabled")
         else:
             log.info("modules: onboarding_finishplacement disabled")
+            if failure_reason:
+                skipped_feature_modules.append(
+                    (
+                        "modules.onboarding.cmd_finishplacement",
+                        ("welcome_watcher_enabled", "promo_watcher_enabled"),
+                    )
+                )
 
         await ops_cog.setup(self.bot)
 
@@ -1531,6 +1604,9 @@ class Runtime:
             log.info("modules: ops_permissions enabled")
         else:
             log.info("modules: ops_permissions disabled")
+
+        if failure_reason:
+            self._alert_feature_toggle_failure(failure_reason, skipped_feature_modules)
 
         # === Always-on internal extensions (admin-gated debug/ops commands) ===
         ALWAYS_EXTENSIONS = ("modules.coreops.cmd_cfg",)

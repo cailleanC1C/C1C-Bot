@@ -139,7 +139,7 @@ def _extract_column(row: Mapping[str, object], column_name: str) -> str:
     return ""
 
 
-async def refresh() -> None:
+async def _refresh() -> None:
     """Refresh feature toggles from Sheets (fail-closed)."""
 
     global _FEATURE_VALUES, _INVALID_FEATURE_VALUES, _LOADED_AT, _ROW_COUNT
@@ -240,8 +240,9 @@ async def refresh() -> None:
                             failure_reason = "Feature toggle worksheet returned no rows; treating all features as disabled."
                             await _warn_global_once("no-rows", failure_reason)
 
-        for key in _DEFAULT_TRUE_FEATURES:
-            feature_values.setdefault(key, True)
+        if failure_reason is None:
+            for key in _DEFAULT_TRUE_FEATURES:
+                feature_values.setdefault(key, True)
 
         _FEATURE_VALUES = feature_values
         _INVALID_FEATURE_VALUES = invalid_feature_values
@@ -253,12 +254,42 @@ async def refresh() -> None:
         _GLOBAL_FAILURE_REASON = failure_reason
 
 
+async def refresh() -> None:
+    """Refresh feature toggles and convert unexpected errors to a safe state."""
+
+    global _FEATURE_VALUES, _INVALID_FEATURE_VALUES, _LOADED_AT, _ROW_COUNT
+    global _SOURCE_TAB, _DISABLED_BY_DEFAULT, _NOTES, _GLOBAL_FAILURE_REASON
+
+    try:
+        await _refresh()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        reason = f"Unexpected feature toggle refresh failure: {exc}"
+        log.exception(reason)
+        async with _LOCK:
+            _FEATURE_VALUES = {}
+            _INVALID_FEATURE_VALUES = {}
+            _LOADED_AT = datetime.now(timezone.utc)
+            _ROW_COUNT = 0
+            _SOURCE_TAB = _DEFAULT_TOGGLES_TAB
+            _DISABLED_BY_DEFAULT = True
+            _NOTES = [reason]
+            _GLOBAL_FAILURE_REASON = reason
+        await _warn_global_once("unexpected-refresh", reason)
+
+
 async def _warn_global_once(token: str, detail: str) -> None:
     if token in _GLOBAL_WARNINGS_SENT:
         return
     _GLOBAL_WARNINGS_SENT.add(token)
     log.warning(detail)
-    await _emit_admin_alert(detail)
+
+
+def global_failure_reason() -> str | None:
+    """Return why the toggle source is globally unreadable, if applicable."""
+
+    return _GLOBAL_FAILURE_REASON
 
 
 async def _warn_invalid_value_once(
@@ -328,7 +359,16 @@ def snapshot() -> Dict[str, Any]:
 
 
 def values() -> Dict[str, bool]:
+    if _GLOBAL_FAILURE_REASON:
+        return {key: False for key in _DEFAULT_TRUE_FEATURES}
     return dict(_FEATURE_VALUES)
 
 
-__all__ = ["is_enabled", "refresh", "snapshot", "status", "values"]
+__all__ = [
+    "global_failure_reason",
+    "is_enabled",
+    "refresh",
+    "snapshot",
+    "status",
+    "values",
+]
