@@ -94,24 +94,11 @@ version: vX.Y.Z          # optional; include only when approved
 footer_date: YYYY-MM-DD  # optional; include only when approved
 [/approval]
 ```
-**Codex — Meta Block Instruction (must follow):**
-
-“Append the meta block shown below to the **very end of the PR body**. It must be the **final lines**. **Do not** include this instruction text in the PR body. **Do not** change keys/wording. **Do not** add any characters or blank lines after `[/meta]`.”
-
-And this is the block Codex must append, literally:
-```
-[meta]
-labels: <labels here>
-milestone: Harmonize v1.0
-[/meta]
-```
-
 ---
 
 ## 4) Codex PR Formatting Rules
 
 * Entire PR prompt in **one fenced code block**.
-* Append the `[meta]` block as the **final lines** of the PR body (no text after it).
 * Use **approved label names only** (see §6).
 * Do not move/delete files unless explicitly instructed in the PR body.
 * Before editing guardrail/compliance docs, Codex must read:
@@ -242,7 +229,6 @@ milestone: Harmonize v1.0
 * ☐ ADR filed (if architectural)?
 * ☐ ENV + Sheets in sync?
 * ☐ Excluded `AUDIT/` from scans/tests?
-* ☐ `[meta]` is the last lines in PR body? and has instructions?
 
 ---
 
@@ -254,19 +240,7 @@ milestone: Harmonize v1.0
 ### A1. PR Prompt Format (required)
 
 - One fenced code block for the entire Codex prompt (clean copy/paste).
-- PR body sections first; **meta block must be the final lines**.
 - Include screenshots or captured sample outputs when modifying user-visible text.
-- **Meta block syntax:**
-
-```markdown
-**Instruction for Codex:**
-At the end of the PR **body**, after all other sections, append the metadata block below **exactly**. 
-Do **not** add any text after it. It must be the **final lines** of the PR body so the workflow can parse it.
-[meta]
-labels: <comma-separated labels>
-milestone: Harmonize v1.0
-[/meta]
-```
 
 ### A2. Docs Footer Standard
 
@@ -347,7 +321,7 @@ Rules:
 - **No hard-coded IDs** (guilds, channels, users, roles). Read from config/sheets/env where specified.
 - Use existing modules/files when present; do not invent new top-level packages without an ADR.
 - Respect `ENV` vs `Sheets` source of truth as documented (feature toggles live in Sheets where specified).
-- For docs/PRs: follow label taxonomy and meta block exactly; no ad-hoc labels.
+- For docs/PRs: follow the approved label taxonomy; no ad-hoc labels.
 - When changing visible text, **update screenshots or paste example output** in the PR body.
 
 ### A5. Acceptance checklists Codex must satisfy
@@ -363,10 +337,10 @@ Rules:
 - [ ] Footer in each touched MD: `Doc last updated: YYYY-MM-DD (v0.9.8.2)`.
 
 **For any PR**
-- [ ] One fenced code block; meta block last; milestone `Harmonize v1.0`.  
+- [ ] One fenced code block and the required `Tests:` / `Docs:` declarations.
 - [ ] No hard-coded IDs; references to config/sheets where needed.  
 - [ ] If tests/docs/CI guardrails mention this area, update them for parity.
 
 ---
 
-Doc last updated: 2025-12-31 (v0.9.8.2)
+Doc last updated: 2026-07-19 (v0.9.8.2)

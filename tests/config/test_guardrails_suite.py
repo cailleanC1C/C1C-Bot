@@ -55,17 +55,18 @@ Details here.
     assert category.violations[0].rule_id == "G-09"
 
 
-def test_g03_requires_meta_block() -> None:
+def test_normal_pr_body_needs_no_legacy_meta_block() -> None:
     body = """Summary only
 
-Tests: Added
-Docs: Added
+Tests: Updated guardrails tests
+Docs: Updated guardrails documentation
 """
     category = guardrails_suite.CategoryResult("Governance (G)")
-    guardrails_suite.check_g03(category, body)
 
-    assert category.status == "fail"
-    assert category.violations[0].rule_id == "G-03"
+    guardrails_suite.check_g09(category, body)
+
+    assert category.status == "pass"
+    assert "G-03" not in {check.code for check in guardrails_suite.CHECKS}
 
 
 def test_f04_uses_feature_registry_and_accessor(tmp_path: Path, monkeypatch: object) -> None:
@@ -217,10 +218,7 @@ def test_run_checks_covers_all_codes(tmp_path: Path, monkeypatch: object) -> Non
 
     monkeypatch.setattr(guardrails_suite, "_load_feature_toggle_names", lambda: set())
 
-    pr_body = (
-        "[meta]\nlabels: guardrails\nmilestone: Harmonize v1.0\n[/meta]\n\n"
-        "Tests:\nNot required (reason: CI-only)\nDocs:\nNot required (reason: CI-only)\n"
-    )
+    pr_body = "Tests:\nNot required (reason: CI-only)\nDocs:\nNot required (reason: CI-only)\n"
 
     suite = guardrails_suite.run_checks(None, pr_body=pr_body, parity_status="success", pr_number=1)
 
@@ -255,10 +253,7 @@ def test_run_all_checks_returns_results(tmp_path: Path, monkeypatch: object) -> 
 
     monkeypatch.setattr(guardrails_suite, "_load_feature_toggle_names", lambda: set())
 
-    pr_body = (
-        "[meta]\nlabels: guardrails\nmilestone: Harmonize v1.0\n[/meta]\n\n"
-        "Tests:\nNot required (reason: CI-only)\nDocs:\nNot required (reason: CI-only)\n"
-    )
+    pr_body = "Tests:\nNot required (reason: CI-only)\nDocs:\nNot required (reason: CI-only)\n"
 
     results, violations = guardrails_suite.run_all_checks(
         base_ref=None, pr_number=1, pr_body=pr_body, parity_status="success"

@@ -694,16 +694,6 @@ def _parity_violation(parity_status: Optional[str]) -> tuple[List[Violation], Op
     return [], f"ENV parity status reported as '{parity_status}'"
 
 
-def check_g03(category: CategoryResult, pr_body: str) -> None:
-    meta_block = re.search(r"\[meta\](.*?)\[/meta\]", pr_body, re.DOTALL | re.IGNORECASE)
-    if not meta_block:
-        category.add(Violation("G-03", "error", "PR body missing [meta] block with labels and milestone", []))
-        return
-    block = meta_block.group(1)
-    if "labels:" not in block or "milestone:" not in block:
-        category.add(Violation("G-03", "error", "[meta] block must include labels and milestone", []))
-
-
 def check_g06(category: CategoryResult, diff_status: Dict[str, str]) -> None:
     added_docs = [path for path, status in diff_status.items() if status.upper() == "A" and path.startswith("docs/")]
     bad: List[str] = []
@@ -950,15 +940,6 @@ def _build_guardrail_checks() -> List[GuardrailCheck]:
                 lambda ctx: _collect_category_violations(
                     ctx, "d10", check_d10, ctx.changed_files, ctx.pr_body
                 ),
-            ),
-        ),
-        GuardrailCheck(
-            "G-03",
-            "PR body must include [meta] block with labels and milestone",
-            _build_pr_only_check(
-                "G-03",
-                "PR body must include [meta] block with labels and milestone",
-                lambda ctx: _collect_category_violations(ctx, "g03", check_g03, ctx.pr_body),
             ),
         ),
         GuardrailCheck(
