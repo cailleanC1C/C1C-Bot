@@ -115,7 +115,12 @@ def test_load_reservation_ledger_rejects_bad_header(monkeypatch):
         return matrix
 
     monkeypatch.setattr(reservations, "_fetch_reservations_matrix", fake_fetch)
-    monkeypatch.setattr(reservations.recruitment, "get_reservations_tab_name", lambda: "RESERVATIONS_TAB")
+    async def fake_tab_name():
+        return "RESERVATIONS_TAB"
+
+    monkeypatch.setattr(
+        reservations.recruitment, "get_reservations_tab_name_async", fake_tab_name
+    )
 
     with pytest.raises(reservations.ReservationSchemaError):
         asyncio.run(reservations.load_reservation_ledger())

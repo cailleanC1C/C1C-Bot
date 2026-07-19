@@ -68,7 +68,7 @@ def test_clan_ad_buckets_use_config_pointers(monkeypatch) -> None:
     requested_keys = []
     fetched_tabs = []
 
-    def fake_config_value(key, default=None, *, force=False):
+    async def fake_config_value(key, default=None, *, force=False):
         requested_keys.append((key, force))
         return {
             "clan_ad_messages_tab": "AdMessages",
@@ -79,7 +79,9 @@ def test_clan_ad_buckets_use_config_pointers(monkeypatch) -> None:
         fetched_tabs.append((sheet_id, tab_name))
         return [["header"], ["row"]]
 
-    monkeypatch.setattr("shared.sheets.recruitment.get_config_value", fake_config_value)
+    monkeypatch.setattr(
+        "shared.sheets.recruitment.get_config_value_async", fake_config_value
+    )
     monkeypatch.setattr(
         "shared.sheets.recruitment.get_recruitment_sheet_id", lambda: "sheet123"
     )
@@ -102,9 +104,11 @@ def test_missing_config_pointer_is_readable_failure(monkeypatch) -> None:
         return None
 
     monkeypatch.setattr(cache_service.asyncio, "sleep", no_sleep)
+    async def missing_config(key, default=None, *, force=False):
+        return default
+
     monkeypatch.setattr(
-        "shared.sheets.recruitment.get_config_value",
-        lambda key, default=None, *, force=False: default,
+        "shared.sheets.recruitment.get_config_value_async", missing_config
     )
     feature_refresh.register_cache_buckets()
 
@@ -124,9 +128,11 @@ def test_bad_tab_name_is_readable_failure(monkeypatch) -> None:
         raise RuntimeError("not found")
 
     monkeypatch.setattr(cache_service.asyncio, "sleep", no_sleep)
+    async def bogus_config(key, default=None, *, force=False):
+        return "BogusTab"
+
     monkeypatch.setattr(
-        "shared.sheets.recruitment.get_config_value",
-        lambda key, default=None, *, force=False: "BogusTab",
+        "shared.sheets.recruitment.get_config_value_async", bogus_config
     )
     monkeypatch.setattr(
         "shared.sheets.recruitment.get_recruitment_sheet_id", lambda: "sheet123"

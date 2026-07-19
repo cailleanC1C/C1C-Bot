@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -87,14 +88,22 @@ def test_idle_watcher_posts_first_reminder(monkeypatch):
         return thread
 
     monkeypatch.setattr(idle_watcher, "_resolve_thread", _resolve)
-    monkeypatch.setattr(idle_watcher.onboarding_sessions, "load_all", lambda: [_row(3.1)])
     monkeypatch.setattr(
         idle_watcher.onboarding_sessions,
-        "update_existing",
-        lambda thread_id, payload: saves.append(payload),
+        "aload_all",
+        AsyncMock(return_value=[_row(3.1)]),
+    )
+    monkeypatch.setattr(
+        idle_watcher.onboarding_sessions,
+        "aupdate_existing",
+        AsyncMock(side_effect=lambda thread_id, payload: saves.append(payload)),
     )
     monkeypatch.setattr(welcome_flow, "resolve_onboarding_flow", lambda t: welcome_flow.FlowResolution("welcome"))
-    monkeypatch.setattr(idle_watcher.reservation_jobs, "release_reservations_for_thread", lambda *_, **__: None)
+    monkeypatch.setattr(
+        idle_watcher.reservation_jobs,
+        "release_reservations_for_thread",
+        AsyncMock(),
+    )
     monkeypatch.setattr(idle_watcher, "get_recruitment_coordinator_role_ids", lambda: set())
     monkeypatch.setattr(
         idle_watcher,
@@ -123,16 +132,28 @@ def test_idle_watcher_skips_when_completed_at_present(monkeypatch):
     monkeypatch.setattr(idle_watcher, "_resolve_thread", _resolve)
     monkeypatch.setattr(
         idle_watcher.onboarding_sessions,
-        "load_all",
-        lambda: [_row(8.0, completed=False, completed_at="2025-01-01T10:00:00+00:00")],
+        "aload_all",
+        AsyncMock(
+            return_value=[
+                _row(
+                    8.0,
+                    completed=False,
+                    completed_at="2025-01-01T10:00:00+00:00",
+                )
+            ]
+        ),
     )
     monkeypatch.setattr(
         idle_watcher.onboarding_sessions,
-        "update_existing",
-        lambda thread_id, payload: saves.append(payload),
+        "aupdate_existing",
+        AsyncMock(side_effect=lambda thread_id, payload: saves.append(payload)),
     )
     monkeypatch.setattr(welcome_flow, "resolve_onboarding_flow", lambda t: welcome_flow.FlowResolution("welcome"))
-    monkeypatch.setattr(idle_watcher.reservation_jobs, "release_reservations_for_thread", lambda *_, **__: None)
+    monkeypatch.setattr(
+        idle_watcher.reservation_jobs,
+        "release_reservations_for_thread",
+        AsyncMock(),
+    )
 
     asyncio.run(idle_watcher.run_idle_scan(bot, now=_fixed_now()))
 
@@ -149,14 +170,22 @@ def test_idle_watcher_posts_warning(monkeypatch):
         return thread
 
     monkeypatch.setattr(idle_watcher, "_resolve_thread", _resolve)
-    monkeypatch.setattr(idle_watcher.onboarding_sessions, "load_all", lambda: [_row(24.5)])
     monkeypatch.setattr(
         idle_watcher.onboarding_sessions,
-        "update_existing",
-        lambda thread_id, payload: saves.append(payload),
+        "aload_all",
+        AsyncMock(return_value=[_row(24.5)]),
+    )
+    monkeypatch.setattr(
+        idle_watcher.onboarding_sessions,
+        "aupdate_existing",
+        AsyncMock(side_effect=lambda thread_id, payload: saves.append(payload)),
     )
     monkeypatch.setattr(welcome_flow, "resolve_onboarding_flow", lambda t: welcome_flow.FlowResolution("welcome"))
-    monkeypatch.setattr(idle_watcher.reservation_jobs, "release_reservations_for_thread", lambda *_, **__: None)
+    monkeypatch.setattr(
+        idle_watcher.reservation_jobs,
+        "release_reservations_for_thread",
+        AsyncMock(),
+    )
     monkeypatch.setattr(idle_watcher, "get_recruitment_coordinator_role_ids", lambda: {42})
     monkeypatch.setattr(
         idle_watcher,
@@ -184,14 +213,22 @@ def test_idle_watcher_autoclose_welcome(monkeypatch):
         return thread
 
     monkeypatch.setattr(idle_watcher, "_resolve_thread", _resolve)
-    monkeypatch.setattr(idle_watcher.onboarding_sessions, "load_all", lambda: [_row(36.5)])
     monkeypatch.setattr(
         idle_watcher.onboarding_sessions,
-        "update_existing",
-        lambda thread_id, payload: saves.append(payload),
+        "aload_all",
+        AsyncMock(return_value=[_row(36.5)]),
+    )
+    monkeypatch.setattr(
+        idle_watcher.onboarding_sessions,
+        "aupdate_existing",
+        AsyncMock(side_effect=lambda thread_id, payload: saves.append(payload)),
     )
     monkeypatch.setattr(welcome_flow, "resolve_onboarding_flow", lambda t: welcome_flow.FlowResolution("welcome"))
-    monkeypatch.setattr(idle_watcher.reservation_jobs, "release_reservations_for_thread", lambda thread_id, **_: releases.append(thread_id))
+    monkeypatch.setattr(
+        idle_watcher.reservation_jobs,
+        "release_reservations_for_thread",
+        AsyncMock(side_effect=lambda thread_id, **_: releases.append(thread_id)),
+    )
     monkeypatch.setattr(idle_watcher, "get_recruitment_coordinator_role_ids", lambda: {7})
     monkeypatch.setattr(
         idle_watcher,
@@ -220,14 +257,22 @@ def test_idle_watcher_autoclose_promo(monkeypatch):
         return thread
 
     monkeypatch.setattr(idle_watcher, "_resolve_thread", _resolve)
-    monkeypatch.setattr(idle_watcher.onboarding_sessions, "load_all", lambda: [_row(36.5, thread_id=888)])
     monkeypatch.setattr(
         idle_watcher.onboarding_sessions,
-        "update_existing",
-        lambda thread_id, payload: saves.append(payload),
+        "aload_all",
+        AsyncMock(return_value=[_row(36.5, thread_id=888)]),
+    )
+    monkeypatch.setattr(
+        idle_watcher.onboarding_sessions,
+        "aupdate_existing",
+        AsyncMock(side_effect=lambda thread_id, payload: saves.append(payload)),
     )
     monkeypatch.setattr(welcome_flow, "resolve_onboarding_flow", lambda t: welcome_flow.FlowResolution("promo.r"))
-    monkeypatch.setattr(idle_watcher.reservation_jobs, "release_reservations_for_thread", lambda *_, **__: None)
+    monkeypatch.setattr(
+        idle_watcher.reservation_jobs,
+        "release_reservations_for_thread",
+        AsyncMock(),
+    )
     monkeypatch.setattr(idle_watcher, "get_recruitment_coordinator_role_ids", lambda: {9})
     monkeypatch.setattr(
         idle_watcher,
@@ -254,14 +299,22 @@ def test_idle_watcher_skips_closed_ticket(monkeypatch):
         return thread
 
     monkeypatch.setattr(idle_watcher, "_resolve_thread", _resolve)
-    monkeypatch.setattr(idle_watcher.onboarding_sessions, "load_all", lambda: [_row(6.0)])
     monkeypatch.setattr(
         idle_watcher.onboarding_sessions,
-        "update_existing",
-        lambda thread_id, payload: saves.append(payload),
+        "aload_all",
+        AsyncMock(return_value=[_row(6.0)]),
+    )
+    monkeypatch.setattr(
+        idle_watcher.onboarding_sessions,
+        "aupdate_existing",
+        AsyncMock(side_effect=lambda thread_id, payload: saves.append(payload)),
     )
     monkeypatch.setattr(welcome_flow, "resolve_onboarding_flow", lambda t: welcome_flow.FlowResolution("welcome"))
-    monkeypatch.setattr(idle_watcher.reservation_jobs, "release_reservations_for_thread", lambda *_, **__: None)
+    monkeypatch.setattr(
+        idle_watcher.reservation_jobs,
+        "release_reservations_for_thread",
+        AsyncMock(),
+    )
 
     asyncio.run(idle_watcher.run_idle_scan(bot, now=_fixed_now()))
 

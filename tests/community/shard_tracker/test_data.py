@@ -27,6 +27,15 @@ def _patch_runtime_config(
         }
     )
     monkeypatch.setattr(shard_data, "runtime_config", stub)
+    if tab:
+        resolver = AsyncMock(return_value=tab)
+    else:
+        resolver = AsyncMock(
+            side_effect=shard_data.milestones_config.MilestonesConfigValueBlank(
+                "SHARD_MERCY_TAB is blank", key="SHARD_MERCY_TAB"
+            )
+        )
+    monkeypatch.setattr(shard_data.milestones_config, "arequire_value", resolver)
 
 
 def test_get_config_prefers_env_channel_id(monkeypatch):
