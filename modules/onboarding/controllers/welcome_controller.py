@@ -1336,7 +1336,7 @@ class BaseWelcomeController:
         except (TypeError, ValueError):
             thread_id_int = None
         player_id = self._summary_player_id(thread_id_int, answers)
-        step = self._summary_step(thread_id_int)
+        step = await self._summary_step(thread_id_int)
 
         try:
             embed = build_summary_embed(
@@ -1372,7 +1372,7 @@ class BaseWelcomeController:
                 step=step,
             )
         async with lock:
-            existing = onboarding_sessions.get_by_thread_id(thread_id_int) or {}
+            existing = await onboarding_sessions.aget_by_thread_id(thread_id_int) or {}
             existing_message_id = self._coerce_int(
                 existing.get("recruiter_summary_message_id")
             )
@@ -1388,7 +1388,7 @@ class BaseWelcomeController:
                     step=step,
                 )
                 if existing_result == "edited":
-                    persisted = self._persist_summary_metadata(
+                    persisted = await self._persist_summary_metadata(
                         thread_id_int,
                         message_id=existing_message_id,
                         player_id=player_id,
@@ -1505,7 +1505,7 @@ class BaseWelcomeController:
                     )
                     return False
                 else:
-                    persisted = self._persist_summary_metadata(
+                    persisted = await self._persist_summary_metadata(
                         thread_id_int,
                         message_id=discovered_message_id,
                         player_id=player_id,
@@ -1543,7 +1543,7 @@ class BaseWelcomeController:
             new_message_id = self._coerce_int(getattr(message, "id", None))
             persisted = False
             if new_message_id is not None:
-                persisted = self._persist_summary_metadata(
+                persisted = await self._persist_summary_metadata(
                     thread_id_int,
                     message_id=new_message_id,
                     player_id=player_id,
@@ -1694,7 +1694,7 @@ class BaseWelcomeController:
             "summary_screenshot_prompt_summary_message_id",
         }
         try:
-            missing = onboarding_sessions.missing_columns(required)
+            missing = await onboarding_sessions.amissing_columns(required)
         except Exception:
             log.warning(
                 "onboarding.summary.screenshot_prompt_skipped_metadata_check_failed",
@@ -1713,7 +1713,7 @@ class BaseWelcomeController:
             return
 
         try:
-            row = onboarding_sessions.get_by_thread_id(thread_id) or {}
+            row = await onboarding_sessions.aget_by_thread_id(thread_id) or {}
         except Exception:
             log.warning(
                 "onboarding.summary.screenshot_prompt_skipped_metadata_read_failed",
@@ -1748,7 +1748,7 @@ class BaseWelcomeController:
             return
 
         try:
-            updated = onboarding_sessions.update_existing(
+            updated = await onboarding_sessions.aupdate_existing(
                 thread_id,
                 {
                     "summary_screenshot_prompt_message_id": str(
@@ -1815,7 +1815,7 @@ class BaseWelcomeController:
             )
         return False
 
-    def _persist_summary_metadata(
+    async def _persist_summary_metadata(
         self, thread_id: int, *, message_id: int, player_id: int | str | None
     ) -> bool:
         required = {
@@ -1824,7 +1824,7 @@ class BaseWelcomeController:
             "recruiter_summary_player_id",
         }
         try:
-            missing = onboarding_sessions.missing_columns(required)
+            missing = await onboarding_sessions.amissing_columns(required)
         except Exception:
             log.warning(
                 "onboarding.summary.metadata_header_check_failed",
@@ -1844,7 +1844,7 @@ class BaseWelcomeController:
 
         timestamp = utc_now().isoformat()
         try:
-            updated = onboarding_sessions.update_existing(
+            updated = await onboarding_sessions.aupdate_existing(
                 thread_id,
                 {
                     "recruiter_summary_message_id": str(message_id),
@@ -1907,13 +1907,13 @@ class BaseWelcomeController:
         except (TypeError, ValueError):
             return None
 
-    def _summary_step(self, thread_id: int | None) -> int | None:
+    async def _summary_step(self, thread_id: int | None) -> int | None:
         if thread_id is None:
             return None
         session = store.get(thread_id)
         if session is not None and session.current_question_index is not None:
             return self._coerce_int(session.current_question_index)
-        row = onboarding_sessions.get_by_thread_id(thread_id)
+        row = await onboarding_sessions.aget_by_thread_id(thread_id)
         return (
             self._coerce_int(row.get("step_index")) if isinstance(row, dict) else None
         )
@@ -2197,7 +2197,7 @@ class BaseWelcomeController:
         if thread_id is not None:
             panel_message_id = self._panel_messages.get(int(thread_id))
         if panel_message_id is None:
-            row = onboarding_sessions.get_by_thread_id(thread_id)
+            row = await onboarding_sessions.aget_by_thread_id(thread_id)
             raw_panel_id = (
                 row.get("panel_message_id") if isinstance(row, dict) else None
             )

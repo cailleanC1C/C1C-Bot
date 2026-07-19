@@ -1953,3 +1953,63 @@ def register_cache_buckets() -> None:
 
     if cache.get_bucket("clan_tags") is None:
         cache.register("clan_tags", _TTL_CLAN_TAGS_SEC, _load_clan_tags_async)
+
+
+async def aget_finalization_headers(
+    flow: str, *, force: bool = False
+) -> Dict[str, str]:
+    """Resolve finalization headers through the async Config reader."""
+
+    normalized = (flow or "").strip().lower()
+    if normalized not in _FINALIZATION_CONFIG_KEYS:
+        raise ValueError(f"unknown onboarding finalization flow: {flow!r}")
+    if force:
+        await _aload_config(force=True)
+    resolved: Dict[str, str] = {}
+    for field, key in _FINALIZATION_CONFIG_KEYS[normalized].items():
+        cleaned = str(await _aconfig_lookup(key) or "").strip()
+        if not cleaned:
+            raise RuntimeError(f"Onboarding Config missing {key}")
+        resolved[field] = cleaned
+    return resolved
+
+
+async def aget_promo_source_clan_tag_header(*, force: bool = False) -> str:
+    """Resolve the Promo source-clan header through the async Config reader."""
+
+    if force:
+        await _aload_config(force=True)
+    cleaned = str(
+        await _aconfig_lookup(PROMO_SOURCE_CLAN_TAG_HEADER_CONFIG_KEY) or ""
+    ).strip()
+    if not cleaned:
+        raise RuntimeError(
+            "Onboarding Config missing PROMO_SOURCE_CLAN_TAG_HEADER for Promo source clan header"
+        )
+    return cleaned
+
+
+async def aget_ticket_finalization_state(
+    flow: str, row_values: Dict[str, str] | Sequence[str]
+) -> Dict[str, str]:
+    """Parse ticket finalization state using async-resolved Config headers."""
+
+    headers = await aget_finalization_headers(flow)
+    if isinstance(row_values, dict):
+        return {
+            field: str(row_values.get(header, "") or "").strip()
+            for field, header in headers.items()
+        }
+    if flow == "welcome":
+        base_headers = [*WELCOME_HEADERS, *headers.values()]
+    else:
+        promo_headers = list(PROMO_HEADERS)
+        promo_headers[
+            _PROMO_SOURCE_CLAN_TAG_HEADER_DEFAULT_SLOT
+        ] = await aget_promo_source_clan_tag_header()
+        base_headers = [*promo_headers, *headers.values()]
+    row_map = _row_map(base_headers, row_values)
+    return {
+        field: str(row_map.get(header, "") or "").strip()
+        for field, header in headers.items()
+    }

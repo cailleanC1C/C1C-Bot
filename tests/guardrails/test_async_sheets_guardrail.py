@@ -23,10 +23,26 @@ FORBIDDEN_HELPERS = {
     "get_role_map_tab_name",
     "get_reports_tab_name",
     "get_reservations_tab_name",
+    "get_by_thread_id",
+    "load_all",
+    "update_existing",
+    "upsert_session",
+    "mark_completed",
+    "missing_columns",
+    "get_ticket_finalization_state",
+    "get_finalization_headers",
+    "get_promo_source_clan_tag_header",
+}
+SCOPED_FORBIDDEN_HELPERS = {
+    "get_by_thread_id", "load_all", "update_existing", "upsert_session",
+    "mark_completed", "missing_columns", "get_ticket_finalization_state",
+    "get_finalization_headers", "get_promo_source_clan_tag_header",
 }
 FORBIDDEN_MODULES = {
     "shared.sheets.core",
     "shared.sheets.recruitment",
+    "shared.sheets.onboarding",
+    "shared.sheets.onboarding_sessions",
 }
 ASYNC_FACADE_MODULES = {
     "shared.sheets.async_facade",
@@ -102,6 +118,8 @@ def _forbidden_call_name(call: ast.Call, aliases: ImportAliases) -> str | None:
                 return None
             if module_name in aliases.forbidden_modules:
                 return func.attr
+        if func.attr in SCOPED_FORBIDDEN_HELPERS:
+            return None
         return func.attr
     return None
 

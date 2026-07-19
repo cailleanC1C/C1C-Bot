@@ -250,7 +250,7 @@ async def _handle_row(
     age = now - updated_at
     thread = await _resolve_thread(bot, int(thread_id))
     if thread is None:
-        onboarding_sessions.update_existing(
+        await onboarding_sessions.aupdate_existing(
             thread_id,
             {
                 **row,
@@ -278,7 +278,7 @@ async def _handle_row(
         return
 
     if age >= AUTO_CLOSE_AFTER:
-        onboarding_sessions.update_existing(
+        await onboarding_sessions.aupdate_existing(
             thread_id,
             {
                 **row,
@@ -303,7 +303,7 @@ async def _handle_row(
         except Exception:
             log.warning("failed to post onboarding warning", exc_info=True)
         else:
-            onboarding_sessions.update_existing(
+            await onboarding_sessions.aupdate_existing(
                 thread_id,
                 {
                     **row,
@@ -323,7 +323,7 @@ async def _handle_row(
         except Exception:
             log.warning("failed to post onboarding reminder", exc_info=True)
         else:
-            onboarding_sessions.update_existing(
+            await onboarding_sessions.aupdate_existing(
                 thread_id,
                 {
                     **row,
@@ -337,7 +337,7 @@ async def run_idle_scan(bot: commands.Bot, *, now: datetime | None = None) -> No
     await bot.wait_until_ready()
 
     clock = now or _utc_now()
-    rows = onboarding_sessions.load_all()
+    rows = await onboarding_sessions.aload_all()
     for row in rows:
         try:
             await _handle_row(bot, row, now=clock)
