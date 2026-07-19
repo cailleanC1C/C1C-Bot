@@ -293,11 +293,15 @@ def test_config_resolution_parses_comma_separated_game_role_ids(monkeypatch):
         1448269393082454076,
         1447924607842652232,
         1447919520751681548,
+        1298349996374229045,
+        1447924492776116316,
+        1447924956519469067,
+        1447924705892892733,
     )
 
     async def get_config(key, default=None):
         if key == realmwalker.ACCESS_ROLE_KEY:
-            return "1298349996374229045"
+            return "1450000000000000000"
         return ",".join(str(role_id) for role_id in game_ids)
 
     monkeypatch.setattr(realmwalker.recruitment, "get_config_value_async", get_config)
@@ -305,7 +309,7 @@ def test_config_resolution_parses_comma_separated_game_role_ids(monkeypatch):
 
     assert error is None
     assert config is not None
-    assert config.access_role_id == 1298349996374229045
+    assert config.access_role_id == 1450000000000000000
     assert config.game_role_ids == frozenset(game_ids)
 
 
