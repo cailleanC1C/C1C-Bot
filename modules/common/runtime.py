@@ -949,6 +949,7 @@ class Scheduler:
     def __init__(self) -> None:
         self._tasks: list[asyncio.Task] = []
         self._jobs: list[Any] = []
+        self._registration_skips: dict[str, str] = {}
 
     def spawn(self, coro: Awaitable, *, name: Optional[str] = None) -> asyncio.Task:
         if name is not None:
@@ -975,7 +976,16 @@ class Scheduler:
     def cron(
         self, expression: str, *, tag: str | None = None, name: str | None = None
     ) -> _CronJob:
-        return _CronJob(self, expression=expression, tag=tag, name=name)
+        if name is not None:
+            for existing in self._jobs:
+                if existing.name == name:
+                    return existing
+        job = _CronJob(self, expression=expression, tag=tag, name=name)
+        job.cadence_label = expression
+        self._jobs.append(job)
+        if name:
+            self._registration_skips.pop(name, None)
+        return job
 
     def every(
         self,
@@ -1009,6 +1019,8 @@ class Scheduler:
             component=component,
         )
         self._jobs.append(job)
+        if name:
+            self._registration_skips.pop(name, None)
         return job
 
     def at(
@@ -1035,7 +1047,19 @@ class Scheduler:
             cadence_label=cadence_label,
         )
         self._jobs.append(job)
+        if name:
+            self._registration_skips.pop(name, None)
         return job
+
+    def record_registration_skip(self, name: str, reason: str) -> None:
+        """Record why a configured job was not added to the live registry."""
+
+        if not any(getattr(job, "name", None) == name for job in self._jobs):
+            self._registration_skips.setdefault(name, reason)
+
+    @property
+    def registration_skips(self) -> dict[str, str]:
+        return dict(self._registration_skips)
 
     @property
     def jobs(self) -> list[Any]:
@@ -1057,8 +1081,53 @@ class Scheduler:
                 log.exception("scheduler task error during shutdown")
 
 
+def scheduler_report_lines(scheduler: Scheduler) -> list[str]:
+    """Render scheduler status solely from registration results and live jobs."""
+
+    lines = ["🧭 Scheduler"]
+    jobs = sorted(
+        scheduler.jobs,
+        key=lambda job: getattr(job, "name", None) or getattr(job, "tag", None) or "",
+    )
+    for job in jobs:
+        name = getattr(job, "name", None) or getattr(job, "tag", None) or "unnamed"
+        cadence = getattr(job, "cadence_label", None)
+        interval = getattr(job, "interval", None)
+        if cadence is None and isinstance(interval, timedelta):
+            seconds = interval.total_seconds()
+            if seconds % 86400 == 0:
+                cadence = f"{seconds / 86400:g}d"
+            elif seconds % 3600 == 0:
+                cadence = f"{seconds / 3600:g}h"
+            elif seconds % 60 == 0:
+                cadence = f"{seconds / 60:g}m"
+            else:
+                cadence = f"{seconds:g}s"
+        next_run = getattr(job, "next_run", None)
+        next_text = (
+            next_run.astimezone(timezone.utc)
+            .replace(second=0, microsecond=0)
+            .strftime("%Y-%m-%d %H:%M UTC")
+            if isinstance(next_run, datetime)
+            else "pending"
+        )
+        lines.append(
+            f"• {name}=registered • cadence={cadence or 'scheduled'} • next={next_text}"
+        )
+    for name, reason in sorted(scheduler.registration_skips.items()):
+        lines.append(f"• {name}=not registered • reason={reason}")
+    if len(lines) == 1:
+        lines.append("• no jobs registered")
+    return lines
+
+
 class Runtime:
     """Container object that wires the bot, health server, and scheduler."""
+
+    def _record_scheduler_skip(self, name: str, reason: str) -> None:
+        recorder = getattr(self.scheduler, "record_registration_skip", None)
+        if callable(recorder):
+            recorder(name, reason)
 
     def __init__(
         self,
@@ -1796,6 +1865,9 @@ class Runtime:
     ) -> None:
         cleanup_logger = logging.getLogger("c1c.housekeeping.cleanup")
         if not toggles.housekeeping_enabled:
+            self._record_scheduler_skip(
+                "cleanup_watcher", "global housekeeping feature toggle is disabled"
+            )
             cleanup_logger.info(
                 "housekeeping cleanup disabled via global housekeeping feature toggle"
             )
@@ -1806,6 +1878,9 @@ class Runtime:
                 cleanup_logger
             )
         except Exception as exc:
+            self._record_scheduler_skip(
+                "cleanup_watcher", f"config load failed: {type(exc).__name__}"
+            )
             if sheets_core._is_rate_limited_error(exc):
                 cleanup_logger.warning(
                     "cleanup scheduler config resolve hit Google Sheets quota/backoff; "
@@ -1818,6 +1893,9 @@ class Runtime:
             )
             return
         if cleanup_config is None or not cleanup_config.enabled:
+            self._record_scheduler_skip(
+                "cleanup_watcher", "cleanup config is missing or disabled"
+            )
             return
 
         cleanup_job = self.scheduler.every(
@@ -1917,6 +1995,9 @@ class Runtime:
             callback()
             return True
         except Exception as exc:
+            self._record_scheduler_skip(
+                scheduler_name, f"config load failed: {type(exc).__name__}"
+            )
             if sheets_core._is_rate_limited_error(exc):
                 self._log_optional_scheduler_quota_skip(
                     logger=target_logger,
@@ -1985,6 +2066,9 @@ class Runtime:
                     collector_config.schedule_time_utc,
                 )
             except Exception:
+                self._record_scheduler_skip(
+                    "achievement_collector", "schedule config load failed"
+                )
                 log.exception("achievement collector schedule configuration failed")
             else:
                 collector_job = self.scheduler.at(
@@ -2044,10 +2128,16 @@ class Runtime:
                 )
             )
         elif mirralith_cron:
+            self._record_scheduler_skip(
+                "mirralith_overview", "feature toggle is disabled"
+            )
             log.info(
                 "Mirralith overview disabled via feature toggle; skipping schedule"
             )
         else:
+            self._record_scheduler_skip(
+                "mirralith_overview", "MIRRALITH_POST_CRON is not set"
+            )
             log.info("Mirralith overview job disabled; MIRRALITH_POST_CRON is not set.")
 
         try:
@@ -2093,6 +2183,9 @@ class Runtime:
                 )
             )
         else:
+            self._record_scheduler_skip(
+                "c1c_ad", "C1C_AD_REFRESH_DAYS is not configured"
+            )
             log.info("C1C ad job disabled; C1C_AD_REFRESH_DAYS is not configured.")
 
         try:
@@ -2110,6 +2203,7 @@ class Runtime:
                 raise
 
         if not clan_ads_enabled:
+            self._record_scheduler_skip("clan_ads", "feature toggle is disabled")
             log.info("Clan ads job disabled via feature toggle.")
         else:
             try:
@@ -2146,6 +2240,9 @@ class Runtime:
                     )
                 )
             else:
+                self._record_scheduler_skip(
+                    "clan_ads", "scheduler interval is not configured"
+                )
                 log.info(
                     "Clan ads job disabled; clan_ad_post_interval_hours is not configured."
                 )
@@ -2193,10 +2290,18 @@ class Runtime:
                     )
                 )
             else:
+                self._record_scheduler_skip(
+                    "housekeeping_keepalive",
+                    "required config is missing, invalid, or disabled",
+                )
                 log.info(
                     "thread keepalive not scheduled; required sheet Config is missing, invalid, or disabled"
                 )
         else:
+            self._record_scheduler_skip(
+                "housekeeping_keepalive",
+                "global housekeeping feature toggle is disabled",
+            )
             log.info("housekeeping keepalive disabled via feature toggle")
 
         self._register_optional_scheduler(

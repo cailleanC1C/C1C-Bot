@@ -1440,9 +1440,7 @@ def test_cleanup_schedules_only_when_global_and_cleanup_toggles_enabled(
     assert rt.scheduler.calls == [
         {"hours": 6.0, "tag": "cleanup", "name": "cleanup_watcher"}
     ]
-    assert [task["name"] for task in rt.scheduler.spawned] == [
-        "cleanup_registration_notice",
-    ]
+    assert rt.scheduler.spawned == []
     assert "cleanup_startup_validation" not in [
         task["name"] for task in rt.scheduler.spawned
     ]
@@ -1463,12 +1461,8 @@ def test_cleanup_schedules_only_when_global_and_cleanup_toggles_enabled(
         "writeback": True,
     }
 
-    registration_notice = rt.scheduler.spawned[0]["coro"]
-    asyncio.run(registration_notice)
     assert sent_logs == [
         "🧹 cleanup watcher tick: startup_validation=false writeback=true",
-        "🧹 cleanup watcher scheduled: every=6h dry_run=true "
-        "tab=CleanupRows next_run=2026-06-26T12:00:00Z",
     ]
 
 

@@ -23,7 +23,7 @@ from shared.logfmt import LogTemplates, guild_label, user_label, human_reason
 from shared.redaction import sanitize_text
 from shared import health as healthmod
 from shared import socket_heartbeat as hb
-from modules.common.runtime import Runtime, StartupPhaseError
+from modules.common.runtime import Runtime, StartupPhaseError, scheduler_report_lines
 from modules.common import keepalive
 from modules.coreops import ready as core_ready
 from c1c_coreops.config import (
@@ -42,7 +42,6 @@ from c1c_coreops.cron_summary import emit_daily_summary
 from modules.recruitment.reporting.daily_recruiter_update import (
     ensure_scheduler_started,
 )
-from modules.community.fusion.reminders import collect_fusion_reminder_startup_summary
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -258,17 +257,6 @@ def _normalize_admin_invocation(base: str, remainder: str | None) -> str:
     if remainder:
         parts.append(remainder)
     return normalize_command_text(" ".join(parts))
-
-
-def _fmt_next_utc(job: object) -> str:
-    next_run = getattr(job, "next_run", None)
-    if next_run is None:
-        return "not scheduled"
-    return (
-        next_run.astimezone(dt.timezone.utc)
-        .replace(second=0, microsecond=0)
-        .strftime("%Y-%m-%d %H:%M UTC")
-    )
 
 
 async def _maybe_capture_onboarding_answer(message: discord.Message) -> bool:
@@ -490,37 +478,9 @@ async def on_ready():
                 f"• failed: {preload_report.error or 'unknown'}",
             ]
 
-    jobs = {getattr(job, "name", ""): job for job in runtime.scheduler.jobs}
-    fusion_reminder_lines: list[str]
-    try:
-        fusion_reminder_lines = await collect_fusion_reminder_startup_summary(
-            bot,
-            scheduler_started=any(name.startswith("fusion_") for name in jobs),
-        )
-    except Exception as exc:
-        log.exception("fusion reminder startup summary failed")
-        fusion_reminder_lines = [
-            "🧬 Fusion reminders",
-            f"• started={'yes' if any(name.startswith('fusion_') for name in jobs) else 'no'}",
-            f"• failed={type(exc).__name__}",
-        ]
-    scheduler_lines = [
-        "🧭 Scheduler",
-        "• intervals: clans=3h • templates=7d • clan_tags=7d • onboarding_questions=7d • cleanup=24h • mirralith_overview=not scheduled",
-        f"• clans={_fmt_next_utc(jobs['cache_refresh:clans']) if 'cache_refresh:clans' in jobs else 'not scheduled'}",
-        f"• templates={_fmt_next_utc(jobs['cache_refresh:templates']) if 'cache_refresh:templates' in jobs else 'not scheduled'}",
-        f"• clan_tags={_fmt_next_utc(jobs['cache_refresh:clan_tags']) if 'cache_refresh:clan_tags' in jobs else 'not scheduled'}",
-        f"• onboarding_questions={_fmt_next_utc(jobs['cache_refresh:onboarding_questions']) if 'cache_refresh:onboarding_questions' in jobs else 'not scheduled'}",
-        f"• cleanup={_fmt_next_utc(jobs['cleanup_watcher']) if 'cleanup_watcher' in jobs else 'not scheduled'}",
-        f"• housekeeping_keepalive={_fmt_next_utc(jobs['housekeeping_keepalive']) if 'housekeeping_keepalive' in jobs else 'not scheduled'}",
-        f"• mirralith_overview={_fmt_next_utc(jobs['mirralith_overview']) if 'mirralith_overview' in jobs else 'not scheduled'}",
-        f"• fusion_grouped_reminders={_fmt_next_utc(jobs['fusion_grouped_reminders']) if 'fusion_grouped_reminders' in jobs else 'not scheduled'}",
-        f"• fusion_announcement_refresh={_fmt_next_utc(jobs['fusion_announcement_refresh']) if 'fusion_announcement_refresh' in jobs else 'not scheduled'}",
-        f"• fusion_role_cleanup={_fmt_next_utc(jobs['fusion_role_cleanup']) if 'fusion_role_cleanup' in jobs else 'not scheduled'}",
-        f"• reset_reminders={_fmt_next_utc(jobs['reset_reminders']) if 'reset_reminders' in jobs else 'not scheduled'}",
-        f"• achievement_collector={_fmt_next_utc(jobs['achievement_collector']) if 'achievement_collector' in jobs else 'not scheduled'}",
-        *fusion_reminder_lines,
-    ]
+    # Reporting is intentionally a registry read.  Do not call job/config helpers
+    # here: registration already established both the live jobs and skip reasons.
+    scheduler_lines = scheduler_report_lines(runtime.scheduler)
     watchers_lines = [
         "✅ Watchers",
         "• Promo watcher — event=enabled",
