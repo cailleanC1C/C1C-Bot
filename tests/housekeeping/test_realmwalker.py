@@ -311,13 +311,17 @@ def test_config_resolution_parses_comma_separated_game_role_ids(monkeypatch):
     assert config is not None
     assert config.access_role_id == 1450000000000000000
     assert config.game_role_ids == frozenset(game_ids)
+    assert len(config.game_role_ids) == 7
+    assert (
+        int("".join(str(role_id) for role_id in game_ids)) not in config.game_role_ids
+    )
 
 
 def test_config_resolution_tolerates_whitespace_and_newlines(monkeypatch):
     async def get_config(key, default=None):
         if key == realmwalker.ACCESS_ROLE_KEY:
             return "10"
-        return " 20,  21 ,\n22\n 23 "
+        return " 20  21\n22\n 23 "
 
     monkeypatch.setattr(realmwalker.recruitment, "get_config_value_async", get_config)
     config, error = asyncio.run(realmwalker.resolve_config())
@@ -349,6 +353,48 @@ def test_unresolved_game_role_ids_are_reported_individually():
     assert "14482693930824540761447924607842652232" not in error
 
 
+def test_concatenated_impossible_value_is_unresolved_while_valid_role_continues():
+    access_id = 10
+    valid_game_id = 20
+    joined_id = 14482693930824540761447924607842652232
+    roles = {
+        access_id: role(access_id, "RealmWalker"),
+        valid_game_id: role(valid_game_id, "WoW"),
+    }
+
+    resolved, warning = realmwalker.resolve_guild_roles(
+        SimpleNamespace(get_role=roles.get),
+        realmwalker.RealmWalkerConfig(access_id, frozenset({valid_game_id, joined_id})),
+    )
+
+    assert resolved is not None
+    assert [item.id for item in resolved.game_roles] == [valid_game_id]
+    assert warning is not None
+    assert f"`{joined_id}`" in warning
+
+
+def test_partial_unresolved_warning_lists_ids_and_audit_uses_resolved_roles():
+    access = role(10, "RealmWalker")
+    game = role(20, "WoW")
+    unresolved_ids = (30, 40)
+    guild = SimpleNamespace(get_role={10: access, 20: game}.get)
+
+    resolved, warning = realmwalker.resolve_guild_roles(
+        guild,
+        realmwalker.RealmWalkerConfig(10, frozenset({20, *unresolved_ids})),
+    )
+    result = realmwalker.scan_members(
+        [member(1, [game])],
+        realmwalker.RealmWalkerConfig(10, frozenset({20, *unresolved_ids})),
+    )
+
+    assert resolved is not None
+    assert len(result.issues) == 1
+    assert warning is not None
+    assert "`30`, `40`" in warning
+    assert "`3040`" not in warning
+
+
 def test_access_role_config_rejects_a_role_id_list(monkeypatch):
     async def get_config(key, default=None):
         return "10,11" if key == realmwalker.ACCESS_ROLE_KEY else "20,21"
@@ -361,7 +407,7 @@ def test_access_role_config_rejects_a_role_id_list(monkeypatch):
     assert "REALMWALKER_ACCESS_ROLE_ID is missing or invalid" in error
 
 
-def test_manual_fix_aborts_before_member_mutation_for_invalid_parsed_config(
+def test_manual_fix_uses_valid_ids_and_warns_for_invalid_parsed_config(
     monkeypatch,
 ):
     add_called = False
@@ -377,11 +423,13 @@ def test_manual_fix_aborts_before_member_mutation_for_invalid_parsed_config(
         return "10" if key == realmwalker.ACCESS_ROLE_KEY else "20,not-a-role,21"
 
     monkeypatch.setattr(realmwalker.recruitment, "get_config_value_async", get_config)
+    roles = {10: role(10, "RealmWalker"), 20: affected.roles[0], 21: role(21, "GW2")}
+
+    async def fetched_members():
+        yield affected
+
     guild = SimpleNamespace(
-        members=[affected],
-        get_role=lambda _role_id: (_ for _ in ()).throw(
-            AssertionError("role resolution must not run for invalid config")
-        ),
+        get_role=roles.get, fetch_members=lambda **_kwargs: fetched_members()
     )
     sent = []
 
@@ -392,8 +440,10 @@ def test_manual_fix_aborts_before_member_mutation_for_invalid_parsed_config(
     ctx = SimpleNamespace(guild=guild, send=send)
     asyncio.run(RealmWalkerAuditCog.audit_realmwalker.callback(cog, ctx, "fix"))
 
-    assert add_called is False
-    assert "contains invalid values" in (sent[0]["embed"].description or "")
+    assert add_called is True
+    assert "contains invalid values: `not-a-role`" in (
+        sent[0]["embed"].description or ""
+    )
 
 
 def test_daily_realmwalker_scan_warns_instead_of_using_partial_cache(monkeypatch):
@@ -443,3 +493,56 @@ def test_daily_realmwalker_scan_warns_instead_of_using_partial_cache(monkeypatch
     assert result is not None
     assert result.realmwalker_issues == []
     assert "full member list could not be loaded" in (result.realmwalker_warning or "")
+
+
+def test_daily_audit_combines_config_and_unresolved_role_warnings(monkeypatch):
+    roles = {
+        role_id: role(role_id, name)
+        for role_id, name in (
+            (1, "Raid"),
+            (2, "Wandering Souls"),
+            (3, "Visitor"),
+            (10, "RealmWalker"),
+            (20, "WoW"),
+        )
+    }
+    affected = member(1, [roles[20]])
+
+    async def fetched_members():
+        yield affected
+
+    guild = SimpleNamespace(
+        id=100,
+        roles=list(roles.values()),
+        fetch_members=lambda **_kwargs: fetched_members(),
+        get_role=roles.get,
+    )
+    affected.guild = guild
+
+    async def no_tickets(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(role_audit, "fetch_ticket_threads", no_tickets)
+    result = asyncio.run(
+        role_audit._audit_guild(
+            SimpleNamespace(),
+            guild,
+            raid_role_id=1,
+            wanderer_role_id=2,
+            visitor_role_id=3,
+            clan_role_ids={99},
+            raid_role_name="Raid",
+            wanderer_role_name="Wandering Souls",
+            realmwalker_config=realmwalker.RealmWalkerConfig(10, frozenset({20, 30})),
+            realmwalker_warning=(
+                "REALMWALKER_GAME_ROLE_IDS contains invalid values: `bad-id`"
+            ),
+        )
+    )
+
+    assert result is not None
+    assert len(result.realmwalker_issues) == 1
+    assert "invalid values: `bad-id`" in (result.realmwalker_warning or "")
+    assert "could not be resolved in this guild: `30`" in (
+        result.realmwalker_warning or ""
+    )

@@ -78,16 +78,21 @@ async def resolve_config() -> tuple[RealmWalkerConfig | None, str | None]:
     games_value = await recruitment.get_config_value_async(GAME_ROLES_KEY, None)
     access_id = _parse_role_id(access_value)
     game_ids, invalid_games = _parse_role_ids(games_value)
-    if access_id is None or not game_ids or invalid_games:
+    if access_id is None or not game_ids:
         details = []
         if access_id is None:
             details.append(f"{ACCESS_ROLE_KEY} is missing or invalid")
         if not game_ids:
             details.append(f"{GAME_ROLES_KEY} has no valid role IDs")
         if invalid_games:
-            details.append(f"{GAME_ROLES_KEY} contains invalid values")
+            invalid = ", ".join(f"`{value}`" for value in invalid_games)
+            details.append(f"{GAME_ROLES_KEY} contains invalid values: {invalid}")
         return None, "; ".join(details)
-    return RealmWalkerConfig(access_id, frozenset(game_ids)), None
+    warning = None
+    if invalid_games:
+        invalid = ", ".join(f"`{value}`" for value in invalid_games)
+        warning = f"{GAME_ROLES_KEY} contains invalid values: {invalid}"
+    return RealmWalkerConfig(access_id, frozenset(game_ids)), warning
 
 
 def resolve_guild_roles(
@@ -109,13 +114,18 @@ def resolve_guild_roles(
             missing_ids.append(role_id)
         else:
             game_roles.append(resolved)
+    warning = None
     if missing_ids:
         unresolved = ", ".join(f"`{role_id}`" for role_id in missing_ids)
-        return None, (
+        warning = (
             f"Game role IDs configured by `{GAME_ROLES_KEY}` could not be resolved "
-            f"in this guild: {unresolved}. No roles were changed."
+            f"in this guild: {unresolved}."
         )
-    return ResolvedRealmWalkerRoles(access_role, tuple(game_roles)), None
+    if not game_roles:
+        return None, (
+            f"{warning} No configured game roles could be used. No roles were changed."
+        )
+    return ResolvedRealmWalkerRoles(access_role, tuple(game_roles)), warning
 
 
 def scan_members(
@@ -177,6 +187,7 @@ def build_embeds(
     *,
     fixing: bool = False,
     error: str | None = None,
+    warning: str | None = None,
     resolved_roles: ResolvedRealmWalkerRoles | None = None,
 ) -> list[discord.Embed]:
     """Render bounded, mention-safe manual command output."""
@@ -200,6 +211,8 @@ def build_embeds(
         sections = ["**Missing RealmWalker access**", *map(format_issue, result.issues)]
     else:
         sections = ["✅ No RealmWalker access issues found."]
+    if warning:
+        sections.extend(["", "**Configuration warning**", warning])
 
     chunks: list[str] = []
     current = ""
