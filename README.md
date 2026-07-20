@@ -1,74 +1,60 @@
-<!-- Keep README user-facing -->
-<!-- Dev layout reference: recruitment modules now live in modules/recruitment/, -->
-<!-- shared sheet adapters consolidate under shared/sheets/. See docs/Architecture.md. -->
-# C1C Bot — The Woadkeeper
-Version v0.9.8.2
+# C1C Bot - The Woadkeeper
 
-Welcome, traveller of the Blue Flame.  
-The Woadkeeper keeps our clans organised, our newcomers guided, and our Sheets clean.  
-Think of it as the cluster’s quiet little helper: always awake, always watching, and always keeping the halls tidy so people can focus on playing and having fun.
-## Role overview
-- **Users** get quick answers about clans and bot status without pinging staff.
-- **Staff** use richer panels with more info to clans needs and ready-to-send welcome messages.
-- **Admins** keep the bot running smoothly and coordinate anything that touches the Ops toolkit.
-# 🌟 What the Woadkeeper Does
-### For normal users
-- `@<Botname> help` — lists everything you can access with a short tip for each item.
-- **Find a clan**
-  `!clan <tag>` gives you a clean profile card with requirements, crest, and quick notes.
-- **Browse the cluster**
-  Use `!clansearch` to open the interactive search menu.
-- **Track your shard mercy**
-  `!shards` opens your personal shard tracker panel in a private thread. It shows stash, mercy counters, last pulls, and base chances for Ancient, Void, Sacred, and Primal shards, including the split Legendary/Mythical path for Primals.
-- **Answer onboarding prompts**
-  When the onboarding wizard in your welcome thread says “Input is required,” reply in that same thread with your answer. The bot captures your message directly—no extra “Enter answer” button needed—and enables **Next** once it validates the reply.
-- **Check the bot**
-  `@BotName ping` — answers with 🏓 if all systems are up.
-The bot only shows commands you can actually run; if you need more tools, ask an admin to review your roles.
-### For staff & recruiters
-Staff can use all user commands plus:
-- **Recruitment panel**  
-  `!clanmatch` opens the matching tool to help place new members.
-- **Welcome Messages**  
-  `!welcome [clan] @name` posts the welcome and logs it in the right places.
-Operational commands (anything that peeks under the hood of the bot like refresh buttons, sync helpers and similar tools) live in the Ops docs. Start with the [Command Matrix](docs/ops/CommandMatrix.md) and [Perm Command Quickstart](docs/ops/PermCommandQuickstart.md) to see what each command does before you press go.
-### Admin snapshot
-Admins handle the bigger picture:
-- Caches staying fresh  
-- Sheets staying clean  
-- Reservation ledger behaving  
-- Permissions UI working properly  
-- Onboarding running without stalling  
-Start with:
-- **Ops Runbook:** `docs/Runbook.md`
-- **Troubleshooting:** `docs/Troubleshooting.md`
-- **Ops Command Matrix:** `docs/ops/CommandMatrix.md`
-- **Watchers Reference:** `docs/ops/Watchers.md`
-- **Cluster Role Map:** `!whoweare` prints the live "Who We Are" roster straight from the WhoWeAre sheet so cluster leads can see who holds which roles (with snark) in real time.
+**Version:** v0.9.8.2
 
-This is your Swiss-army knife for keeping the bot healthy.
-# 🧭 Behind the Curtain — How It Works
-If you’re curious how the bot thinks, check:
-- **Architecture Overview:** `docs/Architecture.md`  
-- **Module docs:**  
-  - `docs/modules/Onboarding.md`  
-  - `docs/modules/Welcome.md`  
-  - `docs/modules/Recruitment.md`  
-  - `docs/modules/Placement.md`  
-  - `docs/modules/CoreOps.md`  
-  - `docs/modules/PermissionsUI.md`
-    
-Each module doc explains what that subsystem does and how it fits into the bigger picture.
-# 📚 Quick Documentation Links
-- 🏛 **Architecture:** `docs/Architecture.md`  
-- 📘 **Ops Runbook:** `docs/Runbook.md`  
-- 🔧 **Command Matrix:** `docs/ops/CommandMatrix.md`  
-- 🛠 **Troubleshooting:** `docs/Troubleshooting.md`  
-- 🔭 **Watchers:** `docs/ops/Watchers.md`  
-- 🧩 **Modules:** in `docs/modules/`  
-- 📜 **Contributor & Dev Docs:**
-  - `docs/_meta/DocStyle.md`
-  - `docs/contracts/CollaborationContract.md`
-  - ADRs in `docs/adr/`
+The Woadkeeper is the C1C cluster's unified Discord bot for recruitment,
+onboarding, community tools, and day-to-day operations. It connects Discord
+workflows with sheet-backed configuration and records so members, recruiters,
+and administrators can use one consistent set of tools.
 
-Doc last updated: 2025-12-31 (v0.9.8.2)
+This README is the repository landing page. For setup, operation, and command
+details, use the documentation links below rather than treating this page as an
+admin manual.
+
+## Current Documentation
+
+- **Live admin/operator wiki:** [C1C Bot wiki](https://github.com/cailleanC1C/C1C-Bot/wiki)
+- **Version-controlled wiki source:** [`docs/wiki/`](docs/wiki/)
+- **Implementation/reference docs:** [`docs/README.md`](docs/README.md)
+
+The wiki is maintained as code: its Markdown sources live in `docs/wiki/` and
+are published to GitHub Wiki pages. See the
+[wiki command reference](https://github.com/cailleanC1C/C1C-Bot/wiki/Command-Reference)
+for available commands, permissions, and invocation details; the full command
+catalogue is intentionally not duplicated here.
+
+## What the Woadkeeper Covers
+
+- **CoreOps and runtime:** health, configuration, checks, cache refreshes,
+  reloads, help, operational digests, and runtime safeguards.
+- **Onboarding and promo tickets:** guided welcome and promotion flows,
+  question capture, routing, summaries, and handoff to placement.
+- **Recruitment and clan operations:** member and recruiter panels, clan search
+  and profiles, clan advertising, recruitment reporting, placement, and seat
+  reservations.
+- **Community features:** shard tracking, Fusion and Titan events, reset
+  reminders, progress guides, C1C leagues, and reaction roles.
+- **Housekeeping:** cleanup, keepalive, achievements, the achievement collector,
+  Wandering Souls diagnostics, Realmwalker audits, Mirralith overviews, C1C ads,
+  role audits, and the guides help index.
+- **Discord roles and permissions:** role-aware access, interactive permission
+  management, server navigation, and role-holder overviews.
+
+For an administrator-oriented map of these areas and their dependencies, see
+the [feature index](https://github.com/cailleanC1C/C1C-Bot/wiki/Feature-Index).
+
+## Repository Guide
+
+- [`docs/wiki/`](docs/wiki/) contains the source of the operator-facing wiki.
+- [`docs/README.md`](docs/README.md) indexes architecture, operations,
+  troubleshooting, module deep dives, governance, and other implementation
+  references.
+- [`docs/contracts/CollaborationContract.md`](docs/contracts/CollaborationContract.md)
+  defines contribution and documentation standards.
+- [`docs/adr/`](docs/adr/) records significant architectural decisions.
+
+Runtime configuration and operational procedures belong in the wiki and
+reference documentation. Secrets and credential values must never be committed
+to this repository.
+
+Doc last updated: 2026-07-20 (v0.9.8.2)
