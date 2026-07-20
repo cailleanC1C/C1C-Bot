@@ -67,14 +67,20 @@ def test_amerge_onboarding_config_early_uses_async_loader(monkeypatch):
         return "milestone-sheet", {"SHARD_MERCY_TAB": "Mercy"}
 
     def _sync_loader():
-        raise AssertionError("sync onboarding Config loader must not run in async runtime")
+        raise AssertionError(
+            "sync onboarding Config loader must not run in async runtime"
+        )
 
     monkeypatch.setitem(
         sys.modules,
         "shared.sheets.onboarding",
-        types.SimpleNamespace(_aload_config=_aload_config, _read_onboarding_config=_sync_loader),
+        types.SimpleNamespace(
+            _aload_config=_aload_config, _read_onboarding_config=_sync_loader
+        ),
     )
-    monkeypatch.setattr(config, "_aload_milestones_config_values", _aload_milestones_config_values)
+    monkeypatch.setattr(
+        config, "_aload_milestones_config_values", _aload_milestones_config_values
+    )
 
     merged = asyncio.run(config.amerge_onboarding_config_early())
 
@@ -98,8 +104,10 @@ def test_amerge_onboarding_config_early_executes_real_async_sheet_loaders(monkey
     monkeypatch.setenv("MILESTONES_CONFIG_TAB", "MilestonesConfigTab")
     config._CONFIG["MILESTONES_SHEET_ID"] = "milestone-sheet-XYZ"
 
-    onboarding_sheets._CONFIG_CACHE = None
-    onboarding_sheets._CONFIG_CACHE_TS = 0.0
+    monkeypatch.setattr(onboarding_sheets, "_CONFIG_CACHE", None)
+    monkeypatch.setattr(onboarding_sheets, "_CONFIG_CACHE_TS", 0.0)
+    monkeypatch.setattr(onboarding_sheets, "_sheet_id", lambda: "onboard-sheet-XYZ")
+    monkeypatch.setattr(milestones_config, "_sheet_id", lambda: "milestone-sheet-XYZ")
 
     calls = []
 
@@ -122,10 +130,16 @@ def test_amerge_onboarding_config_early_executes_real_async_sheet_loaders(monkey
         ]
 
     def _sync_fetch_records(*args, **kwargs):
-        raise AssertionError("sync Sheets fetch_records must not run during async startup preload")
+        raise AssertionError(
+            "sync Sheets fetch_records must not run during async startup preload"
+        )
 
-    monkeypatch.setattr(onboarding_sheets, "afetch_records", _fake_onboarding_afetch_records)
-    monkeypatch.setattr(milestones_config.async_core, "afetch_records", _fake_milestones_afetch_records)
+    monkeypatch.setattr(
+        onboarding_sheets, "afetch_records", _fake_onboarding_afetch_records
+    )
+    monkeypatch.setattr(
+        milestones_config.async_core, "afetch_records", _fake_milestones_afetch_records
+    )
     monkeypatch.setattr(sheets_core, "fetch_records", _sync_fetch_records)
 
     merged = asyncio.run(config.amerge_onboarding_config_early())

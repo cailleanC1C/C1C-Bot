@@ -49,7 +49,13 @@ def test_load_clan_tags_async_reads_column_b(monkeypatch) -> None:
 
     async def runner() -> None:
         monkeypatch.setattr(onboarding, "_sheet_id", lambda: "sheet-id", raising=False)
-        monkeypatch.setattr(onboarding, "_clanlist_tab", lambda: "ClanList", raising=False)
+
+        async def fake_aclanlist_tab() -> str:
+            return "ClanList"
+
+        monkeypatch.setattr(
+            onboarding, "_aclanlist_tab", fake_aclanlist_tab, raising=True
+        )
         monkeypatch.setattr(onboarding, "afetch_values", fake_afetch, raising=True)
 
         tags = await onboarding._load_clan_tags_async()

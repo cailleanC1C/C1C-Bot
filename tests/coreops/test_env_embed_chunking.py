@@ -5,8 +5,10 @@ from discord.ext import commands
 
 from c1c_coreops.cog import (
     CoreOpsCog,
+    _EMBED_TOTAL_CHAR_LIMIT,
     _EnvEntry,
-    _MAX_EMBED_LENGTH,
+    _EnvRenderMeta,
+    _FIELD_CHAR_LIMIT,
     _chunk_field_lines,
     _embed_length,
 )
@@ -103,23 +105,21 @@ def test_env_embeds_chunk_large_fields(monkeypatch):
 
     timestamp = dt.datetime.now(dt.timezone.utc)
 
+    render_meta = _EnvRenderMeta(
+        bot_name="Bot", env="test", version="v1", timestamp=timestamp
+    )
     embeds, warnings, warning_keys = cog._build_env_embeds(
-        bot_name="Bot",
-        env="test",
-        version="v1",
-        guild_name="Guild",
         entries=entries,
         sheet_sections=[],
-        footer_text="footer",
-        timestamp=timestamp,
+        render_meta=render_meta,
     )
 
     assert not warnings
     assert not warning_keys
     assert len(embeds) >= 4
     assert any("Channels (" in field.name for embed in embeds for field in embed.fields)
-    for page, embed in enumerate(embeds, start=1):
-        assert f"Page {page}/{len(embeds)}" in embed.title
-        assert _embed_length(embed) <= _MAX_EMBED_LENGTH
+    for embed in embeds:
+        assert embed.title.startswith("Bot — env: test —")
+        assert _embed_length(embed) <= _EMBED_TOTAL_CHAR_LIMIT
         for field in embed.fields:
-            assert len(str(field.value)) <= 900
+            assert len(str(field.value)) <= _FIELD_CHAR_LIMIT

@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+from c1c_coreops import cog as coreops_cog
 from c1c_coreops.cog import CoreOpsCog
-from shared import config as shared_config
 
 
 class _Context:
@@ -28,8 +28,11 @@ def test_coreops_reload_surfaces_use_async_config_reload(monkeypatch) -> None:
         calls.append("async_reload")
         return {}
 
-    monkeypatch.setattr(shared_config, "reload_config", sync_reload_forbidden)
-    monkeypatch.setattr(shared_config, "areload_config", async_reload)
+    config_module = SimpleNamespace(
+        reload_config=sync_reload_forbidden,
+        areload_config=async_reload,
+    )
+    monkeypatch.setattr(coreops_cog, "_ensure_config_module", lambda: config_module)
 
     cog = object.__new__(CoreOpsCog)
 
