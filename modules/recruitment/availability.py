@@ -343,71 +343,19 @@ def _resolve_availability_headers() -> AvailabilityHeaderResolution:
 
 
 async def _aresolve_availability_headers() -> AvailabilityHeaderResolution:
-    async def _load_async_header() -> tuple[str, list[Any], dict[str, str]]:
-        tab = await recruitment.get_clans_tab_name_async()
-        row = list(await recruitment.aget_clan_header_row(force=False))
-        configured: dict[str, str] = {}
-        for field in AVAILABILITY_FIELDS:
-            config_key = f"clans_header_{field}"
-            value = await recruitment.get_config_value_async(
-                config_key, None, force=False
-            )
-            configured[field] = str(value).strip() if value is not None else ""
-        return tab, row, configured
-
-    async def _load_cached_header_with_async_config() -> (
-        tuple[str, list[Any], dict[str, str]]
-    ):
-        tab = await recruitment.get_clans_tab_name_async()
-        try:
-            row = list(recruitment.get_clan_header_row(force=False))
-        except TypeError:
-            row = list(recruitment.get_clan_header_row())
-        configured: dict[str, str] = {}
-        for field in AVAILABILITY_FIELDS:
-            config_key = f"clans_header_{field}"
-            value = await recruitment.get_config_value_async(
-                config_key, None, force=False
-            )
-            configured[field] = str(value).strip() if value is not None else ""
-        return tab, row, configured
-
-    def _load_sync_for_thread() -> tuple[str, list[Any], dict[str, str]]:
-        tab = recruitment.get_clans_tab_name()
-        try:
-            row = list(recruitment.get_clan_header_row(force=False))
-        except TypeError:
-            row = list(recruitment.get_clan_header_row())
-        configured: dict[str, str] = {}
-        for field in AVAILABILITY_FIELDS:
-            config_key = f"clans_header_{field}"
-            try:
-                value = recruitment.get_config_value(config_key, None, force=False)
-            except TypeError:
-                value = recruitment.get_config_value(config_key, None)
-            configured[field] = str(value).strip() if value is not None else ""
-        return tab, row, configured
-
     sheet_id = recruitment.get_recruitment_sheet_id()
     used_cached_header = bool(
         getattr(recruitment, "clan_header_cache_ready", lambda: False)()
     )
     summary = _QUOTA_SUMMARY.get()
 
-    try:
-        if used_cached_header:
-            tab_name, header_row, configured_headers = (
-                await _load_cached_header_with_async_config()
-            )
-        else:
-            tab_name, header_row, configured_headers = await _load_async_header()
-    except Exception:
-        # Compatibility path for callers/tests that only provide sync helpers.
-        # Run it off the event loop so sync Sheets retry/backoff cannot execute
-        # in the Discord event loop.
-        tab_name, header_row, configured_headers = await asyncio.to_thread(
-            _load_sync_for_thread
-        )
+    tab_name = await recruitment.get_clans_tab_name_async()
+    header_row = list(await recruitment.aget_clan_header_row(force=False))
+    configured_headers: dict[str, str] = {}
+    for field in AVAILABILITY_FIELDS:
+        config_key = f"clans_header_{field}"
+        value = await recruitment.get_config_value_async(config_key, None, force=False)
+        configured_headers[field] = str(value).strip() if value is not None else ""
 
     if summary is not None:
         summary.used_cached_header = used_cached_header
@@ -507,25 +455,10 @@ async def _afind_availability_clan_row(
     normalized_target = _normalize_tag(clan_tag)
     used_cached_row = bool(getattr(recruitment, "clan_cache_ready", lambda: False)())
 
-    def _sync_find_for_thread() -> tuple[int, list[str]] | None:
-        try:
-            return recruitment.find_clan_row(clan_tag, force=False)
-        except TypeError:
-            return recruitment.find_clan_row(clan_tag)
-
-    if used_cached_row:
-        try:
-            try:
-                clan_rows = recruitment.fetch_clans(force=False)
-            except TypeError:
-                clan_rows = recruitment.fetch_clans()
-        except Exception:
-            clan_rows = []
-    else:
-        try:
-            clan_rows = await recruitment.afetch_clans(force=False)
-        except Exception:
-            clan_rows = []
+    try:
+        clan_rows = await recruitment.afetch_clans(force=False)
+    except Exception:
+        clan_rows = []
 
     summary = _QUOTA_SUMMARY.get()
     if summary is not None:
@@ -542,12 +475,7 @@ async def _afind_availability_clan_row(
         if _normalize_tag(tag_value) == normalized_target:
             return idx + headers.header_row_index + 1, list(row)
 
-    if used_cached_row:
-        return _sync_find_for_thread()
-
-    # Compatibility fallback for sync-only test doubles/legacy callers, without
-    # running sync Sheets retry/backoff in the event loop.
-    return await asyncio.to_thread(_sync_find_for_thread)
+    return await recruitment.afind_clan_row(clan_tag, force=False)
 
 
 async def aresolve_configured_clan_tag(clan_tag: str) -> str:
