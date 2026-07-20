@@ -8,8 +8,27 @@ import unicodedata
 
 ROOT = Path(__file__).resolve().parents[2]
 WIKI = ROOT / "docs" / "wiki"
-REQUIRED = ("Home.md", "_Sidebar.md")
+REQUIRED = ("home.md", "_sidebar.md")
 LINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
+
+# Repository sources obey G-06 lower_snake_case naming. Publishing deliberately
+# maps them to the human-facing filenames expected by GitHub Wiki.
+SOURCE_TO_WIKI = {
+    "home.md": "Home.md",
+    "command_reference.md": "Command-Reference.md",
+    "feature_index.md": "Feature-Index.md",
+    "sheets_config_reference.md": "Sheets-&-Config-Reference.md",
+    "operations_runbook.md": "Operations-Runbook.md",
+    "coreops_runtime.md": "CoreOps-&-Runtime.md",
+    "onboarding_ticket_flows.md": "Onboarding-&-Ticket-Flows.md",
+    "recruitment_clan_tools.md": "Recruitment-&-Clan-Tools.md",
+    "placement_reservations.md": "Placement-&-Reservations.md",
+    "housekeeping_maintenance.md": "Housekeeping-&-Maintenance.md",
+    "community_features_events.md": "Community-Features-&-Events.md",
+    "discord_roles_permissions.md": "Discord-Roles-&-Permissions.md",
+    "troubleshooting.md": "Troubleshooting.md",
+    "_sidebar.md": "_Sidebar.md",
+}
 
 
 def canonical_page_name(name: str) -> str:
@@ -26,9 +45,18 @@ def main() -> int:
 
     pages = sorted(WIKI.glob("*.md")) if WIKI.is_dir() else []
     filenames = {page.name for page in pages}
+    unmapped = filenames - SOURCE_TO_WIKI.keys()
+    missing_sources = SOURCE_TO_WIKI.keys() - filenames
+    for name in sorted(unmapped):
+        errors.append(f"wiki source has no publish mapping: docs/wiki/{name}")
+    for name in sorted(missing_sources):
+        errors.append(f"publish mapping has no wiki source: docs/wiki/{name}")
+
+    published_filenames = set(SOURCE_TO_WIKI.values())
     canonical: dict[str, Path] = {}
     for page in pages:
-        key = canonical_page_name(page.stem)
+        published_name = SOURCE_TO_WIKI.get(page.name, page.name)
+        key = canonical_page_name(Path(published_name).stem)
         if previous := canonical.get(key):
             errors.append(
                 "duplicate lookalike page names: "
@@ -40,10 +68,10 @@ def main() -> int:
     for page in pages:
         for target in LINK_RE.findall(page.read_text(encoding="utf-8")):
             expected = f"{target.strip().replace(' ', '-')}.md"
-            if expected not in filenames:
+            if expected not in published_filenames:
                 errors.append(
                     f"unresolved wiki link in {page.relative_to(ROOT)}: "
-                    f"[[{target}]] -> docs/wiki/{expected}"
+                    f"[[{target}]] -> published wiki page {expected}"
                 )
 
     if errors:

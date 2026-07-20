@@ -31,7 +31,7 @@ Use `!health` for gateway/watchdog/cache status, `!digest` for cache age/jobs/re
 
 ## CI failures
 
-Open the first failing job, reproduce its exact command locally, and fix the cause rather than rerunning blindly. For guardrails, inspect repository policy and changed-file scope. For wiki publishing, run `python .github/scripts/validate_wiki.py`; link targets must match page filenames after spaces become hyphens. A publish clone/push failure can also mean the repository token lacks Wiki write capability or the Wiki has not been initialized.
+Open the first failing job, reproduce its exact command locally, and fix the cause rather than rerunning blindly. For guardrails, inspect repository policy and changed-file scope. For wiki publishing, run `python .github/scripts/validate_wiki.py`; link targets must match the mapped publish filename after spaces become hyphens. A publish clone/push failure can also mean the Wiki has not been initialized or authentication is insufficient. The workflow prefers the `WIKI_PUSH_TOKEN` secret: use a fine-grained personal access token scoped to the `C1C-Bot` repository with **Contents: Read and write**. When that secret is absent, the workflow uses `GITHUB_TOKEN`, for which repository Actions settings must grant **Read and write permissions**; the workflow also declares `contents: write`.
 
 ## Discord permission failures
 

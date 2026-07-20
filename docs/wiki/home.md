@@ -1,6 +1,6 @@
 # The Woadkeeper Wiki
 
-This wiki is the administrator-facing map of The Woadkeeper. Its canonical source is `docs/wiki/`; edits made directly in GitHub Wiki are overwritten after the next publish from `main`.
+This wiki is the canonical administrator and operator source of truth for The Woadkeeper. Its version-controlled source lives in `docs/wiki/`; edits made directly in GitHub Wiki are overwritten after the next publish from `main`.
 
 ## Start here
 
@@ -19,6 +19,6 @@ This wiki is the administrator-facing map of The Woadkeeper. Its canonical sourc
 - [[Community Features & Events]]
 - [[Discord Roles & Permissions]]
 
-This is concise operational documentation, not a replacement for architecture records and detailed contracts under `docs/`.
+Deeper documents elsewhere under `docs/` remain implementation references until their applicable guidance is migrated into this wiki.
 
 Doc last updated: 2026-07-20 (v0.9.8.2)
