@@ -1330,7 +1330,7 @@ def run_checks(
     )
 
     check_results = _run_guardrail_checks(context)
-    if pr_number > 0:
+    if pr_number > 0 or changed_files:
         check_results = _scope_results_to_pr_changes(check_results, changed_files)
     categories = _build_categories(check_results)
     violations = [violation for result in check_results for violation in result.violations]

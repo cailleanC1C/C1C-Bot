@@ -380,6 +380,90 @@ def test_pr_scope_keeps_violations_in_changed_files(tmp_path: Path, monkeypatch:
     assert c03_result.violations[0].files == ["modules/changed.py:1"]
 
 
+def test_non_pr_scope_ignores_unchanged_historical_violations(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    _configure_roots(tmp_path, monkeypatch)
+    modules_dir = tmp_path / "modules"
+    modules_dir.mkdir()
+    (modules_dir / "historical.py").write_text("from ..legacy import helper\n", encoding="utf-8")
+    (modules_dir / "changed.py").write_text("value = 1\n", encoding="utf-8")
+
+    base_sha = "a" * 40
+    monkeypatch.setattr(
+        guardrails_suite,
+        "_git_diff_names",
+        lambda base_ref: ["modules/changed.py"] if base_ref == base_sha else [],
+    )
+    monkeypatch.setattr(
+        guardrails_suite,
+        "_git_diff_status",
+        lambda base_ref: {"modules/changed.py": "M"} if base_ref == base_sha else {},
+    )
+    monkeypatch.setattr(guardrails_suite, "_load_feature_toggle_names", lambda: set())
+
+    suite = guardrails_suite.run_checks(
+        base_sha,
+        pr_body="",
+        parity_status="success",
+        pr_number=0,
+    )
+
+    c03_result = next(result for result in suite.check_results if result.code == "C-03")
+    assert c03_result.status == "pass"
+    assert c03_result.violations == []
+
+
+def test_non_pr_scope_preserves_full_repo_scan_without_diff_context(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    _configure_roots(tmp_path, monkeypatch)
+    modules_dir = tmp_path / "modules"
+    modules_dir.mkdir()
+    (modules_dir / "historical.py").write_text("from ..legacy import helper\n", encoding="utf-8")
+
+    monkeypatch.setattr(guardrails_suite, "_git_diff_names", lambda base_ref: [])
+    monkeypatch.setattr(guardrails_suite, "_git_diff_status", lambda base_ref: {})
+    monkeypatch.setattr(guardrails_suite, "_load_feature_toggle_names", lambda: set())
+
+    suite = guardrails_suite.run_checks(
+        None,
+        pr_body="",
+        parity_status="success",
+        pr_number=0,
+    )
+
+    c03_result = next(result for result in suite.check_results if result.code == "C-03")
+    assert c03_result.status == "fail"
+    assert c03_result.violations[0].files == ["modules/historical.py:1"]
+
+
+def test_non_pr_scope_keeps_violations_in_changed_files(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    _configure_roots(tmp_path, monkeypatch)
+    modules_dir = tmp_path / "modules"
+    modules_dir.mkdir()
+    (modules_dir / "changed.py").write_text("from ..legacy import helper\n", encoding="utf-8")
+
+    monkeypatch.setattr(guardrails_suite, "_git_diff_names", lambda base_ref: ["modules/changed.py"])
+    monkeypatch.setattr(
+        guardrails_suite, "_git_diff_status", lambda base_ref: {"modules/changed.py": "M"}
+    )
+    monkeypatch.setattr(guardrails_suite, "_load_feature_toggle_names", lambda: set())
+
+    suite = guardrails_suite.run_checks(
+        "origin/main",
+        pr_body="",
+        parity_status="success",
+        pr_number=0,
+    )
+
+    c03_result = next(result for result in suite.check_results if result.code == "C-03")
+    assert c03_result.status == "fail"
+    assert c03_result.violations[0].files == ["modules/changed.py:1"]
+
+
 def test_run_all_checks_returns_results(tmp_path: Path, monkeypatch: object) -> None:
     _configure_roots(tmp_path, monkeypatch)
 

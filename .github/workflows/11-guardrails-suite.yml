@@ -44,12 +44,19 @@ jobs:
           status_file=guardrails_status.txt
           exit_code=0
           base_ref="${{ github.base_ref || 'main' }}"
+          guardrails_base="origin/$base_ref"
           git fetch origin "$base_ref" --depth=1 || exit_code=$?
+          before_sha="${{ github.event.before }}"
+          if [ "${{ github.event_name }}" = "push" ] && \
+             [ -n "$before_sha" ] && \
+             [[ ! "$before_sha" =~ ^0+$ ]]; then
+            guardrails_base="$before_sha"
+          fi
           python -m scripts.ci.guardrails_suite \
             --pr "${{ github.event.pull_request.number || 0 }}" \
             --status-file "$status_file" \
             --summary guardrails-comment.md \
-            --base-ref "origin/$base_ref" || exit_code=$?
+            --base-ref "$guardrails_base" || exit_code=$?
           if [ -f "$status_file" ]; then
             echo "guardrails_status=$(cat "$status_file")" >> "$GITHUB_OUTPUT"
           else
