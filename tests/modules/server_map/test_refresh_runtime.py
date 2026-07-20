@@ -172,10 +172,10 @@ def test_refresh_server_map_applies_category_blacklist(monkeypatch):
         assert "<#6001>" not in body
         assert "## PUBLIC" in body
         assert "<#6002>" in body
-        assert log_messages[0].startswith("📘 Server map — cmd=")
-        assert "requested_channel=config" in log_messages[0]
-        assert log_messages[1].startswith("📘 Server map — config")
-        assert log_messages[-1].startswith("📘 Server map — cmd=servermap")
+        assert log_messages[-1].startswith(
+            "✅ Server map updated — cmd=servermap"
+        )
+        assert "target=<#7001>" in log_messages[-1]
         bot.wait_until_ready.assert_awaited()
 
     asyncio.run(_run())
@@ -234,13 +234,10 @@ def test_refresh_server_map_filters_blacklisted_channels_and_logs_config(monkeyp
         assert "<#6103>" not in body
         assert "<#6101>" in body
         assert "## PUBLIC" in body
-        config_entry = log_messages[1]
-        assert "📘 Server map — config" in config_entry
-        assert "cat_ids=1" in config_entry
-        assert "chan_ids=2" in config_entry
-        assert log_messages[0].startswith("📘 Server map — cmd=")
-        assert "requested_channel=config" in log_messages[0]
-        assert log_messages[-1].startswith("📘 Server map — cmd=servermap")
+        assert log_messages[-1].startswith(
+            "✅ Server map updated — cmd=servermap"
+        )
+        assert "target=<#7101>" in log_messages[-1]
         bot.wait_until_ready.assert_awaited()
 
     asyncio.run(_run())
