@@ -1,5 +1,6 @@
 import asyncio
 import datetime as dt
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -12,7 +13,9 @@ class _Worksheet:
         self.updated: list[tuple[str, list[list[str]]]] = []
         self.appended: list[list[str]] = []
 
-    def update(self, cell: str, values: list[list[str]], value_input_option: str = "RAW") -> None:
+    def update(
+        self, cell: str, values: list[list[str]], value_input_option: str = "RAW"
+    ) -> None:
         self.updated.append((cell, values))
 
     def append_row(self, values: list[str], value_input_option: str = "RAW") -> None:
@@ -22,9 +25,16 @@ class _Worksheet:
 def _install_config(monkeypatch: pytest.MonkeyPatch, mapping: dict[str, str]) -> None:
     for key, value in mapping.items():
         monkeypatch.setitem(config_module._CONFIG, key, value)
+    monkeypatch.setattr(
+        fusion_sheets,
+        "_resolve_tab_name",
+        AsyncMock(side_effect=lambda key: mapping[key]),
+    )
 
 
-def test_get_sent_reminder_keys_uses_configured_tab_and_columns(monkeypatch: pytest.MonkeyPatch):
+def test_get_sent_reminder_keys_uses_configured_tab_and_columns(
+    monkeypatch: pytest.MonkeyPatch,
+):
     _install_config(
         monkeypatch,
         {
@@ -32,6 +42,7 @@ def test_get_sent_reminder_keys_uses_configured_tab_and_columns(monkeypatch: pyt
         },
     )
     monkeypatch.setattr(fusion_sheets, "_sheet_id", lambda: "sheet-1")
+
     async def _afetch_values(sheet_id: str, tab_name: str):
         assert sheet_id == "sheet-1"
         assert tab_name == "Reminder Ledger"
@@ -48,7 +59,9 @@ def test_get_sent_reminder_keys_uses_configured_tab_and_columns(monkeypatch: pyt
     assert sent == {("e-1", "start")}
 
 
-def test_mark_reminder_sent_updates_existing_row_with_configured_columns(monkeypatch: pytest.MonkeyPatch):
+def test_mark_reminder_sent_updates_existing_row_with_configured_columns(
+    monkeypatch: pytest.MonkeyPatch,
+):
     _install_config(
         monkeypatch,
         {
@@ -57,6 +70,7 @@ def test_mark_reminder_sent_updates_existing_row_with_configured_columns(monkeyp
     )
     worksheet = _Worksheet()
     monkeypatch.setattr(fusion_sheets, "_sheet_id", lambda: "sheet-1")
+
     async def _afetch_values(sheet_id: str, tab_name: str):
         assert sheet_id == "sheet-1"
         assert tab_name == "Reminder Ledger"
@@ -89,7 +103,9 @@ def test_mark_reminder_sent_updates_existing_row_with_configured_columns(monkeyp
     assert worksheet.updated[0][0] == "D2"
 
 
-def test_get_sent_reminder_keys_requires_required_headers(monkeypatch: pytest.MonkeyPatch):
+def test_get_sent_reminder_keys_requires_required_headers(
+    monkeypatch: pytest.MonkeyPatch,
+):
     _install_config(
         monkeypatch,
         {
@@ -109,7 +125,9 @@ def test_get_sent_reminder_keys_requires_required_headers(monkeypatch: pytest.Mo
         asyncio.run(fusion_sheets.get_sent_reminder_keys("f-1"))
 
 
-def test_get_sent_reminder_keys_does_not_require_sent_at_header(monkeypatch: pytest.MonkeyPatch):
+def test_get_sent_reminder_keys_does_not_require_sent_at_header(
+    monkeypatch: pytest.MonkeyPatch,
+):
     _install_config(
         monkeypatch,
         {
@@ -133,7 +151,9 @@ def test_get_sent_reminder_keys_does_not_require_sent_at_header(monkeypatch: pyt
     assert sent == {("e-1", "start")}
 
 
-def test_get_last_reminder_sent_at_reads_grouped_marker(monkeypatch: pytest.MonkeyPatch):
+def test_get_last_reminder_sent_at_reads_grouped_marker(
+    monkeypatch: pytest.MonkeyPatch,
+):
     _install_config(
         monkeypatch,
         {
@@ -148,9 +168,24 @@ def test_get_last_reminder_sent_at_reads_grouped_marker(monkeypatch: pytest.Monk
         return [
             ["fusion_id", "event_id", "reminder_type", "sent_at_utc"],
             ["f-1", "e-old", "start", "2026-04-09T01:00:00+00:00"],
-            ["f-1", "grouped_daily:2026-04-09", "grouped_daily", "2026-04-09T12:00:00+00:00"],
-            ["f-1", "grouped_daily:2026-04-10", "grouped_daily", "2026-04-10T12:00:00+00:00"],
-            ["f-2", "grouped_daily:2026-04-11", "grouped_daily", "2026-04-11T12:00:00+00:00"],
+            [
+                "f-1",
+                "grouped_daily:2026-04-09",
+                "grouped_daily",
+                "2026-04-09T12:00:00+00:00",
+            ],
+            [
+                "f-1",
+                "grouped_daily:2026-04-10",
+                "grouped_daily",
+                "2026-04-10T12:00:00+00:00",
+            ],
+            [
+                "f-2",
+                "grouped_daily:2026-04-11",
+                "grouped_daily",
+                "2026-04-11T12:00:00+00:00",
+            ],
         ]
 
     monkeypatch.setattr(fusion_sheets, "afetch_values", _afetch_values)
@@ -162,7 +197,9 @@ def test_get_last_reminder_sent_at_reads_grouped_marker(monkeypatch: pytest.Monk
     assert sent_at == dt.datetime(2026, 4, 10, 12, tzinfo=dt.timezone.utc)
 
 
-def test_get_fusion_reminder_settings_reads_configured_tab(monkeypatch: pytest.MonkeyPatch):
+def test_get_fusion_reminder_settings_reads_configured_tab(
+    monkeypatch: pytest.MonkeyPatch,
+):
     _install_config(
         monkeypatch,
         {
@@ -208,7 +245,9 @@ def test_get_fusion_reminder_settings_reads_configured_tab(monkeypatch: pytest.M
     assert settings.settings_value_header == "value"
 
 
-def test_get_fusion_reminder_settings_reads_setting_key_and_local_sheet_time(monkeypatch: pytest.MonkeyPatch):
+def test_get_fusion_reminder_settings_reads_setting_key_and_local_sheet_time(
+    monkeypatch: pytest.MonkeyPatch,
+):
     _install_config(
         monkeypatch,
         {
@@ -246,8 +285,12 @@ def test_get_fusion_reminder_settings_reads_setting_key_and_local_sheet_time(mon
     assert settings.settings_raw_types["grouped_daily_post_time"] == "float"
 
 
-def test_get_fusion_reminder_settings_requires_production_headers(monkeypatch: pytest.MonkeyPatch):
-    _install_config(monkeypatch, {"FUSION_REMINDER_SETTINGS_TAB": "FusionReminderSettings"})
+def test_get_fusion_reminder_settings_requires_production_headers(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_config(
+        monkeypatch, {"FUSION_REMINDER_SETTINGS_TAB": "FusionReminderSettings"}
+    )
     monkeypatch.setattr(fusion_sheets, "_sheet_id", lambda: "sheet-1")
 
     async def _afetch_values(sheet_id: str, tab_name: str):
@@ -275,24 +318,30 @@ def test_fusion_reminder_bool_parser_accepts_sheet_true_false_values():
     assert fusion_sheets._parse_bool("") is False
 
 
-def test_load_fusion_events_reads_optional_embed_copy_columns(monkeypatch: pytest.MonkeyPatch):
+def test_load_fusion_events_reads_optional_embed_copy_columns(
+    monkeypatch: pytest.MonkeyPatch,
+):
     _install_config(monkeypatch, {"FUSION_EVENT_TAB": "FusionEvents"})
+
     async def _afetch_records(_sheet_id: str, tab_name: str):
         assert tab_name == "FusionEvents"
-        return [{
-            "fusion_id": "f-1",
-            "event_id": "e-1",
-            "event_name": "Event 1",
-            "event_type": "tournament",
-            "category": "arena",
-            "start_at_utc": "2026-01-01T00:00:00+00:00",
-            "end_at_utc": "2026-01-01T01:00:00+00:00",
-            "reward_amount": "10",
-            "reward_type": "fragments",
-            "embed_title": "{event_label}",
-            "embed_description": "Begins {starts_in}",
-            "embed_footer": "Footer",
-        }]
+        return [
+            {
+                "fusion_id": "f-1",
+                "event_id": "e-1",
+                "event_name": "Event 1",
+                "event_type": "tournament",
+                "category": "arena",
+                "start_at_utc": "2026-01-01T00:00:00+00:00",
+                "end_at_utc": "2026-01-01T01:00:00+00:00",
+                "reward_amount": "10",
+                "reward_type": "fragments",
+                "embed_title": "{event_label}",
+                "embed_description": "Begins {starts_in}",
+                "embed_footer": "Footer",
+            }
+        ]
+
     monkeypatch.setattr(fusion_sheets, "_sheet_id", lambda: "sheet-1")
     monkeypatch.setattr(fusion_sheets, "afetch_records", _afetch_records)
     rows = asyncio.run(fusion_sheets._load_fusion_events())

@@ -8,7 +8,9 @@ import pytest
 from shared.sheets import fusion
 
 
-def test_load_fusions_reads_fusion_prefixed_needed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_fusions_reads_fusion_prefixed_needed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def _fake_fetch_records(_sheet_id: str, _tab_name: str):
         return [
             {
@@ -28,7 +30,7 @@ def test_load_fusions_reads_fusion_prefixed_needed(monkeypatch: pytest.MonkeyPat
         ]
 
     monkeypatch.setattr(fusion, "afetch_records", _fake_fetch_records)
-    monkeypatch.setattr(fusion, "_resolve_tab_name", lambda _key: "Fusion")
+    monkeypatch.setattr(fusion, "_resolve_tab_name", AsyncMock(return_value="Fusion"))
     monkeypatch.setattr(fusion, "_sheet_id", lambda: "sheet-id")
 
     rows = asyncio.run(fusion._load_fusions())
@@ -40,9 +42,9 @@ def test_load_fusions_reads_fusion_prefixed_needed(monkeypatch: pytest.MonkeyPat
     assert rows[0].start_at_utc == dt.datetime(2026, 4, 8, tzinfo=dt.timezone.utc)
 
 
-
-
-def test_load_fusions_reads_needed_total_alias_for_fragment(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_fusions_reads_needed_total_alias_for_fragment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def _fake_fetch_records(_sheet_id: str, _tab_name: str):
         return [
             {
@@ -62,7 +64,7 @@ def test_load_fusions_reads_needed_total_alias_for_fragment(monkeypatch: pytest.
         ]
 
     monkeypatch.setattr(fusion, "afetch_records", _fake_fetch_records)
-    monkeypatch.setattr(fusion, "_resolve_tab_name", lambda _key: "Fusion")
+    monkeypatch.setattr(fusion, "_resolve_tab_name", AsyncMock(return_value="Fusion"))
     monkeypatch.setattr(fusion, "_sheet_id", lambda: "sheet-id")
 
     rows = asyncio.run(fusion._load_fusions())
@@ -71,6 +73,7 @@ def test_load_fusions_reads_needed_total_alias_for_fragment(monkeypatch: pytest.
     assert rows[0].fusion_type == "fragment"
     assert rows[0].needed == 100
     assert rows[0].available == 135
+
 
 def _event(
     *,
@@ -115,7 +118,9 @@ def test_load_fusion_events_accepts_legacy_start_end_column_names(
         ]
 
     monkeypatch.setattr(fusion, "afetch_records", _fake_fetch_records)
-    monkeypatch.setattr(fusion, "_resolve_tab_name", lambda _key: "Fusion Events")
+    monkeypatch.setattr(
+        fusion, "_resolve_tab_name", AsyncMock(return_value="Fusion Events")
+    )
     monkeypatch.setattr(fusion, "_sheet_id", lambda: "sheet-id")
 
     rows = asyncio.run(fusion._load_fusion_events())
@@ -173,7 +178,9 @@ def test_get_fusion_events_matches_fusion_id_casefold_and_whitespace(
             sort_order=1,
         ),
     )
-    monkeypatch.setattr(fusion, "register_cache_buckets", lambda: ("fusion", "fusion_events"))
+    monkeypatch.setattr(
+        fusion, "register_cache_buckets", lambda: ("fusion", "fusion_events")
+    )
     monkeypatch.setattr(fusion, "_cached_rows", AsyncMock(return_value=rows))
 
     result = asyncio.run(fusion.get_fusion_events("anomalus_titan_event_2026_04"))
@@ -296,7 +303,9 @@ def test_get_upcoming_events_uses_validated_timestamps_for_sorting(
     assert [row.event_id for row in result] == ["naive-earlier", "aware"]
 
 
-def test_transition_fusion_to_ended_updates_status_once(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_transition_fusion_to_ended_updates_status_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     worksheet = AsyncMock()
 
     async def _afetch_values(_sheet_id: str, _tab_name: str):
@@ -308,19 +317,25 @@ def test_transition_fusion_to_ended_updates_status_once(monkeypatch: pytest.Monk
     async def _acall_with_backoff(fn, *args, **kwargs):
         return await fn(*args, **kwargs)
 
-    monkeypatch.setattr(fusion, "_resolve_tab_name", lambda _key: "Fusion")
+    monkeypatch.setattr(fusion, "_resolve_tab_name", AsyncMock(return_value="Fusion"))
     monkeypatch.setattr(fusion, "_sheet_id", lambda: "sheet-id")
     monkeypatch.setattr(fusion, "afetch_values", _afetch_values)
     monkeypatch.setattr(fusion, "aget_worksheet", AsyncMock(return_value=worksheet))
     monkeypatch.setattr(fusion, "acall_with_backoff", _acall_with_backoff)
-    monkeypatch.setattr(fusion, "register_cache_buckets", lambda: ("fusion", "fusion_events"))
+    monkeypatch.setattr(
+        fusion, "register_cache_buckets", lambda: ("fusion", "fusion_events")
+    )
     monkeypatch.setattr(fusion.cache, "refresh_now", AsyncMock())
 
     changed = asyncio.run(fusion.transition_fusion_to_ended("f-1"))
 
     assert changed is True
-    worksheet.update.assert_awaited_once_with("B2", [["ended"]], value_input_option="RAW")
-    fusion.cache.refresh_now.assert_awaited_once_with("fusion", actor="fusion_status_ended")
+    worksheet.update.assert_awaited_once_with(
+        "B2", [["ended"]], value_input_option="RAW"
+    )
+    fusion.cache.refresh_now.assert_awaited_once_with(
+        "fusion", actor="fusion_status_ended"
+    )
 
 
 def test_transition_fusion_to_ended_is_noop_when_already_ended(
@@ -334,11 +349,13 @@ def test_transition_fusion_to_ended_is_noop_when_already_ended(
             ["f-1", "ended"],
         ]
 
-    monkeypatch.setattr(fusion, "_resolve_tab_name", lambda _key: "Fusion")
+    monkeypatch.setattr(fusion, "_resolve_tab_name", AsyncMock(return_value="Fusion"))
     monkeypatch.setattr(fusion, "_sheet_id", lambda: "sheet-id")
     monkeypatch.setattr(fusion, "afetch_values", _afetch_values)
     monkeypatch.setattr(fusion, "aget_worksheet", AsyncMock(return_value=worksheet))
-    monkeypatch.setattr(fusion, "register_cache_buckets", lambda: ("fusion", "fusion_events"))
+    monkeypatch.setattr(
+        fusion, "register_cache_buckets", lambda: ("fusion", "fusion_events")
+    )
     monkeypatch.setattr(fusion.cache, "refresh_now", AsyncMock())
 
     changed = asyncio.run(fusion.transition_fusion_to_ended("f-1"))
@@ -371,16 +388,22 @@ def _fusion_row(*, fusion_id: str, fusion_type: str, status: str) -> fusion.Fusi
     )
 
 
-def test_get_publishable_fusion_includes_fragment_draft(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_publishable_fusion_includes_fragment_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     rows = (
         _fusion_row(fusion_id="hybrid-active", fusion_type="hybrid", status="active"),
         _fusion_row(fusion_id="fragment-draft", fusion_type="fragment", status="draft"),
     )
-    monkeypatch.setattr(fusion, "register_cache_buckets", lambda: ("fusion", "fusion_events"))
+    monkeypatch.setattr(
+        fusion, "register_cache_buckets", lambda: ("fusion", "fusion_events")
+    )
     monkeypatch.setattr(fusion, "_cached_rows", AsyncMock(return_value=rows))
 
     result = asyncio.run(
-        fusion.get_publishable_fusion(include_draft=True, tracker_kind="fusion", prefer_draft=True)
+        fusion.get_publishable_fusion(
+            include_draft=True, tracker_kind="fusion", prefer_draft=True
+        )
     )
 
     assert result is not None
@@ -399,7 +422,9 @@ def test_get_publishable_fusion_includes_fragment_draft(monkeypatch: pytest.Monk
         ("titan event", "titan"),
     ],
 )
-def test_tracker_kind_maps_supported_fusion_types(fusion_type: str, expected: str) -> None:
+def test_tracker_kind_maps_supported_fusion_types(
+    fusion_type: str, expected: str
+) -> None:
     row = _fusion_row(fusion_id="f-1", fusion_type=fusion_type, status="draft")
     assert fusion._tracker_kind(row) == expected
 
@@ -425,7 +450,7 @@ def test_load_fusions_normalizes_fragment_fusion_type_case(
         ]
 
     monkeypatch.setattr(fusion, "afetch_records", _fake_fetch_records)
-    monkeypatch.setattr(fusion, "_resolve_tab_name", lambda _key: "Fusion")
+    monkeypatch.setattr(fusion, "_resolve_tab_name", AsyncMock(return_value="Fusion"))
     monkeypatch.setattr(fusion, "_sheet_id", lambda: "sheet-id")
 
     rows = asyncio.run(fusion._load_fusions())
@@ -434,8 +459,20 @@ def test_load_fusions_normalizes_fragment_fusion_type_case(
     assert rows[0].fusion_type == "fragment"
 
 
-def test_upsert_user_event_progress_returns_insert_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
-    matrix = [["fusion_id", "user_id", "event_id", "milestone_key", "status", "updated_at_utc", "partial_amount"]]
+def test_upsert_user_event_progress_returns_insert_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    matrix = [
+        [
+            "fusion_id",
+            "user_id",
+            "event_id",
+            "milestone_key",
+            "status",
+            "updated_at_utc",
+            "partial_amount",
+        ]
+    ]
 
     class _Worksheet:
         async def append_row(self, *_args, **_kwargs):
@@ -454,7 +491,9 @@ def test_upsert_user_event_progress_returns_insert_diagnostics(monkeypatch: pyte
             matrix.append(args[0])
         return None
 
-    monkeypatch.setattr(fusion, "_resolve_tab_name", lambda key: "User Progress")
+    monkeypatch.setattr(
+        fusion, "_resolve_tab_name", AsyncMock(return_value="User Progress")
+    )
     monkeypatch.setattr(fusion, "_sheet_id", lambda: "sheet-id")
     monkeypatch.setattr(fusion, "afetch_values", _afetch_values)
     monkeypatch.setattr(fusion, "aget_worksheet", AsyncMock(return_value=worksheet))
@@ -478,15 +517,43 @@ def test_upsert_user_event_progress_returns_insert_diagnostics(monkeypatch: pyte
     assert appended[0][4] == "done"
 
 
-def test_get_user_traditional_progress_resolves_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_user_traditional_progress_resolves_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def _afetch_values(_sheet_id: str, tab_name: str):
         assert tab_name == "fusion_traditional_user_prog"
         return [
-            ["user_id", "fusion_id", "epics_ascended", "rares_owned", "rares_level_40", "rares_ascended", "epics_fused", "epics_level_50", "target_ready", "updated_at_utc"],
-            ["42", "f-1", "3", "14", "12", "8", "2", "2", "yes", "2026-07-01T00:00:00+00:00"],
+            [
+                "user_id",
+                "fusion_id",
+                "epics_ascended",
+                "rares_owned",
+                "rares_level_40",
+                "rares_ascended",
+                "epics_fused",
+                "epics_level_50",
+                "target_ready",
+                "updated_at_utc",
+            ],
+            [
+                "42",
+                "f-1",
+                "3",
+                "14",
+                "12",
+                "8",
+                "2",
+                "2",
+                "yes",
+                "2026-07-01T00:00:00+00:00",
+            ],
         ]
 
-    monkeypatch.setattr(fusion, "_resolve_tab_name", lambda key: "fusion_traditional_user_prog")
+    monkeypatch.setattr(
+        fusion,
+        "_resolve_tab_name",
+        AsyncMock(return_value="fusion_traditional_user_prog"),
+    )
     monkeypatch.setattr(fusion, "_sheet_id", lambda: "sheet-id")
     monkeypatch.setattr(fusion, "afetch_values", _afetch_values)
 
@@ -501,14 +568,38 @@ def test_get_user_traditional_progress_resolves_headers(monkeypatch: pytest.Monk
     assert row.target_ready is True
 
 
-def test_traditional_progress_resolves_human_readable_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_traditional_progress_resolves_human_readable_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def _resolve_tab_name(_key: str) -> str:
         return "fusion_traditional_user_prog"
 
     async def _afetch_values(_sheet_id: str, _tab_name: str):
         return [
-            ["User ID", "Fusion ID", "Epics fully ascended", "Rares owned", "Rares level 40", "Rares fully ascended", "Epics fused", "Epics level 50", "Target ready", "Updated At UTC"],
-            ["42", "f-1", "4", "16", "16", "16", "4", "4", "TRUE", "2026-07-01T00:00:00+00:00"],
+            [
+                "User ID",
+                "Fusion ID",
+                "Epics fully ascended",
+                "Rares owned",
+                "Rares level 40",
+                "Rares fully ascended",
+                "Epics fused",
+                "Epics level 50",
+                "Target ready",
+                "Updated At UTC",
+            ],
+            [
+                "42",
+                "f-1",
+                "4",
+                "16",
+                "16",
+                "16",
+                "4",
+                "4",
+                "TRUE",
+                "2026-07-01T00:00:00+00:00",
+            ],
         ]
 
     monkeypatch.setattr(fusion, "_resolve_tab_name", _resolve_tab_name)
@@ -522,28 +613,55 @@ def test_traditional_progress_resolves_human_readable_headers(monkeypatch: pytes
     assert row.target_ready is True
 
 
-def test_upsert_user_traditional_progress_updates_existing_row_by_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_upsert_user_traditional_progress_updates_existing_row_by_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     worksheet = AsyncMock()
 
     async def _afetch_values(_sheet_id: str, _tab_name: str):
         return [
-            ["user_id", "fusion_id", "epics_ascended", "rares_owned", "rares_level_40", "rares_ascended", "epics_fused", "epics_level_50", "target_ready", "updated_at_utc"],
+            [
+                "user_id",
+                "fusion_id",
+                "epics_ascended",
+                "rares_owned",
+                "rares_level_40",
+                "rares_ascended",
+                "epics_fused",
+                "epics_level_50",
+                "target_ready",
+                "updated_at_utc",
+            ],
             ["42", "f-1", "1", "4", "4", "4", "1", "1", "FALSE", "old"],
         ]
 
     async def _acall_with_backoff(fn, *args, **kwargs):
         return await fn(*args, **kwargs)
 
-    monkeypatch.setattr(fusion, "_resolve_tab_name", lambda key: "fusion_traditional_user_prog")
+    monkeypatch.setattr(
+        fusion,
+        "_resolve_tab_name",
+        AsyncMock(return_value="fusion_traditional_user_prog"),
+    )
     monkeypatch.setattr(fusion, "_sheet_id", lambda: "sheet-id")
     monkeypatch.setattr(fusion, "afetch_values", _afetch_values)
     monkeypatch.setattr(fusion, "aget_worksheet", AsyncMock(return_value=worksheet))
     monkeypatch.setattr(fusion, "acall_with_backoff", _acall_with_backoff)
 
-    row = asyncio.run(fusion.upsert_user_traditional_progress(
-        "f-1", "42", rares_owned=9, rares_level_40=8, rares_ascended=8, epics_fused=2,
-        epics_level_50=2, epics_ascended=4, target_ready=True, updated_at=dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc)
-    ))
+    row = asyncio.run(
+        fusion.upsert_user_traditional_progress(
+            "f-1",
+            "42",
+            rares_owned=9,
+            rares_level_40=8,
+            rares_ascended=8,
+            epics_fused=2,
+            epics_level_50=2,
+            epics_ascended=4,
+            target_ready=True,
+            updated_at=dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc),
+        )
+    )
 
     assert row.rares_owned == 9
     assert row.epics_ascended == 4
