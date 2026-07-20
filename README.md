@@ -17,12 +17,6 @@ admin manual.
 - **Version-controlled wiki source:** [`docs/wiki/`](docs/wiki/)
 - **Implementation/reference docs:** [`docs/README.md`](docs/README.md)
 
-The wiki is maintained as code: its Markdown sources live in `docs/wiki/` and
-are published to GitHub Wiki pages. See the
-[wiki command reference](https://github.com/cailleanC1C/C1C-Bot/wiki/Command-Reference)
-for available commands, permissions, and invocation details; the full command
-catalogue is intentionally not duplicated here.
-
 ## What the Woadkeeper Covers
 
 - **CoreOps and runtime:** health, configuration, checks, cache refreshes,
