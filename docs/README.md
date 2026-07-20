@@ -82,6 +82,24 @@ Collaboration Contract and core infra conventions.
 * [`.env.example`](ops/.env.example) — reference environment file for local/testing setups.
 * Automated server map posts keep `#server-map` in sync with live categories. Configuration (`SERVER_MAP_*`) lives in [`ops/Config.md`](ops/Config.md); log formats are in [`ops/Logging.md`](ops/Logging.md). The rendered post now starts with an `🧭 Server Map` intro that lists uncategorized channels up top, and staff-only sections can be hidden via the Config blacklists.
 
+## GitHub Wiki source `/docs/wiki/`
+
+These pages are published automatically to GitHub Wiki from `main`.
+* [`Home.md`](wiki/Home.md)
+* [`Command-Reference.md`](wiki/Command-Reference.md)
+* [`Feature-Index.md`](wiki/Feature-Index.md)
+* [`Sheets-&-Config-Reference.md`](wiki/Sheets-&-Config-Reference.md)
+* [`Operations-Runbook.md`](wiki/Operations-Runbook.md)
+* [`CoreOps-&-Runtime.md`](wiki/CoreOps-&-Runtime.md)
+* [`Onboarding-&-Ticket-Flows.md`](wiki/Onboarding-&-Ticket-Flows.md)
+* [`Recruitment-&-Clan-Tools.md`](wiki/Recruitment-&-Clan-Tools.md)
+* [`Placement-&-Reservations.md`](wiki/Placement-&-Reservations.md)
+* [`Housekeeping-&-Maintenance.md`](wiki/Housekeeping-&-Maintenance.md)
+* [`Community-Features-&-Events.md`](wiki/Community-Features-&-Events.md)
+* [`Discord-Roles-&-Permissions.md`](wiki/Discord-Roles-&-Permissions.md)
+* [`Troubleshooting.md`](wiki/Troubleshooting.md)
+* [`_Sidebar.md`](wiki/_Sidebar.md)
+
 ## Community features
 * [`Community Reaction Roles`](modules/community_reaction_roles.md) – sheet-driven reaction role wiring with optional channel/thread scoping.
 * C1C Leagues Autoposter – weekly boards & announcement for Legendary, Rising Stars, Stormforged.
@@ -123,4 +141,4 @@ Each module has a **dedicated deep-dive file** describing its scope, flows, data
 ## Cross-References
 * [`docs/contracts/CollaborationContract.md`](contracts/CollaborationContract.md) documents contributor responsibilities and embeds this index under “Documentation Discipline.”
 
-Doc last updated: 2026-07-19 (v0.9.8.2)
+Doc last updated: 2026-07-20 (v0.9.8.2)
