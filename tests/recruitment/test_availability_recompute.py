@@ -50,6 +50,36 @@ def _default_recruitment_config(monkeypatch):
     header[36] = "Clan Tag"
     monkeypatch.setattr(availability.recruitment, "get_clan_header_row", lambda: header)
 
+    async def get_clans_tab_name_async():
+        return availability.recruitment.get_clans_tab_name()
+
+    async def aget_clan_header_row(*, force=False):
+        try:
+            return availability.recruitment.get_clan_header_row(force=force)
+        except TypeError:
+            return availability.recruitment.get_clan_header_row()
+
+    async def get_config_value_async(key, default=None, *, force=False):
+        return availability.recruitment.get_config_value(key, default)
+
+    async def afetch_clans(*, force=False):
+        return []
+
+    async def afind_clan_row(tag, *, force=False):
+        return availability.recruitment.find_clan_row(tag, force=force)
+
+    monkeypatch.setattr(
+        availability.recruitment, "get_clans_tab_name_async", get_clans_tab_name_async
+    )
+    monkeypatch.setattr(
+        availability.recruitment, "aget_clan_header_row", aget_clan_header_row
+    )
+    monkeypatch.setattr(
+        availability.recruitment, "get_config_value_async", get_config_value_async
+    )
+    monkeypatch.setattr(availability.recruitment, "afetch_clans", afetch_clans)
+    monkeypatch.setattr(availability.recruitment, "afind_clan_row", afind_clan_row)
+
 
 def test_recompute_clan_availability_updates_sheet(monkeypatch):
     worksheet = StubWorksheet()
@@ -802,6 +832,57 @@ def test_availability_header_config_resolves_production_columns(monkeypatch):
         "manual_open_spots_seen": "AJ",
         "clan_tag": "AK",
     }
+
+
+def test_async_availability_resolution_never_calls_sync_sheet_helpers(monkeypatch):
+    header = [""] * 37
+    configured = {field: field for field in availability.AVAILABILITY_FIELDS}
+    for index, field in enumerate(availability.AVAILABILITY_FIELDS):
+        header[index] = field
+
+    def fail_sync(*args, **kwargs):
+        pytest.fail("async availability path called a synchronous sheet helper")
+
+    for helper in (
+        "get_clans_tab_name",
+        "get_clan_header_row",
+        "get_config_value",
+        "fetch_clans",
+        "find_clan_row",
+    ):
+        monkeypatch.setattr(availability.recruitment, helper, fail_sync)
+
+    async def get_tab():
+        return "bot_info"
+
+    async def get_header(*, force=False):
+        assert force is False
+        return header
+
+    async def get_config(key, default=None, *, force=False):
+        assert force is False
+        return configured.get(key.removeprefix("clans_header_"), default)
+
+    async def fetch_clans(*, force=False):
+        assert force is False
+        return [["#OTHER"] + [""] * 36]
+
+    async def find_clan(tag, *, force=False):
+        assert tag == "#TARGET"
+        assert force is False
+        return (8, ["#TARGET"] + [""] * 36)
+
+    monkeypatch.setattr(availability.recruitment, "get_clans_tab_name_async", get_tab)
+    monkeypatch.setattr(availability.recruitment, "aget_clan_header_row", get_header)
+    monkeypatch.setattr(availability.recruitment, "get_config_value_async", get_config)
+    monkeypatch.setattr(availability.recruitment, "afetch_clans", fetch_clans)
+    monkeypatch.setattr(availability.recruitment, "afind_clan_row", find_clan)
+
+    async def exercise():
+        headers = await availability._aresolve_availability_headers()
+        return await availability._afind_availability_clan_row("#TARGET", headers)
+
+    assert asyncio.run(exercise()) == (8, ["#TARGET"] + [""] * 36)
 
 
 def test_preflight_clan_availability_wraps_worksheet_lookup_quota(monkeypatch):
