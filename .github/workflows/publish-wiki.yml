@@ -1,0 +1,66 @@
+name: Publish Wiki
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/wiki/**
+      - .github/workflows/publish-wiki.yml
+      - .github/scripts/validate_wiki.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate wiki source
+        run: python .github/scripts/validate_wiki.py
+
+      - name: Clone wiki
+        env:
+          # Prefer a fine-grained PAT with Contents: read/write on C1C-Bot;
+          # otherwise the repository GITHUB_TOKEN must have contents: write.
+          GH_TOKEN: ${{ secrets.WIKI_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/cailleanC1C/C1C-Bot.wiki.git" wiki-checkout
+
+      - name: Replace, commit, and publish wiki
+        env:
+          GH_TOKEN: ${{ secrets.WIKI_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          find wiki-checkout -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          declare -A pages=(
+            [home.md]=Home.md
+            [command_reference.md]=Command-Reference.md
+            [feature_index.md]=Feature-Index.md
+            [sheets_config_reference.md]='Sheets-&-Config-Reference.md'
+            [operations_runbook.md]=Operations-Runbook.md
+            [coreops_runtime.md]='CoreOps-&-Runtime.md'
+            [onboarding_ticket_flows.md]='Onboarding-&-Ticket-Flows.md'
+            [recruitment_clan_tools.md]='Recruitment-&-Clan-Tools.md'
+            [placement_reservations.md]='Placement-&-Reservations.md'
+            [housekeeping_maintenance.md]='Housekeeping-&-Maintenance.md'
+            [community_features_events.md]='Community-Features-&-Events.md'
+            [discord_roles_permissions.md]='Discord-Roles-&-Permissions.md'
+            [troubleshooting.md]=Troubleshooting.md
+            [_sidebar.md]=_Sidebar.md
+          )
+          for source in "${!pages[@]}"; do
+            cp "docs/wiki/${source}" "wiki-checkout/${pages[$source]}"
+          done
+          cd wiki-checkout
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add --all
+          if git diff --cached --quiet; then
+            echo "Wiki is already current."
+            exit 0
+          fi
+          git commit -m "docs: publish wiki from main"
+          git push origin HEAD:master

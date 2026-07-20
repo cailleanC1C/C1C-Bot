@@ -82,6 +82,24 @@ Collaboration Contract and core infra conventions.
 * [`.env.example`](ops/.env.example) — reference environment file for local/testing setups.
 * Automated server map posts keep `#server-map` in sync with live categories. Configuration (`SERVER_MAP_*`) lives in [`ops/Config.md`](ops/Config.md); log formats are in [`ops/Logging.md`](ops/Logging.md). The rendered post now starts with an `🧭 Server Map` intro that lists uncategorized channels up top, and staff-only sections can be hidden via the Config blacklists.
 
+## GitHub Wiki source `/docs/wiki/`
+
+Repository sources use guardrail-compliant `lower_snake_case.md` names. The publish workflow maps them to clean GitHub Wiki page filenames and titles automatically.
+* [`home.md`](wiki/home.md) → `Home.md`
+* [`command_reference.md`](wiki/command_reference.md) → `Command-Reference.md`
+* [`feature_index.md`](wiki/feature_index.md) → `Feature-Index.md`
+* [`sheets_config_reference.md`](wiki/sheets_config_reference.md) → `Sheets-&-Config-Reference.md`
+* [`operations_runbook.md`](wiki/operations_runbook.md) → `Operations-Runbook.md`
+* [`coreops_runtime.md`](wiki/coreops_runtime.md) → `CoreOps-&-Runtime.md`
+* [`onboarding_ticket_flows.md`](wiki/onboarding_ticket_flows.md) → `Onboarding-&-Ticket-Flows.md`
+* [`recruitment_clan_tools.md`](wiki/recruitment_clan_tools.md) → `Recruitment-&-Clan-Tools.md`
+* [`placement_reservations.md`](wiki/placement_reservations.md) → `Placement-&-Reservations.md`
+* [`housekeeping_maintenance.md`](wiki/housekeeping_maintenance.md) → `Housekeeping-&-Maintenance.md`
+* [`community_features_events.md`](wiki/community_features_events.md) → `Community-Features-&-Events.md`
+* [`discord_roles_permissions.md`](wiki/discord_roles_permissions.md) → `Discord-Roles-&-Permissions.md`
+* [`troubleshooting.md`](wiki/troubleshooting.md) → `Troubleshooting.md`
+* [`_sidebar.md`](wiki/_sidebar.md) → `_Sidebar.md`
+
 ## Community features
 * [`Community Reaction Roles`](modules/community_reaction_roles.md) – sheet-driven reaction role wiring with optional channel/thread scoping.
 * C1C Leagues Autoposter – weekly boards & announcement for Legendary, Rising Stars, Stormforged.
@@ -123,4 +141,4 @@ Each module has a **dedicated deep-dive file** describing its scope, flows, data
 ## Cross-References
 * [`docs/contracts/CollaborationContract.md`](contracts/CollaborationContract.md) documents contributor responsibilities and embeds this index under “Documentation Discipline.”
 
-Doc last updated: 2026-07-19 (v0.9.8.2)
+Doc last updated: 2026-07-20 (v0.9.8.2)
