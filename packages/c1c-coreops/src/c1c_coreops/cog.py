@@ -82,6 +82,7 @@ from c1c_coreops.rbac import (
     can_view_staff,
     guild_only_denied_msg,
     is_admin_member,
+    is_recruiter,
     is_staff_member,
     ops_only,
 )
@@ -3766,6 +3767,7 @@ class CoreOpsCog(commands.Cog):
         visible = help_commands.visible_rows(
             rows,
             staff=can_view_staff(ctx),
+            recruiter=is_recruiter(ctx),
             admin=can_view_admin(ctx),
         )
         if lookup:
@@ -3796,18 +3798,15 @@ class CoreOpsCog(commands.Cog):
             await ctx.reply(embed=sanitize_embed(embed))
             return
 
-        categories: dict[str, list[help_commands.HelpCommandRow]] = {}
-        for row in visible:
-            categories.setdefault(row.category, []).append(row)
         embeds: list[discord.Embed] = []
-        for category, category_rows in categories.items():
+        for access_level, category, category_rows in help_commands.group_rows(visible):
             for offset in range(0, len(category_rows), 25):
                 page_rows = category_rows[offset : offset + 25]
                 page = offset // 25 + 1
                 page_count = (len(category_rows) + 24) // 25
                 page_suffix = f" · {page}/{page_count}" if page_count > 1 else ""
                 embed = discord.Embed(
-                    title=f"{bot_name} · help · {category}{page_suffix}",
+                    title=f"{bot_name} · help · {access_level.title()} · {category}{page_suffix}",
                     description=f"Shared command help ({len(category_rows)} command{'s' if len(category_rows) != 1 else ''}).",
                     colour=discord.Color.blurple(),
                 )

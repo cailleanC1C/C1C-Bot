@@ -56,6 +56,7 @@ class HelpContext:
         self.guild = SimpleNamespace(id=1234)
         self._coreops_suppress_denials = True
         self._replies: list[discord.Embed] = []
+        self._views: list[discord.ui.View | None] = []
         self.command = None
 
     async def reply(
@@ -63,12 +64,14 @@ class HelpContext:
         *args: object,
         embed: discord.Embed | None = None,
         embeds: Sequence[discord.Embed] | None = None,
+        view: discord.ui.View | None = None,
         **_: object,
     ) -> None:
         if embed is not None:
             self._replies.append(embed)
         if embeds:
             self._replies.extend(embeds)
+        self._views.append(view)
 
 
 @pytest.fixture(autouse=True)
@@ -229,6 +232,66 @@ def test_help_access_views_are_sheet_driven(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert "!clan <tag>" in _fields(user)
     assert "!welcome" not in _fields(user)
+
+
+def test_help_pages_group_access_before_category(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def runner() -> None:
+        async def rows():
+            return _sheet_rows()
+
+        monkeypatch.setattr("c1c_coreops.cog.help_commands.get_rows", rows)
+        monkeypatch.setattr("c1c_coreops.cog.can_view_admin", lambda _: True)
+        monkeypatch.setattr("c1c_coreops.cog.can_view_staff", lambda _: True)
+        monkeypatch.setattr("c1c_coreops.cog.is_recruiter", lambda _: True)
+        bot = await _setup_test_bot(monkeypatch)
+        try:
+            ctx = HelpContext(bot, DummyMember(is_admin=True, is_staff=True))
+            cog = bot.get_cog("CoreOpsCog")
+            assert cog is not None
+            await cog.render_help(ctx)
+            view = ctx._views[0]
+            assert view is not None
+            assert [embed.title for embed in view.embeds] == [
+                "C1C-Recruitment · help · User · Recruitment",
+                "C1C-Recruitment · help · Staff · Recruitment",
+                "C1C-Recruitment · help · Admin · Recruitment",
+            ]
+        finally:
+            await bot.close()
+
+    asyncio.run(runner())
+
+
+def test_recruiter_only_access_renders_recruiter_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def runner() -> None:
+        from shared.sheets.help_commands import HelpCommandRow
+
+        async def rows():
+            return (
+                HelpCommandRow("woadkeeper", "user", "!user", "!user", "General", "user", "User", "Details", 1, 0),
+                HelpCommandRow("woadkeeper", "recruit", "!recruit", "!recruit", "Recruitment", "recruiter", "Recruit", "Details", 2, 1),
+                HelpCommandRow("woadkeeper", "staff", "!staff", "!staff", "Operations", "staff", "Staff", "Details", 3, 2),
+            )
+
+        monkeypatch.setattr("c1c_coreops.cog.help_commands.get_rows", rows)
+        monkeypatch.setattr("c1c_coreops.cog.can_view_admin", lambda _: False)
+        monkeypatch.setattr("c1c_coreops.cog.can_view_staff", lambda _: False)
+        monkeypatch.setattr("c1c_coreops.cog.is_recruiter", lambda _: True)
+        bot = await _setup_test_bot(monkeypatch)
+        try:
+            ctx = HelpContext(bot, DummyMember())
+            cog = bot.get_cog("CoreOpsCog")
+            assert cog is not None
+            await cog.render_help(ctx)
+            view = ctx._views[0]
+            assert view is not None
+            titles = [embed.title for embed in view.embeds]
+            assert "C1C-Recruitment · help · Recruiter · Recruitment" in titles
+            assert not any("Staff · Operations" in title for title in titles)
+        finally:
+            await bot.close()
+
+    asyncio.run(runner())
 
 
 def test_help_detail_uses_sheet_fields_and_normalized_lookup(monkeypatch: pytest.MonkeyPatch) -> None:

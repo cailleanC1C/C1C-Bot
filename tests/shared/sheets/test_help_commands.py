@@ -32,9 +32,17 @@ def test_parser_resolves_reordered_headers_hides_disabled_and_sorts() -> None:
     source = [
         reordered,
         list(reversed(_row(command="!late", command_key="late", sort_order="30"))),
-        list(reversed(_row(command="!off", command_key="off", enabled="FALSE", sort_order="1"))),
+        list(
+            reversed(
+                _row(command="!off", command_key="off", enabled="FALSE", sort_order="1")
+            )
+        ),
         list(reversed(_row(command="!early", command_key="early", sort_order="2"))),
-        list(reversed(_row(command="!fallback", command_key="fallback", sort_order="bad"))),
+        list(
+            reversed(
+                _row(command="!fallback", command_key="fallback", sort_order="bad")
+            )
+        ),
     ]
 
     rows = help_commands.parse_rows(source)
@@ -44,13 +52,76 @@ def test_parser_resolves_reordered_headers_hides_disabled_and_sorts() -> None:
 
 def test_lookup_normalizes_leading_bang_and_access_filtering() -> None:
     rows = help_commands.parse_rows(
-        [HEADERS, _row(), _row(command="!secret", command_key="secret", access_level="admin")]
+        [
+            HEADERS,
+            _row(),
+            _row(command="!secret", command_key="secret", access_level="admin"),
+        ]
     )
 
     assert help_commands.find_row(rows, "clan") == help_commands.find_row(rows, "!clan")
-    assert [row.command for row in help_commands.visible_rows(rows, staff=False, admin=False)] == ["!clan"]
-    assert [row.command for row in help_commands.visible_rows(rows, staff=True, admin=False)] == ["!clan"]
+    assert [
+        row.command
+        for row in help_commands.visible_rows(rows, staff=False, admin=False)
+    ] == ["!clan"]
+    assert [
+        row.command for row in help_commands.visible_rows(rows, staff=True, admin=False)
+    ] == ["!clan"]
     assert len(help_commands.visible_rows(rows, staff=True, admin=True)) == 2
+
+
+def test_recruiter_only_visibility_uses_separate_access() -> None:
+    rows = help_commands.parse_rows(
+        [
+            HEADERS,
+            _row(command="!user", command_key="user"),
+            _row(command="!recruit", command_key="recruit", access_level="recruiter"),
+            _row(command="!staff", command_key="staff", access_level="staff"),
+        ]
+    )
+
+    visible = help_commands.visible_rows(rows, staff=False, recruiter=True, admin=False)
+
+    assert [row.command for row in visible] == ["!user", "!recruit"]
+
+
+def test_grouping_splits_access_before_dynamic_category_and_numeric_order() -> None:
+    rows = help_commands.parse_rows(
+        [
+            HEADERS,
+            _row(
+                command="!staff-late",
+                command_key="staff_late",
+                category="Zulu",
+                access_level="staff",
+                sort_order="20",
+            ),
+            _row(command="!user", command_key="user", category="Zulu", sort_order="99"),
+            _row(
+                command="!staff-early",
+                command_key="staff_early",
+                category="Zulu",
+                access_level="staff",
+                sort_order="2",
+            ),
+            _row(
+                command="!staff-alpha",
+                command_key="staff_alpha",
+                category="Alpha",
+                access_level="staff",
+                sort_order="50",
+            ),
+        ]
+    )
+
+    grouped = help_commands.group_rows(rows)
+
+    assert [(access, category) for access, category, _ in grouped] == [
+        ("user", "Zulu"),
+        ("staff", "Alpha"),
+        ("staff", "Zulu"),
+    ]
+    assert [row.command for row in grouped[-1][2]] == ["!staff-early", "!staff-late"]
 
 
 def test_loader_uses_config_selected_tab_and_one_values_read(monkeypatch) -> None:
@@ -72,14 +143,23 @@ def test_loader_uses_config_selected_tab_and_one_values_read(monkeypatch) -> Non
     async def direct_call(func, *args, **kwargs):
         return func(*args, **kwargs)
 
-    monkeypatch.setenv("RECRUITMENT_SHEET_ID", "sheet-id")
-    monkeypatch.setattr(help_commands, "get_config_value_async", config)
+    sheet_id_calls = 0
+
+    def sheet_id():
+        nonlocal sheet_id_calls
+        sheet_id_calls += 1
+        return "sheet-id"
+
+    monkeypatch.delenv("RECRUITMENT_SHEET_ID", raising=False)
+    monkeypatch.setattr(help_commands.recruitment, "get_recruitment_sheet_id", sheet_id)
+    monkeypatch.setattr(help_commands.recruitment, "get_config_value_async", config)
     monkeypatch.setattr(help_commands, "aget_worksheet", worksheet)
     monkeypatch.setattr(help_commands, "acall_with_backoff", direct_call)
 
     rows = asyncio.run(help_commands._load())
 
     assert rows[0].command == "!clan"
+    assert sheet_id_calls == 1
     assert calls == [("sheet-id", "ConfiguredHelpTab"), ("read", "once")]
 
 
@@ -115,9 +195,7 @@ def test_manual_helpcommands_bucket_refresh_reloads_immediately(monkeypatch) -> 
     async def loader():
         nonlocal reads
         reads += 1
-        return help_commands.parse_rows(
-            [HEADERS, _row(summary=f"version {reads}")]
-        )
+        return help_commands.parse_rows([HEADERS, _row(summary=f"version {reads}")])
 
     monkeypatch.setattr(help_commands, "_load", loader)
     first = asyncio.run(help_commands.get_rows())

@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Sequence
-import os
 
 from shared.sheets.async_core import acall_with_backoff, aget_worksheet
-from shared.sheets.recruitment import get_config_value_async
+from shared.sheets import recruitment
 
 BUCKET_NAME = "helpcommands"
 CACHE_TTL_SEC = 24 * 60 * 60
@@ -60,10 +59,13 @@ def parse_rows(values: Sequence[Sequence[object]]) -> tuple[HelpCommandRow, ...]
     headers = values[0]
     columns, missing = _header_map(headers)
     if missing:
-        raise RuntimeError("Shared help sheet is missing headers: " + ", ".join(missing))
+        raise RuntimeError(
+            "Shared help sheet is missing headers: " + ", ".join(missing)
+        )
 
     parsed: list[HelpCommandRow] = []
     for source_order, raw_row in enumerate(values[1:]):
+
         def value(name: str) -> str:
             index = columns[name]
             return str(raw_row[index] if index < len(raw_row) else "").strip()
@@ -100,10 +102,12 @@ def parse_rows(values: Sequence[Sequence[object]]) -> tuple[HelpCommandRow, ...]
 
 
 async def _load() -> tuple[HelpCommandRow, ...]:
-    sheet_id = os.getenv("RECRUITMENT_SHEET_ID", "").strip()
+    sheet_id = recruitment.get_recruitment_sheet_id().strip()
     if not sheet_id:
         raise RuntimeError("RECRUITMENT_SHEET_ID is required for shared help.")
-    tab_name = str(await get_config_value_async("HELP_COMMANDS_TAB", None) or "").strip()
+    tab_name = str(
+        await recruitment.get_config_value_async("HELP_COMMANDS_TAB", None) or ""
+    ).strip()
     if not tab_name:
         raise RuntimeError("Config key HELP_COMMANDS_TAB is required for shared help.")
     worksheet = await aget_worksheet(sheet_id, tab_name)
@@ -144,16 +148,67 @@ def normalize_lookup(value: object) -> str:
 def find_row(rows: Sequence[HelpCommandRow], query: object) -> HelpCommandRow | None:
     needle = normalize_lookup(query)
     for row in rows:
-        candidates = (row.command_key.replace("_", " "), row.command, row.usage.split(" ", 1)[0])
+        candidates = (
+            row.command_key.replace("_", " "),
+            row.command,
+            row.usage.split(" ", 1)[0],
+        )
         if any(normalize_lookup(candidate) == needle for candidate in candidates):
             return row
     return None
 
 
-def visible_rows(rows: Sequence[HelpCommandRow], *, staff: bool, admin: bool) -> tuple[HelpCommandRow, ...]:
+def visible_rows(
+    rows: Sequence[HelpCommandRow],
+    *,
+    staff: bool,
+    recruiter: bool = False,
+    admin: bool,
+) -> tuple[HelpCommandRow, ...]:
     allowed = {"user", "public"}
     if staff:
-        allowed.update({"staff", "recruiter"})
+        allowed.add("staff")
+    if recruiter:
+        allowed.add("recruiter")
     if admin:
-        allowed.update({"admin", "hidden"})
+        allowed.update({"staff", "recruiter", "admin", "hidden"})
     return tuple(row for row in rows if row.access_level in allowed)
+
+
+def group_rows(
+    rows: Sequence[HelpCommandRow],
+) -> tuple[tuple[str, str, tuple[HelpCommandRow, ...]], ...]:
+    """Group rows by access level, then category, then numeric display order."""
+
+    access_rank = {
+        "public": 0,
+        "user": 0,
+        "recruiter": 1,
+        "staff": 2,
+        "admin": 3,
+        "hidden": 4,
+    }
+
+    def row_key(row: HelpCommandRow) -> tuple[int, str, str, bool, float, int]:
+        return (
+            access_rank.get(row.access_level, 99),
+            row.access_level,
+            row.category.casefold(),
+            row.sort_order is None,
+            row.sort_order if row.sort_order is not None else 0,
+            row.source_order,
+        )
+
+    grouped: list[tuple[str, str, tuple[HelpCommandRow, ...]]] = []
+    current_key: tuple[str, str] | None = None
+    current_rows: list[HelpCommandRow] = []
+    for row in sorted(rows, key=row_key):
+        key = (row.access_level, row.category)
+        if current_key is not None and key != current_key:
+            grouped.append((*current_key, tuple(current_rows)))
+            current_rows = []
+        current_key = key
+        current_rows.append(row)
+    if current_key is not None:
+        grouped.append((*current_key, tuple(current_rows)))
+    return tuple(grouped)
