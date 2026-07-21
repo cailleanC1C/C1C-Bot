@@ -1,5 +1,6 @@
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import discord
 
@@ -96,7 +97,7 @@ class GuardedMessage(SimpleNamespace):
         id: int,
         author_id: int = 111,
         embeds: list[discord.Embed] | None = None,
-        content: str | None = None
+        content: str | None = None,
     ) -> None:
         super().__init__(
             id=id,
@@ -184,11 +185,11 @@ def _install_summary_fakes(
     state = dict(row or {"thread_id": "456", "step_index": 15})
     updates: list[dict[str, object]] = []
 
-    def fake_get_by_thread_id(thread_id: int) -> dict[str, object]:
+    async def fake_get_by_thread_id(thread_id: int) -> dict[str, object]:
         assert thread_id == 456
         return dict(state)
 
-    def fake_update_existing(thread_id: int, payload: dict[str, object]) -> bool:
+    async def fake_update_existing(thread_id: int, payload: dict[str, object]) -> bool:
         assert thread_id == 456
         state.update(payload)
         updates.append(dict(payload))
@@ -196,14 +197,16 @@ def _install_summary_fakes(
 
     monkeypatch.setattr(
         welcome_controller.onboarding_sessions,
-        "get_by_thread_id",
+        "aget_by_thread_id",
         fake_get_by_thread_id,
     )
     monkeypatch.setattr(
-        welcome_controller.onboarding_sessions, "update_existing", fake_update_existing
+        welcome_controller.onboarding_sessions, "aupdate_existing", fake_update_existing
     )
     monkeypatch.setattr(
-        welcome_controller.onboarding_sessions, "missing_columns", lambda columns: set()
+        welcome_controller.onboarding_sessions,
+        "amissing_columns",
+        AsyncMock(return_value=set()),
     )
     return state, updates
 
@@ -415,8 +418,8 @@ def test_missing_metadata_headers_logs_warning_without_claiming_persist(
     controller, thread, state, updates, _embed = _controller_and_thread(monkeypatch)
     monkeypatch.setattr(
         welcome_controller.onboarding_sessions,
-        "missing_columns",
-        lambda columns: {"recruiter_summary_message_id"},
+        "amissing_columns",
+        AsyncMock(return_value={"recruiter_summary_message_id"}),
     )
 
     with caplog.at_level("WARNING"):
@@ -535,9 +538,12 @@ def test_screenshot_prompt_skipped_when_dedupe_metadata_columns_missing(
     controller, thread, _state, _updates, _embed = _controller_and_thread(monkeypatch)
     monkeypatch.setattr(
         welcome_controller.onboarding_sessions,
-        "missing_columns",
-        lambda columns: (
-            set(columns) if "summary_screenshot_prompt_message_id" in columns else set()
+        "amissing_columns",
+        AsyncMock(
+            return_value={
+                "summary_screenshot_prompt_message_id",
+                "summary_screenshot_prompt_summary_message_id",
+            }
         ),
     )
 
@@ -563,18 +569,18 @@ def test_screenshot_prompt_skipped_when_dedupe_metadata_read_fails(
     monkeypatch: object, caplog
 ) -> None:
     controller, thread, _state, _updates, _embed = _controller_and_thread(monkeypatch)
-    original_get = welcome_controller.onboarding_sessions.get_by_thread_id
+    original_get = welcome_controller.onboarding_sessions.aget_by_thread_id
     calls = 0
 
-    def get_by_thread_id(thread_id: int) -> dict[str, object]:
+    async def get_by_thread_id(thread_id: int) -> dict[str, object]:
         nonlocal calls
         calls += 1
         if calls >= 3:
             raise RuntimeError("sheet read failed")
-        return original_get(thread_id)
+        return await original_get(thread_id)
 
     monkeypatch.setattr(
-        welcome_controller.onboarding_sessions, "get_by_thread_id", get_by_thread_id
+        welcome_controller.onboarding_sessions, "aget_by_thread_id", get_by_thread_id
     )
 
     with caplog.at_level("WARNING"):
@@ -589,18 +595,18 @@ def test_screenshot_prompt_metadata_persistence_failure_does_not_break_summary(
     monkeypatch: object, caplog
 ) -> None:
     controller, thread, state, updates, _embed = _controller_and_thread(monkeypatch)
-    original_update = welcome_controller.onboarding_sessions.update_existing
+    original_update = welcome_controller.onboarding_sessions.aupdate_existing
     calls = 0
 
-    def update_existing(thread_id: int, payload: dict[str, object]) -> bool:
+    async def update_existing(thread_id: int, payload: dict[str, object]) -> bool:
         nonlocal calls
         calls += 1
         if calls == 2:
             raise RuntimeError("sheet write failed")
-        return original_update(thread_id, payload)
+        return await original_update(thread_id, payload)
 
     monkeypatch.setattr(
-        welcome_controller.onboarding_sessions, "update_existing", update_existing
+        welcome_controller.onboarding_sessions, "aupdate_existing", update_existing
     )
 
     with caplog.at_level("WARNING"):

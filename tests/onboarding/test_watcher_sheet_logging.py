@@ -23,13 +23,17 @@ def test_welcome_ticket_logs_sheets(monkeypatch):
     )
     context = TicketContext(thread_id=111, ticket_number="W0600", username="smurf")
 
-    monkeypatch.setattr(watcher_welcome.onboarding_sheets, "find_welcome_row", lambda ticket: None)
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets, "find_welcome_row", lambda ticket: None
+    )
     starter = SimpleNamespace(
         mentions=[SimpleNamespace(id=222, bot=False)],
         content="<@222>",
         author=SimpleNamespace(id=watcher.bot.user.id, bot=True),
     )
-    monkeypatch.setattr(watcher_welcome, "locate_welcome_message", AsyncMock(return_value=starter))
+    monkeypatch.setattr(
+        watcher_welcome, "locate_welcome_message", AsyncMock(return_value=starter)
+    )
     monkeypatch.setattr(watcher_welcome, "ensure_session_for_thread", AsyncMock())
 
     welcome_calls = []
@@ -44,8 +48,16 @@ def test_welcome_ticket_logs_sheets(monkeypatch):
         session_calls.append(kwargs)
         return "inserted"
 
-    monkeypatch.setattr(watcher_welcome.onboarding_sheets, "append_welcome_ticket_row", fake_append_welcome)
-    monkeypatch.setattr(watcher_welcome.onboarding_sheets, "append_onboarding_session_row", fake_append_session)
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "append_welcome_ticket_row",
+        fake_append_welcome,
+    )
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "append_onboarding_session_row",
+        fake_append_session,
+    )
     monkeypatch.setattr(
         watcher_welcome.onboarding_sessions,
         "upsert_session",
@@ -67,7 +79,9 @@ def test_promo_ticket_logs_sheets(monkeypatch):
     watcher = PromoTicketWatcher(bot=MagicMock())
     watcher._features_enabled = lambda: True  # type: ignore[attr-defined]
     watcher._is_ticket_thread = lambda thread: True  # type: ignore[attr-defined]
-    thread = SimpleNamespace(id=222, created_at=datetime(2025, 2, 2, tzinfo=timezone.utc), name="M0011-user")
+    thread = SimpleNamespace(
+        id=222, created_at=datetime(2025, 2, 2, tzinfo=timezone.utc), name="M0011-user"
+    )
     context = watcher_promo.PromoTicketContext(
         thread_id=222,
         ticket_number="M0011",
@@ -78,10 +92,28 @@ def test_promo_ticket_logs_sheets(monkeypatch):
         month="February",
     )
 
-    monkeypatch.setattr(watcher_promo.onboarding_sheets, "find_promo_row", lambda ticket: None)
-    monkeypatch.setattr(watcher_promo, "locate_welcome_message", AsyncMock(return_value=object()))
-    monkeypatch.setattr(watcher_promo, "extract_target_from_message", lambda _: (333, None))
-    monkeypatch.setattr(watcher_promo, "ensure_session_for_thread", AsyncMock())
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets, "find_promo_row", lambda ticket: None
+    )
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets,
+        "find_promo_row_by_thread_id",
+        lambda _thread_id: None,
+    )
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets,
+        "patch_promo_ticket_metadata",
+        lambda **_kwargs: "updated",
+    )
+    monkeypatch.setattr(
+        watcher_promo, "locate_welcome_message", AsyncMock(return_value=object())
+    )
+    monkeypatch.setattr(
+        watcher_promo, "extract_target_from_message", lambda _: (333, None)
+    )
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sessions, "aupsert_session", AsyncMock()
+    )
 
     promo_calls = []
 
@@ -89,8 +121,12 @@ def test_promo_ticket_logs_sheets(monkeypatch):
         promo_calls.append((args, kwargs))
         return "inserted"
 
-    monkeypatch.setattr(watcher_promo.onboarding_sheets, "append_promo_ticket_row", fake_append_promo)
-    monkeypatch.setattr(watcher_promo.onboarding_sheets, "append_onboarding_session_row", AsyncMock())
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets, "append_promo_ticket_row", fake_append_promo
+    )
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets, "append_onboarding_session_row", AsyncMock()
+    )
 
     asyncio.run(watcher.on_thread_create(thread))
 
@@ -101,6 +137,7 @@ def test_promo_ticket_logs_sheets(monkeypatch):
     assert args == (
         "M0011",
         "user",
+        "",
         "",
         "player move request",
         "2025-02-02 00:00:00",
@@ -115,12 +152,16 @@ def test_promo_ticket_logs_sheets(monkeypatch):
     assert kwargs["created_at"] == thread.created_at
     assert len(promo_calls) == 1
     # No onboarding session rows are created until the promo panel is posted.
-    assert watcher_promo.onboarding_sheets.append_onboarding_session_row.await_count == 0
+    assert (
+        watcher_promo.onboarding_sheets.append_onboarding_session_row.await_count == 0
+    )
 
 
 def test_promo_ticket_open_logs_error_on_failure(monkeypatch, caplog):
     watcher = PromoTicketWatcher(bot=MagicMock())
-    thread = SimpleNamespace(id=333, created_at=datetime(2025, 3, 3, tzinfo=timezone.utc))
+    thread = SimpleNamespace(
+        id=333, created_at=datetime(2025, 3, 3, tzinfo=timezone.utc)
+    )
     context = watcher_promo.PromoTicketContext(
         thread_id=333,
         ticket_number="L0001",
@@ -134,7 +175,9 @@ def test_promo_ticket_open_logs_error_on_failure(monkeypatch, caplog):
     def boom(*args, **kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(watcher_promo.onboarding_sheets, "append_promo_ticket_row", boom)
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets, "append_promo_ticket_row", boom
+    )
 
     with caplog.at_level("ERROR"):
         asyncio.run(watcher._log_ticket_open(thread, context))
@@ -152,10 +195,30 @@ def test_welcome_ticket_open_logs_sheet_update(monkeypatch, caplog):
     )
     context = TicketContext(thread_id=444, ticket_number="W4444", username="smurf")
 
-    monkeypatch.setattr(watcher_welcome, "locate_welcome_message", AsyncMock(return_value=None))
-    monkeypatch.setattr(watcher_welcome.onboarding_sheets, "find_welcome_row", lambda ticket: None)
+    monkeypatch.setattr(
+        watcher_welcome, "locate_welcome_message", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "find_welcome_row",
+        lambda ticket: (2, {"finalization_status": "pending"}),
+    )
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "aget_ticket_finalization_state",
+        AsyncMock(return_value={"finalization_status": "pending"}),
+    )
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "update_ticket_finalization_state",
+        lambda *a, **k: "updated",
+    )
     monkeypatch.setattr(watcher_welcome, "ensure_session_for_thread", AsyncMock())
-    monkeypatch.setattr(watcher_welcome.onboarding_sheets, "append_welcome_ticket_row", lambda *_, **__: "inserted")
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "append_welcome_ticket_row",
+        lambda *_, **__: "inserted",
+    )
 
     with caplog.at_level("INFO", logger="c1c.onboarding.welcome_watcher"):
         asyncio.run(watcher._handle_ticket_open(thread, context))
@@ -176,8 +239,24 @@ def test_welcome_sheet_logging_failure_pings_admin(monkeypatch, caplog):
     )
     context = TicketContext(thread_id=555, ticket_number="W5555", username="smurf")
 
-    monkeypatch.setattr(watcher_welcome, "locate_welcome_message", AsyncMock(return_value=None))
-    monkeypatch.setattr(watcher_welcome.onboarding_sheets, "find_welcome_row", lambda ticket: None)
+    monkeypatch.setattr(
+        watcher_welcome, "locate_welcome_message", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "find_welcome_row",
+        lambda ticket: (2, {"finalization_status": "pending"}),
+    )
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "aget_ticket_finalization_state",
+        AsyncMock(return_value={"finalization_status": "pending"}),
+    )
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "update_ticket_finalization_state",
+        lambda *a, **k: "updated",
+    )
     monkeypatch.setattr(watcher_welcome, "ensure_session_for_thread", AsyncMock())
 
     def boom(*_args, **_kwargs):
@@ -186,7 +265,9 @@ def test_welcome_sheet_logging_failure_pings_admin(monkeypatch, caplog):
     monkeypatch.setattr(
         "modules.onboarding.sheet_logging.get_admin_role_ids", lambda: {1234}
     )
-    monkeypatch.setattr(watcher_welcome.onboarding_sheets, "append_welcome_ticket_row", boom)
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets, "append_welcome_ticket_row", boom
+    )
 
     with caplog.at_level("ERROR", logger="c1c.onboarding.welcome_watcher"):
         asyncio.run(watcher._handle_ticket_open(thread, context))
@@ -202,7 +283,21 @@ def test_welcome_reminder_sheet_touch_logs(monkeypatch, caplog):
     context = TicketContext(thread_id=777, ticket_number="W7777", username="loggy")
     thread = SimpleNamespace(id=777, name="W7777-loggy")
 
-    monkeypatch.setattr(watcher_welcome.onboarding_sheets, "find_welcome_row", lambda ticket: None)
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "find_welcome_row",
+        lambda ticket: (2, {"finalization_status": "pending"}),
+    )
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "aget_ticket_finalization_state",
+        AsyncMock(return_value={"finalization_status": "pending"}),
+    )
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "update_ticket_finalization_state",
+        lambda *a, **k: "updated",
+    )
     monkeypatch.setattr(
         watcher_welcome.onboarding_sheets,
         "append_welcome_ticket_row",
@@ -246,7 +341,9 @@ def test_setup_is_idempotent_when_watchers_already_registered(monkeypatch):
 
     monkeypatch.setattr(watcher_welcome, "_ensure_reminder_job", lambda _bot: None)
     ensure_idle = AsyncMock()
-    monkeypatch.setattr("modules.onboarding.idle_watcher.ensure_idle_watcher", ensure_idle)
+    monkeypatch.setattr(
+        "modules.onboarding.idle_watcher.ensure_idle_watcher", ensure_idle
+    )
 
     asyncio.run(watcher_welcome.setup(bot))
 
@@ -265,7 +362,21 @@ def test_welcome_reminder_sheet_touch_logs_failure(monkeypatch, caplog):
     monkeypatch.setattr(
         "modules.onboarding.sheet_logging.get_admin_role_ids", lambda: {4242}
     )
-    monkeypatch.setattr(watcher_welcome.onboarding_sheets, "find_welcome_row", lambda ticket: None)
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "find_welcome_row",
+        lambda ticket: (2, {"finalization_status": "pending"}),
+    )
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "aget_ticket_finalization_state",
+        AsyncMock(return_value={"finalization_status": "pending"}),
+    )
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "update_ticket_finalization_state",
+        lambda *a, **k: "updated",
+    )
     monkeypatch.setattr(watcher_welcome.onboarding_sheets, "upsert_welcome", boom)
 
     with caplog.at_level("ERROR", logger="c1c.onboarding.welcome_watcher"):
@@ -288,17 +399,41 @@ def test_welcome_reminder_sheet_touch_logs_failure(monkeypatch, caplog):
 def test_welcome_auto_close_logs_sheet_update(monkeypatch, caplog):
     watcher = WelcomeTicketWatcher(bot=MagicMock())
     context = TicketContext(thread_id=999, ticket_number="W9999", username="closer")
-    thread = SimpleNamespace(id=999, name="W9999-closer", send=AsyncMock(), edit=AsyncMock())
+    thread = SimpleNamespace(
+        id=999, name="W9999-closer", send=AsyncMock(), edit=AsyncMock()
+    )
 
-    monkeypatch.setattr(watcher_welcome.onboarding_sheets, "find_welcome_row", lambda ticket: None)
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "find_welcome_row",
+        lambda ticket: (2, {"finalization_status": "pending"}),
+    )
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "aget_ticket_finalization_state",
+        AsyncMock(return_value={"finalization_status": "pending"}),
+    )
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "update_ticket_finalization_state",
+        lambda *a, **k: "updated",
+    )
     monkeypatch.setattr(
         watcher_welcome.onboarding_sheets,
         "append_welcome_ticket_row",
         lambda *_args, **_kwargs: "updated",
     )
-    monkeypatch.setattr(watcher_welcome, "_log_finalize_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(watcher_welcome.reservations_sheets, "find_active_reservations_for_recruit", AsyncMock(return_value=[]))
-    monkeypatch.setattr(watcher_welcome.recruitment_sheets, "find_clan_row", lambda *_: None)
+    monkeypatch.setattr(
+        watcher_welcome, "_log_finalize_summary", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        watcher_welcome.reservations_sheets,
+        "find_active_reservations_for_recruit",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        watcher_welcome.recruitment_sheets, "find_clan_row", lambda *_: None
+    )
     monkeypatch.setattr(watcher_welcome, "_clan_math_column_indices", lambda: {})
     monkeypatch.setattr(watcher_welcome, "_capture_clan_snapshots", lambda *a, **k: {})
 
@@ -327,17 +462,43 @@ def test_welcome_auto_close_logs_sheet_update(monkeypatch, caplog):
 def test_welcome_auto_close_logging_failure_mentions_admin(monkeypatch, caplog):
     watcher = WelcomeTicketWatcher(bot=MagicMock())
     context = TicketContext(thread_id=1001, ticket_number="W1001", username="closer")
-    thread = SimpleNamespace(id=1001, name="W1001-closer", send=AsyncMock(), edit=AsyncMock())
+    thread = SimpleNamespace(
+        id=1001, name="W1001-closer", send=AsyncMock(), edit=AsyncMock()
+    )
 
     def boom(*_args, **_kwargs):
         raise RuntimeError("close boom")
 
-    monkeypatch.setattr(watcher_welcome.onboarding_sheets, "find_welcome_row", lambda ticket: None)
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "find_welcome_row",
+        lambda ticket: (2, {"finalization_status": "pending"}),
+    )
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "aget_ticket_finalization_state",
+        AsyncMock(return_value={"finalization_status": "pending"}),
+    )
+    monkeypatch.setattr(
+        watcher_welcome.onboarding_sheets,
+        "update_ticket_finalization_state",
+        lambda *a, **k: "updated",
+    )
     monkeypatch.setattr(watcher_welcome.onboarding_sheets, "upsert_welcome", boom)
-    monkeypatch.setattr("modules.onboarding.sheet_logging.get_admin_role_ids", lambda: {5150})
-    monkeypatch.setattr(watcher_welcome, "_log_finalize_summary", lambda *args, **kwargs: None)
-    monkeypatch.setattr(watcher_welcome.reservations_sheets, "find_active_reservations_for_recruit", AsyncMock(return_value=[]))
-    monkeypatch.setattr(watcher_welcome.recruitment_sheets, "find_clan_row", lambda *_: None)
+    monkeypatch.setattr(
+        "modules.onboarding.sheet_logging.get_admin_role_ids", lambda: {5150}
+    )
+    monkeypatch.setattr(
+        watcher_welcome, "_log_finalize_summary", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        watcher_welcome.reservations_sheets,
+        "find_active_reservations_for_recruit",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        watcher_welcome.recruitment_sheets, "find_clan_row", lambda *_: None
+    )
     monkeypatch.setattr(watcher_welcome, "_clan_math_column_indices", lambda: {})
     monkeypatch.setattr(watcher_welcome, "_capture_clan_snapshots", lambda *a, **k: {})
 
@@ -373,10 +534,24 @@ def test_promo_close_context_unresolved_writes_failure_log(monkeypatch):
     )
     updates: list[dict[str, object]] = []
 
-    monkeypatch.setattr(watcher_promo.onboarding_sheets, "find_promo_row_by_thread_id", lambda _thread_id: None)
-    monkeypatch.setattr(watcher_promo.onboarding_sessions, "get_by_thread_id", lambda _thread_id: None)
-    monkeypatch.setattr(watcher_promo, "locate_welcome_message", AsyncMock(return_value=SimpleNamespace(id=999)))
-    monkeypatch.setattr(watcher_promo, "extract_target_from_message", lambda _message: (456, 999))
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets,
+        "find_promo_row_by_thread_id",
+        lambda _thread_id: None,
+    )
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sessions,
+        "aget_by_thread_id",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        watcher_promo,
+        "locate_welcome_message",
+        AsyncMock(return_value=SimpleNamespace(id=999)),
+    )
+    monkeypatch.setattr(
+        watcher_promo, "extract_target_from_message", lambda _message: (456, 999)
+    )
     monkeypatch.setattr(
         watcher_promo.onboarding_sheets,
         "update_ticket_finalization_state",
@@ -388,7 +563,9 @@ def test_promo_close_context_unresolved_writes_failure_log(monkeypatch):
     assert result is None
     assert updates and updates[0]["thread_id"] == thread.id
     assert updates[0]["finalization_status"] == "skipped_unresolved"
-    assert updates[0]["finalization_note"] == "close_context_unresolved before clan prompt"
+    assert (
+        updates[0]["finalization_note"] == "close_context_unresolved before clan prompt"
+    )
 
 
 def test_promo_context_rich_thread_keeps_intro_target_user(monkeypatch):
@@ -402,11 +579,27 @@ def test_promo_context_rich_thread_keeps_intro_target_user(monkeypatch):
     )
     updates: list[dict[str, object]] = []
 
-    monkeypatch.setattr(watcher_promo.onboarding_sessions, "get_by_thread_id", lambda _thread_id: None)
-    monkeypatch.setattr(watcher_promo.onboarding_sheets, "find_promo_row", lambda _ticket: None)
-    monkeypatch.setattr(watcher_promo.onboarding_sheets, "find_promo_row_by_thread_id", lambda _thread_id: None)
-    monkeypatch.setattr(watcher_promo, "locate_welcome_message", AsyncMock(return_value=SimpleNamespace(id=999)))
-    monkeypatch.setattr(watcher_promo, "extract_target_from_message", lambda _message: (98765, 999))
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sessions,
+        "aget_by_thread_id",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets, "find_promo_row", lambda _ticket: None
+    )
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets,
+        "find_promo_row_by_thread_id",
+        lambda _thread_id: None,
+    )
+    monkeypatch.setattr(
+        watcher_promo,
+        "locate_welcome_message",
+        AsyncMock(return_value=SimpleNamespace(id=999)),
+    )
+    monkeypatch.setattr(
+        watcher_promo, "extract_target_from_message", lambda _message: (98765, 999)
+    )
     monkeypatch.setattr(
         watcher_promo.onboarding_sheets,
         "update_ticket_finalization_state",
@@ -433,15 +626,27 @@ def test_promo_context_uses_session_row_by_thread_id(monkeypatch):
 
     monkeypatch.setattr(
         watcher_promo.onboarding_sessions,
-        "get_by_thread_id",
-        lambda _thread_id: {
-            "thread_name": "L0061-C1C WarWalker / C1C Cholula",
-            "user_id": "24680",
-        },
+        "aget_by_thread_id",
+        AsyncMock(
+            return_value={
+                "thread_name": "L0061-C1C WarWalker / C1C Cholula",
+                "user_id": "24680",
+            }
+        ),
     )
-    monkeypatch.setattr(watcher_promo.onboarding_sheets, "find_promo_row", lambda _ticket: None)
-    monkeypatch.setattr(watcher_promo.onboarding_sheets, "find_promo_row_by_thread_id", lambda _thread_id: None)
-    monkeypatch.setattr(watcher_promo, "locate_welcome_message", AsyncMock(return_value=SimpleNamespace(id=999)))
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets, "find_promo_row", lambda _ticket: None
+    )
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets,
+        "find_promo_row_by_thread_id",
+        lambda _thread_id: None,
+    )
+    monkeypatch.setattr(
+        watcher_promo,
+        "locate_welcome_message",
+        AsyncMock(return_value=SimpleNamespace(id=999)),
+    )
 
     context = asyncio.run(watcher._ensure_context(thread))
 
@@ -452,20 +657,46 @@ def test_promo_context_uses_session_row_by_thread_id(monkeypatch):
 
 def test_promo_failure_no_row_found_logs_context_without_crashing(monkeypatch, caplog):
     watcher = PromoTicketWatcher(bot=MagicMock())
-    thread = SimpleNamespace(id=67890, name="not-a-promo-ticket", parent=SimpleNamespace(id=77), guild=SimpleNamespace(id=88))
+    thread = SimpleNamespace(
+        id=67890,
+        name="not-a-promo-ticket",
+        parent=SimpleNamespace(id=77),
+        guild=SimpleNamespace(id=88),
+    )
 
     def missing_row(*_args, **_kwargs):
         raise RuntimeError("promo finalization row not found")
 
-    monkeypatch.setattr(watcher_promo.onboarding_sheets, "find_promo_row_by_thread_id", lambda _thread_id: None)
-    monkeypatch.setattr(watcher_promo.onboarding_sessions, "get_by_thread_id", lambda _thread_id: None)
-    monkeypatch.setattr(watcher_promo, "locate_welcome_message", AsyncMock(return_value=SimpleNamespace(id=999)))
-    monkeypatch.setattr(watcher_promo, "extract_target_from_message", lambda _message: (13579, 999))
-    monkeypatch.setattr(watcher_promo.onboarding_sheets, "update_ticket_finalization_state", missing_row)
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets,
+        "find_promo_row_by_thread_id",
+        lambda _thread_id: None,
+    )
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sessions,
+        "aget_by_thread_id",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        watcher_promo,
+        "locate_welcome_message",
+        AsyncMock(return_value=SimpleNamespace(id=999)),
+    )
+    monkeypatch.setattr(
+        watcher_promo, "extract_target_from_message", lambda _message: (13579, 999)
+    )
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets, "update_ticket_finalization_state", missing_row
+    )
 
     with caplog.at_level("ERROR", logger="c1c.onboarding.promo_watcher"):
         result = asyncio.run(watcher._ensure_context(thread))
 
     assert result is None
-    assert any("promo failure promo-row update failed" in record.message for record in caplog.records)
-    assert any(getattr(record, "target_user_id", None) == 13579 for record in caplog.records)
+    assert any(
+        "promo failure promo-row update failed" in record.message
+        for record in caplog.records
+    )
+    assert any(
+        getattr(record, "target_user_id", None) == 13579 for record in caplog.records
+    )
