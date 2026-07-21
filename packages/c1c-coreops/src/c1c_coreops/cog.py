@@ -95,14 +95,23 @@ logger = logging.getLogger(__name__)
 class _HelpAccessView(discord.ui.View):
     """Non-expiring access-group controls over an already-cached snapshot."""
 
-    def __init__(self, embeds: Mapping[str, discord.Embed]) -> None:
+    def __init__(self, embeds: Mapping[str, discord.Embed], *, requester_id: int) -> None:
         super().__init__(timeout=None)
         self.embeds = dict(embeds)
+        self.requester_id = requester_id
         for item in tuple(self.children):
             if isinstance(item, discord.ui.Button) and item.custom_id:
                 access = item.custom_id.rsplit(":", 1)[-1]
                 if access not in self.embeds:
                     self.remove_item(item)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.requester_id:
+            return True
+        await interaction.response.send_message(
+            "Run !help to open your own help menu.", ephemeral=True
+        )
+        return False
 
     async def _show(self, interaction: discord.Interaction, access: str) -> None:
         await interaction.response.edit_message(embed=self.embeds[access], view=self)
@@ -3834,7 +3843,10 @@ class CoreOpsCog(commands.Cog):
             colour=discord.Color.blurple(),
         )
         overview.set_footer(text=build_coreops_footer(bot_version=bot_version))
-        await ctx.reply(embed=sanitize_embed(overview), view=_HelpAccessView(access_embeds))
+        await ctx.reply(
+            embed=sanitize_embed(overview),
+            view=_HelpAccessView(access_embeds, requester_id=ctx.author.id),
+        )
 
     async def _reply_with_help_embeds(
         self, ctx: commands.Context, embeds: Sequence[discord.Embed]

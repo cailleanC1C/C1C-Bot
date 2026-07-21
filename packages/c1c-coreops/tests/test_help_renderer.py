@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Iterable, Mapping, Sequence
+from unittest.mock import AsyncMock
 
 import discord
 import pytest
@@ -275,6 +276,33 @@ def test_help_pages_group_categories_inside_access_pages(monkeypatch: pytest.Mon
                 "Staff Commands": discord.ButtonStyle.success,
                 "Admin Commands": discord.ButtonStyle.danger,
             }
+        finally:
+            await bot.close()
+
+    asyncio.run(runner())
+
+
+def test_help_access_buttons_reject_non_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def runner() -> None:
+        async def rows():
+            return _sheet_rows()
+
+        monkeypatch.setattr("c1c_coreops.cog.help_commands.get_rows", rows)
+        bot = await _setup_test_bot(monkeypatch)
+        try:
+            ctx = HelpContext(bot, DummyMember())
+            cog = bot.get_cog("CoreOpsCog")
+            assert cog is not None
+            await cog.render_help(ctx)
+            view = ctx._views[0]
+            assert view is not None
+            response = SimpleNamespace(send_message=AsyncMock())
+            interaction = SimpleNamespace(user=SimpleNamespace(id=999), response=response)
+
+            assert await view.interaction_check(interaction) is False
+            response.send_message.assert_awaited_once_with(
+                "Run !help to open your own help menu.", ephemeral=True
+            )
         finally:
             await bot.close()
 
