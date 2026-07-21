@@ -266,9 +266,11 @@ def test_help_pages_group_categories_inside_access_pages(monkeypatch: pytest.Mon
             view = ctx._views[0]
             assert view is not None
             assert set(view.embeds) == {"user", "staff", "admin"}
-            assert list(_fields(view.embeds["user"][0])) == ["Recruitment"]
-            assert list(_fields(view.embeds["staff"][0])) == ["Recruitment"]
-            assert list(_fields(view.embeds["admin"][0])) == ["Recruitment"]
+            for access in ("user", "staff", "admin"):
+                fields = view.embeds[access][0].fields
+                assert len(fields) == 1
+                assert fields[0].name == "\u200b"
+                assert fields[0].value.startswith("### Recruitment\n")
 
             buttons = {
                 button.label: button.style
