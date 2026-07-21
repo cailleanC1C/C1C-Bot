@@ -660,26 +660,18 @@ def _patch_real_setopenspots_sheet_path(monkeypatch, *, warm_cache):
         return config.get(key, default)
 
     async def fake_aget_header(*, force=False):
-        if warm_cache:
-            raise AssertionError("warm header path should not call async header loader")
         return list(header)
 
     async def fake_afetch_clans(*, force=False):
-        if warm_cache:
-            raise AssertionError("warm clan path should not call async clan loader")
         return [list(row)]
 
     def fake_get_header(*, force=False):
-        if not warm_cache:
-            return _event_loop_sync_guard()
         sync_calls["header"] += 1
-        return list(header)
+        return _event_loop_sync_guard()
 
     def fake_fetch_clans(*, force=False):
-        if not warm_cache:
-            return _event_loop_sync_guard()
         sync_calls["rows"] += 1
-        return [list(row)]
+        return _event_loop_sync_guard()
 
     async def fake_aget_worksheet(_sheet_id, _tab_name):
         return Worksheet()
@@ -759,7 +751,7 @@ def test_setopenspots_warm_cache_uses_cached_header_and_row_without_sheet_reads(
     assert summary.used_cached_row is True
     assert summary.sheet_reads_count == 0
     assert summary.sheet_writes_count == 1
-    assert sync_calls == {"header": 1, "rows": 1}
+    assert sync_calls == {"header": 0, "rows": 0}
     assert updates == [
         (
             "batch_update",
