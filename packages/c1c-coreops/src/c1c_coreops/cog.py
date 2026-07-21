@@ -92,30 +92,32 @@ UTC = dt.timezone.utc
 logger = logging.getLogger(__name__)
 
 
-class _HelpPagesView(discord.ui.View):
-    """Non-expiring page controls over an already-cached embed snapshot."""
+class _HelpAccessView(discord.ui.View):
+    """Non-expiring access-group controls over an already-cached snapshot."""
 
-    def __init__(self, embeds: Sequence[discord.Embed]) -> None:
+    def __init__(self, embeds: Mapping[str, discord.Embed]) -> None:
         super().__init__(timeout=None)
-        self.embeds = tuple(embeds)
-        self.index = 0
-        self._sync_buttons()
+        self.embeds = dict(embeds)
+        for item in tuple(self.children):
+            if isinstance(item, discord.ui.Button) and item.custom_id:
+                access = item.custom_id.rsplit(":", 1)[-1]
+                if access not in self.embeds:
+                    self.remove_item(item)
 
-    def _sync_buttons(self) -> None:
-        self.previous.disabled = self.index == 0
-        self.next.disabled = self.index >= len(self.embeds) - 1
+    async def _show(self, interaction: discord.Interaction, access: str) -> None:
+        await interaction.response.edit_message(embed=self.embeds[access], view=self)
 
-    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, custom_id="woadkeeper:help:previous")
-    async def previous(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        self.index = max(0, self.index - 1)
-        self._sync_buttons()
-        await interaction.response.edit_message(embed=self.embeds[self.index], view=self)
+    @discord.ui.button(label="Commands", style=discord.ButtonStyle.primary, custom_id="woadkeeper:help:user")
+    async def commands(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._show(interaction, "user")
 
-    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, custom_id="woadkeeper:help:next")
-    async def next(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        self.index = min(len(self.embeds) - 1, self.index + 1)
-        self._sync_buttons()
-        await interaction.response.edit_message(embed=self.embeds[self.index], view=self)
+    @discord.ui.button(label="Staff Commands", style=discord.ButtonStyle.success, custom_id="woadkeeper:help:staff")
+    async def staff_commands(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._show(interaction, "staff")
+
+    @discord.ui.button(label="Admin Commands", style=discord.ButtonStyle.danger, custom_id="woadkeeper:help:admin")
+    async def admin_commands(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._show(interaction, "admin")
 
 
 _HELP_DIAGNOSTICS_CACHE: Dict[tuple[str, int | None], float] = {}
@@ -3779,48 +3781,21 @@ class CoreOpsCog(commands.Cog):
                     colour=discord.Color.blurple(),
                 )
             else:
+                description_parts = [value for value in (row.summary, row.details) if value]
                 embed = discord.Embed(
                     title=row.command or f"!{help_commands.normalize_lookup(row.command_key)}",
-                    description=row.details or row.summary or "—",
+                    description="\n\n".join(dict.fromkeys(description_parts)) or "—",
                     colour=discord.Color.blurple(),
                 )
-                for label, value in (
-                    ("Command", row.command),
-                    ("Usage", row.usage),
-                    ("Category", row.category),
-                    ("Access level", row.access_level),
-                    ("Summary", row.summary),
-                    ("Details", row.details),
-                    ("Owning bot", row.bot_key),
-                ):
-                    embed.add_field(name=label, value=value or "—", inline=False)
             embed.set_footer(text=build_coreops_footer(bot_version=bot_version))
             await ctx.reply(embed=sanitize_embed(embed))
             return
 
-        embeds: list[discord.Embed] = []
-        for access_level, category, category_rows in help_commands.group_rows(visible):
-            for offset in range(0, len(category_rows), 25):
-                page_rows = category_rows[offset : offset + 25]
-                page = offset // 25 + 1
-                page_count = (len(category_rows) + 24) // 25
-                page_suffix = f" · {page}/{page_count}" if page_count > 1 else ""
-                embed = discord.Embed(
-                    title=f"{bot_name} · help · {access_level.title()} · {category}{page_suffix}",
-                    description=f"Shared command help ({len(category_rows)} command{'s' if len(category_rows) != 1 else ''}).",
-                    colour=discord.Color.blurple(),
-                )
-                for row in page_rows:
-                    label = row.usage or row.command or f"!{help_commands.normalize_lookup(row.command_key)}"
-                    embed.add_field(name=label, value=row.summary or "—", inline=False)
-                embed.set_footer(
-                    text=build_coreops_footer(
-                        bot_version=bot_version,
-                        notes=f" • For details: {self._help_command_label(ctx, 'help <command>')}",
-                    )
-                )
-                embeds.append(sanitize_embed(embed))
-        if not embeds:
+        access_categories: dict[str, dict[str, list[help_commands.HelpCommandRow]]] = {}
+        for row in visible:
+            access = "user" if row.access_level == "user" else "admin" if row.access_level == "admin" else "staff"
+            access_categories.setdefault(access, {}).setdefault(row.category, []).append(row)
+        if not access_categories:
             embed = discord.Embed(
                 title=f"{bot_name} · help",
                 description="No help entries are currently visible to you.",
@@ -3829,8 +3804,37 @@ class CoreOpsCog(commands.Cog):
             embed.set_footer(text=build_coreops_footer(bot_version=bot_version))
             await ctx.reply(embed=sanitize_embed(embed))
             return
-        view = _HelpPagesView(embeds) if len(embeds) > 1 else None
-        await ctx.reply(embed=embeds[0], view=view)
+
+        access_embeds: dict[str, discord.Embed] = {}
+        access_titles = {"user": "Commands", "staff": "Staff Commands", "admin": "Admin Commands"}
+        access_colours = {"user": discord.Color.blurple(), "staff": discord.Color.green(), "admin": discord.Color.red()}
+        for access, categories in access_categories.items():
+            embed = discord.Embed(
+                title=f"{bot_name} · {access_titles[access]}",
+                description="Choose a command below. Categories are grouped as sections.",
+                colour=access_colours[access],
+            )
+            for category, category_rows in categories.items():
+                lines = []
+                for row in category_rows:
+                    label = row.usage or row.command or f"!{help_commands.normalize_lookup(row.command_key)}"
+                    lines.append(f"**{label}** — {row.summary or '—'}")
+                embed.add_field(name=category, value="\n".join(lines), inline=False)
+            embed.set_footer(
+                text=build_coreops_footer(
+                    bot_version=bot_version,
+                    notes=f" • For details: {self._help_command_label(ctx, 'help <command>')}",
+                )
+            )
+            access_embeds[access] = sanitize_embed(embed)
+
+        overview = discord.Embed(
+            title=f"{bot_name} · help",
+            description="Select a command access group below to browse the shared help menu.",
+            colour=discord.Color.blurple(),
+        )
+        overview.set_footer(text=build_coreops_footer(bot_version=bot_version))
+        await ctx.reply(embed=sanitize_embed(overview), view=_HelpAccessView(access_embeds))
 
     async def _reply_with_help_embeds(
         self, ctx: commands.Context, embeds: Sequence[discord.Embed]
