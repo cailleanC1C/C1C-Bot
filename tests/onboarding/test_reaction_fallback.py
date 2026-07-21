@@ -98,7 +98,9 @@ async def _run_event(
     thread_join_error: Exception | None = None,
     message_author_id: int | None = None,
 ):
-    author = SimpleNamespace(id=message_author_id) if message_author_id is not None else None
+    author = (
+        SimpleNamespace(id=message_author_id) if message_author_id is not None else None
+    )
     message = SimpleNamespace(id=7001, content=message_content, author=author)
     thread = DummyThread(message)
     member = reaction_fallback.discord.Member(1234)
@@ -268,7 +270,7 @@ def test_role_gate_rejected(monkeypatch, caplog):
     start_mock.assert_not_called()
     join_mock.assert_awaited_once()
     details = _find_log(caplog, "result")
-    assert details["result"] == "ambiguous_target"
+    assert details["result"] == "unauthorized"
 
 
 def test_thread_join_failure_logs(monkeypatch, caplog):

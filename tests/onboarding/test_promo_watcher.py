@@ -3,6 +3,7 @@ import datetime as dt
 from types import SimpleNamespace
 
 import pytest
+from unittest.mock import AsyncMock
 
 
 from modules.onboarding.constants import CLAN_TAG_PROMPT_HELPER
@@ -18,6 +19,10 @@ def _promo_source_header_config(monkeypatch):
         "shared.sheets.onboarding.get_promo_source_clan_tag_header",
         lambda **_kwargs: "source_clan_tag",
     )
+    monkeypatch.setattr(
+        "shared.sheets.onboarding.aget_promo_source_clan_tag_header",
+        AsyncMock(return_value="source_clan_tag"),
+    )
 
 
 class DummyMessage:
@@ -26,12 +31,16 @@ class DummyMessage:
         self.id = mid if mid is not None else 0
         self.edits: list[tuple[str | None, object | None]] = []
 
-    async def edit(self, content: str | None = None, view: object | None = None) -> None:  # pragma: no cover - helper
+    async def edit(
+        self, content: str | None = None, view: object | None = None
+    ) -> None:  # pragma: no cover - helper
         self.edits.append((content, view))
 
 
 class DummyThread:
-    def __init__(self, name: str, parent_id: int, created_at: dt.datetime | None = None) -> None:
+    def __init__(
+        self, name: str, parent_id: int, created_at: dt.datetime | None = None
+    ) -> None:
         self.name = name
         self.parent_id = parent_id
         self.id = hash(name) % 10000
@@ -47,13 +56,17 @@ class DummyThread:
         if "name" in kwargs:
             self.name = str(kwargs["name"])
 
-    async def send(self, content: str | None = None, view: object | None = None) -> DummyMessage:
+    async def send(
+        self, content: str | None = None, view: object | None = None
+    ) -> DummyMessage:
         message_id = len(self.sent) + 1
         message = DummyMessage(content, message_id)
         self.sent.append((content, view, message))
         return message
 
-    async def fetch_message(self, message_id: int) -> DummyMessage:  # pragma: no cover - helper
+    async def fetch_message(
+        self, message_id: int
+    ) -> DummyMessage:  # pragma: no cover - helper
         return DummyMessage(f"fetched-{message_id}")
 
 
@@ -74,7 +87,11 @@ def promo_setup(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(watcher_promo, "get_promo_channel_id", lambda: promo_parent)
     monkeypatch.setattr(watcher_promo, "get_ticket_tool_bot_id", lambda: ticket_tool_id)
-    monkeypatch.setattr(thread_scopes, "is_promo_parent", lambda thread: getattr(thread, "parent_id", None) == promo_parent)
+    monkeypatch.setattr(
+        thread_scopes,
+        "is_promo_parent",
+        lambda thread: getattr(thread, "parent_id", None) == promo_parent,
+    )
     monkeypatch.setattr(
         watcher_promo.feature_flags,
         "is_enabled",
@@ -95,24 +112,96 @@ def promo_setup(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(onboarding_sheets, "upsert_promo", _fake_upsert)
 
-    def _fake_append(ticket, username, clan_tag, source_clan_tag, promo_type, thread_created, year, month, join_month, clan_name, progression, **_kwargs):
-        row = [ticket, username, clan_tag, source_clan_tag, "", promo_type, thread_created, year, month, join_month, clan_name, progression]
+    def _fake_append(
+        ticket,
+        username,
+        clan_tag,
+        source_clan_tag,
+        promo_type,
+        thread_created,
+        year,
+        month,
+        join_month,
+        clan_name,
+        progression,
+        **_kwargs,
+    ):
+        row = [
+            ticket,
+            username,
+            clan_tag,
+            source_clan_tag,
+            "",
+            promo_type,
+            thread_created,
+            year,
+            month,
+            join_month,
+            clan_name,
+            progression,
+        ]
         return _fake_upsert(row, onboarding_sheets.PROMO_HEADERS)
 
     monkeypatch.setattr(onboarding_sheets, "append_promo_ticket_row", _fake_append)
     monkeypatch.setattr(onboarding_sheets, "find_promo_row", _fake_find)
-    monkeypatch.setattr(onboarding_sheets, "find_promo_row_by_thread_id", lambda _thread_id: None)
-    monkeypatch.setattr(onboarding_sheets, "get_ticket_finalization_state", lambda _flow, values: {
-        "finalization_status": values.get("finalization_status", ""),
-        "reservation_status": values.get("reservation_status", ""),
-        "clan_update_status": values.get("clan_update_status", ""),
-        "finalization_note": values.get("finalization_note", ""),
-    })
-    monkeypatch.setattr(onboarding_sheets, "update_ticket_finalization_state", lambda *a, **k: "updated")
-    monkeypatch.setattr(onboarding_sheets, "patch_promo_prompt_source", lambda **kwargs: "updated")
-    monkeypatch.setattr(onboarding_sheets, "patch_promo_ticket_metadata", lambda **kwargs: "updated")
-    monkeypatch.setattr(onboarding_sheets, "patch_promo_final_close", lambda **kwargs: _fake_upsert([kwargs.get("ticket"), "", kwargs.get("clan_tag"), kwargs.get("source_clan_tag"), kwargs.get("date_closed"), "", "", kwargs.get("year"), kwargs.get("month"), kwargs.get("join_month"), kwargs.get("clan_name"), kwargs.get("progression")], onboarding_sheets.PROMO_HEADERS))
-    monkeypatch.setattr(onboarding_sheets, "load_clan_tags", lambda force=False: calls["tags"][0])
+    monkeypatch.setattr(
+        onboarding_sheets, "find_promo_row_by_thread_id", lambda _thread_id: None
+    )
+    monkeypatch.setattr(
+        onboarding_sheets,
+        "get_ticket_finalization_state",
+        lambda _flow, values: {
+            "finalization_status": values.get("finalization_status", ""),
+            "reservation_status": values.get("reservation_status", ""),
+            "clan_update_status": values.get("clan_update_status", ""),
+            "finalization_note": values.get("finalization_note", ""),
+        },
+    )
+    monkeypatch.setattr(
+        onboarding_sheets,
+        "aget_ticket_finalization_state",
+        AsyncMock(
+            side_effect=lambda _flow, values: {
+                "finalization_status": values.get("finalization_status", ""),
+                "reservation_status": values.get("reservation_status", ""),
+                "clan_update_status": values.get("clan_update_status", ""),
+                "finalization_note": values.get("finalization_note", ""),
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        onboarding_sheets, "update_ticket_finalization_state", lambda *a, **k: "updated"
+    )
+    monkeypatch.setattr(
+        onboarding_sheets, "patch_promo_prompt_source", lambda **kwargs: "updated"
+    )
+    monkeypatch.setattr(
+        onboarding_sheets, "patch_promo_ticket_metadata", lambda **kwargs: "updated"
+    )
+    monkeypatch.setattr(
+        onboarding_sheets,
+        "patch_promo_final_close",
+        lambda **kwargs: _fake_upsert(
+            [
+                kwargs.get("ticket"),
+                "",
+                kwargs.get("clan_tag"),
+                kwargs.get("source_clan_tag"),
+                kwargs.get("date_closed"),
+                "",
+                "",
+                kwargs.get("year"),
+                kwargs.get("month"),
+                kwargs.get("join_month"),
+                kwargs.get("clan_name"),
+                kwargs.get("progression"),
+            ],
+            onboarding_sheets.PROMO_HEADERS,
+        ),
+    )
+    monkeypatch.setattr(
+        onboarding_sheets, "load_clan_tags", lambda force=False: calls["tags"][0]
+    )
 
     watcher = watcher_promo.PromoTicketWatcher(bot=SimpleNamespace())
     return watcher, calls, promo_parent, ticket_tool_id
@@ -173,17 +262,29 @@ def test_upsert_promo_inserts_and_updates(monkeypatch: pytest.MonkeyPatch) -> No
         def append_row(self, row, value_input_option=None):  # pragma: no cover - helper
             rows.append(list(row))
 
-    monkeypatch.setattr(onboarding_sheets.core, "call_with_backoff", lambda func, *args, **kwargs: func(*args, **kwargs))
+    monkeypatch.setattr(
+        onboarding_sheets.core,
+        "call_with_backoff",
+        lambda func, *args, **kwargs: func(*args, **kwargs),
+    )
     monkeypatch.setattr(onboarding_sheets, "_worksheet", lambda tab: FakeWorksheet())
     monkeypatch.setattr(onboarding_sheets, "_promo_tab", lambda: "PromoTickets")
     monkeypatch.setattr(onboarding_sheets, "_sheet_id", lambda: "sheet")
-    monkeypatch.setattr(onboarding_sheets, "get_promo_source_clan_tag_header", lambda **kwargs: "source_clan_tag")
-    monkeypatch.setattr(onboarding_sheets, "get_finalization_headers", lambda flow, **kwargs: {
-        "finalization_status": "finalization_status",
-        "reservation_status": "reservation_status",
-        "clan_update_status": "clan_update_status",
-        "finalization_note": "finalization_note",
-    })
+    monkeypatch.setattr(
+        onboarding_sheets,
+        "get_promo_source_clan_tag_header",
+        lambda **kwargs: "source_clan_tag",
+    )
+    monkeypatch.setattr(
+        onboarding_sheets,
+        "get_finalization_headers",
+        lambda flow, **kwargs: {
+            "finalization_status": "finalization_status",
+            "reservation_status": "reservation_status",
+            "clan_update_status": "clan_update_status",
+            "finalization_note": "finalization_note",
+        },
+    )
     live_headers = list(onboarding_sheets.PROMO_HEADERS) + [
         "finalization_status",
         "reservation_status",
@@ -263,7 +364,9 @@ def test_promo_watcher_logs_open_on_thread_create(promo_setup):
     assert "type" in [h.lower() for h in headers]
 
 
-def test_promo_watcher_close_flow_updates_sheet(promo_setup, monkeypatch: pytest.MonkeyPatch):
+def test_promo_watcher_close_flow_updates_sheet(
+    promo_setup, monkeypatch: pytest.MonkeyPatch
+):
     watcher, calls, promo_parent, ticket_tool_id = promo_setup
     thread = DummyThread("M0002-beta", promo_parent)
 
@@ -277,10 +380,14 @@ def test_promo_watcher_close_flow_updates_sheet(promo_setup, monkeypatch: pytest
         await watcher.on_message(close_message)
 
         assert thread.sent, "expected prompt to be sent"
-        source_message = SimpleNamespace(content="NONE", author=DummyAuthor(bot=False), channel=thread)
+        source_message = SimpleNamespace(
+            content="NONE", author=DummyAuthor(bot=False), channel=thread
+        )
         await watcher.on_message(source_message)
 
-        clan_message = SimpleNamespace(content="C1CE", author=DummyAuthor(bot=False), channel=thread)
+        clan_message = SimpleNamespace(
+            content="C1CE", author=DummyAuthor(bot=False), channel=thread
+        )
         await watcher.on_message(clan_message)
 
         progression_message = SimpleNamespace(
@@ -298,8 +405,9 @@ def test_promo_watcher_close_flow_updates_sheet(promo_setup, monkeypatch: pytest
     assert final_row[-2] == ""
 
 
-
-def _patch_promo_close_dependencies(monkeypatch: pytest.MonkeyPatch, *, open_spots: int = 2, reservations=None):
+def _patch_promo_close_dependencies(
+    monkeypatch: pytest.MonkeyPatch, *, open_spots: int = 2, reservations=None
+):
     state = {"open_spots": open_spots}
     deltas: list[tuple[str, int]] = []
     log_messages: list[str] = []
@@ -331,40 +439,76 @@ def _patch_promo_close_dependencies(monkeypatch: pytest.MonkeyPatch, *, open_spo
         log_messages.append(message)
 
     monkeypatch.setattr(watcher_promo, "_ensure_fresh_clans_for_placement", fresh)
-    monkeypatch.setattr(watcher_promo.reservations_sheets, "find_active_reservations_for_recruit", find_reservations)
-    monkeypatch.setattr(watcher_promo.reservations_sheets, "update_reservation_status", update_status)
-    monkeypatch.setattr(watcher_promo.recruitment_sheets, "find_clan_row", find_clan_row)
-    monkeypatch.setattr(watcher_promo.recruitment_sheets, "get_clan_header_map", lambda: {
-        "open_spots": 4,
-        "inactives": 5,
-        "reservation_count": 6,
-        "reservation_summary": 7,
-    })
+    monkeypatch.setattr(
+        watcher_promo.reservations_sheets,
+        "find_active_reservations_for_recruit",
+        find_reservations,
+    )
+    monkeypatch.setattr(
+        watcher_promo.reservations_sheets, "update_reservation_status", update_status
+    )
+    monkeypatch.setattr(
+        watcher_promo.recruitment_sheets, "find_clan_row", find_clan_row
+    )
+    monkeypatch.setattr(
+        watcher_promo.recruitment_sheets,
+        "get_clan_header_map",
+        lambda: {
+            "open_spots": 4,
+            "inactives": 5,
+            "reservation_count": 6,
+            "reservation_summary": 7,
+        },
+    )
+
     def find_promo_row(ticket):
-        return (2, {
-            "ticket number": ticket,
-            "username": "",
-            "clantag": "",
-            "source_clan_tag": "C1CV",
-            "finalization_status": "pending",
-            "reservation_status": "pending",
-            "clan_update_status": "pending",
-            "finalization_note": "",
-        })
+        return (
+            2,
+            {
+                "ticket number": ticket,
+                "username": "",
+                "clantag": "",
+                "source_clan_tag": "C1CV",
+                "finalization_status": "pending",
+                "reservation_status": "pending",
+                "clan_update_status": "pending",
+                "finalization_note": "",
+            },
+        )
 
     monkeypatch.setattr(watcher_promo.availability, "adjust_manual_open_spots", adjust)
-    monkeypatch.setattr(watcher_promo.availability, "recompute_clan_availability", recompute)
+    monkeypatch.setattr(
+        watcher_promo.availability, "recompute_clan_availability", recompute
+    )
     monkeypatch.setattr(watcher_promo.rt, "send_log_message", send_log)
-    monkeypatch.setattr(watcher_promo.onboarding_sheets, "find_promo_row", find_promo_row)
-    monkeypatch.setattr(watcher_promo.onboarding_sheets, "get_ticket_finalization_state", lambda _flow, values: {
-        "finalization_status": values.get("finalization_status", ""),
-        "reservation_status": values.get("reservation_status", ""),
-        "clan_update_status": values.get("clan_update_status", ""),
-        "finalization_note": values.get("finalization_note", ""),
-    })
-    monkeypatch.setattr(watcher_promo.onboarding_sheets, "update_ticket_finalization_state", lambda *a, **k: "updated")
-    monkeypatch.setattr(watcher_promo.onboarding_sheets, "patch_promo_final_close", lambda **kwargs: "updated")
-    monkeypatch.setattr(watcher_promo.onboarding_sessions, "mark_completed", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets, "find_promo_row", find_promo_row
+    )
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets,
+        "get_ticket_finalization_state",
+        lambda _flow, values: {
+            "finalization_status": values.get("finalization_status", ""),
+            "reservation_status": values.get("reservation_status", ""),
+            "clan_update_status": values.get("clan_update_status", ""),
+            "finalization_note": values.get("finalization_note", ""),
+        },
+    )
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets,
+        "update_ticket_finalization_state",
+        lambda *a, **k: "updated",
+    )
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sheets,
+        "patch_promo_final_close",
+        lambda **kwargs: "updated",
+    )
+    monkeypatch.setattr(
+        watcher_promo.onboarding_sessions,
+        "mark_completed",
+        lambda *_args, **_kwargs: None,
+    )
     return state, deltas, log_messages
 
 
@@ -406,7 +550,6 @@ def test_promo_move_close_preserves_full_ticket_id_and_consumes_unreserved_spot(
     assert "F-IT:-1" in log_messages[-1]
 
 
-
 def test_promo_move_close_normalizes_ticket_prefixed_username_and_logs_rows(
     promo_setup, monkeypatch: pytest.MonkeyPatch
 ):
@@ -428,7 +571,11 @@ def test_promo_move_close_normalizes_ticket_prefixed_username_and_logs_rows(
         user_id=12345,
     )
 
-    asyncio.run(watcher._complete_close(thread, context, progression="", clan_name="", previous_final=""))
+    asyncio.run(
+        watcher._complete_close(
+            thread, context, progression="", clan_name="", previous_final=""
+        )
+    )
 
     assert context.state == "closed"
     assert thread.name == "Closed-M0392-J_Turbo-F-IT"
@@ -453,28 +600,38 @@ def test_promo_close_recompute_keeps_shared_availability_path(
     _state, _deltas, log_messages = _patch_promo_close_dependencies(
         monkeypatch, open_spots=2
     )
-    monkeypatch.setattr(watcher_promo.availability, "recompute_clan_availability", fake_recompute)
+    monkeypatch.setattr(
+        watcher_promo.availability, "recompute_clan_availability", fake_recompute
+    )
 
     def find_clan_row(tag, force=False):
         normalized = str(tag).strip().upper()
         if normalized not in {"C1CV", "C1CZ"}:
             return None
-        return (7 if normalized == "C1CZ" else 8, ["", "", normalized, "", "2", "0", "0", ""])
+        return (
+            7 if normalized == "C1CZ" else 8,
+            ["", "", normalized, "", "2", "0", "0", ""],
+        )
 
-    monkeypatch.setattr(watcher_promo.recruitment_sheets, "find_clan_row", find_clan_row)
+    monkeypatch.setattr(
+        watcher_promo.recruitment_sheets, "find_clan_row", find_clan_row
+    )
     monkeypatch.setattr(
         watcher_promo.onboarding_sheets,
         "find_promo_row",
-        lambda ticket: (2, {
-            "ticket number": ticket,
-            "username": "",
-            "clantag": "",
-            "source_clan_tag": "C1CZ",
-            "finalization_status": "pending",
-            "reservation_status": "pending",
-            "clan_update_status": "pending",
-            "finalization_note": "",
-        }),
+        lambda ticket: (
+            2,
+            {
+                "ticket number": ticket,
+                "username": "",
+                "clantag": "",
+                "source_clan_tag": "C1CZ",
+                "finalization_status": "pending",
+                "reservation_status": "pending",
+                "clan_update_status": "pending",
+                "finalization_note": "",
+            },
+        ),
     )
 
     thread = DummyThread("M0392-J_Turbo", promo_parent)
@@ -491,7 +648,11 @@ def test_promo_close_recompute_keeps_shared_availability_path(
         user_id=12345,
     )
 
-    asyncio.run(watcher._complete_close(thread, context, progression="", clan_name="", previous_final=""))
+    asyncio.run(
+        watcher._complete_close(
+            thread, context, progression="", clan_name="", previous_final=""
+        )
+    )
 
     assert context.state == "closed"
     assert sorted(recomputed) == ["C1CV", "C1CZ"]
@@ -500,6 +661,7 @@ def test_promo_close_recompute_keeps_shared_availability_path(
     assert log_messages
     assert "M0392 • J_Turbo" in log_messages[-1]
     assert "snapshot unavailable" not in log_messages[-1]
+
 
 def test_reserved_promo_move_same_clan_does_not_double_consume_open_spot(
     promo_setup, monkeypatch: pytest.MonkeyPatch
@@ -549,6 +711,7 @@ def test_reserved_promo_move_same_clan_does_not_double_consume_open_spot(
     assert "reservation=row4(same)" in log_messages[-1]
     assert "C1CV:+1" in log_messages[-1]
 
+
 def test_promo_watcher_respects_feature_flags(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(watcher_promo, "get_promo_channel_id", lambda: 1)
     monkeypatch.setattr(watcher_promo, "get_ticket_tool_bot_id", lambda: 1)
@@ -559,7 +722,11 @@ def test_promo_watcher_respects_feature_flags(monkeypatch: pytest.MonkeyPatch):
         lambda name: False if name == "promo_enabled" else True,
     )
 
-    monkeypatch.setattr(onboarding_sheets, "upsert_promo", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("should not run")))
+    monkeypatch.setattr(
+        onboarding_sheets,
+        "upsert_promo",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("should not run")),
+    )
 
     watcher = watcher_promo.PromoTicketWatcher(bot=SimpleNamespace())
     thread = DummyThread("R2222-user", parent_id=1)
