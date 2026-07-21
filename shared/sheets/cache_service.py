@@ -68,8 +68,9 @@ class CacheBucket:
         "last_item_count",
         "last_trigger",
         "last_ttl_expired",
+        "retry_delay_sec",
     )
-    def __init__(self, name: str, ttl_sec: int, loader: Loader):
+    def __init__(self, name: str, ttl_sec: int, loader: Loader, *, retry_delay_sec: int = 300):
         self.name = name
         self.ttl_sec = ttl_sec
         self.loader = loader
@@ -83,6 +84,7 @@ class CacheBucket:
         self.last_item_count: Optional[int] = None
         self.last_trigger: Optional[str] = None
         self.last_ttl_expired: Optional[bool] = None
+        self.retry_delay_sec = retry_delay_sec
 
     def age_sec(self) -> Optional[int]:
         if not self.last_refresh:
@@ -98,8 +100,10 @@ class CacheService:
     def __init__(self):
         self._buckets: Dict[str, CacheBucket] = {}
 
-    def register(self, name: str, ttl_sec: int, loader: Loader) -> CacheBucket:
-        b = CacheBucket(name, ttl_sec, loader)
+    def register(
+        self, name: str, ttl_sec: int, loader: Loader, *, retry_delay_sec: int = 300
+    ) -> CacheBucket:
+        b = CacheBucket(name, ttl_sec, loader, retry_delay_sec=retry_delay_sec)
         self._buckets[name] = b
         return b
 
@@ -203,7 +207,7 @@ class CacheService:
                 first_err = _errtext(exc)
                 err_text = first_err
                 b.last_error = first_err
-                await asyncio.sleep(300)  # 5 minutes
+                await asyncio.sleep(b.retry_delay_sec)
                 try:
                     with sheets_audit.log_read(
                         component="cache_service",
