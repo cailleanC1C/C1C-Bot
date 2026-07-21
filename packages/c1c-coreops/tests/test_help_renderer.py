@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Iterable, Mapping, Sequence
+from unittest.mock import AsyncMock
 
 import discord
 import pytest
@@ -224,17 +225,30 @@ def _sheet_rows():
 
 
 def test_help_access_views_are_sheet_driven(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def rows():
-        return _sheet_rows()
+    async def runner() -> None:
+        async def rows():
+            return _sheet_rows()
 
-    monkeypatch.setattr("c1c_coreops.cog.help_commands.get_rows", rows)
-    user = asyncio.run(_gather_help_embeds(monkeypatch, DummyMember()))[0]
+        monkeypatch.setattr("c1c_coreops.cog.help_commands.get_rows", rows)
+        bot = await _setup_test_bot(monkeypatch)
+        try:
+            ctx = HelpContext(bot, DummyMember())
+            cog = bot.get_cog("CoreOpsCog")
+            assert cog is not None
+            await cog.render_help(ctx)
+            assert ctx._replies[0].title == "C1C-Recruitment · help"
+            view = ctx._views[0]
+            assert view is not None
+            user = view.embeds["user"][0]
+            assert "!clan <tag>" in _collect_text(user)
+            assert "!welcome" not in _collect_text(user)
+        finally:
+            await bot.close()
 
-    assert "!clan <tag>" in _fields(user)
-    assert "!welcome" not in _fields(user)
+    asyncio.run(runner())
 
 
-def test_help_pages_group_access_before_category(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_help_pages_group_categories_inside_access_pages(monkeypatch: pytest.MonkeyPatch) -> None:
     async def runner() -> None:
         async def rows():
             return _sheet_rows()
@@ -251,11 +265,98 @@ def test_help_pages_group_access_before_category(monkeypatch: pytest.MonkeyPatch
             await cog.render_help(ctx)
             view = ctx._views[0]
             assert view is not None
-            assert [embed.title for embed in view.embeds] == [
-                "C1C-Recruitment · help · User · Recruitment",
-                "C1C-Recruitment · help · Staff · Recruitment",
-                "C1C-Recruitment · help · Admin · Recruitment",
-            ]
+            assert set(view.embeds) == {"user", "staff", "admin"}
+            assert list(_fields(view.embeds["user"][0])) == ["Recruitment"]
+            assert list(_fields(view.embeds["staff"][0])) == ["Recruitment"]
+            assert list(_fields(view.embeds["admin"][0])) == ["Recruitment"]
+
+            buttons = {
+                button.label: button.style
+                for button in view.children
+                if button.label in {"Commands", "Staff Commands", "Admin Commands"}
+            }
+            assert buttons == {
+                "Commands": discord.ButtonStyle.primary,
+                "Staff Commands": discord.ButtonStyle.success,
+                "Admin Commands": discord.ButtonStyle.danger,
+            }
+        finally:
+            await bot.close()
+
+    asyncio.run(runner())
+
+
+def test_help_access_buttons_reject_non_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def runner() -> None:
+        async def rows():
+            return _sheet_rows()
+
+        monkeypatch.setattr("c1c_coreops.cog.help_commands.get_rows", rows)
+        bot = await _setup_test_bot(monkeypatch)
+        try:
+            ctx = HelpContext(bot, DummyMember())
+            cog = bot.get_cog("CoreOpsCog")
+            assert cog is not None
+            await cog.render_help(ctx)
+            view = ctx._views[0]
+            assert view is not None
+            response = SimpleNamespace(send_message=AsyncMock())
+            interaction = SimpleNamespace(user=SimpleNamespace(id=999), response=response)
+
+            assert await view.interaction_check(interaction) is False
+            response.send_message.assert_awaited_once()
+            kwargs = response.send_message.await_args.kwargs
+            assert kwargs["ephemeral"] is True
+            assert kwargs["embed"].description == "Run !help to open your own help menu."
+        finally:
+            await bot.close()
+
+    asyncio.run(runner())
+
+
+def test_help_long_category_splits_without_dropping_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def runner() -> None:
+        from shared.sheets.help_commands import HelpCommandRow
+
+        expected_commands = [f"!command-{index}" for index in range(70)]
+
+        async def rows():
+            return tuple(
+                HelpCommandRow(
+                    "woadkeeper",
+                    f"command_{index}",
+                    command,
+                    command,
+                    "Very Long Category",
+                    "user",
+                    f"Summary {index}: " + ("help text " * 12),
+                    "Details",
+                    index,
+                    index,
+                )
+                for index, command in enumerate(expected_commands)
+            )
+
+        monkeypatch.setattr("c1c_coreops.cog.help_commands.get_rows", rows)
+        bot = await _setup_test_bot(monkeypatch)
+        try:
+            ctx = HelpContext(bot, DummyMember())
+            cog = bot.get_cog("CoreOpsCog")
+            assert cog is not None
+            await cog.render_help(ctx)
+            view = ctx._views[0]
+            assert view is not None
+            pages = view.embeds["user"]
+            assert len(pages) > 1
+            assert all(len(field.value) <= 1000 for page in pages for field in page.fields)
+            assert all(len(page.fields) <= 25 and len(page) <= 6000 for page in pages)
+            rendered = "\n".join(
+                field.value for page in pages for field in page.fields
+            )
+            missing = [command for command in expected_commands if command not in rendered]
+            assert not missing, missing
         finally:
             await bot.close()
 
@@ -285,9 +386,9 @@ def test_recruiter_only_access_renders_recruiter_page(monkeypatch: pytest.Monkey
             await cog.render_help(ctx)
             view = ctx._views[0]
             assert view is not None
-            titles = [embed.title for embed in view.embeds]
-            assert "C1C-Recruitment · help · Recruiter · Recruitment" in titles
-            assert not any("Staff · Operations" in title for title in titles)
+            assert set(view.embeds) == {"user", "staff"}
+            assert "!recruit" in _collect_text(view.embeds["staff"][0])
+            assert "!staff" not in _collect_text(view.embeds["staff"][0])
         finally:
             await bot.close()
 
@@ -306,10 +407,10 @@ def test_help_detail_uses_sheet_fields_and_normalized_lookup(monkeypatch: pytest
             cog = bot.get_cog("CoreOpsCog")
             assert cog is not None
             await cog.render_help(ctx, query="!clan")
-            fields = _fields(ctx._replies[0])
-            assert fields["Usage"] == "!clan <tag>"
-            assert fields["Details"] == "Detailed clan help"
-            assert fields["Owning bot"] == "woadkeeper"
+            embed = ctx._replies[0]
+            assert embed.title == "!clan"
+            assert embed.description == "Clan details\n\nDetailed clan help"
+            assert not embed.fields
         finally:
             await bot.close()
 

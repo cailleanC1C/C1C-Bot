@@ -92,30 +92,74 @@ UTC = dt.timezone.utc
 logger = logging.getLogger(__name__)
 
 
-class _HelpPagesView(discord.ui.View):
-    """Non-expiring page controls over an already-cached embed snapshot."""
+class _HelpAccessView(discord.ui.View):
+    """Non-expiring access-group controls over an already-cached snapshot."""
 
-    def __init__(self, embeds: Sequence[discord.Embed]) -> None:
+    def __init__(
+        self,
+        embeds: Mapping[str, Sequence[discord.Embed]],
+        *,
+        requester_id: int,
+    ) -> None:
         super().__init__(timeout=None)
-        self.embeds = tuple(embeds)
-        self.index = 0
-        self._sync_buttons()
+        self.embeds = {access: tuple(pages) for access, pages in embeds.items()}
+        self.requester_id = requester_id
+        self.access: str | None = None
+        self.page = 0
+        for item in tuple(self.children):
+            if isinstance(item, discord.ui.Button) and item.custom_id:
+                access = item.custom_id.rsplit(":", 1)[-1]
+                if access in {"user", "staff", "admin"} and access not in self.embeds:
+                    self.remove_item(item)
+        self._sync_page_buttons()
 
-    def _sync_buttons(self) -> None:
-        self.previous.disabled = self.index == 0
-        self.next.disabled = self.index >= len(self.embeds) - 1
+    def _sync_page_buttons(self) -> None:
+        page_count = len(self.embeds.get(self.access or "", ()))
+        self.previous.disabled = self.access is None or self.page == 0
+        self.next.disabled = self.access is None or self.page >= page_count - 1
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.requester_id:
+            return True
+        embed = discord.Embed(
+            description="Run !help to open your own help menu.",
+            colour=discord.Color.orange(),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return False
+
+    async def _show(self, interaction: discord.Interaction, access: str) -> None:
+        self.access = access
+        self.page = 0
+        self._sync_page_buttons()
+        await interaction.response.edit_message(embed=self.embeds[access][0], view=self)
+
+    @discord.ui.button(label="Commands", style=discord.ButtonStyle.primary, custom_id="woadkeeper:help:user")
+    async def commands(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._show(interaction, "user")
+
+    @discord.ui.button(label="Staff Commands", style=discord.ButtonStyle.success, custom_id="woadkeeper:help:staff")
+    async def staff_commands(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._show(interaction, "staff")
+
+    @discord.ui.button(label="Admin Commands", style=discord.ButtonStyle.danger, custom_id="woadkeeper:help:admin")
+    async def admin_commands(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._show(interaction, "admin")
 
     @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, custom_id="woadkeeper:help:previous")
     async def previous(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        self.index = max(0, self.index - 1)
-        self._sync_buttons()
-        await interaction.response.edit_message(embed=self.embeds[self.index], view=self)
+        self.page = max(0, self.page - 1)
+        self._sync_page_buttons()
+        await interaction.response.edit_message(
+            embed=self.embeds[self.access or "user"][self.page], view=self
+        )
 
     @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, custom_id="woadkeeper:help:next")
     async def next(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        self.index = min(len(self.embeds) - 1, self.index + 1)
-        self._sync_buttons()
-        await interaction.response.edit_message(embed=self.embeds[self.index], view=self)
+        pages = self.embeds[self.access or "user"]
+        self.page = min(len(pages) - 1, self.page + 1)
+        self._sync_page_buttons()
+        await interaction.response.edit_message(embed=pages[self.page], view=self)
 
 
 _HELP_DIAGNOSTICS_CACHE: Dict[tuple[str, int | None], float] = {}
@@ -231,6 +275,8 @@ _ENV_FIELD_CHUNK_LIMIT = 1000
 _EMBED_TOTAL_CHAR_LIMIT = 6000
 _EMBED_FIELD_LIMIT = 25
 _MAX_EMBED_LENGTH = 4500
+_HELP_FIELD_VALUE_LIMIT = 1000
+_HELP_EMBED_CHAR_LIMIT = 5500
 _ZERO_WIDTH_SPACE = "\u200b"
 _DIGEST_SHEET_BUCKETS: Tuple[Tuple[str, str], ...] = (
     ("clans", "ClanInfo"),
@@ -246,6 +292,33 @@ _TELEMETRY_REQUIRED_KEYS: Tuple[str, ...] = (
     "last_error",
     "retries",
 )
+
+
+def _help_field_chunks(lines: Sequence[str]) -> list[str]:
+    """Pack help lines into complete field values below Discord's limit."""
+
+    chunks: list[str] = []
+    current = ""
+    for line in lines:
+        parts = textwrap.wrap(
+            line,
+            width=_HELP_FIELD_VALUE_LIMIT,
+            break_long_words=True,
+            break_on_hyphens=False,
+            replace_whitespace=False,
+            drop_whitespace=False,
+        ) or ["—"]
+        for part in parts:
+            candidate = f"{current}\n{part}" if current else part
+            if len(candidate) <= _HELP_FIELD_VALUE_LIMIT:
+                current = candidate
+                continue
+            if current:
+                chunks.append(current)
+            current = part
+    if current:
+        chunks.append(current)
+    return chunks
 _TELEMETRY_FALLBACK_KEYS: Tuple[str, ...] = (
     "name",
     "available",
@@ -3779,48 +3852,21 @@ class CoreOpsCog(commands.Cog):
                     colour=discord.Color.blurple(),
                 )
             else:
+                description_parts = [value for value in (row.summary, row.details) if value]
                 embed = discord.Embed(
                     title=row.command or f"!{help_commands.normalize_lookup(row.command_key)}",
-                    description=row.details or row.summary or "—",
+                    description="\n\n".join(dict.fromkeys(description_parts)) or "—",
                     colour=discord.Color.blurple(),
                 )
-                for label, value in (
-                    ("Command", row.command),
-                    ("Usage", row.usage),
-                    ("Category", row.category),
-                    ("Access level", row.access_level),
-                    ("Summary", row.summary),
-                    ("Details", row.details),
-                    ("Owning bot", row.bot_key),
-                ):
-                    embed.add_field(name=label, value=value or "—", inline=False)
             embed.set_footer(text=build_coreops_footer(bot_version=bot_version))
             await ctx.reply(embed=sanitize_embed(embed))
             return
 
-        embeds: list[discord.Embed] = []
-        for access_level, category, category_rows in help_commands.group_rows(visible):
-            for offset in range(0, len(category_rows), 25):
-                page_rows = category_rows[offset : offset + 25]
-                page = offset // 25 + 1
-                page_count = (len(category_rows) + 24) // 25
-                page_suffix = f" · {page}/{page_count}" if page_count > 1 else ""
-                embed = discord.Embed(
-                    title=f"{bot_name} · help · {access_level.title()} · {category}{page_suffix}",
-                    description=f"Shared command help ({len(category_rows)} command{'s' if len(category_rows) != 1 else ''}).",
-                    colour=discord.Color.blurple(),
-                )
-                for row in page_rows:
-                    label = row.usage or row.command or f"!{help_commands.normalize_lookup(row.command_key)}"
-                    embed.add_field(name=label, value=row.summary or "—", inline=False)
-                embed.set_footer(
-                    text=build_coreops_footer(
-                        bot_version=bot_version,
-                        notes=f" • For details: {self._help_command_label(ctx, 'help <command>')}",
-                    )
-                )
-                embeds.append(sanitize_embed(embed))
-        if not embeds:
+        access_categories: dict[str, dict[str, list[help_commands.HelpCommandRow]]] = {}
+        for row in visible:
+            access = "user" if row.access_level == "user" else "admin" if row.access_level == "admin" else "staff"
+            access_categories.setdefault(access, {}).setdefault(row.category, []).append(row)
+        if not access_categories:
             embed = discord.Embed(
                 title=f"{bot_name} · help",
                 description="No help entries are currently visible to you.",
@@ -3829,8 +3875,70 @@ class CoreOpsCog(commands.Cog):
             embed.set_footer(text=build_coreops_footer(bot_version=bot_version))
             await ctx.reply(embed=sanitize_embed(embed))
             return
-        view = _HelpPagesView(embeds) if len(embeds) > 1 else None
-        await ctx.reply(embed=embeds[0], view=view)
+
+        access_embeds: dict[str, tuple[discord.Embed, ...]] = {}
+        access_titles = {"user": "Commands", "staff": "Staff Commands", "admin": "Admin Commands"}
+        access_colours = {"user": discord.Color.blurple(), "staff": discord.Color.green(), "admin": discord.Color.red()}
+        for access, categories in access_categories.items():
+            field_specs: list[tuple[str, str]] = []
+            for category, category_rows in categories.items():
+                lines = []
+                for row in category_rows:
+                    label = row.usage or row.command or f"!{help_commands.normalize_lookup(row.command_key)}"
+                    lines.append(f"**{label}** — {row.summary or '—'}")
+                for chunk_index, value in enumerate(_help_field_chunks(lines)):
+                    heading = category if chunk_index == 0 else f"{category} (continued)"
+                    field_specs.append((heading[:256], value))
+
+            title = f"{bot_name} · {access_titles[access]}"
+            description = "Choose a command below. Categories are grouped as sections."
+            pages: list[discord.Embed] = []
+            embed = discord.Embed(
+                title=title,
+                description=description,
+                colour=access_colours[access],
+            )
+            embed_chars = len(title) + len(description)
+            for heading, value in field_specs:
+                field_chars = len(heading) + len(value)
+                if embed.fields and (
+                    len(embed.fields) >= _EMBED_FIELD_LIMIT
+                    or embed_chars + field_chars > _HELP_EMBED_CHAR_LIMIT
+                ):
+                    pages.append(embed)
+                    embed = discord.Embed(
+                        title=title,
+                        description=description,
+                        colour=access_colours[access],
+                    )
+                    embed_chars = len(title) + len(description)
+                embed.add_field(name=heading, value=value, inline=False)
+                embed_chars += field_chars
+            pages.append(embed)
+
+            page_count = len(pages)
+            footer = build_coreops_footer(
+                bot_version=bot_version,
+                notes=f" • For details: {self._help_command_label(ctx, 'help <command>')}",
+            )
+            for page_number, page_embed in enumerate(pages, start=1):
+                if page_count > 1:
+                    page_embed.title = f"{title} · {page_number}/{page_count}"
+                page_embed.set_footer(text=footer)
+            access_embeds[access] = tuple(
+                sanitize_embed(page_embed) for page_embed in pages
+            )
+
+        overview = discord.Embed(
+            title=f"{bot_name} · help",
+            description="Select a command access group below to browse the shared help menu.",
+            colour=discord.Color.blurple(),
+        )
+        overview.set_footer(text=build_coreops_footer(bot_version=bot_version))
+        await ctx.reply(
+            embed=sanitize_embed(overview),
+            view=_HelpAccessView(access_embeds, requester_id=ctx.author.id),
+        )
 
     async def _reply_with_help_embeds(
         self, ctx: commands.Context, embeds: Sequence[discord.Embed]
