@@ -350,10 +350,7 @@ async def _aresolve_availability_headers() -> AvailabilityHeaderResolution:
     summary = _QUOTA_SUMMARY.get()
 
     tab_name = await recruitment.get_clans_tab_name_async()
-    if used_cached_header:
-        header_row = list(recruitment.get_clan_header_row(force=False))
-    else:
-        header_row = list(await recruitment.aget_clan_header_row(force=False))
+    header_row = list(await recruitment.aget_clan_header_row(force=False))
     configured_headers: dict[str, str] = {}
     for field in AVAILABILITY_FIELDS:
         config_key = f"clans_header_{field}"
@@ -459,10 +456,7 @@ async def _afind_availability_clan_row(
     used_cached_row = bool(getattr(recruitment, "clan_cache_ready", lambda: False)())
 
     try:
-        if used_cached_row:
-            clan_rows = recruitment.fetch_clans(force=False)
-        else:
-            clan_rows = await recruitment.afetch_clans(force=False)
+        clan_rows = await recruitment.afetch_clans(force=False)
     except Exception:
         clan_rows = []
 
