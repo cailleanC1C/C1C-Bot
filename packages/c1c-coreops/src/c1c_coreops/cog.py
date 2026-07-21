@@ -3882,13 +3882,12 @@ class CoreOpsCog(commands.Cog):
         for access, categories in access_categories.items():
             field_specs: list[tuple[str, str]] = []
             for category, category_rows in categories.items():
-                lines = []
+                lines = [f"### {category}"]
                 for row in category_rows:
                     label = row.usage or row.command or f"!{help_commands.normalize_lookup(row.command_key)}"
                     lines.append(f"**{label}** — {row.summary or '—'}")
-                for chunk_index, value in enumerate(_help_field_chunks(lines)):
-                    heading = category if chunk_index == 0 else f"{category} (continued)"
-                    field_specs.append((heading[:256], value))
+                for value in _help_field_chunks(lines):
+                    field_specs.append((_ZERO_WIDTH_SPACE, value))
 
             title = f"{bot_name} · {access_titles[access]}"
             description = "Choose a command below. Categories are grouped as sections."
