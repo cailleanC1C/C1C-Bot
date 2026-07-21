@@ -21,7 +21,6 @@ from discord.ext import commands
 
 from config.runtime import (
     get_bot_name,
-    get_command_prefix,
     get_env_name,
     get_watchdog_check_sec,
     get_watchdog_disconnect_grace_sec,
@@ -55,8 +54,6 @@ from c1c_coreops.help import (
     HelpTier,
     HelpTierSection,
     build_coreops_footer,
-    build_help_detail_embed,
-    build_help_overview_embeds,
 )
 from c1c_coreops.helpers import help_metadata, tier
 from shared.redaction import sanitize_embed, sanitize_log, sanitize_text
@@ -73,6 +70,7 @@ from shared.sheets.async_core import (
     afetch_records,
 )
 from shared.sheets.recruitment import get_config_value_async, get_reports_tab_name_async
+from shared.sheets import help_commands
 import shared.sheets.core as sheets_core
 from modules.common.config_sheets import SHEET_TARGETS, SheetTarget
 
@@ -84,6 +82,7 @@ from c1c_coreops.rbac import (
     can_view_staff,
     guild_only_denied_msg,
     is_admin_member,
+    is_recruiter,
     is_staff_member,
     ops_only,
 )
@@ -91,6 +90,56 @@ from c1c_coreops.rbac import (
 UTC = dt.timezone.utc
 
 logger = logging.getLogger(__name__)
+
+
+class _HelpPagesView(discord.ui.View):
+    """Non-expiring access-group controls over a cached embed snapshot."""
+
+    def __init__(self, overview: discord.Embed, pages: Sequence[tuple[str, discord.ButtonStyle, discord.Embed]]) -> None:
+        super().__init__(timeout=None)
+        self.embeds = (overview, *(page for _, _, page in pages))
+        for index, (label, style, embed) in enumerate(pages):
+            button = discord.ui.Button(label=label, style=style, custom_id=f"woadkeeper:help:access:{index}")
+
+            async def show_page(interaction: discord.Interaction, _embed: discord.Embed = embed) -> None:
+                await interaction.response.edit_message(embed=_embed, view=self)
+
+            button.callback = show_page
+            self.add_item(button)
+
+
+_HELP_ACCESS_GROUPS = (
+    ("User", "Commands", discord.ButtonStyle.primary, {"user", "public"}),
+    ("Staff / Recruitment", "Staff Commands", discord.ButtonStyle.success, {"staff", "recruiter"}),
+    ("Admin / Operational", "Admin Commands", discord.ButtonStyle.danger, {"admin", "hidden"}),
+)
+
+
+def _help_category_fields(rows: Sequence[help_commands.HelpCommandRow]) -> list[tuple[str, str]]:
+    """Build category sections, splitting only sections that exceed field limits."""
+    categories: dict[str, list[str]] = {}
+    ordered = sorted(rows, key=lambda row: (row.sort_order is None, row.sort_order or 0, row.source_order))
+    for row in ordered:
+        label = row.usage or row.command or f"!{help_commands.normalize_lookup(row.command_key)}"
+        categories.setdefault(row.category, []).append(f"**{label}**\n{row.summary or '—'}")
+
+    fields: list[tuple[str, str]] = []
+    for category, entries in categories.items():
+        chunks: list[str] = []
+        current = ""
+        for entry in entries:
+            candidate = f"{current}\n\n{entry}" if current else entry
+            if current and len(candidate) > 1024:
+                chunks.append(current)
+                current = entry
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+        for index, value in enumerate(chunks, start=1):
+            suffix = f" ({index})" if len(chunks) > 1 else ""
+            fields.append((f"{category}{suffix}", value[:1024]))
+    return fields
 
 
 _HELP_DIAGNOSTICS_CACHE: Dict[tuple[str, int | None], float] = {}
@@ -3725,64 +3774,93 @@ class CoreOpsCog(commands.Cog):
     async def _render_help(
         self, ctx: commands.Context, *, query: str | None
     ) -> None:
-        prefix = get_command_prefix()
         bot_version = os.getenv("BOT_VERSION", "dev")
         bot_name = get_bot_name()
         lookup = query.strip() if isinstance(query, str) else ""
-
-        diagnostics: _HelpDiagnosticsCollector | None = None
-        if self._help_diagnostics_enabled():
-            diagnostics = self._create_help_diagnostics_collector()
-
-        if not lookup:
-            tiers = await self._gather_overview_tiers(ctx, diagnostics=diagnostics)
-            if not tiers:
-                await ctx.reply(str(sanitize_text("No commands available.")))
-                await self._maybe_emit_help_diagnostics(ctx, diagnostics)
-                return
-            embeds = build_help_overview_embeds(
-                prefix=prefix,
-                overview_title="C1C-Recruitment — help",
-                overview_description=self._help_bot_description(ctx, bot_name=bot_name),
-                tiers=tiers,
-                bot_version=bot_version,
-                notes=f" • For details: {self._help_command_label(ctx, 'help')}",
-                show_empty_sections=self._show_empty_sections(),
+        rows = await help_commands.get_rows()
+        if rows is None:
+            embed = discord.Embed(
+                title=f"{bot_name} · help temporarily unavailable",
+                description="I couldn't refresh shared help just now. Please try again a little later.",
+                colour=discord.Color.orange(),
             )
-            sanitized = [sanitize_embed(embed) for embed in embeds]
-            await self._reply_with_help_embeds(ctx, sanitized)
-            await self._maybe_emit_help_diagnostics(ctx, diagnostics)
+            embed.set_footer(text=build_coreops_footer(bot_version=bot_version))
+            await ctx.reply(embed=sanitize_embed(embed))
             return
 
-        normalized_lookup = " ".join(lookup.lower().split())
-        command = self.bot.get_command(normalized_lookup)
-        if command is None and not normalized_lookup.startswith("ops "):
-            command = self.bot.get_command(f"ops {normalized_lookup}")
-        if command is None:
-            await ctx.reply(str(sanitize_text(f"Unknown command `{lookup}`.")))
-            if diagnostics is not None:
-                await self._gather_overview_tiers(ctx, diagnostics=diagnostics)
-            await self._maybe_emit_help_diagnostics(ctx, diagnostics)
-            return
-
-        if not await self._can_display_command(command, ctx):
-            await ctx.reply(str(sanitize_text("You do not have access to that command.")))
-            if diagnostics is not None:
-                await self._gather_overview_tiers(ctx, diagnostics=diagnostics)
-            await self._maybe_emit_help_diagnostics(ctx, diagnostics)
-            return
-
-        command_info = self._build_help_info(command)
-        embed = build_help_detail_embed(
-            prefix=prefix,
-            command=command_info,
-            bot_version=bot_version,
-            bot_name=bot_name,
+        visible = help_commands.visible_rows(
+            rows,
+            staff=can_view_staff(ctx),
+            recruiter=is_recruiter(ctx),
+            admin=can_view_admin(ctx),
         )
-        await self._reply_with_help_embeds(ctx, [sanitize_embed(embed)])
-        if diagnostics is not None:
-            await self._gather_overview_tiers(ctx, diagnostics=diagnostics)
-        await self._maybe_emit_help_diagnostics(ctx, diagnostics)
+        if lookup:
+            row = help_commands.find_row(visible, lookup)
+            if row is None:
+                embed = discord.Embed(
+                    title=f"{bot_name} · help",
+                    description="No visible help entry was found for that command.",
+                    colour=discord.Color.blurple(),
+                )
+            else:
+                description_parts = [
+                    text for text in (row.summary, row.details) if text
+                ]
+                embed = discord.Embed(
+                    title=row.command or f"!{help_commands.normalize_lookup(row.command_key)}",
+                    description="\n\n".join(dict.fromkeys(description_parts)) or "—",
+                    colour=discord.Color.blurple(),
+                )
+            embed.set_footer(text=build_coreops_footer(bot_version=bot_version))
+            await ctx.reply(embed=sanitize_embed(embed))
+            return
+
+        overview = discord.Embed(
+            title=f"{bot_name} · shared help",
+            description=("Welcome to Woadkeeper's shared command help. Choose a command group below, or use "
+                         f"`{self._help_command_label(ctx, 'help <command>')}` for details."),
+            colour=discord.Color.blurple(),
+        )
+        overview.set_footer(text=build_coreops_footer(bot_version=bot_version))
+        overview = sanitize_embed(overview)
+
+        pages: list[tuple[str, discord.ButtonStyle, discord.Embed]] = []
+        for title, button_label, button_style, access_levels in _HELP_ACCESS_GROUPS:
+            access_rows = [row for row in visible if row.access_level in access_levels]
+            if not access_rows:
+                continue
+            field_pages: list[list[tuple[str, str]]] = []
+            current_fields: list[tuple[str, str]] = []
+            current_size = 0
+            for field in _help_category_fields(access_rows):
+                field_size = len(field[0]) + len(field[1])
+                if current_fields and (len(current_fields) >= 25 or current_size + field_size > 5_000):
+                    field_pages.append(current_fields)
+                    current_fields, current_size = [], 0
+                current_fields.append(field)
+                current_size += field_size
+            if current_fields:
+                field_pages.append(current_fields)
+
+            for page_number, page_fields in enumerate(field_pages, start=1):
+                page_suffix = f" {page_number}" if len(field_pages) > 1 else ""
+                embed = discord.Embed(
+                    title=f"{bot_name} · help · {title}{page_suffix}",
+                    description=f"{len(access_rows)} visible command{'s' if len(access_rows) != 1 else ''}, grouped by category.",
+                    colour=discord.Color.blurple(),
+                )
+                for category, commands_text in page_fields:
+                    embed.add_field(name=category, value=commands_text, inline=False)
+                embed.set_footer(
+                    text=build_coreops_footer(
+                        bot_version=bot_version,
+                        notes=f" • For details: {self._help_command_label(ctx, 'help <command>')}",
+                    )
+                )
+                label = button_label if page_number == 1 else f"{button_label} {page_number}"
+                pages.append((label, button_style, sanitize_embed(embed)))
+        view = _HelpPagesView(overview, pages) if pages else None
+        await ctx.reply(embed=overview, view=view)
 
     async def _reply_with_help_embeds(
         self, ctx: commands.Context, embeds: Sequence[discord.Embed]
