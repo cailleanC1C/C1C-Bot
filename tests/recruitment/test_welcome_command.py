@@ -17,9 +17,16 @@ class FakeChannel:
     async def send(self, *args, **kwargs):
         content = kwargs.get("content")
         embed = kwargs.get("embed")
+        embeds = kwargs.get("embeds")
+        allowed_mentions = kwargs.get("allowed_mentions")
         if args:
             content = args[0]
-        payload = {"content": content, "embed": embed}
+        payload = {
+            "content": content,
+            "embed": embed,
+            "embeds": embeds,
+            "allowed_mentions": allowed_mentions,
+        }
         self.sent.append(payload)
         return SimpleNamespace(content=content, embed=embed)
 
@@ -82,9 +89,9 @@ class FakeContext:
         self.message = message
         self.replies = []
 
-    async def reply(self, content=None):
+    async def reply(self, content=None, **kwargs):
         self.replies.append(content)
-        return await self.channel.send(content=content)
+        return await self.channel.send(content=content, **kwargs)
 
     async def send(self, content=None):
         return await self.channel.send(content=content)
@@ -123,8 +130,17 @@ def _template_rows():
     ]
 
 
-def test_welcome_happy_path_posts_embed(monkeypatch, stub_logs):
+def test_welcome_happy_path_posts_two_embeds_in_one_message(monkeypatch, stub_logs):
     async def scenario():
+        rows = _template_rows()
+        rows[1].update(
+            {
+                "TAG": "C1C9",
+                "TITLE": "Welcome to {CLAN}",
+                "BODY": "Lead: {CLANLEAD}\nDeputies: {DEPUTIES}",
+                "FOOTER": "Clan footer",
+            }
+        )
         clan_channel = FakeChannel(123)
         general_channel = FakeChannel(999)
         bot = FakeBot(channels=[clan_channel, general_channel])
@@ -134,7 +150,7 @@ def test_welcome_happy_path_posts_embed(monkeypatch, stub_logs):
         message = FakeMessage(mentions=[recruit])
         ctx = FakeContext(bot=bot, guild=guild, channel=FakeChannel(555), author=author, message=message)
 
-        template_loader = AsyncMock(return_value=_template_rows())
+        template_loader = AsyncMock(return_value=rows)
         monkeypatch.setattr(
             welcome_module.sheets,
             "get_cached_welcome_templates",
@@ -143,16 +159,24 @@ def test_welcome_happy_path_posts_embed(monkeypatch, stub_logs):
         monkeypatch.setattr(welcome_module, "get_welcome_general_channel_id", lambda: 999)
 
         bridge = WelcomeBridge(bot)
-        await bridge.welcome.callback(bridge, ctx, "C1CM")  # type: ignore[misc]
+        await bridge.welcome.callback(bridge, ctx, "C1C9")  # type: ignore[misc]
 
         assert len(clan_channel.sent) == 1
         sent = clan_channel.sent[0]
         assert sent["content"] == recruit.mention
-        embed = sent["embed"]
-        assert embed.title == "Welcome <@8>"
-        assert embed.thumbnail.url == "https://example.com/crest.png"
-        assert embed.footer.text == "Footer Deputy One, Deputy Two"
-        assert "Lead Name" in embed.description
+        assert sent["allowed_mentions"] is None
+        assert len(sent["embeds"]) == 2
+        cluster_embed, clan_embed = sent["embeds"]
+        assert cluster_embed.title == "Default C1C Title"
+        assert cluster_embed.description == "Default body for C1C"
+        assert cluster_embed.footer.text == "Default footer"
+        assert "C1C Match" not in cluster_embed.description
+        assert "Lead Name" not in cluster_embed.description
+        assert clan_embed.title == "Welcome to C1C Match"
+        assert clan_embed.thumbnail.url == "https://example.com/crest.png"
+        assert clan_embed.footer.text == "Clan footer"
+        assert "Lead Name" in clan_embed.description
+        assert "Deputy One, Deputy Two" in clan_embed.description
 
         assert len(general_channel.sent) == 1
         assert recruit.mention in general_channel.sent[0]["content"]
@@ -213,17 +237,24 @@ def test_welcome_template_load_failure_keeps_existing_response(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_default_merge_uses_c1c_row(monkeypatch):
+def test_clan_template_does_not_fall_back_to_c1c_row(monkeypatch):
     async def scenario():
         rows = _template_rows()
         rows[1]["BODY"] = ""
         rows[1]["FOOTER"] = ""
         clan_channel = FakeChannel(123)
+        invocation_channel = FakeChannel(555)
         bot = FakeBot(channels=[clan_channel])
         guild = FakeGuild(1, channels=[clan_channel])
         author = FakeMember(5)
         message = FakeMessage()
-        ctx = FakeContext(bot=bot, guild=guild, channel=clan_channel, author=author, message=message)
+        ctx = FakeContext(
+            bot=bot,
+            guild=guild,
+            channel=invocation_channel,
+            author=author,
+            message=message,
+        )
 
         monkeypatch.setattr(
             welcome_module.sheets,
@@ -235,10 +266,45 @@ def test_default_merge_uses_c1c_row(monkeypatch):
         bridge = WelcomeBridge(bot)
         await bridge.welcome.callback(bridge, ctx, "C1CM")  # type: ignore[misc]
 
-        sent = clan_channel.sent[0]
-        embed = sent["embed"]
-        assert embed.description == "Default body for C1C Match"
-        assert embed.footer.text == "Default footer"
+        assert not clan_channel.sent
+        assert ctx.replies == ["Missing welcome text for **C1CM**. Please check WelcomeTemplates."]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("cluster_active", [None, "N"])
+def test_missing_or_inactive_c1c_returns_admin_embed_without_welcome(
+    monkeypatch, cluster_active
+):
+    async def scenario():
+        rows = _template_rows()
+        if cluster_active is None:
+            rows = rows[1:]
+        else:
+            rows[0]["ACTIVE"] = cluster_active
+        clan_channel = FakeChannel(123)
+        invocation_channel = FakeChannel(555)
+        bot = FakeBot(channels=[clan_channel])
+        guild = FakeGuild(1, channels=[clan_channel])
+        ctx = FakeContext(
+            bot=bot,
+            guild=guild,
+            channel=invocation_channel,
+            author=FakeMember(5),
+            message=FakeMessage(mentions=[FakeMember(6)]),
+        )
+        monkeypatch.setattr(
+            welcome_module.sheets,
+            "get_cached_welcome_templates",
+            AsyncMock(return_value=rows),
+        )
+
+        await welcome_module.WelcomeCommandService(bot).post_welcome(ctx, "C1CM")
+
+        assert not clan_channel.sent
+        error_embed = invocation_channel.sent[0]["embed"]
+        assert error_embed.title == "Shared C1C welcome template unavailable"
+        assert "No welcome was posted" in error_embed.description
 
     asyncio.run(scenario())
 

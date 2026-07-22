@@ -201,28 +201,19 @@ async def _load_templates() -> tuple[dict[str, WelcomeTemplate], Optional[Welcom
     rows = await sheets.get_cached_welcome_templates()
     templates: dict[str, WelcomeTemplate] = {}
     default_row: WelcomeTemplate | None = None
-    alt_default: WelcomeTemplate | None = None
-
     for row in rows or []:
         template = _build_template(row)
         if template is None:
             continue
         key = template.tag
-        if key in {"C1C", "DEFAULT"}:
-            if key == "C1C":
-                default_row = template
-            else:
-                alt_default = template
+        if key == "C1C":
+            default_row = template
+            continue
+        if key == "DEFAULT":
             continue
         templates[key] = template
 
-    default_row = default_row or alt_default
-
-    merged: dict[str, WelcomeTemplate] = {}
-    for key, template in templates.items():
-        merged[key] = template.merged_with(default_row)
-
-    return merged, default_row
+    return templates, default_row
 
 
 def _timezone() -> timezone:
@@ -331,6 +322,52 @@ def _expand_tokens(
     return _strip_empty_role_lines(_replace_emoji_tokens(text, guild))
 
 
+def _build_welcome_embed(
+    template: WelcomeTemplate,
+    *,
+    guild: discord.Guild,
+    tag: str,
+    inviter: discord.Member | discord.User | None,
+    target: discord.Member | discord.User | None,
+    extra_body: str = "",
+    include_crest: bool = False,
+) -> discord.Embed:
+    """Build one welcome embed using only the supplied template row."""
+
+    title = _expand_tokens(
+        template.title,
+        guild=guild,
+        template=template,
+        tag=tag,
+        inviter=inviter,
+        target=target,
+    )
+    body = _expand_tokens(
+        template.body,
+        guild=guild,
+        template=template,
+        tag=tag,
+        inviter=inviter,
+        target=target,
+    )
+    footer = _expand_tokens(
+        template.footer,
+        guild=guild,
+        template=template,
+        tag=tag,
+        inviter=inviter,
+        target=target,
+    )
+    description = f"{body}\n\n{extra_body}".strip() if extra_body else body
+    embed = discord.Embed(title=title or None, description=description, colour=discord.Colour.blue())
+    embed.timestamp = datetime.now(timezone.utc)
+    if footer:
+        embed.set_footer(text=footer)
+    if include_crest and template.crest_url.strip():
+        embed.set_thumbnail(url=template.crest_url.strip())
+    return embed
+
+
 async def _log(level: str, **kv: Any) -> None:
     payload = " ".join(f"{key}={value}" for key, value in kv.items() if value is not None)
     message = f"[welcome/{level}] {payload}" if payload else f"[welcome/{level}]"
@@ -426,7 +463,21 @@ class WelcomeCommandService:
             )
             return
 
-        effective = template.merged_with(default_row)
+        if default_row is None or not default_row.active:
+            cause = "missing_cluster_row" if default_row is None else "inactive_cluster_row"
+            await _log("error", actor=getattr(ctx.author, "id", None), tag=tag, cause=cause)
+            error = discord.Embed(
+                title="Shared C1C welcome template unavailable",
+                description=(
+                    "The active **C1C** row in WelcomeTemplates is missing or unavailable. "
+                    "No welcome was posted."
+                ),
+                colour=discord.Colour.red(),
+            )
+            await ctx.reply(embed=error)
+            return
+
+        effective = template
         raw_channel_value = str(template.raw.get("TARGET_CHANNEL_ID", "") or "").strip()
         if raw_channel_value and not effective.target_channel_id:
             await _log(
@@ -474,60 +525,53 @@ class WelcomeCommandService:
             channel=summary_channel,
         )
 
-        title = _expand_tokens(
-            effective.title,
+        cluster_embed = _build_welcome_embed(
+            default_row,
             guild=ctx.guild,
-            template=effective,
-            tag=tag,
+            tag=default_row.tag,
             inviter=getattr(ctx, "author", None),
             target=target_member,
         )
-        body = _expand_tokens(
-            effective.body,
+        clan_embed = _build_welcome_embed(
+            effective,
             guild=ctx.guild,
-            template=effective,
             tag=tag,
             inviter=getattr(ctx, "author", None),
             target=target_member,
-        )
-        footer = _expand_tokens(
-            effective.footer,
-            guild=ctx.guild,
-            template=effective,
-            tag=tag,
-            inviter=getattr(ctx, "author", None),
-            target=target_member,
+            extra_body=note_text,
+            include_crest=True,
         )
 
-        if not body.strip():
+        if not (cluster_embed.description or "").strip():
             await _log("error", actor=getattr(ctx.author, "id", None), tag=tag, cause="empty_body")
-            await ctx.reply("Missing welcome text. Please check the **C1C** row in the sheet.")
+            error = discord.Embed(
+                title="Shared C1C welcome template unavailable",
+                description="The **C1C** row has no usable welcome text. No welcome was posted.",
+                colour=discord.Colour.red(),
+            )
+            await ctx.reply(embed=error)
+            if summary is not None:
+                summary.record("command", "error", "empty_cluster_body")
+                await summary.emit()
+                summary = None
+            return
+
+        if not (clan_embed.description or "").strip():
+            await _log("error", actor=getattr(ctx.author, "id", None), tag=tag, cause="empty_body")
+            await ctx.reply(f"Missing welcome text for **{tag}**. Please check WelcomeTemplates.")
             if summary is not None:
                 summary.record("command", "error", "empty_body")
                 await summary.emit()
                 summary = None
             return
 
-        description = body
-        if note_text:
-            description = f"{body}\n\n{note_text}".strip()
-
-        embed = discord.Embed(title=title or None, description=description, colour=discord.Colour.blue())
-        embed.timestamp = datetime.now(timezone.utc)
-
-        if footer:
-            embed.set_footer(text=footer)
-
-        crest_url = effective.crest_url.strip()
-        if crest_url:
-            try:
-                embed.set_thumbnail(url=crest_url)
-            except Exception:
-                await _log("warn", tag=tag, cause="crest_failed", url=crest_url)
-
         ping_content = target_member.mention if (target_member and effective.ping_user) else None
         try:
-            await channel.send(content=ping_content, embed=embed)
+            await channel.send(
+                content=ping_content,
+                embeds=[cluster_embed, clan_embed],
+                allowed_mentions=None,
+            )
         except Exception as exc:
             await _log(
                 "error",
