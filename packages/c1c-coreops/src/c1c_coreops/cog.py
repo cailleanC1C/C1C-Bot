@@ -275,9 +275,7 @@ _ENV_FIELD_CHUNK_LIMIT = 1000
 _EMBED_TOTAL_CHAR_LIMIT = 6000
 _EMBED_FIELD_LIMIT = 25
 _MAX_EMBED_LENGTH = 4500
-_HELP_FIELD_VALUE_LIMIT = 1000
-_HELP_EMBED_CHAR_LIMIT = 5500
-_ZERO_WIDTH_SPACE = "\u200b"
+_HELP_DESCRIPTION_LIMIT = 4000
 _DIGEST_SHEET_BUCKETS: Tuple[Tuple[str, str], ...] = (
     ("clans", "ClanInfo"),
     ("templates", "Templates"),
@@ -294,31 +292,71 @@ _TELEMETRY_REQUIRED_KEYS: Tuple[str, ...] = (
 )
 
 
-def _help_field_chunks(lines: Sequence[str]) -> list[str]:
-    """Pack help lines into complete field values below Discord's limit."""
+def _help_description_pages(
+    categories: Mapping[str, Sequence["help_commands.HelpCommandRow"]],
+) -> list[str]:
+    """Render categorized help rows into description-safe, contextual pages."""
 
-    chunks: list[str] = []
+    pages: list[str] = []
     current = ""
-    for line in lines:
-        parts = textwrap.wrap(
-            line,
-            width=_HELP_FIELD_VALUE_LIMIT,
-            break_long_words=True,
-            break_on_hyphens=False,
-            replace_whitespace=False,
-            drop_whitespace=False,
-        ) or ["—"]
-        for part in parts:
-            candidate = f"{current}\n{part}" if current else part
-            if len(candidate) <= _HELP_FIELD_VALUE_LIMIT:
+
+    for category, rows in categories.items():
+        heading = f"__**{category}**__"
+        continuation_heading = f"__**{category} (cont.)**__"
+        heading_for_next_line = heading
+
+        for row in rows:
+            label = (
+                row.usage
+                or row.command
+                or f"!{help_commands.normalize_lookup(row.command_key)}"
+            )
+            line = f"**{label}** - {row.summary or '—'}"
+            parts = textwrap.wrap(
+                line,
+                width=max(1, _HELP_DESCRIPTION_LIMIT - len(continuation_heading) - 1),
+                break_long_words=True,
+                break_on_hyphens=False,
+                replace_whitespace=False,
+                drop_whitespace=False,
+            ) or ["—"]
+
+            for part in parts:
+                separator = (
+                    "\n\n"
+                    if heading_for_next_line and current
+                    else "\n" if current else ""
+                )
+                addition = (
+                    f"{heading_for_next_line}\n{part}"
+                    if heading_for_next_line
+                    else part
+                )
+                candidate = f"{current}{separator}{addition}"
+                if len(candidate) <= _HELP_DESCRIPTION_LIMIT:
+                    current = candidate
+                    heading_for_next_line = ""
+                    continue
+
+                if current:
+                    pages.append(current)
+                current = f"{continuation_heading}\n{part}"
+                heading_for_next_line = ""
+
+        if not rows:
+            section = f"{heading}\nComing soon"
+            candidate = f"{current}\n\n{section}" if current else section
+            if len(candidate) > _HELP_DESCRIPTION_LIMIT and current:
+                pages.append(current)
+                current = section
+            else:
                 current = candidate
-                continue
-            if current:
-                chunks.append(current)
-            current = part
+
     if current:
-        chunks.append(current)
-    return chunks
+        pages.append(current)
+    return pages
+
+
 _TELEMETRY_FALLBACK_KEYS: Tuple[str, ...] = (
     "name",
     "available",
@@ -3880,45 +3918,21 @@ class CoreOpsCog(commands.Cog):
         access_titles = {"user": "Commands", "staff": "Staff Commands", "admin": "Admin Commands"}
         access_colours = {"user": discord.Color.blurple(), "staff": discord.Color.green(), "admin": discord.Color.red()}
         for access, categories in access_categories.items():
-            field_specs: list[tuple[str, str]] = []
-            for category, category_rows in categories.items():
-                lines = [f"### {category}"]
-                for row in category_rows:
-                    label = row.usage or row.command or f"!{help_commands.normalize_lookup(row.command_key)}"
-                    lines.append(f"**{label}** — {row.summary or '—'}")
-                for value in _help_field_chunks(lines):
-                    field_specs.append((_ZERO_WIDTH_SPACE, value))
-
             title = f"{bot_name} · {access_titles[access]}"
-            description = "Choose a command below. Categories are grouped as sections."
-            pages: list[discord.Embed] = []
-            embed = discord.Embed(
-                title=title,
-                description=description,
-                colour=access_colours[access],
-            )
-            embed_chars = len(title) + len(description)
-            for heading, value in field_specs:
-                field_chars = len(heading) + len(value)
-                if embed.fields and (
-                    len(embed.fields) >= _EMBED_FIELD_LIMIT
-                    or embed_chars + field_chars > _HELP_EMBED_CHAR_LIMIT
-                ):
-                    pages.append(embed)
-                    embed = discord.Embed(
-                        title=title,
-                        description=description,
-                        colour=access_colours[access],
-                    )
-                    embed_chars = len(title) + len(description)
-                embed.add_field(name=heading, value=value, inline=False)
-                embed_chars += field_chars
-            pages.append(embed)
+            descriptions = _help_description_pages(categories)
+            pages = [
+                discord.Embed(
+                    title=title,
+                    description=description,
+                    colour=access_colours[access],
+                )
+                for description in descriptions
+            ]
 
             page_count = len(pages)
             footer = build_coreops_footer(
                 bot_version=bot_version,
-                notes=f" • For details: {self._help_command_label(ctx, 'help <command>')}",
+                notes=" • For details: !help <command>",
             )
             for page_number, page_embed in enumerate(pages, start=1):
                 if page_count > 1:
@@ -3933,7 +3947,12 @@ class CoreOpsCog(commands.Cog):
             description="Select a command access group below to browse the shared help menu.",
             colour=discord.Color.blurple(),
         )
-        overview.set_footer(text=build_coreops_footer(bot_version=bot_version))
+        overview.set_footer(
+            text=build_coreops_footer(
+                bot_version=bot_version,
+                notes=" • For details: !help <command>",
+            )
+        )
         await ctx.reply(
             embed=sanitize_embed(overview),
             view=_HelpAccessView(access_embeds, requester_id=ctx.author.id),

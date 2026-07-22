@@ -211,7 +211,7 @@ def _fields(embed: discord.Embed) -> Mapping[str, str]:
 
 
 def _collect_text(embed: discord.Embed) -> str:
-    return " \n ".join(_fields(embed).values())
+    return " \n ".join(filter(None, [embed.description, *_fields(embed).values()]))
 
 
 def _sheet_rows():
@@ -267,10 +267,18 @@ def test_help_pages_group_categories_inside_access_pages(monkeypatch: pytest.Mon
             assert view is not None
             assert set(view.embeds) == {"user", "staff", "admin"}
             for access in ("user", "staff", "admin"):
-                fields = view.embeds[access][0].fields
-                assert len(fields) == 1
-                assert fields[0].name == "\u200b"
-                assert fields[0].value.startswith("### Recruitment\n")
+                embed = view.embeds[access][0]
+                assert not embed.fields
+                assert embed.description is not None
+                assert embed.description.startswith("__**Recruitment**__\n")
+                assert (
+                    "Choose a command below. Categories are grouped as sections."
+                    not in embed.description
+                )
+                assert "###" not in embed.description
+                assert "For details: !help <command>" in embed.footer.text
+
+            assert "For details: !help <command>" in ctx._replies[0].footer.text
 
             buttons = {
                 button.label: button.style
@@ -352,11 +360,13 @@ def test_help_long_category_splits_without_dropping_commands(
             assert view is not None
             pages = view.embeds["user"]
             assert len(pages) > 1
-            assert all(len(field.value) <= 1000 for page in pages for field in page.fields)
-            assert all(len(page.fields) <= 25 and len(page) <= 6000 for page in pages)
-            rendered = "\n".join(
-                field.value for page in pages for field in page.fields
+            assert all(not page.fields for page in pages)
+            assert all(len(page.description or "") <= 4096 for page in pages)
+            assert all(len(page) <= 6000 for page in pages)
+            assert all(
+                "__**Very Long Category" in (page.description or "") for page in pages
             )
+            rendered = "\n".join(page.description or "" for page in pages)
             missing = [command for command in expected_commands if command not in rendered]
             assert not missing, missing
         finally:
@@ -413,6 +423,7 @@ def test_help_detail_uses_sheet_fields_and_normalized_lookup(monkeypatch: pytest
             assert embed.title == "!clan"
             assert embed.description == "Clan details\n\nDetailed clan help"
             assert not embed.fields
+            assert "For details: !help <command>" not in embed.footer.text
         finally:
             await bot.close()
 
