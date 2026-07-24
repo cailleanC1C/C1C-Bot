@@ -9,9 +9,10 @@ from typing import Optional
 from discord.ext import commands
 
 from c1c_coreops.helpers import help_metadata, tier
-from c1c_coreops.rbac import is_admin_member, is_staff_member, ops_only
+from c1c_coreops.rbac import is_admin_member, is_staff_member
 from modules.common import runtime as runtime_helpers
 from modules.recruitment import availability
+from shared import config
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +23,45 @@ QUOTA_FAILURE_MESSAGE = "Google Sheets quota/rate limits are temporarily exhaust
 ROW_CONFIG_FAILURE_MESSAGE = "The correction could not be applied because the clan row or recruitment sheet configuration could not be resolved."
 WRITE_FAILURE_MESSAGE = "The correction could not be applied because the sheet write failed. Please try again or contact an admin."
 VERIFY_FAILURE_MESSAGE = "The correction may have written to Sheets, but post-write verification failed. Please check the clan row before retrying."
+
+
+def _can_set_open_spots(ctx: commands.Context) -> bool:
+    if getattr(ctx, "guild", None) is None:
+        return False
+    if is_staff_member(ctx) or is_admin_member(ctx):
+        return True
+    author = getattr(ctx, "author", None)
+    member_role_ids = {
+        role.id for role in getattr(author, "roles", []) if hasattr(role, "id")
+    }
+    return bool(member_role_ids & config.get_clan_lead_ids())
+
+
+def _set_open_spots_only():
+    """Allow staff/admins and configured clan lead roles for this command only."""
+
+    async def predicate(ctx: commands.Context) -> bool:
+        if getattr(ctx, "guild", None) is None:
+            if not getattr(ctx, "_coreops_suppress_denials", False):
+                try:
+                    await ctx.reply(
+                        "This command can only be used in servers.",
+                        mention_author=False,
+                    )
+                except Exception:
+                    pass
+            raise commands.CheckFailure("Guild only.")
+        if _can_set_open_spots(ctx):
+            return True
+        if getattr(ctx, "_coreops_suppress_denials", False):
+            raise commands.CheckFailure("Staff only.")
+        try:
+            await ctx.reply("Staff only.", mention_author=False)
+        except Exception:
+            pass
+        raise commands.CheckFailure("Staff only.")
+
+    return commands.check(predicate)
 
 
 def _display_name(author: object) -> str:
@@ -140,7 +180,7 @@ class RecruitmentOpenSpotsCog(commands.Cog):
         help="Emergency staff/admin correction for configured clan open spots.",
         brief="Corrects configured clan open spots.",
     )
-    @ops_only()
+    @_set_open_spots_only()
     async def setopenspots(
         self,
         ctx: commands.Context,
@@ -151,7 +191,7 @@ class RecruitmentOpenSpotsCog(commands.Cog):
     ) -> None:
         """Manually correct a clan's configured open-spots availability value."""
 
-        if not (is_staff_member(ctx) or is_admin_member(ctx)):
+        if not _can_set_open_spots(ctx):
             await ctx.reply(
                 "You do not have permission to use this command.", mention_author=False
             )

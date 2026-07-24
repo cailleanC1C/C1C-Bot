@@ -7,10 +7,11 @@ from cogs.recruitment_open_spots import RecruitmentOpenSpotsCog
 
 
 class FakeAuthor:
-    def __init__(self, member_id=123, display_name="Caillean"):
+    def __init__(self, member_id=123, display_name="Caillean", role_ids=()):
         self.id = member_id
         self.display_name = display_name
         self.name = display_name
+        self.roles = [SimpleNamespace(id=role_id) for role_id in role_ids]
 
 
 class FakeContext:
@@ -64,11 +65,38 @@ def test_staff_can_set_open_spots_successfully(monkeypatch):
     assert "missed promo close correction" in logs[0]
 
 
+def test_admin_remains_authorized(monkeypatch):
+    ctx = FakeContext()
+    monkeypatch.setattr(command_module, "is_staff_member", lambda _ctx: False)
+    monkeypatch.setattr(command_module, "is_admin_member", lambda _ctx: True)
+    monkeypatch.setattr(command_module.config, "get_clan_lead_ids", lambda: set())
+
+    assert command_module._can_set_open_spots(ctx) is True
+
+
+def test_clan_lead_role_can_set_open_spots(monkeypatch):
+    ctx = FakeContext()
+    ctx.author = FakeAuthor(role_ids=(2468,))
+    setter = AsyncMock(return_value=(3, 4, "C1CC"))
+    monkeypatch.setattr(command_module, "is_staff_member", lambda _ctx: False)
+    monkeypatch.setattr(command_module, "is_admin_member", lambda _ctx: False)
+    monkeypatch.setattr(command_module.config, "get_clan_lead_ids", lambda: {2468})
+    monkeypatch.setattr(command_module.availability, "set_manual_open_spots", setter)
+    monkeypatch.setattr(command_module.runtime_helpers, "send_log_message", AsyncMock())
+
+    cog = RecruitmentOpenSpotsCog(bot=None)
+    _run(cog.setopenspots.callback(cog, ctx, "C1CC", "4", reason="reason"))
+
+    setter.assert_awaited_once_with("C1CC", 4)
+    assert "Open spots corrected" in ctx.replies[0][0]
+
+
 def test_non_staff_cannot_run(monkeypatch):
     ctx = FakeContext()
     setter = AsyncMock()
     monkeypatch.setattr(command_module, "is_staff_member", lambda _ctx: False)
     monkeypatch.setattr(command_module, "is_admin_member", lambda _ctx: False)
+    monkeypatch.setattr(command_module.config, "get_clan_lead_ids", lambda: {2468})
     monkeypatch.setattr(command_module.availability, "set_manual_open_spots", setter)
 
     cog = RecruitmentOpenSpotsCog(bot=None)
