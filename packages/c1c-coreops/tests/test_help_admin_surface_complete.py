@@ -177,6 +177,7 @@ async def _gather_help_embeds(
         monkeypatch.setenv("COREOPS_ADMIN_BANG_ALLOWLIST", allowlist)
 
     bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+    bot.remove_command("help")
 
     await bot.add_cog(CoreOpsCog(bot))
     await bot.add_cog(PermissionsUICog(bot))
