@@ -248,11 +248,11 @@ def _share_config(**overrides):
     return ShardShareConfig(**values)
 
 
-def test_share_summary_sends_to_resolved_destination():
+def test_share_summary_general_selection_sends_to_general_destination():
     async def runner():
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
         tracker = ShardTracker(bot)
-        clan = _share_clan()
+        clan = _share_clan(clan_key="GENERAL")
         destination = _ShareDestination()
         tracker.store.get_enabled_clans = AsyncMock(return_value=[clan])
         tracker._resolve_share_destination = lambda _clan: (destination, None)
@@ -264,7 +264,7 @@ def test_share_summary_sends_to_resolved_destination():
         await tracker._handle_share_summary_action(
             interaction=interaction,
             record=record,
-            default_clan_key=None,
+            default_clan_key=clan.clan_key,
         )
 
         assert len(destination.sent) == 1
@@ -274,12 +274,109 @@ def test_share_summary_sends_to_resolved_destination():
     asyncio.run(runner())
 
 
-def test_share_summary_missing_destination_is_ephemeral_warning(caplog):
+def test_share_summary_invalid_selected_target_does_not_fall_back_to_general():
+    async def runner():
+        tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+        clan = _share_clan(share_channel_id=123)
+        general = _share_clan(clan_key="GENERAL", share_channel_id=456)
+        tracker.store.get_enabled_clans = AsyncMock(return_value=[clan, general])
+        tracker._resolve_share_destination = lambda row: (
+            (None, "destination not found") if row is clan else (_ShareDestination(), None)
+        )
+        tracker._notify_admins = AsyncMock()
+        record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
+        interaction = _ShareInteraction()
+
+        await tracker._handle_share_summary_action(
+            interaction=interaction,
+            record=record,
+            default_clan_key=clan.clan_key,
+        )
+
+        assert "no longer exists" in interaction.followup.messages[-1][0]
+        assert interaction.followup.messages[-1][1] is True
+
+    asyncio.run(runner())
+
+
+def test_share_summary_single_destination_still_prompts_for_selection():
+    async def runner():
+        tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+        clan = _share_clan()
+        tracker.store.get_enabled_clans = AsyncMock(return_value=[clan])
+        record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
+        interaction = _ShareInteraction()
+
+        await tracker._handle_share_summary_action(
+            interaction=interaction,
+            record=record,
+            default_clan_key=None,
+        )
+
+        message, ephemeral, view = interaction.followup.messages[-1]
+        assert message == "Choose a clan to continue."
+        assert ephemeral is True
+        assert [option.value for option in view.children[0].options] == ["alpha"]
+
+    asyncio.run(runner())
+
+
+def test_share_summary_multiple_destinations_prompt_for_selection():
+    async def runner():
+        tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+        clans = [_share_clan(clan_key="alpha"), _share_clan(clan_key="GENERAL")]
+        tracker.store.get_enabled_clans = AsyncMock(return_value=clans)
+        record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
+        interaction = _ShareInteraction()
+
+        await tracker._handle_share_summary_action(
+            interaction=interaction,
+            record=record,
+            default_clan_key=None,
+        )
+
+        view = interaction.followup.messages[-1][2]
+        assert [option.value for option in view.children[0].options] == ["alpha", "GENERAL"]
+
+    asyncio.run(runner())
+
+
+def test_share_summary_missing_destination_falls_back_to_general():
+    async def runner():
+        tracker = ShardTracker(commands.Bot(command_prefix="!", intents=discord.Intents.none()))
+        clan = _share_clan(share_channel_id=None, share_thread_id=None)
+        general = _share_clan(clan_key="GENERAL", share_channel_id=456)
+        destination = _ShareDestination()
+        destination.id = 456
+        destination.mention = "<#456>"
+        tracker.store.get_enabled_clans = AsyncMock(return_value=[clan, general])
+        tracker._resolve_share_destination = lambda row: (
+            (destination, None) if row is general else (None, "missing destination")
+        )
+        tracker._share_destination_block_reason = lambda _interaction, _destination: None
+        tracker._notify_admins = AsyncMock()
+        record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
+        interaction = _ShareInteraction()
+
+        await tracker._handle_share_summary_action(
+            interaction=interaction,
+            record=record,
+            default_clan_key=clan.clan_key,
+        )
+
+        assert len(destination.sent) == 1
+        assert "Shared your shard summary" in interaction.followup.messages[-1][0]
+
+    asyncio.run(runner())
+
+
+def test_share_summary_missing_destination_without_usable_general_is_ephemeral_warning(caplog):
     async def runner():
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
         tracker = ShardTracker(bot)
         clan = _share_clan(share_channel_id=None, share_thread_id=None)
-        tracker.store.get_enabled_clans = AsyncMock(return_value=[clan])
+        general = _share_clan(clan_key="GENERAL", share_channel_id=None, share_thread_id=None)
+        tracker.store.get_enabled_clans = AsyncMock(return_value=[clan, general])
         tracker._notify_admins = AsyncMock()
         record = tracker.store._new_record([], 42, "Tester")  # type: ignore[arg-type]
         interaction = _ShareInteraction()
@@ -288,7 +385,7 @@ def test_share_summary_missing_destination_is_ephemeral_warning(caplog):
             await tracker._handle_share_summary_action(
                 interaction=interaction,
                 record=record,
-                default_clan_key=None,
+                default_clan_key=clan.clan_key,
             )
 
         assert interaction.followup.messages[-1][1] is True

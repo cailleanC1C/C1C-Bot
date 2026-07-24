@@ -1166,8 +1166,17 @@ class ShardTracker(commands.Cog, ShardTrackerController):
             if selected is None:
                 return
 
+            destination_clan = selected
             destination, reason = self._resolve_share_destination(selected)
-            target_id = self._configured_share_target_id(selected)
+            if destination is None and reason == _SKIP_MISSING_DESTINATION:
+                general = next(
+                    (row for row in clans if row.clan_key.casefold() == "general"),
+                    None,
+                )
+                if general is not None:
+                    destination_clan = general
+                    destination, reason = self._resolve_share_destination(general)
+            target_id = self._configured_share_target_id(destination_clan)
             if destination is None:
                 message = self._share_failure_message(selected, reason)
                 await self._send_share_failure(interaction, message)
@@ -1357,7 +1366,7 @@ class ShardTracker(commands.Cog, ShardTrackerController):
             selected = next((row for row in clans if row.clan_key.lower() == default_clan_key.lower()), None)
             if selected is not None:
                 return selected
-        if len(clans) == 1:
+        if len(clans) == 1 and action != "share":
             return clans[0]
         view = _ShardClanChoiceView(controller=self, clans=clans, action=action)
         await interaction.followup.send(
