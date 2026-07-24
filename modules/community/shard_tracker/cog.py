@@ -6,7 +6,6 @@ import asyncio
 import io
 from datetime import datetime, time, timedelta, timezone
 import logging
-import os
 import random
 import re
 from dataclasses import dataclass
@@ -18,13 +17,9 @@ from discord.ext import commands
 
 from c1c_coreops.rbac import admin_only
 from c1c_coreops.helpers import help_metadata, tier
-from modules.common import feature_flags
-from modules.recruitment import emoji_pipeline
-from shared import config as shared_config
-from shared.config import get_admin_role_ids
-from shared.logfmt import user_label
-
-from .data import (
+from modules.common import feature_flags, runtime
+from modules.common.embeds import get_embed_colour
+from modules.community.shard_tracker.data import (
     ShardClanRow,
     ShardRecord,
     ShardShareConfig,
@@ -33,9 +28,9 @@ from .data import (
     ShardTrackerConfigError,
     ShardTrackerSheetError,
 )
-from .mercy import MERCY_CONFIGS, MercyConfig, mercy_state
-from .threads import ShardThreadRouter
-from .views import (
+from modules.community.shard_tracker.mercy import MERCY_CONFIGS, MercyConfig, mercy_state
+from modules.community.shard_tracker.threads import ShardThreadRouter
+from modules.community.shard_tracker.views import (
     MythicDisplay,
     ShardDisplay,
     ShardTrackerController,
@@ -46,7 +41,10 @@ from .views import (
     build_overview_embed,
     human_time,
 )
-from modules.common import runtime
+from modules.recruitment import emoji_pipeline
+from shared import config as shared_config
+from shared.config import get_admin_role_ids
+from shared.logfmt import user_label
 
 log = logging.getLogger("c1c.shards.cog")
 
@@ -1653,11 +1651,10 @@ class ShardTracker(commands.Cog, ShardTrackerController):
         clan: ShardClanRow,
         guild: discord.Guild | None,
     ) -> discord.Embed:
-        color = self._parse_color_hex(clan.color_hex)
         embed = discord.Embed(
             title=clan.title,
             description=clan.body,
-            colour=color,
+            colour=get_embed_colour("community"),
             timestamp=datetime.now(timezone.utc),
         )
         footer_icon = self._resolve_footer_icon_url(guild, clan.emoji_name_or_id)
@@ -1859,21 +1856,6 @@ class ShardTracker(commands.Cog, ShardTrackerController):
         return datetime.combine(candidate_date, scheduled_time)
 
     @staticmethod
-    def _parse_color_hex(value: str) -> discord.Colour:
-        text = str(value or "").strip()
-        if text.startswith("#"):
-            text = text[1:]
-        elif text.lower().startswith("0x"):
-            text = text[2:]
-        try:
-            return discord.Colour(int(text, 16))
-        except Exception:
-            try:
-                return discord.Colour(int(str(value or "").strip()))
-            except Exception:
-                return discord.Colour.blurple()
-
-    @staticmethod
     def _resolve_footer_icon_url(guild: discord.Guild | None, emoji_token: str) -> str | None:
         token = str(emoji_token or "").strip()
         if not token or guild is None:
@@ -2011,12 +1993,12 @@ class ShardTracker(commands.Cog, ShardTrackerController):
 
     def _load_tab_emojis(self) -> dict[str, discord.PartialEmoji | None]:
         return {
-            "ancient": self._parse_partial_emoji(os.getenv("SHARD_EMOJI_ANCIENT", "")),
-            "void": self._parse_partial_emoji(os.getenv("SHARD_EMOJI_VOID", "")),
-            "sacred": self._parse_partial_emoji(os.getenv("SHARD_EMOJI_SACRED", "")),
-            "primal": self._parse_partial_emoji(os.getenv("SHARD_EMOJI_PRIMAL", "")),
-            "mystery": self._parse_partial_emoji(os.getenv("SHARD_EMOJI_MYSTERY", "")),
-            "remnant": self._parse_partial_emoji(os.getenv("SHARD_EMOJI_REMNANT", "")),
+            "ancient": self._parse_partial_emoji(shared_config.get_shard_emoji_ancient("")),
+            "void": self._parse_partial_emoji(shared_config.get_shard_emoji_void("")),
+            "sacred": self._parse_partial_emoji(shared_config.get_shard_emoji_sacred("")),
+            "primal": self._parse_partial_emoji(shared_config.get_shard_emoji_primal("")),
+            "mystery": self._parse_partial_emoji(shared_config.get_shard_emoji_mystery("")),
+            "remnant": self._parse_partial_emoji(shared_config.get_shard_emoji_remnant("")),
         }
 
     def _parse_partial_emoji(self, value: str | None) -> discord.PartialEmoji | None:
