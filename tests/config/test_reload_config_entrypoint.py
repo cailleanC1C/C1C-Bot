@@ -23,6 +23,40 @@ def test_reload_config_happy_path(monkeypatch):
     cfg.reload_config()
 
 
+def test_reload_config_populates_shard_emoji_getters(monkeypatch):
+    _apply_required_env(monkeypatch)
+    import shared.config as cfg
+
+    configured = {
+        "SHARD_PANEL_OVERVIEW_EMOJI": "overview-configured",
+        "SHARD_EMOJI_MYSTERY": "mystery-configured",
+        "SHARD_EMOJI_ANCIENT": "ancient-configured",
+        "SHARD_EMOJI_VOID": "void-configured",
+        "SHARD_EMOJI_PRIMAL": "primal-configured",
+        "SHARD_EMOJI_SACRED": "sacred-configured",
+        "SHARD_EMOJI_REMNANT": "remnant-configured",
+    }
+    for key, value in configured.items():
+        monkeypatch.setenv(key, value)
+
+    monkeypatch.setattr(cfg, "_CONFIG", dict(cfg._CONFIG))
+    monkeypatch.setattr(cfg, "_merge_onboarding_tab", lambda _config: None)
+    monkeypatch.setattr(cfg, "_merge_milestones_tab", lambda _config: None)
+
+    cfg.reload_config()
+
+    assert (
+        cfg.get_shard_panel_overview_emoji()
+        == configured["SHARD_PANEL_OVERVIEW_EMOJI"]
+    )
+    assert cfg.get_shard_emoji_mystery() == configured["SHARD_EMOJI_MYSTERY"]
+    assert cfg.get_shard_emoji_ancient() == configured["SHARD_EMOJI_ANCIENT"]
+    assert cfg.get_shard_emoji_void() == configured["SHARD_EMOJI_VOID"]
+    assert cfg.get_shard_emoji_primal() == configured["SHARD_EMOJI_PRIMAL"]
+    assert cfg.get_shard_emoji_sacred() == configured["SHARD_EMOJI_SACRED"]
+    assert cfg.get_shard_emoji_remnant() == configured["SHARD_EMOJI_REMNANT"]
+
+
 def test_areload_config_uses_async_sheet_loaders(monkeypatch):
     _apply_required_env(monkeypatch)
     import shared.config as cfg
