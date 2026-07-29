@@ -588,6 +588,15 @@ def _load_config_snapshot() -> Dict[str, object]:
         "TAG_BADGE_PX": _int_env("TAG_BADGE_PX", 128, min_value=32, max_value=512),
         "TAG_BADGE_BOX": _float_env("TAG_BADGE_BOX", 0.90, min_value=0.2, max_value=0.95),
         "STRICT_EMOJI_PROXY": _env_bool("STRICT_EMOJI_PROXY", True),
+        "SHARD_PANEL_OVERVIEW_EMOJI": (
+            os.getenv("SHARD_PANEL_OVERVIEW_EMOJI") or ""
+        ).strip(),
+        "SHARD_EMOJI_MYSTERY": (os.getenv("SHARD_EMOJI_MYSTERY") or "").strip(),
+        "SHARD_EMOJI_ANCIENT": (os.getenv("SHARD_EMOJI_ANCIENT") or "").strip(),
+        "SHARD_EMOJI_VOID": (os.getenv("SHARD_EMOJI_VOID") or "").strip(),
+        "SHARD_EMOJI_PRIMAL": (os.getenv("SHARD_EMOJI_PRIMAL") or "").strip(),
+        "SHARD_EMOJI_SACRED": (os.getenv("SHARD_EMOJI_SACRED") or "").strip(),
+        "SHARD_EMOJI_REMNANT": (os.getenv("SHARD_EMOJI_REMNANT") or "").strip(),
         "SERVER_MAP_CHANNEL_ID": _first_int(os.getenv("SERVER_MAP_CHANNEL_ID")),
         "SERVER_MAP_REFRESH_DAYS": _int_env("SERVER_MAP_REFRESH_DAYS", 30, min_value=1),
     }
