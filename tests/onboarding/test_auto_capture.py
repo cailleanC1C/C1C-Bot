@@ -58,6 +58,91 @@ def test_handle_thread_message_captures_answer() -> None:
     asyncio.run(runner())
 
 
+def test_handle_thread_message_normalizes_sheet_declared_score() -> None:
+    async def runner() -> None:
+        loop = asyncio.get_running_loop()
+        controller = WelcomeController(SimpleNamespace(loop=loop, logger=None))
+        thread_id = 1025
+        question = SimpleNamespace(
+            qid="sheet_score",
+            label="Score",
+            type="number",
+            required=True,
+            validate="score",
+            help="",
+            options=(),
+        )
+        controller._questions[thread_id] = [question]
+        controller._threads[thread_id] = SimpleNamespace(id=thread_id)
+        session = store.ensure(thread_id, flow=controller.flow, schema_hash="hash")
+        session.pending_step = {"kind": "inline", "index": 0}
+        session.status = "in_progress"
+        session.respondent_id = 555
+        session.thread_id = thread_id
+        session.answers = {}
+        message = SimpleNamespace(
+            channel=SimpleNamespace(id=thread_id),
+            author=SimpleNamespace(id=555, bot=False),
+            content="Over 40b",
+            id=100,
+            add_reaction=AsyncMock(),
+            delete=AsyncMock(),
+        )
+        controller._react_to_message = AsyncMock()
+        controller._refresh_inline_message = AsyncMock()
+
+        assert await controller.handle_thread_message(message) is True
+        assert controller.answers_by_thread[thread_id]["sheet_score"] == "40B"
+        controller._react_to_message.assert_called_with(message, "✅")
+        controller._refresh_inline_message.assert_awaited_with(thread_id, index=0)
+        message.delete.assert_awaited_once()
+        store.end(thread_id)
+
+    asyncio.run(runner())
+
+
+def test_handle_thread_message_rejects_ambiguous_bare_score() -> None:
+    async def runner() -> None:
+        loop = asyncio.get_running_loop()
+        controller = WelcomeController(SimpleNamespace(loop=loop, logger=None))
+        thread_id = 1026
+        question = SimpleNamespace(
+            qid="sheet_score",
+            label="Score",
+            type="number",
+            required=True,
+            validate="score",
+            help="",
+            options=(),
+        )
+        controller._questions[thread_id] = [question]
+        session = store.ensure(thread_id, flow=controller.flow, schema_hash="hash")
+        session.pending_step = {"kind": "inline", "index": 0}
+        session.status = "in_progress"
+        session.respondent_id = 555
+        session.thread_id = thread_id
+        session.answers = {}
+        message = SimpleNamespace(
+            channel=SimpleNamespace(id=thread_id),
+            author=SimpleNamespace(id=555, bot=False),
+            content="40",
+            id=101,
+            add_reaction=AsyncMock(),
+            delete=AsyncMock(),
+        )
+        controller._react_to_message = AsyncMock()
+        controller._refresh_inline_message = AsyncMock()
+
+        assert await controller.handle_thread_message(message) is True
+        assert controller.answers_by_thread.get(thread_id) in (None, {})
+        controller._react_to_message.assert_called_with(message, "❌")
+        controller._refresh_inline_message.assert_not_awaited()
+        message.delete.assert_not_awaited()
+        store.end(thread_id)
+
+    asyncio.run(runner())
+
+
 def test_handle_thread_message_ignores_other_users() -> None:
     async def runner() -> None:
         loop = asyncio.get_running_loop()
@@ -409,7 +494,9 @@ def test_refresh_inline_message_reuses_existing_message(monkeypatch) -> None:
         message = SimpleNamespace(id=999, edit=AsyncMock())
         controller._inline_messages[thread_id] = message
 
-        thread = SimpleNamespace(id=thread_id, send=AsyncMock(), fetch_message=AsyncMock())
+        thread = SimpleNamespace(
+            id=thread_id, send=AsyncMock(), fetch_message=AsyncMock()
+        )
         controller._threads[thread_id] = thread
 
         await controller._refresh_inline_message(thread_id, index=0)
