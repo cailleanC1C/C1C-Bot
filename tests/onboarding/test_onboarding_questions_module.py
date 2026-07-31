@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from shared import config as shared_config
 from shared.sheets import onboarding_questions
 
@@ -55,7 +57,9 @@ def test_normalise_type_maps_boolean_aliases() -> None:
         assert max_count is None
 
 
-def _option_pairs(options: tuple[onboarding_questions.Option, ...]) -> list[tuple[str, str]]:
+def _option_pairs(
+    options: tuple[onboarding_questions.Option, ...],
+) -> list[tuple[str, str]]:
     return [(option.label, option.value) for option in options]
 
 
@@ -119,6 +123,34 @@ def test_build_questions_supports_promo_subflows() -> None:
     assert [question.qid for question in promo_r] == ["r1"]
     assert [question.qid for question in promo_m] == ["m1"]
     assert [question.qid for question in welcome] == ["w1"]
+
+
+def test_build_questions_preserves_sheet_validation_without_qid_overrides() -> None:
+    rows = (
+        {
+            "flow": "welcome",
+            "order": "1",
+            "qid": "w_hydra_clash",
+            "label": "Hydra",
+            "type": "number",
+            "validate": "score:min=10000,max=1000000",
+        },
+        {
+            "flow": "welcome",
+            "order": "2",
+            "qid": "w_chimera_clash",
+            "label": "Chimera",
+            "type": "number",
+            "validate": "none",
+        },
+    )
+
+    questions = onboarding_questions._build_questions("welcome", rows)
+
+    assert [question.validate for question in questions] == [
+        "score:min=10000,max=1000000",
+        "none",
+    ]
 
 
 def test_schema_hash_varies_by_flow() -> None:

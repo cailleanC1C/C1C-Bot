@@ -7,6 +7,7 @@ import logging
 import math
 import re
 import sys
+from decimal import Decimal, InvalidOperation
 from typing import (
     Any,
     Awaitable,
@@ -30,6 +31,7 @@ from modules.onboarding.schema import (
     parse_values_list,
 )
 from modules.onboarding.sessions import Session, ensure_session_for_thread, utc_now
+from modules.onboarding.score_input import ScoreInputError, parse_score
 from modules.onboarding.session_store import SessionData, store
 from modules.onboarding.summary_detection import find_recruitment_summary_message
 from modules.onboarding.ui.card import RollingCard
@@ -85,6 +87,10 @@ async def _delete_captured_answer_message(message: discord.Message | None) -> No
 
 # --- Sheet-driven validator (no fallbacks/coercion) --------------------------
 NUMERIC_HINTS = ("number",)
+SCORE_INPUT_ERROR = (
+    "Enter a score such as 500K, 12.6M, 1B, or 40 billion. "
+    "Include K, M, or B when using a shortened value."
+)
 
 
 def _sheet_regex(meta: dict[str, Any]) -> str | None:
@@ -104,6 +110,34 @@ def validate_answer(
     """
 
     raw = "" if raw is None else str(raw)
+
+    directive = (meta.get("validate") or "").strip()
+    if directive.lower() == "score" or directive.lower().startswith("score:"):
+        minimum: Decimal | None = None
+        maximum: Decimal | None = None
+        if ":" in directive:
+            try:
+                options = directive.split(":", 1)[1].split(",")
+                bounds = {
+                    key.strip().lower(): Decimal(value.strip())
+                    for option in options
+                    for key, value in [option.split("=", 1)]
+                }
+                if set(bounds) - {"min", "max"}:
+                    raise ValueError
+                minimum = bounds.get("min")
+                maximum = bounds.get("max")
+            except (InvalidOperation, ValueError):
+                log.warning(
+                    "welcome: bad score validator in sheet",
+                    extra={"validate": directive},
+                )
+                return False, None, SCORE_INPUT_ERROR
+        try:
+            parsed = parse_score(raw, minimum=minimum, maximum=maximum)
+        except ScoreInputError:
+            return False, None, SCORE_INPUT_ERROR
+        return True, parsed.compact, None
 
     pattern = _sheet_regex(meta)
     if pattern:

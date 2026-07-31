@@ -266,6 +266,8 @@ explicitly configured in the sheet.
 
 ### Onboarding
 - `ONBOARDING_TAB` (string) — Sheet tab name containing the onboarding questions with headers `flow, order, qid, label, type, required, maxlen, validate, help, options, visibility_rules, nav_rules`. Preloaded at startup and refreshed weekly; missing or invalid values surface `missing config key: ONBOARDING_TAB` during refresh.
+- The questions tab controls validation per row through `validate`. Use `score` for approximate scores, or `score:min=10000,max=1000000` for inclusive bounds measured in base units. Score rows accept compact and word suffixes (`500K`, `12.6M`, `40b`, `40 billion`), leading approximation words or `~`, a trailing `+`, and separated or unseparated full numbers. Accepted values are stored canonically with the largest appropriate unit (for example, `40B` or `40.5B`).
+- Score behavior is enabled only by the explicit sheet directive—not by `qid`, question text, help text, order, flow, `type=number`, or regex contents. Exact numeric fields such as player power, levels, ranks, counts, and IDs retain their own validators and do not receive approximate-score syntax.
 - `ONBOARDING_SESSIONS_TAB` (string) — Worksheet storing onboarding sessions keyed by `user_id` + `thread_id`. Columns (order enforced): `user_id`, `thread_id`, `panel_message_id`, `step_index`, `completed`, `completed_at`, `answers_json`, `updated_at`, `first_reminder_at`, `warning_sent_at`, `auto_closed_at`.
 - Feature toggles `PROMO_ENABLED` and `promo_dialog` gate promo onboarding dialogs (`promo.r`, `promo.m`, `promo.l`). Both must be enabled for promo dialogs to run once detected.
 
@@ -437,4 +439,4 @@ Feature enable/disable is always sourced from the FeatureToggles worksheet; ENV 
 
 > **Template note:** The `.env.example` file in this directory mirrors the tables below. Treat that file as the canonical template for new deployments and update both assets together.
 
-Doc last updated: 2026-07-19 (v0.9.8.2)
+Doc last updated: 2026-07-30 (v0.9.8.2)

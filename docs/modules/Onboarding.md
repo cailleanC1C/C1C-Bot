@@ -22,6 +22,8 @@ The onboarding module is the generic questionnaire engine that powers welcome an
 - **Headers:** `flow`, `order`, `qid`, `label`, `type`, `required`, `maxlen`, `validate`, `help`, `options`, `visibility_rules`, `nav_rules`, `rules` (Config doc mirrors this schema). Rows with `flow=welcome` drive the Discord welcome dialog; other flows reuse the same engine.
 - **Options:** stored as comma-separated tokens; converted into `(label, value)` tuples so both dropdowns and multi-select prompts retain sheet ordering.
 - **Rules:** `visibility_rules` and `nav_rules` reference other `qid` values; parser rejects unknown IDs so skip logic does not drift.
+- **Score validation:** set `validate=score` for approximate scores, or use inclusive base-unit bounds such as `validate=score:min=10000,max=1000000`. Accepted answers include compact forms (`500K`, `12.6M`, `40b`), word forms (`40 billion`), qualifiers (`about`, `over`, `~`), a trailing `+`, and full numbers (`40,000,000,000` or `40000000000`). Values are stored as canonical compact strings such as `500K`, `12.6M`, and `40B`.
+- **Directive-driven behavior:** score parsing is selected only by the row's `validate` directive, never by `qid`, label, help text, order, flow, question type, or an existing regex. Exact numeric fields—including player power, account levels, ranks, counts, and IDs—continue to use their own sheet-authored validators without score-specific qualifiers, suffix words, or decimal-comma handling.
 
 ### Session Persistence (`OnboardingSessions` tab)
 - **Columns (minimum required):** `thread_name`, `user_id`, `thread_id`, `panel_message_id`, `step_index`, `completed`, `completed_at`, `answers_json`, `updated_at`, `first_reminder_at`, `warning_sent_at`, `auto_closed_at` (extra columns are tolerated so long as the required ones exist).
@@ -68,4 +70,4 @@ The onboarding module is the generic questionnaire engine that powers welcome an
 - [`docs/Runbook.md`](../Runbook.md)
 - [`docs/adr/ADR-0022-Module-Boundaries.md`](../adr/ADR-0022-Module-Boundaries.md)
 
-Doc last updated: 2025-12-06 (v0.9.8.2)
+Doc last updated: 2026-07-30 (v0.9.8.2)

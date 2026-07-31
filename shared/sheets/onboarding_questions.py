@@ -33,6 +33,7 @@ log = logging.getLogger(__name__)
 _cached_rows_snapshot: Tuple[dict[str, str], ...] | None = None
 _cached_questions_by_flow: dict[str, Tuple[Question, ...]] = {}
 
+
 def _question_tab() -> str:
     """Return the configured onboarding question tab name."""
 
@@ -67,13 +68,6 @@ class Question:
     rules: str | None = None
 
 
-_VALIDATION_OVERRIDES: dict[str, str] = {
-    "w_power": r"regex:^[0-9]+(\.[0-9]{1,2})?[Mm]?$",
-    "w_hydra_clash": r"regex:^\d+(?:\.\d+)?[MmBb]?$",
-    "w_chimera_clash": r"regex:^\d+(?:\.\d+)?[MmBb]?$",
-}
-
-
 def _sheet_id() -> str:
     sheet_id = get_onboarding_sheet_id().strip()
     if not sheet_id:
@@ -98,7 +92,9 @@ def describe_source() -> dict[str, str]:
     return {"sheet": redacted, "tab": tab}
 
 
-def _normalise_records(records: Iterable[Mapping[str, object]]) -> Tuple[dict[str, str], ...]:
+def _normalise_records(
+    records: Iterable[Mapping[str, object]],
+) -> Tuple[dict[str, str], ...]:
     parsed: list[dict[str, str]] = []
     for record in records:
         normalized: dict[str, str] = {}
@@ -241,7 +237,9 @@ def _parse_options(raw_options: str | None) -> tuple[Option, ...]:
         start = int(match.group("start"))
         end = int(match.group("end"))
         if start <= end:
-            return tuple(_canonicalise_option(str(number)) for number in range(start, end + 1))
+            return tuple(
+                _canonicalise_option(str(number)) for number in range(start, end + 1)
+            )
 
     raw_segments = re.split(r"[\n,]", text)
     segments = [segment.strip() for segment in raw_segments if segment.strip()]
@@ -325,18 +323,16 @@ def _build_questions(flow: str, rows: Sequence[Mapping[str, str]]) -> list[Quest
         try:
             qtype, multi_max = _normalise_type(qtype_raw)
         except ValueError:
-            log.warning("onboarding question missing type", extra={"qid": qid, "order": order})
+            log.warning(
+                "onboarding question missing type", extra={"qid": qid, "order": order}
+            )
             continue
-        qid_key = qid.strip()
         options = (
             _parse_options(row.get("options"))
             if qtype in {"single-select", "multi-select"}
             else ()
         )
         validate_text = _normalise_whitespace(row.get("validate"))
-        override = _VALIDATION_OVERRIDES.get(qid_key)
-        if override:
-            validate_text = override
         question = Question(
             flow=flow,
             order=order.strip(),
@@ -379,7 +375,9 @@ def _hash_payload(questions: Iterable[Question]) -> str:
                 "maxlen": question.maxlen,
                 "validate": question.validate,
                 "help": question.help,
-                "options": [(option.value, option.label) for option in question.options],
+                "options": [
+                    (option.value, option.label) for option in question.options
+                ],
                 "visibility_rules": question.visibility_rules,
                 "nav_rules": question.nav_rules,
             }
