@@ -248,6 +248,58 @@ def test_help_access_views_are_sheet_driven(monkeypatch: pytest.MonkeyPatch) -> 
     asyncio.run(runner())
 
 
+def test_bare_help_is_registered_and_reuses_permission_aware_renderer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def runner() -> None:
+        async def rows():
+            return _sheet_rows()
+
+        monkeypatch.setattr("c1c_coreops.cog.help_commands.get_rows", rows)
+        bot = await _setup_test_bot(monkeypatch)
+        try:
+            command = bot.get_command("help")
+            assert command is not None
+            assert command.qualified_name == "help"
+            assert command.callback is CoreOpsCog.bare_help.callback
+
+            ctx = HelpContext(bot, DummyMember())
+            for check in command.checks:
+                assert await check(ctx)
+            await command.callback(command.cog, ctx)
+
+            view = ctx._views[0]
+            assert view is not None
+            assert set(view.embeds) == {"user"}
+            assert "!clan <tag>" in _collect_text(view.embeds["user"][0])
+            assert "!ops config" not in _collect_text(view.embeds["user"][0])
+        finally:
+            await bot.close()
+
+    asyncio.run(runner())
+
+
+def test_bare_help_query_reuses_existing_renderer(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def runner() -> None:
+        bot = await _setup_test_bot(monkeypatch)
+        try:
+            cog = bot.get_cog("CoreOpsCog")
+            command = bot.get_command("help")
+            assert cog is not None
+            assert command is not None
+            render_help = AsyncMock()
+            monkeypatch.setattr(cog, "render_help", render_help)
+            ctx = HelpContext(bot, DummyMember())
+
+            await command.callback(command.cog, ctx, query="clan")
+
+            render_help.assert_awaited_once_with(ctx, query="clan")
+        finally:
+            await bot.close()
+
+    asyncio.run(runner())
+
+
 def test_help_pages_group_categories_inside_access_pages(monkeypatch: pytest.MonkeyPatch) -> None:
     async def runner() -> None:
         async def rows():

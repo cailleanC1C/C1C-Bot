@@ -164,6 +164,7 @@ def patch_rbac(monkeypatch: pytest.MonkeyPatch) -> Iterable[None]:
 
 async def _setup_bot(monkeypatch: pytest.MonkeyPatch) -> tuple[commands.Bot, DummyLogChannel]:
     bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+    bot.remove_command("help")
     channel = DummyLogChannel()
     monkeypatch.setattr(
         "c1c_coreops.cog.resolve_ops_log_channel_id", lambda *_, **__: 999,

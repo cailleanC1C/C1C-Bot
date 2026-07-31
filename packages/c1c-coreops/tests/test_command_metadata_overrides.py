@@ -41,6 +41,7 @@ def test_operational_metadata_exposed(monkeypatch: pytest.MonkeyPatch) -> None:
 
     async def runner() -> None:
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        bot.remove_command("help")
         await bot.add_cog(CoreOpsCog(bot))
         await bot.add_cog(PermissionsUICog(bot))
         await bot.add_cog(RecruiterPanelCog(bot))

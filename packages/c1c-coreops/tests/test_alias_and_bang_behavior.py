@@ -74,6 +74,7 @@ def test_multi_bot_alias_behavior(monkeypatch: pytest.MonkeyPatch) -> None:
     async def runner() -> None:
         intents = discord.Intents.none()
         bot = commands.Bot(command_prefix="!", intents=intents)
+        bot.remove_command("help")
         await bot.add_cog(CoreOpsCog(bot))
 
         try:
@@ -109,6 +110,7 @@ def test_generic_alias_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
 
     async def runner() -> None:
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        bot.remove_command("help")
         await bot.add_cog(CoreOpsCog(bot))
 
         try:
@@ -151,6 +153,7 @@ def test_reload_requires_admin(monkeypatch: pytest.MonkeyPatch) -> None:
 
     async def runner() -> None:
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        bot.remove_command("help")
         await bot.add_cog(CoreOpsCog(bot))
 
         try:

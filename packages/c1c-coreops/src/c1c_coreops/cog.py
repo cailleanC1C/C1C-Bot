@@ -1678,6 +1678,7 @@ class CoreOpsCog(commands.Cog):
     def _build_command_metadata_overrides(self) -> dict[str, dict[str, str]]:
         return {
             "ops": {"function_group": "operational", "access_tier": "user"},
+            "help": {"function_group": "operational", "access_tier": "user"},
             "ops help": {"function_group": "operational", "access_tier": "user"},
             "health": {"function_group": "operational"},
             "ops health": {"function_group": "operational"},
@@ -3834,6 +3835,19 @@ class CoreOpsCog(commands.Cog):
         brief="Shows the permission-aware help menu.",
     )
     async def ops_help(
+        self, ctx: commands.Context, *, query: str | None = None
+    ) -> None:
+        await self.render_help(ctx, query=query)
+
+    @tier("user")
+    @commands.command(
+        name="help",
+        usage="[command]",
+        extras={"hide_in_help": True},
+        help="Shows the permission-aware help menu with dynamic visibility.",
+        brief="Shows the permission-aware help menu.",
+    )
+    async def bare_help(
         self, ctx: commands.Context, *, query: str | None = None
     ) -> None:
         await self.render_help(ctx, query=query)
