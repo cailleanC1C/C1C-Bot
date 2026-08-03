@@ -438,5 +438,10 @@ Feature enable/disable is always sourced from the FeatureToggles worksheet; ENV 
 - Use `!ops reload` (or the Ops equivalent) to force the bot to re-read the toggles after a fix.
 
 > **Template note:** The `.env.example` file in this directory mirrors the tables below. Treat that file as the canonical template for new deployments and update both assets together.
+## C1C Leagues cluster-history Config
 
-Doc last updated: 2026-07-30 (v0.9.8.2)
+The `LEAGUES_SHEET_ID` Config tab resolves `cluster_capture_config_tab`, `cluster_clan_map_tab`, `cluster_event_history_tab`, and `cluster_evaluation_tab`. Do not substitute environment variables or hard-coded prepared-tab names. Enabled capture rows own their source worksheet, A1 range, source-column letters, capture mode, score unit, and (for cumulative inputs) result-only history status. All capture/map/history table columns are selected by header name.
+
+Before weekly boards are exported, the bot appends one candidate per active clan and enabled capture spec. Unknown/former source clans are ignored; a missing active clan is archived as `evaluation_status=missing`. Blank, invalid, and zero weekly scores stay blank rather than becoming valid zeroes. Existing identical record keys are retry no-ops, while conflicting keys and negative cumulative deltas fail the job before Discord posting. The capture is append-only and never clears Stormforged inputs. Current CvC/Siege inputs only support weekly scores or cumulative win/loss deltas, not complete cycle/participation/action/class ratings.
+
+Doc last updated: 2026-08-03 (v0.9.8.2)

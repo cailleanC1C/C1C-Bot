@@ -335,6 +335,12 @@ def test_reaction_approval_runtime_uses_async_league_config_loader(monkeypatch):
     monkeypatch.setattr(sheets_core, "_retry_with_backoff", _sync_retry_forbidden)
     monkeypatch.setattr(leagues_cog, "aload_league_bundles", _async_loader)
 
+    async def _capture(*_args, **kwargs):
+        assert kwargs["week_key"] == "2026-W26"
+        return SimpleNamespace(status_text=lambda: "History: captured")
+
+    monkeypatch.setattr(leagues_cog, "capture_weekly_history", _capture)
+
     bot = _LeagueApprovalBot()
     bot.get_cog = lambda _name: None
     cog = LeaguesCog(bot)

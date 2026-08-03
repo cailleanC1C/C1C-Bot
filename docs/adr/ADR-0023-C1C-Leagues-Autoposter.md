@@ -24,5 +24,10 @@ Date: 2025-12-01
 - Future leagues can reuse the same Config-tab grouping pattern without architectural changes.
 
 Status: Approved
+## Weekly cluster history capture
+- After league bundle validation and before the first export or Discord send, the posting pipeline captures an append-only weekly snapshot in `ClusterEventHistory`. A validation, alias, negative-delta, or history-conflict failure stops the job before any board or announcement is posted. A Discord failure after capture does not remove history; retries safely deduplicate identical record keys.
+- The Config keys `cluster_capture_config_tab`, `cluster_clan_map_tab`, `cluster_event_history_tab`, and `cluster_evaluation_tab` resolve every prepared tab name. Capture specs supply source worksheet names, ranges, column letters, modes, units, and result-only status; table fields are resolved by header.
+- Active clan aliases are punctuation/whitespace-insensitive. Every active clan receives one candidate per enabled spec, while former/unmapped source clans are ignored. Missing, invalid, and zero weekly scores remain blank with `evaluation_status=missing`—they are never recorded as zero.
+- `weekly_score` supports positive score snapshots. `cumulative_win_delta` records wins/losses and preserves the wins delta as `result_only`; negative deltas abort the capture. Current CvC/Siege sources do not provide cycle dates, participation, action counts, event class, or enough data for complete mode ratings, so those fields remain blank. Source cells are never reset or cleared.
 
-Doc last updated: 2025-12-02 (v0.9.8.2)
+Doc last updated: 2026-08-03 (v0.9.8.2)

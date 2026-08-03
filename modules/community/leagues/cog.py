@@ -18,6 +18,7 @@ from modules.community.leagues.config import (
     LeaguesConfigError,
     aload_league_bundles,
 )
+from modules.community.leagues.history import HistoryCaptureError, capture_weekly_history
 from shared.logfmt import channel_label, user_label
 from shared.sheets.async_core import acall_with_backoff, afetch_records, afetch_values, aget_worksheet
 from shared.sheets.export_utils import export_pdf_as_png, get_tab_gid
@@ -319,7 +320,16 @@ class LeaguesCog(commands.Cog):
         )
         try:
             log.info("league board publish started", extra={"trigger": "reaction_approval", "message_id": payload.message_id})
-            ok = await self.run_leagues_job(trigger="reaction_approval", status_channel=channel)
+            durable_week = self._format_week_key(
+                row["values"].get("season_key", ""), row["values"].get("week_key", "")
+            )
+            self._approval_capture_week_key = durable_week
+            try:
+                ok = await self.run_leagues_job(
+                    trigger="reaction_approval", status_channel=channel
+                )
+            finally:
+                self._approval_capture_week_key = None
         except Exception as exc:
             ok = False
             error = f"{type(exc).__name__}: {exc}"
@@ -381,6 +391,19 @@ class LeaguesCog(commands.Cog):
         current = now or dt.datetime.now(dt.timezone.utc)
         iso = current.isocalendar()
         return str(iso.year), f"{iso.week:02d}"
+
+    @staticmethod
+    def _format_week_key(season_key: object, week_key: object) -> str:
+        season = str(season_key or "").strip()
+        week = str(week_key or "").strip().removeprefix("W").zfill(2)
+        if not season or not week.isdigit():
+            raise HistoryCaptureError("durable approval season/week is invalid")
+        return f"{season}-W{week}"
+
+    @classmethod
+    def _current_week_key(cls, now: dt.datetime | None = None) -> str:
+        season, week = cls._approval_keys(now)
+        return cls._format_week_key(season, week)
 
     def _config_tab_name(self) -> str:
         return os.getenv("LEAGUES_CONFIG_TAB", "Config").strip() or "Config"
@@ -635,15 +658,19 @@ class LeaguesCog(commands.Cog):
         *,
         trigger: str,
         status_channel: discord.abc.Messageable | None,
+        week_key: str | None = None,
     ) -> bool:
         async with self._job_lock:
-            return await self._run_leagues_job(trigger=trigger, status_channel=status_channel)
+            return await self._run_leagues_job(
+                trigger=trigger, status_channel=status_channel, week_key=week_key
+            )
 
     async def _run_leagues_job(
         self,
         *,
         trigger: str,
         status_channel: discord.abc.Messageable | None,
+        week_key: str | None = None,
     ) -> bool:
         sheet_id = os.getenv("LEAGUES_SHEET_ID", "").strip()
         if not sheet_id:
@@ -707,6 +734,37 @@ class LeaguesCog(commands.Cog):
             await self._post_status(
                 status_channel,
                 f"❌ C1C Leagues job failed\nTrigger: {trigger}\nReason: {validation_error}.",
+                trigger=trigger,
+            )
+            return False
+
+        capture_week = (
+            week_key
+            or getattr(self, "_approval_capture_week_key", None)
+            or self._current_week_key()
+        )
+        try:
+            history_summary = await capture_weekly_history(
+                sheet_id,
+                config_tab=self._config_tab_name(),
+                week_key=capture_week,
+                trigger=trigger,
+            )
+        except Exception as exc:
+            log.exception(
+                "league history capture failed",
+                extra={
+                    "week_key": capture_week,
+                    "failure": str(exc),
+                    "failure_type": type(exc).__name__,
+                    "validation_or_conflict_failure": isinstance(
+                        exc, HistoryCaptureError
+                    ),
+                },
+            )
+            await self._post_status(
+                status_channel,
+                f"❌ C1C Leagues job failed\nTrigger: {trigger}\nReason: history capture failed: {exc}.",
                 trigger=trigger,
             )
             return False
@@ -819,6 +877,7 @@ class LeaguesCog(commands.Cog):
                     f"Trigger: {trigger}",
                     f"Leagues updated: {len(bundles)} / {len(bundles)}",
                     "Result: all posted successfully",
+                    history_summary.status_text(),
                     f"Timestamp: {dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
                 ]
             ),

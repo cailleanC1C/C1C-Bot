@@ -19,5 +19,10 @@ Progress guides publish/refresh configured guide messages. The guides help index
 ## Leagues, achievements, and reaction roles
 
 Leagues schedules weekly category posts/announcements and offers an admin manual run. Achievement boards/collector are described in [[Housekeeping & Maintenance]]. Reaction roles map configured message reactions to roles and require a valid role hierarchy plus message/reaction permissions.
+## Leagues weekly history
 
-Doc last updated: 2026-07-20 (v0.9.8.2)
+Before publishing weekly league images, the bot captures config-driven cluster performance into append-only history. Four Leagues Config keys resolve the capture-spec, active-clan map, event-history, and evaluation tabs; capture specs resolve all source worksheets, ranges, and column letters. Active clans missing from a source are recorded as `missing`, while former/unmapped source clans are ignored. Blank, invalid, or zero weekly scores remain blank—not valid zeroes.
+
+Capture validation occurs before any Discord export/post. Identical retries deduplicate, conflicting history aborts without overwrite, and negative cumulative win deltas abort. Discord failures do not roll back a successful capture, and the pipeline never clears Stormforged inputs. Current CvC/Siege data supports weekly score and result-only cumulative win/loss history, but not full cycle, participation, action, class, or mode-rating fields.
+
+Doc last updated: 2026-08-03 (v0.9.8.2)
