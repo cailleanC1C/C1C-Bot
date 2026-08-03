@@ -109,5 +109,10 @@ runtime keeps the bot “warm” in two additional layers:
 - [`docs/modules/CoreOps.md`](../modules/CoreOps.md) — runtime lifecycle,
   scheduler wiring, and watchdog contracts.
 - [`docs/modules/`](../modules) — module owners for the watchers listed here.
+## Leagues weekly capture and posting
 
-Doc last updated: 2025-12-31 (v0.9.8.2)
+The Wednesday approval and manual `!leagues post` routes share one pipeline. After sheet/config validation, an append-only cluster-history capture runs before the first image export/send. Approval jobs explicitly carry their durable approval season/week; manual jobs explicitly carry the current ISO year/week, so concurrent runs cannot share or overwrite week state. Capture failures (including alias collisions, malformed/out-of-range configured source columns, negative cumulative deltas, and append-only conflicts) post a failure status and suppress every league board and announcement. A posting failure after capture leaves history intact so a retry can deduplicate it by semantic event fields; audit-only differences such as trigger, timestamp, source range, source row, and clan display name neither conflict nor overwrite the original audit trail.
+
+Operational logs include the week key, active clans, enabled specs, candidates, appends, identical retries, missing rows, ignored former/unmapped sources, result-only rows, and validation/conflict failures. Successful status messages include the capture summary. Missing weekly values are blank/`missing`, never zero, and this stage does not reset source cells. Current CvC/Siege sheets lack the extra fields required for complete mode evaluation.
+
+Doc last updated: 2026-08-03 (v0.9.8.2)
