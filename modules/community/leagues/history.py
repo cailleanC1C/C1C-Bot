@@ -96,12 +96,14 @@ def build_active_clan_map(rows: Iterable[Mapping[str, object]]) -> tuple[dict[st
     for row in rows:
         if not _enabled(_field(row, "active", "enabled")):
             continue
-        tag = _field(row, "clan_tag", "tag")
-        name = _field(row, "clan_name", "name")
+        tag = _field(row, "canonical_clan_tag", "clan_tag", "tag")
+        name = _field(row, "canonical_clan_name", "clan_name", "name")
         if not tag:
             raise HistoryCaptureError("active ClusterClanMap row has no clan_tag")
         clans[tag] = (tag, name)
-        raw_aliases = _field(row, "aliases", "alias", "source_aliases")
+        raw_aliases = _field(
+            row, "source_alias", "source_aliases", "aliases", "alias"
+        )
         values = [tag, name, *re.split(r"[,;|\n]", raw_aliases)]
         for value in values:
             alias = normalize_alias(value)
@@ -240,6 +242,8 @@ async def capture_weekly_history(
     _evaluation_tab = tabs["cluster_evaluation_tab"]
 
     clans, aliases = build_active_clan_map(clan_rows)
+    if not clans:
+        raise HistoryCaptureError("ClusterClanMap resolves to zero active clans")
     specs = [row for row in capture_rows if _enabled(_field(row, "enabled", "active"))]
     if not specs:
         raise HistoryCaptureError("ClusterCaptureConfig has no enabled capture specs")
@@ -276,10 +280,12 @@ async def capture_weekly_history(
         origin_col, origin_row = _validate_source_columns(event_type, source_range, columns)
         matrix = await _read_unformatted(sheet_id, tab, source_range)
         found: dict[str, tuple[list[Any], int]] = {}
+        populated_source_clans = 0
         for offset, row in enumerate(matrix):
             source_name = _cell(row, current_clan_col, origin_col)
             if not str(source_name or "").strip():
                 continue
+            populated_source_clans += 1
             tag = aliases.get(normalize_alias(source_name))
             if tag is None:
                 ignored += 1
@@ -287,6 +293,11 @@ async def capture_weekly_history(
             if tag in found:
                 raise HistoryCaptureError(f"{event_type}: active clan {tag} appears more than once")
             found[tag] = (row, origin_row + offset)
+        if populated_source_clans and not found:
+            raise HistoryCaptureError(
+                f"{event_type}: populated source contains clan names but zero clans "
+                "match the active ClusterClanMap"
+            )
 
         if mode == "cumulative_win_delta":
             previous: dict[str, Decimal] = {}
