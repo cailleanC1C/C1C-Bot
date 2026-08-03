@@ -26,6 +26,14 @@ HISTORY_HEADERS = (
     "evaluation_status", "captured_at_utc", "source_range", "source_row",
     "source_trigger",
 )
+SEMANTIC_EVENT_FIELDS = (
+    "week_key", "event_type", "cycle_start", "cycle_end", "clan_tag",
+    "score", "score_unit", "result", "participation", "actions_used",
+    "actions_available", "event_class", "evaluation_status",
+)
+_NUMERIC_SEMANTIC_FIELDS = {
+    "score", "participation", "actions_used", "actions_available",
+}
 
 
 class HistoryCaptureError(RuntimeError):
@@ -109,8 +117,8 @@ def build_active_clan_map(rows: Iterable[Mapping[str, object]]) -> tuple[dict[st
 
 
 def _column_number(label: str) -> int:
-    clean = re.sub(r"[^A-Za-z]", "", label).upper()
-    if not clean:
+    clean = str(label or "").strip().replace("$", "").upper()
+    if not re.fullmatch(r"[A-Z]+", clean):
         raise HistoryCaptureError(f"invalid source column: {label!r}")
     number = 0
     for char in clean:
@@ -118,12 +126,32 @@ def _column_number(label: str) -> int:
     return number
 
 
-def _range_origin(a1_range: str) -> tuple[int, int]:
-    first = a1_range.split(":", 1)[0].replace("$", "")
-    match = re.fullmatch(r"([A-Za-z]+)(\d+)", first)
+def _range_bounds(a1_range: str) -> tuple[int, int, int]:
+    clean = str(a1_range or "").strip().replace("$", "")
+    match = re.fullmatch(r"([A-Za-z]+)(\d+):([A-Za-z]+)(\d+)", clean)
     if not match:
-        raise HistoryCaptureError(f"source range must start with a cell reference: {a1_range!r}")
-    return _column_number(match.group(1)), int(match.group(2))
+        raise HistoryCaptureError(f"source range must be a bounded A1 range: {a1_range!r}")
+    left = _column_number(match.group(1))
+    right = _column_number(match.group(3))
+    start_row, end_row = int(match.group(2)), int(match.group(4))
+    if left > right or start_row > end_row:
+        raise HistoryCaptureError(f"source range boundaries are reversed: {a1_range!r}")
+    return left, right, start_row
+
+
+def _validate_source_columns(
+    event_type: str, a1_range: str, columns: Mapping[str, str],
+) -> tuple[int, int]:
+    left, right, start_row = _range_bounds(a1_range)
+    for field, label in columns.items():
+        if not label:
+            raise HistoryCaptureError(f"{event_type}: {field} is required")
+        number = _column_number(label)
+        if number < left or number > right:
+            raise HistoryCaptureError(
+                f"{event_type}: {field} column {label!r} is outside configured range {a1_range!r}"
+            )
+    return left, start_row
 
 
 def _cell(row: list[Any], column: str, origin_column: int) -> Any:
@@ -147,6 +175,21 @@ def _display_number(value: Decimal | None) -> object:
     if value is None:
         return ""
     return int(value) if value == value.to_integral_value() else float(value)
+
+
+def _semantic_value(field: str, value: object) -> object:
+    if field in _NUMERIC_SEMANTIC_FIELDS:
+        numeric = _number(value)
+        return numeric if numeric is not None else ""
+    return str(value or "").strip()
+
+
+def _same_event_payload(old: Mapping[str, object], candidate: Mapping[str, object]) -> bool:
+    return all(
+        _semantic_value(field, old.get(field, ""))
+        == _semantic_value(field, candidate.get(field, ""))
+        for field in SEMANTIC_EVENT_FIELDS
+    )
 
 
 def _candidate(*, week_key: str, event_type: str, tag: str, name: str,
@@ -216,13 +259,23 @@ async def capture_weekly_history(
         if mode not in {"weekly_score", "cumulative_win_delta"} or not event_type:
             raise HistoryCaptureError(f"unsupported or incomplete capture spec: {event_type or '<unnamed>'}")
         tab, source_range = _spec_source(spec)
-        matrix = await _read_unformatted(sheet_id, tab, source_range)
-        origin_col, origin_row = _range_origin(source_range)
-        found: dict[str, tuple[list[Any], int]] = {}
-
         current_clan_col = _field(spec, "current_clan_column", "clan_column")
-        if not current_clan_col:
-            raise HistoryCaptureError(f"{event_type}: current_clan_column is required")
+        columns = {"current_clan_column": current_clan_col}
+        if mode == "weekly_score":
+            score_col = _field(spec, "score_column", "current_score_column")
+            columns["score_column"] = score_col
+        else:
+            previous_clan_col = _field(spec, "previous_clan_column", "prior_clan_column")
+            previous_total_col = _field(spec, "previous_total_column", "prior_total_column")
+            current_total_col = _field(spec, "current_total_column", "total_column")
+            columns.update({
+                "current_total_column": current_total_col,
+                "previous_clan_column": previous_clan_col,
+                "previous_total_column": previous_total_col,
+            })
+        origin_col, origin_row = _validate_source_columns(event_type, source_range, columns)
+        matrix = await _read_unformatted(sheet_id, tab, source_range)
+        found: dict[str, tuple[list[Any], int]] = {}
         for offset, row in enumerate(matrix):
             source_name = _cell(row, current_clan_col, origin_col)
             if not str(source_name or "").strip():
@@ -236,11 +289,6 @@ async def capture_weekly_history(
             found[tag] = (row, origin_row + offset)
 
         if mode == "cumulative_win_delta":
-            previous_clan_col = _field(spec, "previous_clan_column", "prior_clan_column")
-            previous_total_col = _field(spec, "previous_total_column", "prior_total_column")
-            current_total_col = _field(spec, "current_total_column", "total_column")
-            if not previous_clan_col or not previous_total_col or not current_total_col:
-                raise HistoryCaptureError(f"{event_type}: cumulative columns are incomplete")
             previous: dict[str, Decimal] = {}
             for row in matrix:
                 tag = aliases.get(normalize_alias(_cell(row, previous_clan_col, origin_col)))
@@ -258,9 +306,6 @@ async def capture_weekly_history(
             if source is not None:
                 row, source_row = source
                 if mode == "weekly_score":
-                    score_col = _field(spec, "score_column", "current_score_column")
-                    if not score_col:
-                        raise HistoryCaptureError(f"{event_type}: score_column is required")
                     numeric = _number(_cell(row, score_col, origin_col))
                     if numeric is not None and numeric > 0:
                         score, status = _display_number(numeric), "valid"
@@ -294,12 +339,11 @@ async def capture_weekly_history(
             existing[key] = values
     append: list[dict[str, object]] = []
     identical = 0
-    comparable = tuple(header for header in HISTORY_HEADERS if header != "captured_at_utc")
     for candidate in candidates:
         old = existing.get(str(candidate["record_key"]))
         if old is None:
             append.append(candidate)
-        elif all(str(old.get(key, "")) == str(candidate.get(key, "")) for key in comparable):
+        elif _same_event_payload(old, candidate):
             identical += 1
         else:
             raise HistoryCaptureError(f"history-conflict for record_key {candidate['record_key']}")

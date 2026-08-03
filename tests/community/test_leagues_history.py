@@ -177,12 +177,14 @@ def test_capture_failure_prevents_first_export_or_board_send(monkeypatch):
     from modules.community.leagues import cog as leagues_cog
     from modules.community.leagues.config import LeagueBundle, LeagueSpec
 
-    monkeypatch.setenv("LEAGUES_SHEET_ID", "sheet")
+    from shared import config as shared_config
+
+    monkeypatch.setitem(shared_config._CONFIG, "LEAGUES_SHEET_ID", "sheet")
     for key, value in {
-        "LEAGUES_LEGENDARY_THREAD_ID": "1", "LEAGUES_RISING_THREAD_ID": "2",
-        "LEAGUES_STORMFORGED_THREAD_ID": "3", "ANNOUNCEMENT_CHANNEL_ID": "4",
+        "LEAGUES_LEGENDARY_THREAD_ID": 1, "LEAGUES_RISING_THREAD_ID": 2,
+        "LEAGUES_STORMFORGED_THREAD_ID": 3, "ANNOUNCEMENT_CHANNEL_ID": 4,
     }.items():
-        monkeypatch.setenv(key, value)
+        monkeypatch.setitem(shared_config._CONFIG, key, value)
     events = []
     channel = SimpleNamespace(send=lambda *_a, **_k: None)
     cog = leagues_cog.LeaguesCog(SimpleNamespace())
@@ -212,5 +214,130 @@ def test_capture_failure_prevents_first_export_or_board_send(monkeypatch):
     monkeypatch.setattr(leagues_cog, "aload_league_bundles", load)
     monkeypatch.setattr(leagues_cog, "capture_weekly_history", capture)
 
-    assert asyncio.run(cog._run_leagues_job(trigger="command", status_channel=channel)) is False
+    assert asyncio.run(cog._run_leagues_job(
+        trigger="command", status_channel=channel, week_key="2026-W31"
+    )) is False
     assert events == ["capture", "status"]
+
+
+def test_configured_columns_accept_both_a1_range_boundaries(monkeypatch):
+    sheets = install(
+        monkeypatch,
+        specs=[weekly_spec(current_clan_column="B", score_column="D")],
+        sources={"Live Input": [["Alpha", "ignored", 9]]},
+    )
+    summary = run_capture()
+    assert summary.appended_rows == 2
+    assert sheets["Live Input"].get_calls
+
+
+@pytest.mark.parametrize(
+    ("column", "message"),
+    [("D7", "invalid source column"), ("A", "outside configured range"), ("E", "outside configured range")],
+)
+def test_configured_column_malformed_or_outside_a1_range_aborts_before_read(
+    monkeypatch, column, message
+):
+    sheets = install(
+        monkeypatch,
+        specs=[weekly_spec(score_column=column)],
+        sources={"Live Input": [["Alpha", "ignored", 9]]},
+    )
+    with pytest.raises(history.HistoryCaptureError, match=message):
+        run_capture()
+    assert sheets["Live Input"].get_calls == []
+    assert sheets["Archive"].appended == []
+
+
+@pytest.mark.parametrize(
+    ("first_trigger", "retry_trigger"),
+    [("reaction_approval", "command"), ("command", "reaction_approval")],
+)
+def test_cross_trigger_retry_uses_semantic_data_and_preserves_original_audit(
+    monkeypatch, first_trigger, retry_trigger
+):
+    sheets = install(monkeypatch, specs=[weekly_spec()], sources={"Live Input": [["Alpha", "", 5]]})
+    first = asyncio.run(history.capture_weekly_history(
+        "sheet", config_tab="Config", week_key="2026-W31", trigger=first_trigger,
+        captured_at=history.dt.datetime(2026, 8, 3, tzinfo=history.dt.timezone.utc),
+    ))
+    assert first.appended_rows == 2
+    original = [list(row) for row in sheets["Archive"].appended[0][0]]
+    archive = [HEADERS, *original]
+
+    moved_spec = weekly_spec(source_range="B6:D10")
+    sheets = install(monkeypatch, specs=[moved_spec], sources={"Live Input": [["Alpha", "", 5]]}, archive=archive)
+    retry = asyncio.run(history.capture_weekly_history(
+        "sheet", config_tab="Config", week_key="2026-W31", trigger=retry_trigger,
+        captured_at=history.dt.datetime(2026, 8, 4, tzinfo=history.dt.timezone.utc),
+    ))
+
+    assert retry.identical_rows == 2 and retry.appended_rows == 0
+    assert sheets["Archive"].appended == []
+    # Append-only history retains the original trigger, timestamp, range, and row.
+    assert archive[1:] == original
+    alpha = dict(zip(HEADERS, archive[1]))
+    assert alpha["source_trigger"] == first_trigger
+    assert alpha["source_range"] == "Live Input!B5:D9"
+    assert alpha["source_row"] == 5
+    assert alpha["captured_at_utc"].startswith("2026-08-03")
+
+
+def test_semantic_score_conflict_still_aborts_without_overwrite(monkeypatch):
+    sheets = install(monkeypatch, specs=[weekly_spec()], sources={"Live Input": [["Alpha", "", 5]]})
+    run_capture()
+    original = [list(row) for row in sheets["Archive"].appended[0][0]]
+    archive = [HEADERS, *original]
+    sheets = install(monkeypatch, specs=[weekly_spec()], sources={"Live Input": [["Alpha", "", 6]]}, archive=archive)
+
+    with pytest.raises(history.HistoryCaptureError, match="history-conflict"):
+        asyncio.run(history.capture_weekly_history(
+            "sheet", config_tab="Config", week_key="2026-W31", trigger="command"
+        ))
+    assert sheets["Archive"].appended == []
+    assert archive[1:] == original
+
+
+def test_semantic_result_conflict_still_aborts(monkeypatch):
+    sheets = install(monkeypatch, specs=[delta_spec()], sources={
+        "Siege Input": [["Alpha", 12, "Alpha", 10], ["Beta", 7, "Beta", 7]]
+    })
+    run_capture()
+    original = [list(row) for row in sheets["Archive"].appended[0][0]]
+    archive = [HEADERS, *original]
+    result_index = HEADERS.index("result")
+    archive[1][result_index] = "loss"
+    sheets = install(monkeypatch, specs=[delta_spec()], sources={
+        "Siege Input": [["Alpha", 12, "Alpha", 10], ["Beta", 7, "Beta", 7]]
+    }, archive=archive)
+
+    with pytest.raises(history.HistoryCaptureError, match="history-conflict"):
+        run_capture()
+    assert sheets["Archive"].appended == []
+
+
+def test_concurrent_manual_and_reaction_jobs_keep_explicit_week_keys():
+    from modules.community.leagues.cog import LeaguesCog
+
+    cog = LeaguesCog(SimpleNamespace())
+    seen = []
+
+    async def job(*, trigger, status_channel, week_key):
+        await asyncio.sleep(0)
+        seen.append((trigger, week_key))
+        return True
+
+    cog._run_leagues_job = job
+
+    async def run_both():
+        return await asyncio.gather(
+            cog.run_leagues_job(
+                trigger="command", status_channel=None, week_key="2026-W32"
+            ),
+            cog.run_leagues_job(
+                trigger="reaction_approval", status_channel=None, week_key="2025-W52"
+            ),
+        )
+
+    assert asyncio.run(run_both()) == [True, True]
+    assert seen == [("command", "2026-W32"), ("reaction_approval", "2025-W52")]

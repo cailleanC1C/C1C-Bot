@@ -4,6 +4,11 @@ from types import SimpleNamespace
 
 from modules.community.leagues.cog import LeaguesCog
 from modules.community.leagues.config import LeagueBundle, LeagueSpec
+from shared import config as shared_config
+
+
+def _set_config(monkeypatch, key, value):
+    monkeypatch.setitem(shared_config._CONFIG, key, value)
 
 
 def _bundle(slug: str, name: str) -> LeagueBundle:
@@ -37,7 +42,7 @@ def test_build_announcement_uses_plain_title_and_bold_league_names() -> None:
 
 def test_league_role_mention_prefers_role_id(monkeypatch) -> None:
     cog = LeaguesCog(SimpleNamespace())
-    monkeypatch.setenv("C1C_LEAGUE_ROLE_ID", "12345")
+    _set_config(monkeypatch, "C1C_LEAGUE_ROLE_ID", 12345)
     assert cog._league_role_mention() == "<@&12345>"
 
 
@@ -94,9 +99,9 @@ async def _run_approval(
     calls = {"job": 0}
 
     if league_admin_ids is None:
-        monkeypatch.delenv("LEAGUE_ADMIN_IDS", raising=False)
+        _set_config(monkeypatch, "LEAGUE_ADMIN_IDS", set())
     else:
-        monkeypatch.setenv("LEAGUE_ADMIN_IDS", league_admin_ids)
+        _set_config(monkeypatch, "LEAGUE_ADMIN_IDS", {int(league_admin_ids)})
     monkeypatch.setattr("modules.community.leagues.cog.is_admin_member", lambda member: is_admin)
 
     async def _find(channel_id, message_id, *, include_terminal=False):
@@ -108,9 +113,10 @@ async def _run_approval(
         updates.append(dict(changes))
         target["values"].update({key: str(value) for key, value in changes.items()})
 
-    async def _run_job(*, trigger, status_channel):
+    async def _run_job(*, trigger, status_channel, week_key):
         calls["job"] += 1
         assert trigger == "reaction_approval"
+        assert week_key == "2026-W26"
         assert row["values"]["status"] == "posting"
         if job_error is not None:
             raise job_error
@@ -287,12 +293,15 @@ def test_reaction_approval_runtime_uses_async_league_config_loader(monkeypatch):
     updates = []
     calls = {"async_loader": 0}
 
-    monkeypatch.setenv("LEAGUES_SHEET_ID", "leagues-sheet")
-    monkeypatch.setenv("LEAGUES_LEGENDARY_THREAD_ID", "1")
-    monkeypatch.setenv("LEAGUES_RISING_THREAD_ID", "2")
-    monkeypatch.setenv("LEAGUES_STORMFORGED_THREAD_ID", "3")
-    monkeypatch.setenv("ANNOUNCEMENT_CHANNEL_ID", "4")
-    monkeypatch.delenv("LEAGUE_ADMIN_IDS", raising=False)
+    for key, value in {
+        "LEAGUES_SHEET_ID": "leagues-sheet",
+        "LEAGUES_LEGENDARY_THREAD_ID": 1,
+        "LEAGUES_RISING_THREAD_ID": 2,
+        "LEAGUES_STORMFORGED_THREAD_ID": 3,
+        "ANNOUNCEMENT_CHANNEL_ID": 4,
+        "LEAGUE_ADMIN_IDS": set(),
+    }.items():
+        _set_config(monkeypatch, key, value)
     monkeypatch.setattr(leagues_cog, "is_admin_member", lambda member: True)
 
     def _sync_retry_forbidden(*_args, **_kwargs):

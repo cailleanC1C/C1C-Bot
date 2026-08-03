@@ -4,7 +4,6 @@ import asyncio
 import datetime as dt
 import io
 import logging
-import os
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 import discord
@@ -19,6 +18,7 @@ from modules.community.leagues.config import (
     aload_league_bundles,
 )
 from modules.community.leagues.history import HistoryCaptureError, capture_weekly_history
+from shared.config import cfg
 from shared.logfmt import channel_label, user_label
 from shared.sheets.async_core import acall_with_backoff, afetch_records, afetch_values, aget_worksheet
 from shared.sheets.export_utils import export_pdf_as_png, get_tab_gid
@@ -57,14 +57,14 @@ class LeaguesCog(commands.Cog):
         self._job_lock = asyncio.Lock()
         self._approval_lock = asyncio.Lock()
 
-        sheet_id = os.getenv("LEAGUES_SHEET_ID", "").strip()
+        sheet_id = str(cfg.get("LEAGUES_SHEET_ID", "") or "").strip()
         if not sheet_id:
             log.warning("Leagues sheet ID missing at startup; feature will remain idle")
 
     # === Helpers ===
     @staticmethod
-    def _parse_int_env(key: str) -> int | None:
-        raw = os.getenv(key)
+    def _parse_int_config(key: str) -> int | None:
+        raw = cfg.get(key)
         try:
             return int(raw) if raw is not None else None
         except (TypeError, ValueError):
@@ -72,10 +72,11 @@ class LeaguesCog(commands.Cog):
 
     @staticmethod
     def _admin_ids() -> list[int]:
-        raw = os.getenv("LEAGUE_ADMIN_IDS", "")
+        raw = cfg.get("LEAGUE_ADMIN_IDS", "")
         admin_ids: list[int] = []
-        for part in raw.split(","):
-            token = part.strip()
+        parts = raw if isinstance(raw, (list, tuple, set, frozenset)) else str(raw).split(",")
+        for part in parts:
+            token = str(part).strip()
             if not token:
                 continue
             try:
@@ -173,7 +174,7 @@ class LeaguesCog(commands.Cog):
         if message.author.bot:
             return
         channel = getattr(message, "channel", None)
-        if not channel or getattr(channel, "id", None) != self._parse_int_env(
+        if not channel or getattr(channel, "id", None) != self._parse_int_config(
             "LEAGUES_SUBMISSION_CHANNEL_ID"
         ):
             return
@@ -183,7 +184,7 @@ class LeaguesCog(commands.Cog):
         if not isinstance(guild, discord.Guild):
             return
 
-        role_id = self._parse_int_env("C1C_LEAGUE_ROLE_ID")
+        role_id = self._parse_int_config("C1C_LEAGUE_ROLE_ID")
         if not role_id:
             return
         role = guild.get_role(role_id)
@@ -323,13 +324,11 @@ class LeaguesCog(commands.Cog):
             durable_week = self._format_week_key(
                 row["values"].get("season_key", ""), row["values"].get("week_key", "")
             )
-            self._approval_capture_week_key = durable_week
-            try:
-                ok = await self.run_leagues_job(
-                    trigger="reaction_approval", status_channel=channel
-                )
-            finally:
-                self._approval_capture_week_key = None
+            ok = await self.run_leagues_job(
+                trigger="reaction_approval",
+                status_channel=channel,
+                week_key=durable_week,
+            )
         except Exception as exc:
             ok = False
             error = f"{type(exc).__name__}: {exc}"
@@ -406,7 +405,7 @@ class LeaguesCog(commands.Cog):
         return cls._format_week_key(season, week)
 
     def _config_tab_name(self) -> str:
-        return os.getenv("LEAGUES_CONFIG_TAB", "Config").strip() or "Config"
+        return str(cfg.get("LEAGUES_CONFIG_TAB", "Config") or "Config").strip() or "Config"
 
     async def _approval_state_tab(self, sheet_id: str) -> str | None:
         try:
@@ -430,7 +429,7 @@ class LeaguesCog(commands.Cog):
         return None
 
     async def _approval_sheet(self) -> tuple[str, Any, dict[str, int], list[list[Any]]] | None:
-        sheet_id = os.getenv("LEAGUES_SHEET_ID", "").strip()
+        sheet_id = str(cfg.get("LEAGUES_SHEET_ID", "") or "").strip()
         if not sheet_id:
             log.error("league approval unavailable; LEAGUES_SHEET_ID missing")
             return None
@@ -575,12 +574,16 @@ class LeaguesCog(commands.Cog):
     @leagues.command(name="post", help="Manually run the C1C Leagues posting job.")
     @admin_only()
     async def leagues_post(self, ctx: commands.Context) -> None:
-        await self.run_leagues_job(trigger="command", status_channel=ctx.channel)
+        await self.run_leagues_job(
+            trigger="command",
+            status_channel=ctx.channel,
+            week_key=self._current_week_key(),
+        )
 
     # === Reminder helpers ===
     async def send_monday_reminder(self) -> None:
         log.info("league reminder fired", extra={"weekday": "monday"})
-        channel = await self._resolve_channel(self._parse_int_env("LEAGUES_REMINDER_THREAD_ID"))
+        channel = await self._resolve_channel(self._parse_int_config("LEAGUES_REMINDER_THREAD_ID"))
         if channel is None:
             log.warning("league reminder skipped", extra={"weekday": "monday", "reason": "reminder_thread_missing"})
             return
@@ -608,7 +611,7 @@ class LeaguesCog(commands.Cog):
             if values.get("season_key") == season_key and values.get("week_key") == week_key:
                 existing = {"tab": tab_name, "worksheet": worksheet, "header_map": header_map, "row_number": row_number, "values": values}
                 break
-        channel = await self._resolve_channel(self._parse_int_env("LEAGUES_REMINDER_THREAD_ID"))
+        channel = await self._resolve_channel(self._parse_int_config("LEAGUES_REMINDER_THREAD_ID"))
         if channel is None:
             log.warning("league approval prompt skipped", extra={"reason": "reminder_thread_missing"})
             return
@@ -658,7 +661,7 @@ class LeaguesCog(commands.Cog):
         *,
         trigger: str,
         status_channel: discord.abc.Messageable | None,
-        week_key: str | None = None,
+        week_key: str,
     ) -> bool:
         async with self._job_lock:
             return await self._run_leagues_job(
@@ -670,9 +673,9 @@ class LeaguesCog(commands.Cog):
         *,
         trigger: str,
         status_channel: discord.abc.Messageable | None,
-        week_key: str | None = None,
+        week_key: str,
     ) -> bool:
-        sheet_id = os.getenv("LEAGUES_SHEET_ID", "").strip()
+        sheet_id = str(cfg.get("LEAGUES_SHEET_ID", "") or "").strip()
         if not sheet_id:
             await self._post_status(
                 status_channel,
@@ -682,11 +685,11 @@ class LeaguesCog(commands.Cog):
             return False
 
         channel_ids = {
-            "legendary": self._parse_int_env("LEAGUES_LEGENDARY_THREAD_ID"),
-            "rising": self._parse_int_env("LEAGUES_RISING_THREAD_ID"),
-            "storm": self._parse_int_env("LEAGUES_STORMFORGED_THREAD_ID"),
+            "legendary": self._parse_int_config("LEAGUES_LEGENDARY_THREAD_ID"),
+            "rising": self._parse_int_config("LEAGUES_RISING_THREAD_ID"),
+            "storm": self._parse_int_config("LEAGUES_STORMFORGED_THREAD_ID"),
         }
-        announcement_id = self._parse_int_env("ANNOUNCEMENT_CHANNEL_ID")
+        announcement_id = self._parse_int_config("ANNOUNCEMENT_CHANNEL_ID")
 
         targets: dict[str, discord.abc.Messageable] = {}
         missing_targets: list[str] = []
@@ -738,11 +741,7 @@ class LeaguesCog(commands.Cog):
             )
             return False
 
-        capture_week = (
-            week_key
-            or getattr(self, "_approval_capture_week_key", None)
-            or self._current_week_key()
-        )
+        capture_week = week_key
         try:
             history_summary = await capture_weekly_history(
                 sheet_id,
@@ -989,7 +988,7 @@ class LeaguesCog(commands.Cog):
         return discord.File(fp=io.BytesIO(png_bytes), filename=filename)
 
     def _league_role_mention(self) -> str:
-        role_id = self._parse_int_env("C1C_LEAGUE_ROLE_ID")
+        role_id = self._parse_int_config("C1C_LEAGUE_ROLE_ID")
         return f"<@&{role_id}>" if role_id else "@C1CLeague"
 
     def _build_announcement(
