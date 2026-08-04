@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 from urllib.parse import urlparse
 
@@ -13,9 +15,9 @@ from modules.common.embeds import get_embed_colour
 from shared.sheets import async_adapter
 from shared.sheets import core as sheets_core
 from shared.sheets import recruitment as recruitment_sheet
+from shared.config import get_recruitment_sheet_id
 from shared.theme import colors
 
-FEATURE = "serverrules"
 MARKER_PREFIX = "\u2063\u200bserverrules:"
 REQUIRED_HEADERS = {
     "message_key",
@@ -35,6 +37,15 @@ MAX_TITLE = 256
 MAX_DESCRIPTION = 4096
 MAX_FOOTER = 2048
 MAX_TOTAL = 6000
+MIN_SNOWFLAKE_LEN = 17
+MAX_SNOWFLAKE_LEN = 20
+MAX_UINT64 = 2**64 - 1
+
+
+class FetchState(Enum):
+    FOUND = "found"
+    MISSING = "missing"
+    UNKNOWN = "unknown"
 
 
 @dataclass
@@ -82,6 +93,13 @@ def is_feature_message(message: Any, keys: set[str] | None = None) -> bool:
     return any(content.startswith(marker_for(key)) for key in keys)
 
 
+def _mirralith_sheet_id() -> str:
+    sheet_id = get_recruitment_sheet_id().strip()
+    if not sheet_id:
+        raise RuntimeError("RECRUITMENT_SHEET_ID not set for Mirralith spreadsheet")
+    return sheet_id
+
+
 def _a1_col(index: int) -> str:
     result = ""
     while index >= 0:
@@ -105,22 +123,25 @@ def parse_enabled(value: Any) -> bool | None:
 
 
 def parse_colour(value: Any) -> discord.Colour | None:
-    text = _text(value)
-    if not text:
+    text = _text(value).lower()
+    if not text or text in {"community", "c1c_blue", "blue"}:
         return get_embed_colour("community")
-    lowered = text.lower()
-    if lowered in {"community", "blue", "c1c_blue"}:
+    if text == "admin":
+        return get_embed_colour("admin")
+    if text == "theme_c1c_blue":
         return colors.c1c_blue
-    if lowered == "admin":
+    if text == "theme_admin":
         return colors.admin
-    if text.startswith("#"):
-        text = text[1:]
-    if text.lower().startswith("0x"):
-        text = text[2:]
-    try:
-        return discord.Colour(int(text, 16))
-    except ValueError:
-        return None
+    return None
+
+
+def valid_snowflake(value: str) -> bool:
+    if not value or not value.isdecimal():
+        return False
+    if not MIN_SNOWFLAKE_LEN <= len(value) <= MAX_SNOWFLAKE_LEN:
+        return False
+    number = int(value)
+    return 0 < number <= MAX_UINT64
 
 
 def _valid_url(value: str) -> bool:
@@ -136,7 +157,7 @@ def build_embed(row: Row) -> tuple[discord.Embed | None, list[str]]:
     thumbnail = row.data.get("thumbnail_url", "").strip()
     colour = parse_colour(row.data.get("colour", ""))
     if colour is None:
-        errors.append("colour is not parseable")
+        errors.append("colour must be an approved palette name")
     if not title and not description:
         errors.append("embed needs a title or description")
     if len(title) > MAX_TITLE:
@@ -151,9 +172,10 @@ def build_embed(row: Row) -> tuple[discord.Embed | None, list[str]]:
         errors.append("embed total text exceeds Discord limit")
     if errors:
         return None, errors
-    embed = discord.Embed(
-        title=title or None, description=description or None, colour=colour
-    )
+    embed = discord.Embed()
+    embed.title = title or None
+    embed.description = description or None
+    embed.colour = colour
     if footer:
         embed.set_footer(text=footer)
     if thumbnail:
@@ -161,39 +183,37 @@ def build_embed(row: Row) -> tuple[discord.Embed | None, list[str]]:
     return embed, []
 
 
-async def load_rows() -> (
-    tuple[str, list[list[Any]], dict[str, int], list[Row], list[str]]
-):
+async def load_rows() -> tuple[str, dict[str, int], list[Row], list[str]]:
     tab = await recruitment_sheet.get_config_value_async(
         "SERVER_RULES_FAQ_TAB", None, force=True
     )
     if not tab:
-        return "", [], {}, [], ["Config key SERVER_RULES_FAQ_TAB is missing"]
-    sheet_id = recruitment_sheet.get_recruitment_sheet_id()
-    matrix = await sheets_core.afetch_values(sheet_id, tab)
+        return "", {}, [], ["Config key SERVER_RULES_FAQ_TAB is missing"]
+    matrix = await sheets_core.afetch_values(_mirralith_sheet_id(), tab)
     if not matrix:
-        return tab, matrix, {}, [], ["sheet tab has no header row"]
+        return tab, {}, [], ["sheet tab has no header row"]
     headers = [_text(value).lower() for value in matrix[0]]
     header_map = {header: idx for idx, header in enumerate(headers) if header}
     missing = sorted(REQUIRED_HEADERS - set(header_map))
     if missing:
-        return tab, matrix, header_map, [], ["missing headers: " + ", ".join(missing)]
+        return tab, header_map, [], ["missing headers: " + ", ".join(missing)]
     rows: list[Row] = []
     for offset, values in enumerate(matrix[1:], start=2):
         data = {
             name: _text(values[idx]) if idx < len(values) else ""
             for name, idx in header_map.items()
         }
-        enabled = parse_enabled(data.get("enabled"))
-        rows.append(Row(offset, list(values), data, bool(enabled)))
-    return tab, matrix, header_map, rows, []
+        rows.append(
+            Row(offset, list(values), data, parse_enabled(data.get("enabled")) is True)
+        )
+    return tab, header_map, rows, []
 
 
 async def preflight(
     bot: discord.Client,
 ) -> tuple[Any | None, str, dict[str, int], list[Row], Summary | None]:
     summary = Summary()
-    tab, _matrix, header_map, rows, load_errors = await load_rows()
+    tab, header_map, rows, load_errors = await load_rows()
     if load_errors:
         for err in load_errors:
             summary.fail("config", err)
@@ -210,53 +230,90 @@ async def preflight(
             "SERVER_RULES_FAQ_CHANNEL_ID must resolve to a text channel or thread",
         )
         target = None
-    seen: set[str] = set()
+    seen_keys: set[str] = set()
+    enabled_orders: dict[float, str] = {}
     for row in rows:
         key = row.key
+        label = key or f"row {row.row_number}"
         if not key:
-            summary.fail(f"row {row.row_number}", "message_key is required")
-        elif key in seen:
+            summary.fail(label, "message_key is required")
+        elif key in seen_keys:
             summary.fail(key, "message_key must be unique")
-        seen.add(key)
-        enabled_raw = row.data.get("enabled")
-        if parse_enabled(enabled_raw) is None:
-            summary.fail(key, "enabled value is not recognised")
-        try:
-            row.order = float(row.data.get("order", ""))
-        except ValueError:
-            summary.fail(key, "order must be numeric")
-        if row.message_id and not row.message_id.isdigit():
-            summary.fail(key, "message_id must be blank or a Discord snowflake")
+        seen_keys.add(key)
+        if parse_enabled(row.data.get("enabled")) is None:
+            summary.fail(label, "enabled value is not recognised")
+        if row.message_id and not valid_snowflake(row.message_id):
+            summary.fail(label, "message_id must be blank or a valid Discord snowflake")
         if row.enabled:
+            order_text = row.data.get("order", "")
+            try:
+                order = float(order_text)
+            except ValueError:
+                summary.fail(label, "enabled rows require numeric order")
+            else:
+                if not math.isfinite(order):
+                    summary.fail(label, "enabled rows require finite order")
+                elif order in enabled_orders:
+                    summary.fail(
+                        label, f"enabled order duplicates {enabled_orders[order]}"
+                    )
+                else:
+                    row.order = order
+                    enabled_orders[order] = label
             row.embed, errors = build_embed(row)
             for err in errors:
-                summary.fail(key, err)
+                summary.fail(label, err)
     return target, tab, header_map, rows, summary if summary.failures else None
 
 
 async def _write_message_id(
     tab: str, header_map: dict[str, int], row: Row, message_id: str
 ) -> None:
-    sheet_id = recruitment_sheet.get_recruitment_sheet_id()
-    ws = await sheets_core.aget_worksheet(sheet_id, tab)
+    ws = await sheets_core.aget_worksheet(_mirralith_sheet_id(), tab)
     col = _a1_col(header_map["message_id"])
     await async_adapter.aworksheet_values_update(
         ws, f"{col}{row.row_number}", [[message_id]]
     )
 
 
-async def _fetch(target: Any, message_id: str) -> Any | None:
-    if not message_id or not message_id.isdigit():
-        return None
+async def _write_ids(
+    tab: str, header_map: dict[str, int], updates: list[tuple[Row, str]]
+) -> None:
+    for row, message_id in updates:
+        await _write_message_id(tab, header_map, row, message_id)
+
+
+async def _restore_ids(
+    tab: str, header_map: dict[str, int], snapshot: dict[int, str]
+) -> None:
+    rows = [Row(row_number, [], {}, False) for row_number in snapshot]
+    await _write_ids(
+        tab, header_map, [(row, value) for row, value in zip(rows, snapshot.values())]
+    )
+
+
+async def _fetch(target: Any, message_id: str) -> tuple[FetchState, Any | None, str]:
+    if not message_id or not valid_snowflake(message_id):
+        return FetchState.MISSING, None, "message_id is blank or invalid"
     try:
-        return await target.fetch_message(int(message_id))
+        return FetchState.FOUND, await target.fetch_message(int(message_id)), ""
+    except discord.NotFound:
+        return FetchState.MISSING, None, "stored message was not found"
+    except discord.Forbidden:
+        return FetchState.UNKNOWN, None, "missing permission to fetch stored message"
+    except (TimeoutError, OSError):
+        return FetchState.UNKNOWN, None, "temporary error while fetching stored message"
+    except discord.HTTPException:
+        return FetchState.UNKNOWN, None, "Discord error while fetching stored message"
     except Exception:
-        return None
+        return (
+            FetchState.UNKNOWN,
+            None,
+            "unexpected error while fetching stored message",
+        )
 
 
-async def _iter_feature_messages(
-    target: Any, bot_id: int | None, keys: set[str] | None = None
-) -> list[Any]:
+async def _iter_feature_messages(target: Any, bot_id: int | None) -> list[Any]:
     history = getattr(target, "history", None)
     if not callable(history):
         return []
@@ -267,9 +324,17 @@ async def _iter_feature_messages(
             and getattr(getattr(message, "author", None), "id", None) != bot_id
         ):
             continue
-        if is_feature_message(message, keys):
+        if is_feature_message(message):
             found.append(message)
     return found
+
+
+async def _delete_new(messages: list[Any]) -> None:
+    for sent in messages:
+        try:
+            await sent.delete()
+        except Exception:
+            pass
 
 
 async def publish(bot: discord.Client) -> tuple[Summary, Any | None]:
@@ -278,47 +343,51 @@ async def publish(bot: discord.Client) -> tuple[Summary, Any | None]:
         return errors, target
     assert target is not None
     summary = Summary()
+    snapshot = {row.row_number: row.message_id for row in rows}
     enabled_rows = sorted(
         [r for r in rows if r.enabled], key=lambda r: (r.order, r.key)
     )
-    old_ids = {r.message_id for r in rows if r.message_id}
     new_pairs: list[tuple[Row, Any]] = []
     try:
         for row in enabled_rows:
-            sent = await target.send(content=marker_for(row.key), embed=row.embed)
-            new_pairs.append((row, sent))
+            new_pairs.append(
+                (row, await target.send(content=marker_for(row.key), embed=row.embed))
+            )
     except Exception:
         summary.fail(row.key, "Discord send failed during rebuild")
-        for _row, sent in new_pairs:
-            try:
-                await sent.delete()
-            except Exception:
-                pass
+        await _delete_new([msg for _row, msg in new_pairs])
         return summary, target
+    updates = [(row, str(msg.id)) for row, msg in new_pairs]
+    updates.extend((row, "") for row in rows if not row.enabled and row.message_id)
     try:
-        for row, sent in new_pairs:
-            await _write_message_id(tab, header_map, row, str(sent.id))
-            summary.created += 1
+        await _write_ids(tab, header_map, updates)
+        summary.created = len(new_pairs)
     except Exception:
-        summary.fail(row.key, "Sheets message_id update failed during rebuild")
-        for _row, sent in new_pairs:
-            try:
-                await sent.delete()
-            except Exception:
-                pass
+        summary.fail(
+            "sheet",
+            "message_id update failed during rebuild; original IDs were restored where possible",
+        )
+        try:
+            await _restore_ids(tab, header_map, snapshot)
+        except Exception:
+            summary.fail("sheet", "failed to restore original message_id values")
+        await _delete_new([msg for _row, msg in new_pairs])
         return summary, target
+    for row in rows:
+        if not row.enabled and row.message_id:
+            summary.removed += 0
+    new_ids = {str(getattr(msg, "id", "")) for _row, msg in new_pairs}
     bot_id = getattr(getattr(bot, "user", None), "id", None)
     for msg in await _iter_feature_messages(target, bot_id):
-        if str(getattr(msg, "id", "")) in {
-            str(getattr(m, "id", "")) for _r, m in new_pairs
-        }:
+        if str(getattr(msg, "id", "")) in new_ids:
             continue
-        if str(getattr(msg, "id", "")) in old_ids or is_feature_message(msg):
-            try:
-                await msg.delete()
-                summary.removed += 1
-            except Exception:
-                summary.fail("old messages", "failed to remove old managed message")
+        try:
+            await msg.delete()
+            summary.removed += 1
+        except Exception:
+            summary.fail(
+                "old messages", "failed to remove old managed message after rebuild"
+            )
     return summary, target
 
 
@@ -329,25 +398,73 @@ async def refresh(bot: discord.Client) -> tuple[Summary, Any | None]:
     assert target is not None
     summary = Summary()
     for row in rows:
-        msg = await _fetch(target, row.message_id)
-        if row.enabled:
-            if msg is not None and is_feature_message(msg, {row.key}):
-                await msg.edit(content=marker_for(row.key), embed=row.embed)
-                summary.refreshed += 1
+        try:
+            state, msg, reason = await _fetch(target, row.message_id)
+            if row.enabled:
+                if state is FetchState.UNKNOWN:
+                    summary.fail(row.key, reason)
+                    continue
+                if (
+                    state is FetchState.FOUND
+                    and msg is not None
+                    and is_feature_message(msg, {row.key})
+                ):
+                    try:
+                        await msg.edit(content=marker_for(row.key), embed=row.embed)
+                    except Exception:
+                        summary.fail(row.key, "failed to edit stored message")
+                    else:
+                        summary.refreshed += 1
+                    continue
+                sent = None
+                try:
+                    sent = await target.send(
+                        content=marker_for(row.key), embed=row.embed
+                    )
+                    await _write_message_id(tab, header_map, row, str(sent.id))
+                except Exception:
+                    if sent is not None:
+                        try:
+                            await sent.delete()
+                        except Exception:
+                            pass
+                    summary.fail(
+                        row.key, "failed to create replacement or store its message_id"
+                    )
+                else:
+                    summary.created += 1
             else:
-                sent = await target.send(content=marker_for(row.key), embed=row.embed)
-                await _write_message_id(tab, header_map, row, str(sent.id))
-                summary.created += 1
-        else:
-            if msg is not None and is_feature_message(msg, {row.key}):
-                await msg.delete()
-                await _write_message_id(tab, header_map, row, "")
-                summary.removed += 1
-            elif row.message_id:
-                await _write_message_id(tab, header_map, row, "")
-                summary.skipped += 1
-            else:
-                summary.skipped += 1
+                if not row.message_id:
+                    summary.skipped += 1
+                elif state is FetchState.UNKNOWN:
+                    summary.fail(row.key, reason)
+                elif state is FetchState.MISSING:
+                    try:
+                        await _write_message_id(tab, header_map, row, "")
+                    except Exception:
+                        summary.fail(
+                            row.key,
+                            "stored message was missing but message_id could not be cleared",
+                        )
+                    else:
+                        summary.skipped += 1
+                elif msg is not None and is_feature_message(msg, {row.key}):
+                    try:
+                        await msg.delete()
+                        await _write_message_id(tab, header_map, row, "")
+                    except Exception:
+                        summary.fail(
+                            row.key,
+                            "failed to delete disabled message or clear message_id",
+                        )
+                    else:
+                        summary.removed += 1
+                else:
+                    summary.fail(
+                        row.key, "stored message is not managed by server rules"
+                    )
+        except Exception:
+            summary.fail(row.key, "unexpected row processing failure")
     return summary, target
 
 
@@ -361,9 +478,9 @@ def result_embed(action: str, summary: Summary) -> discord.Embed:
     embed.add_field(name="Skipped", value=str(summary.skipped), inline=True)
     embed.add_field(name="Failed", value=str(summary.failed), inline=True)
     if summary.failures:
-        details = []
-        for key, reasons in summary.failures.items():
-            details.append(f"{key}: {'; '.join(reasons)}")
+        details = [
+            f"{key}: {'; '.join(reasons)}" for key, reasons in summary.failures.items()
+        ]
         embed.add_field(
             name="Failure details", value="\n".join(details)[:1024], inline=False
         )

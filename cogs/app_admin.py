@@ -15,7 +15,7 @@ from c1c_coreops.rbac import admin_only
 from modules.common import feature_flags, runtime as runtime_helpers
 from modules.common.discord_utils import resolve_message_target
 from modules.common.logs import channel_label
-from modules.ops import cluster_role_map, server_map, server_rules
+from modules.ops import cluster_role_map, server_map
 from modules.housekeeping import guides_help_index
 from shared.config import get_who_we_are_channel_id
 from shared.sheets import recruitment as recruitment_sheet
@@ -595,52 +595,6 @@ class AppAdmin(commands.Cog):
             f"• roles={render.role_count} • unassigned_roles={render.unassigned_roles} "
             f"• missing_roles={render.missing_roles} • empty_roles={render.empty_roles} "
             f"• category_messages={len(jump_entries)} • target_channel={target_label}"
-        )
-
-    @tier("admin")
-    @help_metadata(
-        function_group="operational",
-        section="utilities",
-        access_tier="admin",
-    )
-    @commands.group(name="serverrules", invoke_without_command=True)
-    @admin_only()
-    async def serverrules(self, ctx: commands.Context) -> None:
-        embed = discord.Embed(
-            title="Server rules",
-            description="Use `!serverrules publish` or `!serverrules refresh`.",
-            colour=discord.Colour.blurple(),
-        )
-        await ctx.reply(embed=embed, mention_author=False)
-
-    @serverrules.command(name="publish")
-    @admin_only()
-    async def serverrules_publish(self, ctx: commands.Context) -> None:
-        summary, target = await server_rules.publish(self.bot)
-        await ctx.reply(
-            embed=server_rules.result_embed("publish", summary), mention_author=False
-        )
-        await runtime_helpers.send_log_message(
-            "📘 **Server rules** — "
-            f"cmd=serverrules publish • admin={getattr(getattr(ctx, 'author', None), 'id', 'unknown')} "
-            f"• destination={channel_label(getattr(target, 'guild', getattr(ctx, 'guild', None)), getattr(target, 'id', None))} "
-            f"• created={summary.created} • refreshed={summary.refreshed} • removed={summary.removed} "
-            f"• skipped={summary.skipped} • failed={summary.failed}"
-        )
-
-    @serverrules.command(name="refresh")
-    @admin_only()
-    async def serverrules_refresh(self, ctx: commands.Context) -> None:
-        summary, target = await server_rules.refresh(self.bot)
-        await ctx.reply(
-            embed=server_rules.result_embed("refresh", summary), mention_author=False
-        )
-        await runtime_helpers.send_log_message(
-            "📘 **Server rules** — "
-            f"cmd=serverrules refresh • admin={getattr(getattr(ctx, 'author', None), 'id', 'unknown')} "
-            f"• destination={channel_label(getattr(target, 'guild', getattr(ctx, 'guild', None)), getattr(target, 'id', None))} "
-            f"• created={summary.created} • refreshed={summary.refreshed} • removed={summary.removed} "
-            f"• skipped={summary.skipped} • failed={summary.failed}"
         )
 
 
