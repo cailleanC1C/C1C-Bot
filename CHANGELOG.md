@@ -179,6 +179,7 @@
 - Added parser and command coverage for the Daily Recruiter Update utilities.
 ## Unreleased / Next
 
+- Fixed Woadkeeper command-error noise by silently ignoring unregistered commands that the cached shared help registry assigns only to other bots, while preserving reporting for unknown, ambiguous, unavailable, and Woadkeeper-owned cases.
 - Docs: Added EPIC and ADR for Phase 6 (Daily Recruiter Update v1).
 - Audit: Published docs hygiene findings at `AUDIT/20251030_DOCS_CLEANUP/report.md`.
 
@@ -386,4 +387,4 @@
 - Sheet tab names moved out of env into each Sheet's **Config** tab.
 
 ---
-Doc last updated: 2025-12-02 (v0.9.8.2)
+Doc last updated: 2026-08-04 (v0.9.8.2)

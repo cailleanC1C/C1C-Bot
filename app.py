@@ -23,6 +23,7 @@ from shared.logfmt import LogTemplates, guild_label, user_label, human_reason
 from shared.redaction import sanitize_text
 from shared import health as healthmod
 from shared import socket_heartbeat as hb
+from shared.sheets import help_commands
 from modules.common.runtime import Runtime, StartupPhaseError, scheduler_report_lines
 from modules.common import keepalive
 from modules.coreops import ready as core_ready
@@ -172,6 +173,7 @@ INTENTS.message_content = True
 INTENTS.members = True
 
 BANG_PREFIX = "!"
+WOADKEEPER_HELP_BOT_KEY = "woadkeeper"
 COREOPS_SETTINGS = load_coreops_settings()
 COREOPS_COMMANDS = tuple(COREOPS_SETTINGS.admin_bang_base_commands)
 COREOPS_ADMIN_ALLOWLIST = {
@@ -691,8 +693,38 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 
+async def _is_known_external_command(ctx: commands.Context) -> bool:
+    invoked_with = help_commands.normalize_lookup(getattr(ctx, "invoked_with", ""))
+    root_command = invoked_with.split(" ", 1)[0]
+    if not root_command:
+        return False
+
+    try:
+        rows = await help_commands.get_rows()
+    except Exception:
+        log.warning(
+            "shared help lookup failed while classifying unknown command",
+            exc_info=True,
+        )
+        return False
+    if rows is None:
+        return False
+
+    matches = help_commands.find_rows(rows, root_command)
+    if not matches:
+        return False
+
+    owners = tuple(row.bot_key.strip().casefold() for row in matches)
+    return all(owner and owner != WOADKEEPER_HELP_BOT_KEY for owner in owners)
+
+
 @bot.event
 async def on_command_error(ctx: commands.Context, error: Exception):
+    if isinstance(error, commands.CommandNotFound) and await _is_known_external_command(
+        ctx
+    ):
+        return
+
     log.warning(
         "cmd error: cmd=%s user=%s err=%r",
         getattr(ctx.command, "name", None),

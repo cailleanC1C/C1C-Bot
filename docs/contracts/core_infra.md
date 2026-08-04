@@ -21,6 +21,7 @@ See [`docs/ops/Config.md`](../ops/Config.md#environment-keys) for full key defin
 - `FeatureToggles` worksheet schema: headers `feature_name`, `enabled` (case-insensitive).
 - Only `TRUE` enables a feature; missing tabs/rows fail closed. See [README](../../README.md#feature-toggles)
   and [Ops Config](../ops/Config.md#feature-toggles-worksheet) for operator workflow.
+- Cross-bot command ownership is read from enabled rows in the existing cached shared help registry selected by `HELP_COMMANDS_TAB`.
 
 ## Intents / Permissions
 - Dev Portal: enable **Server Members Intent** and **Message Content**.
@@ -46,6 +47,7 @@ See [`docs/ops/Config.md`](../ops/Config.md#environment-keys) for full key defin
 - Supported: `!ops`, `!ops␣`, `ops`, `ops␣`, `@mention`.
 - Admin bang shortcuts: `!env`, `!reload`, `!health`, `!digest`, `!checksheet`, `!config`, `!help`, `!ping`, `!refresh all` (Admin role only).
 - `!env` returns a four-page admin overview (Overview, Channels, Roles, Sheets & Config) and surfaces warnings for missing/not-found config on Page 1.
+- When a prefixed command is not registered in Woadkeeper, it is ignored only if every matching shared-help row has a nonblank owner other than `woadkeeper`. Unknown commands, ambiguous ownership, unavailable help data, and Woadkeeper-owned registry mismatches retain normal error reporting.
 - No bare-word shortcuts.
 
 ## CoreOps v1.5 contract
@@ -72,7 +74,7 @@ See [`docs/ops/Config.md`](../ops/Config.md#environment-keys) for full key defin
 ## Logging
 - Level via `LOG_LEVEL` (default INFO).
 - Startup confirms parsed role IDs.
-- Logs heartbeat/watchdog decisions and command errors.
+- Logs heartbeat/watchdog decisions and command errors, excluding commands that the shared help registry unambiguously assigns to other bots.
 
 ## CI/CD
 - GitHub Actions deploys queue sequentially; only one run per branch can execute at a time.
@@ -95,4 +97,4 @@ See [`docs/ops/Config.md`](../ops/Config.md#environment-keys) for full key defin
 - Embed footer standardized: `Bot vX.Y.Z · CoreOps vA.B.C` (Discord timestamp replaces
   inline timezone text).
 
-Doc last updated: 2025-12-03 (v0.9.8.2)
+Doc last updated: 2026-08-04 (v0.9.8.2)

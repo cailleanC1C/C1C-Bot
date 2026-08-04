@@ -70,6 +70,25 @@ def test_lookup_normalizes_leading_bang_and_access_filtering() -> None:
     assert len(help_commands.visible_rows(rows, staff=True, admin=True)) == 2
 
 
+def test_find_rows_returns_every_matching_owner() -> None:
+    rows = help_commands.parse_rows(
+        [
+            HEADERS,
+            _row(command="!responder", command_key="responder", bot_key="reminder"),
+            _row(
+                command="!responder",
+                command_key="responder",
+                bot_key="achievements",
+            ),
+            _row(command="!other", command_key="other", bot_key="woadkeeper"),
+        ]
+    )
+
+    matches = help_commands.find_rows(rows, "!responder")
+
+    assert [row.bot_key for row in matches] == ["reminder", "achievements"]
+
+
 def test_recruiter_only_visibility_uses_separate_access() -> None:
     rows = help_commands.parse_rows(
         [
