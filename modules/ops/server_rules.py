@@ -113,6 +113,27 @@ def _text(value: Any) -> str:
     return "" if value is None else str(value).strip()
 
 
+PLACEHOLDER_FIELDS = {
+    "message_key",
+    "section",
+    "order",
+    "title",
+    "description",
+    "colour",
+    "thumbnail_url",
+    "footer",
+    "message_id",
+    "review_status",
+    "review_notes",
+}
+
+
+def _is_empty_placeholder(data: dict[str, str]) -> bool:
+    return parse_enabled(data.get("enabled")) is False and all(
+        not data.get(field, "").strip() for field in PLACEHOLDER_FIELDS
+    )
+
+
 def parse_enabled(value: Any) -> bool | None:
     text = _text(value).lower()
     if text in TRUE_VALUES:
@@ -126,6 +147,8 @@ def parse_colour(value: Any) -> discord.Colour | None:
     text = _text(value).lower()
     if not text or text in {"community", "c1c_blue", "blue"}:
         return get_embed_colour("community")
+    if text in {"recruitment", "green"}:
+        return get_embed_colour("recruitment")
     if text == "admin":
         return get_embed_colour("admin")
     if text == "theme_c1c_blue":
@@ -203,6 +226,8 @@ async def load_rows() -> tuple[str, dict[str, int], list[Row], list[str]]:
             name: _text(values[idx]) if idx < len(values) else ""
             for name, idx in header_map.items()
         }
+        if _is_empty_placeholder(data):
+            continue
         rows.append(
             Row(offset, list(values), data, parse_enabled(data.get("enabled")) is True)
         )
@@ -266,28 +291,51 @@ async def preflight(
     return target, tab, header_map, rows, summary if summary.failures else None
 
 
+async def _worksheet(tab: str) -> Any:
+    return await sheets_core.aget_worksheet(_mirralith_sheet_id(), tab)
+
+
+def _message_id_range(header_map: dict[str, int], row_number: int) -> str:
+    return f"{_a1_col(header_map['message_id'])}{row_number}"
+
+
 async def _write_message_id(
     tab: str, header_map: dict[str, int], row: Row, message_id: str
 ) -> None:
-    ws = await sheets_core.aget_worksheet(_mirralith_sheet_id(), tab)
-    col = _a1_col(header_map["message_id"])
+    ws = await _worksheet(tab)
     await async_adapter.aworksheet_values_update(
-        ws, f"{col}{row.row_number}", [[message_id]]
+        ws, _message_id_range(header_map, row.row_number), [[message_id]]
     )
 
 
-async def _write_ids(
+def _batch_payload(
+    header_map: dict[str, int], updates: list[tuple[Row, str]]
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "range": _message_id_range(header_map, row.row_number),
+            "values": [[message_id]],
+        }
+        for row, message_id in updates
+    ]
+
+
+async def _write_ids_batch(
     tab: str, header_map: dict[str, int], updates: list[tuple[Row, str]]
 ) -> None:
-    for row, message_id in updates:
-        await _write_message_id(tab, header_map, row, message_id)
+    if not updates:
+        return
+    ws = await _worksheet(tab)
+    await sheets_core.acall_with_backoff(
+        ws.batch_update, _batch_payload(header_map, updates)
+    )
 
 
-async def _restore_ids(
+async def _restore_ids_batch(
     tab: str, header_map: dict[str, int], snapshot: dict[int, str]
 ) -> None:
     rows = [Row(row_number, [], {}, False) for row_number in snapshot]
-    await _write_ids(
+    await _write_ids_batch(
         tab, header_map, [(row, value) for row, value in zip(rows, snapshot.values())]
     )
 
@@ -360,7 +408,7 @@ async def publish(bot: discord.Client) -> tuple[Summary, Any | None]:
     updates = [(row, str(msg.id)) for row, msg in new_pairs]
     updates.extend((row, "") for row in rows if not row.enabled and row.message_id)
     try:
-        await _write_ids(tab, header_map, updates)
+        await _write_ids_batch(tab, header_map, updates)
         summary.created = len(new_pairs)
     except Exception:
         summary.fail(
@@ -368,7 +416,7 @@ async def publish(bot: discord.Client) -> tuple[Summary, Any | None]:
             "message_id update failed during rebuild; original IDs were restored where possible",
         )
         try:
-            await _restore_ids(tab, header_map, snapshot)
+            await _restore_ids_batch(tab, header_map, snapshot)
         except Exception:
             summary.fail("sheet", "failed to restore original message_id values")
         await _delete_new([msg for _row, msg in new_pairs])

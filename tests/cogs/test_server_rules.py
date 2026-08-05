@@ -58,6 +58,15 @@ class Bot:
         return self.chan if id == self.chan.id else None
 
 
+class Ws:
+    def __init__(self, batch_writes):
+        self.batch_writes = batch_writes
+
+    def batch_update(self, payload):
+        self.batch_writes.append(payload)
+        return {"updated": len(payload)}
+
+
 async def fake_load(monkeypatch, rows, chan):
     async def cfg(key, default=None, force=False):
         return {
@@ -74,15 +83,21 @@ async def fake_load(monkeypatch, rows, chan):
         server_rules, "resolve_message_target", AsyncMock(return_value=chan)
     )
     writes = []
+    batch_writes = []
+    ws = Ws(batch_writes)
     monkeypatch.setattr(
-        server_rules.sheets_core, "aget_worksheet", AsyncMock(return_value=object())
+        server_rules.sheets_core, "aget_worksheet", AsyncMock(return_value=ws)
     )
 
     async def write(ws, rng, vals, timeout=None):
         writes.append((rng, vals))
 
+    async def acall(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
     monkeypatch.setattr(server_rules.async_adapter, "aworksheet_values_update", write)
-    return writes
+    monkeypatch.setattr(server_rules.sheets_core, "acall_with_backoff", acall)
+    return {"single": writes, "batch": batch_writes}
 
 
 def sheet(*body):
@@ -146,7 +161,10 @@ def test_publish_sorts_and_writes_message_ids_header_order_independent(monkeypat
         assert summary.created == 2
         assert [m.kw["embed"].title for m in chan.sent] == ["Title A", "Title B"]
         assert chan.sent[0].kw["embed"].thumbnail.url == "https://e.test/t.png"
-        assert writes == [("B3", [["100"]]), ("B2", [["101"]])]
+        assert writes["batch"] == [
+            [{"range": "B3", "values": [["100"]]}, {"range": "B2", "values": [["101"]]}]
+        ]
+        assert writes["single"] == []
 
     asyncio.run(run())
 
@@ -178,7 +196,8 @@ def test_preflight_abort_no_mutations_on_invalid_rows(monkeypatch):
         summary, _ = await server_rules.publish(Bot(chan))
         assert summary.failed >= 4
         assert chan.sent == []
-        assert writes == []
+        assert writes["single"] == []
+        assert writes["batch"] == []
 
     asyncio.run(run())
 
@@ -256,8 +275,8 @@ def test_refresh_edits_recreates_and_deletes(monkeypatch):
         assert summary.removed == 1
         assert existing.edits
         assert disabled.deleted
-        assert ("B3", [["100"]]) in writes
-        assert ("B4", [[""]]) in writes
+        assert ("B3", [["100"]]) in writes["single"]
+        assert ("B4", [[""]]) in writes["single"]
 
     asyncio.run(run())
 
@@ -403,7 +422,8 @@ def test_invalid_colour_duplicate_nonfinite_order_and_snowflake_rejected(monkeyp
         summary, _ = await server_rules.publish(Bot(chan))
         assert summary.failed >= 4
         assert chan.sent == []
-        assert writes == []
+        assert writes["single"] == []
+        assert writes["batch"] == []
 
     asyncio.run(run())
 
@@ -481,7 +501,8 @@ def test_publish_send_failure_deletes_new_and_keeps_sheet_ids(monkeypatch):
         summary, _ = await server_rules.publish(Bot(chan))
         assert summary.failed == 1
         assert chan.sent[0].deleted
-        assert writes == []
+        assert writes["single"] == []
+        assert writes["batch"] == []
 
     asyncio.run(run())
 
@@ -509,20 +530,19 @@ def test_publish_sheet_failure_restores_ids_and_deletes_new(monkeypatch):
             ),
             chan,
         )
-        writes = []
+        batch_calls = []
 
-        async def write(ws, rng, vals, timeout=None):
-            writes.append((rng, vals))
-            if vals != [["111111111111111111"]]:
+        async def acall(func, payload, **kwargs):
+            batch_calls.append(payload)
+            if payload != [{"range": "B2", "values": [["111111111111111111"]]}]:
                 raise RuntimeError("sheet down")
+            return {"restored": True}
 
-        monkeypatch.setattr(
-            server_rules.async_adapter, "aworksheet_values_update", write
-        )
+        monkeypatch.setattr(server_rules.sheets_core, "acall_with_backoff", acall)
         summary, _ = await server_rules.publish(Bot(chan))
         assert summary.failed == 1
         assert chan.sent[0].deleted
-        assert ("B2", [["111111111111111111"]]) in writes
+        assert [{"range": "B2", "values": [["111111111111111111"]]}] in batch_calls
 
     asyncio.run(run())
 
@@ -600,5 +620,153 @@ def test_refresh_replacement_write_failure_cleans_replacement(monkeypatch):
         summary, _ = await server_rules.refresh(Bot(chan))
         assert summary.failed == 1
         assert chan.sent[0].deleted
+
+    asyncio.run(run())
+
+
+def actual_sheet(*body):
+    return [
+        [
+            "message_key",
+            "section",
+            "order",
+            "enabled",
+            "title",
+            "description",
+            "colour",
+            "thumbnail_url",
+            "footer",
+            "review_status",
+            "review_notes",
+            "message_id",
+        ],
+        *body,
+    ]
+
+
+def test_trailing_false_placeholder_rows_are_ignored_with_actual_header_order(
+    monkeypatch,
+):
+    async def run():
+        chan = Chan()
+        writes = await fake_load(
+            monkeypatch,
+            actual_sheet(
+                [
+                    "rules",
+                    "rules",
+                    "1",
+                    "TRUE",
+                    "Rules",
+                    "Read <#123>",
+                    "blue",
+                    "",
+                    "",
+                    "approved",
+                    "",
+                    "",
+                ],
+                ["", "", "", "FALSE", "", "", "", "", "", "", "", ""],
+                ["", "", "", "FALSE", "", "", "", "", "", "", "", ""],
+                ["", "", "", "FALSE", "", "", "", "", "", "", "", ""],
+            ),
+            chan,
+        )
+        summary, _ = await server_rules.publish(Bot(chan))
+        assert summary.created == 1
+        assert len(chan.sent) == 1
+        assert writes["batch"] == [[{"range": "L2", "values": [["100"]]}]]
+
+    asyncio.run(run())
+
+
+def test_non_empty_malformed_false_row_is_rejected(monkeypatch):
+    async def run():
+        chan = Chan()
+        writes = await fake_load(
+            monkeypatch,
+            actual_sheet(
+                [
+                    "rules",
+                    "rules",
+                    "1",
+                    "TRUE",
+                    "Rules",
+                    "Read",
+                    "blue",
+                    "",
+                    "",
+                    "approved",
+                    "",
+                    "",
+                ],
+                [
+                    "",
+                    "faq",
+                    "",
+                    "FALSE",
+                    "",
+                    "Has data but no key",
+                    "blue",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                ],
+                ["", "", "", "FALSE", "", "", "", "", "", "", "", ""],
+            ),
+            chan,
+        )
+        summary, _ = await server_rules.publish(Bot(chan))
+        assert summary.failed >= 1
+        assert "row 3" in summary.failures
+        assert chan.sent == []
+        assert writes["batch"] == []
+
+    asyncio.run(run())
+
+
+def test_supported_colour_names_and_hex_rejection():
+    assert server_rules.parse_colour("community") == server_rules.get_embed_colour(
+        "community"
+    )
+    assert server_rules.parse_colour("blue") == server_rules.get_embed_colour(
+        "community"
+    )
+    assert server_rules.parse_colour("c1c_blue") == server_rules.get_embed_colour(
+        "community"
+    )
+    assert server_rules.parse_colour("recruitment") == server_rules.get_embed_colour(
+        "recruitment"
+    )
+    assert server_rules.parse_colour("green") == server_rules.get_embed_colour(
+        "recruitment"
+    )
+    assert server_rules.parse_colour("admin") == server_rules.get_embed_colour("admin")
+    assert server_rules.parse_colour("#00ff00") is None
+    assert server_rules.parse_colour("purple") is None
+
+
+def test_feature_enabled_invokes_publish(monkeypatch):
+    async def run():
+        chan = Chan()
+        cog = ServerRulesCog(Bot(chan))
+        ctx = type(
+            "Ctx",
+            (),
+            {"reply": AsyncMock(), "author": type("A", (), {"id": 5})(), "guild": None},
+        )()
+        monkeypatch.setattr(
+            "cogs.server_rules.feature_flags.is_enabled", lambda key: True
+        )
+        monkeypatch.setattr(
+            "cogs.server_rules.runtime_helpers.send_log_message", AsyncMock()
+        )
+        called = AsyncMock(return_value=(server_rules.Summary(created=1), chan))
+        monkeypatch.setattr(server_rules, "publish", called)
+        await cog.publish.callback(cog, ctx)
+        called.assert_awaited_once()
+        assert ctx.reply.call_args.kwargs["embed"].title == "Server rules publish"
 
     asyncio.run(run())

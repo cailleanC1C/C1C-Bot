@@ -47,7 +47,11 @@ def test_unexpected_refresh_error_clears_previous_true_values(monkeypatch) -> No
 
 
 class _Bot:
+    def __init__(self) -> None:
+        self.loaded_extensions: list[str] = []
+
     async def load_extension(self, _extension: str) -> None:
+        self.loaded_extensions.append(_extension)
         return None
 
 
@@ -180,3 +184,25 @@ def test_runtime_does_not_alert_after_successful_refresh(monkeypatch) -> None:
     messages, _ops_calls = _run_extension_load(monkeypatch, failure_reason=None)
 
     assert messages == []
+
+
+def test_runtime_loads_server_rules_as_always_extension_once(monkeypatch) -> None:
+    bot = _Bot()
+    runtime = runtime_module.Runtime(bot)  # type: ignore[arg-type]
+    ops_calls: list[str] = []
+    _patch_always_loaded_setups(monkeypatch, ops_calls=ops_calls)
+
+    async def fake_refresh() -> str | None:
+        runtime_module.shared_config.update_feature_flags_snapshot(None)
+        return None
+
+    monkeypatch.setattr(runtime, "_refresh_feature_toggles", fake_refresh)
+    monkeypatch.setattr(feature_flags, "is_enabled", lambda _key: False)
+
+    async def run() -> None:
+        await runtime.load_extensions()
+
+    asyncio.run(run())
+    assert bot.loaded_extensions.count("cogs.server_rules") == 1
+    assert bot.loaded_extensions.count("modules.coreops.cmd_cfg") == 1
+    assert ops_calls == ["modules.ops.permissions_ui"]
