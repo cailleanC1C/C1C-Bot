@@ -90,6 +90,7 @@ class MessageGroup:
     rows: list[Row]
     embeds: list[discord.Embed]
     stored_message_id: str = ""
+    marked_embeds: list[discord.Embed] = field(default_factory=list)
 
     @property
     def first_row(self) -> Row:
@@ -195,6 +196,27 @@ def _embeds_with_marker(group: MessageGroup) -> list[discord.Embed]:
         f"{embeds[0].description or ''}{hidden_marker_for(group.key)}"
     )
     return embeds
+
+
+def _validate_embed_payload(embeds: list[discord.Embed]) -> list[str]:
+    errors: list[str] = []
+    if len(embeds) > MAX_EMBEDS_PER_MESSAGE:
+        errors.append("message group exceeds Discord's 10 embed limit")
+    total = 0
+    for embed in embeds:
+        title = getattr(embed, "title", None) or ""
+        description = getattr(embed, "description", None) or ""
+        footer = getattr(getattr(embed, "footer", None), "text", None) or ""
+        if len(title) > MAX_TITLE:
+            errors.append("title exceeds Discord limit")
+        if len(description) > MAX_DESCRIPTION:
+            errors.append("description exceeds Discord limit")
+        if len(footer) > MAX_FOOTER:
+            errors.append("footer exceeds Discord limit")
+        total += _embed_text_len(embed)
+    if total > MAX_TOTAL:
+        errors.append("message group embed text exceeds Discord 6000 character limit")
+    return errors
 
 
 def _mirralith_sheet_id() -> str:
@@ -406,6 +428,7 @@ def build_groups(rows: list[Row]) -> tuple[list[MessageGroup], list[tuple[str, s
     ordered = sorted(
         [r for r in rows if r.enabled], key=lambda r: (r.order, r.row_number)
     )
+    topic_errors = _validate_topic_runs(ordered)
     grouped: dict[str, list[Row]] = {}
     for row in ordered:
         grouped.setdefault(row.key, []).append(row)
@@ -416,25 +439,37 @@ def build_groups(rows: list[Row]) -> tuple[list[MessageGroup], list[tuple[str, s
         for key, group_rows in grouped.items()
     ]
     groups.sort(key=lambda group: (group.rows[0].order, group.rows[0].row_number))
-    errors: list[tuple[str, str]] = []
+    errors: list[tuple[str, str]] = topic_errors
     for group in groups:
-        if len(group.embeds) > MAX_EMBEDS_PER_MESSAGE:
-            errors.append((group.key, "message group exceeds Discord's 10 embed limit"))
         ids = {row.message_id for row in group.rows if row.message_id}
         if len(ids) > 1:
             errors.append(
                 (group.key, "message group has multiple different stored message IDs")
             )
         group.stored_message_id = next(iter(ids), "")
-        marked = _embeds_with_marker(group) if group.embeds else []
-        if sum(_embed_text_len(embed) for embed in marked) > MAX_TOTAL:
-            errors.append(
-                (
-                    group.key,
-                    "message group embed text exceeds Discord 6000 character limit",
-                )
-            )
+        group.marked_embeds = _embeds_with_marker(group) if group.embeds else []
+        errors.extend(
+            (group.key, err) for err in _validate_embed_payload(group.marked_embeds)
+        )
     return groups, errors
+
+
+def _validate_topic_runs(rows: list[Row]) -> list[tuple[str, str]]:
+    errors: list[tuple[str, str]] = []
+    seen_closed: set[str] = set()
+    active_topic = ""
+    for row in rows:
+        topic = row.topic_key
+        if not topic:
+            continue
+        if topic == active_topic:
+            continue
+        if active_topic:
+            seen_closed.add(active_topic)
+        if topic in seen_closed:
+            errors.append((topic, "topic_key rows must be consecutive by order"))
+        active_topic = topic
+    return errors
 
 
 async def _worksheet(tab: str) -> Any:
@@ -520,6 +555,13 @@ def _is_deletable_feature_message(
     return _is_bot_authored(message, bot_id) and is_feature_message(message, keys)
 
 
+def _cleanup_keys_for_row(row: Row) -> set[str]:
+    keys = {row.key}
+    if row.topic_key:
+        keys.add(row.topic_key)
+    return keys
+
+
 async def _iter_feature_messages(target: Any, bot_id: int | None) -> list[Any]:
     history = getattr(target, "history", None)
     if not callable(history):
@@ -543,15 +585,17 @@ async def _delete_old_stored_messages(
         old_id = row.message_id
         if not old_id or old_id in new_ids or old_id in seen:
             continue
-        seen.add(old_id)
         state, msg, reason = await _fetch(target, old_id)
         if state is FetchState.MISSING:
             continue
         if state is FetchState.UNKNOWN:
             summary.fail(row.key, reason)
             continue
-        if msg is None or not _is_deletable_feature_message(msg, bot_id, {row.key}):
+        if msg is None or not _is_deletable_feature_message(
+            msg, bot_id, _cleanup_keys_for_row(row)
+        ):
             continue
+        seen.add(old_id)
         try:
             await msg.delete()
             summary.removed += 1
@@ -579,9 +623,7 @@ async def publish(bot: discord.Client) -> tuple[Summary, Any | None]:
     new_pairs: list[tuple[MessageGroup, Any]] = []
     try:
         for group in groups:
-            new_pairs.append(
-                (group, await target.send(embeds=_embeds_with_marker(group)))
-            )
+            new_pairs.append((group, await target.send(embeds=group.marked_embeds)))
     except Exception:
         summary.fail(group.key, "Discord send failed during rebuild")
         await _delete_new([msg for _group, msg in new_pairs])
@@ -644,57 +686,24 @@ async def refresh(bot: discord.Client) -> tuple[Summary, Any | None]:
         row = group.first_row
         try:
             state, msg, reason = await _fetch(target, group.stored_message_id)
-            if True:
-                if state is FetchState.UNKNOWN:
-                    summary.fail(row.key, reason)
-                    continue
-                if (
-                    state is FetchState.FOUND
-                    and msg is not None
-                    and _is_managed_message(
-                        msg, getattr(getattr(bot, "user", None), "id", None), group.key
-                    )
-                ):
-                    try:
-                        await msg.edit(content=None, embeds=_embeds_with_marker(group))
-                    except Exception:
-                        summary.fail(row.key, "failed to edit stored message")
-                    else:
-                        summary.refreshed += 1
-                    continue
-                summary.skipped += 1
-            else:
-                if not row.message_id:
-                    summary.skipped += 1
-                elif state is FetchState.UNKNOWN:
-                    summary.fail(row.key, reason)
-                elif state is FetchState.MISSING:
-                    try:
-                        await _write_message_id(tab, header_map, row, "")
-                    except Exception:
-                        summary.fail(
-                            row.key,
-                            "stored message was missing but message_id could not be cleared",
-                        )
-                    else:
-                        summary.skipped += 1
-                elif msg is not None and _is_deletable_feature_message(
-                    msg, getattr(getattr(bot, "user", None), "id", None), {row.key}
-                ):
-                    try:
-                        await msg.delete()
-                        await _write_message_id(tab, header_map, row, "")
-                    except Exception:
-                        summary.fail(
-                            row.key,
-                            "failed to delete disabled message or clear message_id",
-                        )
-                    else:
-                        summary.removed += 1
+            if state is FetchState.UNKNOWN:
+                summary.fail(row.key, reason)
+                continue
+            if (
+                state is FetchState.FOUND
+                and msg is not None
+                and _is_managed_message(
+                    msg, getattr(getattr(bot, "user", None), "id", None), group.key
+                )
+            ):
+                try:
+                    await msg.edit(content=None, embeds=group.marked_embeds)
+                except Exception:
+                    summary.fail(row.key, "failed to edit stored message")
                 else:
-                    summary.fail(
-                        row.key, "stored message is not managed by server rules"
-                    )
+                    summary.refreshed += 1
+                continue
+            summary.skipped += 1
         except Exception:
             summary.fail(row.key, "unexpected row processing failure")
     for row in rows:
