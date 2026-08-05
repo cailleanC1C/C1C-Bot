@@ -45,7 +45,7 @@ from shared.logging import get_trace_id, set_trace_id, setup_logging
 from shared.obs.events import refresh_bucket_results
 from c1c_coreops.helpers import audit_tiers, rehydrate_tiers
 from shared.web_routes import mount_emoji_pad
-from . import keepalive
+from modules.common import keepalive
 
 import modules.onboarding as onboarding_pkg
 from modules.community import COMMUNITY_EXTENSIONS
@@ -134,7 +134,7 @@ async def create_app(*, runtime: "Runtime | None" = None) -> web.Application:
             "ok": True,
             "bot": get_bot_name(),
             "env": get_env_name(),
-            "version": os.getenv("BOT_VERSION", "dev"),
+            "version": str(shared_config.cfg.get("BOT_VERSION", "dev") or "dev"),
             "trace": get_trace_id(),
         }
         return web.json_response(payload)
@@ -150,7 +150,7 @@ async def create_app(*, runtime: "Runtime | None" = None) -> web.Application:
                 "ok": True,
                 "bot": get_bot_name(),
                 "env": get_env_name(),
-                "version": os.getenv("BOT_VERSION", "dev"),
+                "version": str(shared_config.cfg.get("BOT_VERSION", "dev") or "dev"),
             }
             return payload, True
         return await runtime._health_payload()
@@ -1231,7 +1231,7 @@ class Runtime:
             "ok": healthy,
             "bot": get_bot_name(),
             "env": get_env_name(),
-            "version": os.getenv("BOT_VERSION", "dev"),
+            "version": str(shared_config.cfg.get("BOT_VERSION", "dev") or "dev"),
             "age_seconds": round(age, 3),
             "stall_after_sec": stall,
             "keepalive_sec": keepalive,
@@ -1678,7 +1678,7 @@ class Runtime:
             self._alert_feature_toggle_failure(failure_reason, skipped_feature_modules)
 
         # === Always-on internal extensions (admin-gated debug/ops commands) ===
-        ALWAYS_EXTENSIONS = ("modules.coreops.cmd_cfg",)
+        ALWAYS_EXTENSIONS = ("modules.coreops.cmd_cfg", "cogs.server_rules")
         for ext in ALWAYS_EXTENSIONS:
             try:
                 await self.bot.load_extension(ext)
@@ -2105,7 +2105,9 @@ class Runtime:
             housekeeping_cleanup=housekeeping_cleanup,
         )
 
-        mirralith_cron = os.getenv("MIRRALITH_POST_CRON", "").strip()
+        mirralith_cron = str(
+            shared_config.cfg.get("MIRRALITH_POST_CRON", "") or ""
+        ).strip()
         if mirralith_cron and toggles.mirralith_overview_enabled:
             mirralith_job = self.scheduler.cron(
                 mirralith_cron,
