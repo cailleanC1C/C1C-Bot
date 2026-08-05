@@ -590,6 +590,7 @@ def _load_config_snapshot() -> Dict[str, object]:
         "PANEL_FIXED_THREAD_ID": _first_int(os.getenv("PANEL_FIXED_THREAD_ID")),
         "BOT_VERSION": os.getenv("BOT_VERSION", "dev"),
         "LOG_LEVEL": os.getenv("LOG_LEVEL", "INFO"),
+        "LOG_MESSAGE_CONTENT": _env_bool("LOG_MESSAGE_CONTENT", False),
         "PUBLIC_BASE_URL": (os.getenv("PUBLIC_BASE_URL") or "").strip(),
         "RENDER_EXTERNAL_URL": (os.getenv("RENDER_EXTERNAL_URL") or "").strip(),
         "EMOJI_MAX_BYTES": _int_env("EMOJI_MAX_BYTES", 2_000_000, min_value=1),
