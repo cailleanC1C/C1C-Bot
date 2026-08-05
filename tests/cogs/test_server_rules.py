@@ -12,11 +12,16 @@ class Msg:
         self.content = content
         self.author = type("A", (), {"id": author_id})()
         self.deleted = False
+        self.embeds = []
         self.edits = []
 
     async def edit(self, **kw):
         self.edits.append(kw)
         self.content = kw.get("content", self.content)
+        if "embeds" in kw:
+            self.embeds = kw["embeds"]
+        if "embed" in kw:
+            self.embeds = [kw["embed"]]
 
     async def delete(self):
         self.deleted = True
@@ -32,6 +37,7 @@ class Chan:
     async def send(self, **kw):
         msg = Msg(100 + len(self.sent), kw.get("content", ""))
         msg.kw = kw
+        msg.embeds = kw.get("embeds") or ([kw["embed"]] if "embed" in kw else [])
         self.sent.append(msg)
         self.messages[msg.id] = msg
         return msg
@@ -159,8 +165,9 @@ def test_publish_sorts_and_writes_message_ids_header_order_independent(monkeypat
         )
         summary, _ = await server_rules.publish(Bot(chan))
         assert summary.created == 2
-        assert [m.kw["embed"].title for m in chan.sent] == ["Title A", "Title B"]
-        assert chan.sent[0].kw["embed"].thumbnail.url == "https://e.test/t.png"
+        assert [m.kw["embeds"][0].title for m in chan.sent] == ["Title A", "Title B"]
+        assert chan.sent[0].kw["embeds"][0].thumbnail.url == "https://e.test/t.png"
+        assert "content" not in chan.sent[0].kw
         assert writes["batch"] == [
             [{"range": "B3", "values": [["100"]]}, {"range": "B2", "values": [["101"]]}]
         ]
@@ -271,11 +278,11 @@ def test_refresh_edits_recreates_and_deletes(monkeypatch):
         monkeypatch.setattr(server_rules, "_fetch", fake_fetch)
         summary, _ = await server_rules.refresh(Bot(chan))
         assert summary.refreshed == 1
-        assert summary.created == 1
+        assert summary.created == 0
         assert summary.removed == 1
         assert existing.edits
         assert disabled.deleted
-        assert ("B3", [["100"]]) in writes["single"]
+        assert ("B3", [["100"]]) not in writes["single"]
         assert ("B4", [[""]]) in writes["single"]
 
     asyncio.run(run())
@@ -618,8 +625,9 @@ def test_refresh_replacement_write_failure_cleans_replacement(monkeypatch):
 
         monkeypatch.setattr(server_rules, "_fetch", missing)
         summary, _ = await server_rules.refresh(Bot(chan))
-        assert summary.failed == 1
-        assert chan.sent[0].deleted
+        assert summary.failed == 0
+        assert summary.skipped == 1
+        assert chan.sent == []
 
     asyncio.run(run())
 
@@ -880,6 +888,7 @@ def test_publish_history_scan_failure_reported_without_rollback(monkeypatch):
 
     asyncio.run(run())
 
+
 def test_feature_enabled_invokes_publish(monkeypatch):
     async def run():
         chan = Chan()
@@ -900,5 +909,329 @@ def test_feature_enabled_invokes_publish(monkeypatch):
         await cog.publish.callback(cog, ctx)
         called.assert_awaited_once()
         assert ctx.reply.call_args.kwargs["embed"].title == "Server rules publish"
+
+    asyncio.run(run())
+
+
+def test_grouped_rows_publish_one_message_with_ordered_embeds_and_group_ids(
+    monkeypatch,
+):
+    async def run():
+        chan = Chan()
+        writes = await fake_load(
+            monkeypatch,
+            sheet(
+                [
+                    "",
+                    "",
+                    "yes",
+                    "One",
+                    "rule",
+                    "https://e.test/icon.png",
+                    "T1",
+                    "1",
+                    "blue",
+                    "",
+                    "",
+                    "rules",
+                ],
+                [
+                    "",
+                    "999999999999999999",
+                    "yes",
+                    "Two",
+                    "rule",
+                    "",
+                    "T2",
+                    "2",
+                    "blue",
+                    "",
+                    "",
+                    "rules",
+                ],
+                [
+                    "",
+                    "",
+                    "yes",
+                    "Three",
+                    "rule",
+                    "",
+                    "T3",
+                    "3",
+                    "blue",
+                    "Foot",
+                    "",
+                    "rules",
+                ],
+                ["", "", "yes", "FAQ", "faq_1", "", "Q", "4", "green", "", "", "faq"],
+            ),
+            chan,
+        )
+        summary, _ = await server_rules.publish(Bot(chan))
+        assert summary.created == 2
+        assert len(chan.sent) == 2
+        assert chan.sent[0].content == ""
+        assert [e.title for e in chan.sent[0].embeds] == ["T1", "T2", "T3"]
+        assert chan.sent[0].embeds[0].thumbnail.url == "https://e.test/icon.png"
+        assert not chan.sent[0].embeds[1].thumbnail.url
+        assert not chan.sent[0].embeds[1].footer.text
+        assert chan.sent[0].embeds[2].footer.text == "Foot"
+        assert "serverrules:" not in (chan.sent[0].embeds[0].description or "")
+        assert server_rules._is_managed_message(chan.sent[0], 42, "rule")
+        assert writes["batch"] == [
+            [
+                {"range": "B2", "values": [["100"]]},
+                {"range": "B3", "values": [[""]]},
+                {"range": "B5", "values": [["101"]]},
+            ]
+        ]
+
+    asyncio.run(run())
+
+
+def test_group_limits_rejected_before_mutation(monkeypatch):
+    async def run():
+        chan = Chan()
+        body = [
+            ["", "", "yes", "D", "rule", "", f"T{i}", str(i), "blue", "", "", "rules"]
+            for i in range(1, 12)
+        ]
+        writes = await fake_load(monkeypatch, sheet(*body), chan)
+        summary, _ = await server_rules.publish(Bot(chan))
+        assert summary.failed == 1
+        assert chan.sent == []
+        assert writes["batch"] == []
+        body = [
+            [
+                "",
+                "",
+                "yes",
+                "x" * 1000,
+                "long",
+                "",
+                f"T{i}",
+                str(i),
+                "blue",
+                "",
+                "",
+                "rules",
+            ]
+            for i in range(1, 8)
+        ]
+        writes = await fake_load(monkeypatch, sheet(*body), chan)
+        summary, _ = await server_rules.publish(Bot(chan))
+        assert summary.failed == 1
+        assert chan.sent == []
+        assert writes["batch"] == []
+
+    asyncio.run(run())
+
+
+def test_faq_topic_metadata_does_not_combine_or_render(monkeypatch):
+    async def run():
+        chan = Chan()
+        rows = actual_sheet(
+            [
+                "faq_a",
+                "faq",
+                "1",
+                "TRUE",
+                "Q1",
+                "A1",
+                "blue",
+                "https://e.test/topic.png",
+                "",
+                "",
+                "",
+                "",
+                "topic",
+                "Topic",
+            ],
+            [
+                "faq_b",
+                "faq",
+                "2",
+                "TRUE",
+                "Q2",
+                "A2",
+                "blue",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "topic",
+                "Topic",
+            ],
+            [
+                "faq_c",
+                "faq",
+                "3",
+                "TRUE",
+                "Q3",
+                "A3",
+                "blue",
+                "",
+                "Topic foot",
+                "",
+                "",
+                "",
+                "topic",
+                "Topic",
+            ],
+        )
+        rows[0].extend(["topic_key", "topic_title"])
+        writes = await fake_load(monkeypatch, rows, chan)
+        _tab, _header, parsed, errors = await server_rules.load_rows()
+        assert not errors
+        assert [r.topic_key for r in parsed] == ["topic", "topic", "topic"]
+        summary, _ = await server_rules.publish(Bot(chan))
+        assert summary.created == 3
+        assert len(chan.sent) == 3
+        assert all(len(m.embeds) == 1 for m in chan.sent)
+        assert "Topic" not in "".join(
+            (m.content or "") + (m.embeds[0].description or "") for m in chan.sent
+        )
+        assert chan.sent[0].embeds[0].thumbnail.url == "https://e.test/topic.png"
+        assert not chan.sent[1].embeds[0].thumbnail.url
+        assert not chan.sent[1].embeds[0].footer.text
+        assert chan.sent[2].embeds[0].footer.text == "Topic foot"
+        assert writes["batch"] == [
+            [
+                {"range": "L2", "values": [["100"]]},
+                {"range": "L3", "values": [["101"]]},
+                {"range": "L4", "values": [["102"]]},
+            ]
+        ]
+
+    asyncio.run(run())
+
+
+def test_hidden_marker_validation_and_legacy_refresh(monkeypatch):
+    async def run():
+        chan = Chan()
+        legacy = Msg(555555555555555555, server_rules.marker_for("keep"))
+        chan.messages[legacy.id] = legacy
+        await fake_load(
+            monkeypatch,
+            sheet(
+                [
+                    "",
+                    str(legacy.id),
+                    "yes",
+                    "Updated",
+                    "keep",
+                    "",
+                    "Keep",
+                    "1",
+                    "blue",
+                    "",
+                    "",
+                    "rules",
+                ]
+            ),
+            chan,
+        )
+        summary, _ = await server_rules.refresh(Bot(chan))
+        assert summary.refreshed == 1
+        assert legacy.content is None
+        assert server_rules._is_managed_message(legacy, 42, "keep")
+        assert not server_rules._is_managed_message(legacy, 42, "wrong")
+        forged = Msg(1, author_id=99)
+        forged.embeds = legacy.embeds
+        assert not server_rules._is_managed_message(forged, 42, "keep")
+        malformed = Msg(2, author_id=42)
+        e = discord.Embed(description="[\u2063](https://c1c.invalid/serverrules/%ZZ)")
+        malformed.embeds = [e]
+        assert not server_rules._is_managed_message(malformed, 42, "keep")
+        ordinary = Msg(3, "hello", 42)
+        assert not server_rules._is_managed_message(ordinary, 42)
+        assert server_rules._is_managed_message(
+            Msg(4, server_rules.marker_for("old")), 42, "old"
+        )
+
+    asyncio.run(run())
+
+
+def test_refresh_group_edits_once_and_conflicting_ids_fail(monkeypatch):
+    async def run():
+        chan = Chan()
+        existing = Msg(555555555555555555, server_rules.marker_for("rule"))
+        chan.messages[existing.id] = existing
+        await fake_load(
+            monkeypatch,
+            sheet(
+                [
+                    "",
+                    str(existing.id),
+                    "yes",
+                    "One",
+                    "rule",
+                    "",
+                    "T1",
+                    "1",
+                    "blue",
+                    "",
+                    "",
+                    "rules",
+                ],
+                [
+                    "",
+                    str(existing.id),
+                    "yes",
+                    "Two",
+                    "rule",
+                    "",
+                    "T2",
+                    "2",
+                    "blue",
+                    "",
+                    "",
+                    "rules",
+                ],
+            ),
+            chan,
+        )
+        summary, _ = await server_rules.refresh(Bot(chan))
+        assert summary.refreshed == 1
+        assert len(existing.edits) == 1
+        assert len(existing.edits[0]["embeds"]) == 2
+        writes = await fake_load(
+            monkeypatch,
+            sheet(
+                [
+                    "",
+                    "555555555555555555",
+                    "yes",
+                    "One",
+                    "bad",
+                    "",
+                    "T1",
+                    "1",
+                    "blue",
+                    "",
+                    "",
+                    "rules",
+                ],
+                [
+                    "",
+                    "666666666666666666",
+                    "yes",
+                    "Two",
+                    "bad",
+                    "",
+                    "T2",
+                    "2",
+                    "blue",
+                    "",
+                    "",
+                    "rules",
+                ],
+            ),
+            chan,
+        )
+        summary, _ = await server_rules.publish(Bot(chan))
+        assert summary.failed == 1
+        assert writes["batch"] == []
 
     asyncio.run(run())
