@@ -530,6 +530,7 @@ def _load_config_snapshot() -> Dict[str, object]:
         "GUILD_IDS": _int_set(os.getenv("GUILD_IDS")),
         "TIMEZONE": (os.getenv("TIMEZONE") or "Europe/Vienna").strip() or "Europe/Vienna",
         "REFRESH_TIMES": _parse_schedule(os.getenv("REFRESH_TIMES"), refresh_default),
+        "MIRRALITH_POST_CRON": (os.getenv("MIRRALITH_POST_CRON") or "").strip(),
         "GSPREAD_CREDENTIALS": os.getenv("GSPREAD_CREDENTIALS", ""),
         "RECRUITMENT_SHEET_ID": (os.getenv("RECRUITMENT_SHEET_ID") or "").strip(),
         "ONBOARDING_SHEET_ID": (os.getenv("ONBOARDING_SHEET_ID") or "").strip(),

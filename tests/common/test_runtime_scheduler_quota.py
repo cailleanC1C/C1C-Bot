@@ -51,6 +51,7 @@ def test_clan_ads_config_quota_skips_registration_without_startup_failure(
         cache_scheduler, "register_refresh_job", fake_register_refresh_job
     )
     monkeypatch.setenv("MIRRALITH_POST_CRON", "")
+    assert runtime_module.shared_config._load_config_snapshot()["MIRRALITH_POST_CRON"] == ""
 
     async def fake_config_value(key, default=None):
         assert key == "C1C_AD_REFRESH_DAYS"
