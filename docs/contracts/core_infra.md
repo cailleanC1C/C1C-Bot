@@ -48,6 +48,12 @@ See [`docs/ops/Config.md`](../ops/Config.md#environment-keys) for full key defin
 - `!env` returns a four-page admin overview (Overview, Channels, Roles, Sheets & Config) and surfaces warnings for missing/not-found config on Page 1.
 - No bare-word shortcuts.
 
+## External Command Ownership
+- `CommandNotFound` handling consults the cached shared HelpCommands registry to distinguish Woadkeeper commands from commands owned exclusively by external bots.
+- Commands with only enabled, nonblank, non-Woadkeeper owners are ignored silently so another bot can handle them.
+- Unknown commands, Woadkeeper-owned commands, mixed ownership, blank ownership, unavailable help data, lookup failures, and non-`CommandNotFound` exceptions continue through normal command-error reporting.
+- Command ownership must remain sheet/cache-driven; do not add hard-coded external command lists in `app.py`.
+
 ## CoreOps v1.5 contract
 - CoreOps integrates with the cache service exclusively through the public API surface:
   `list_buckets()`, `get_snapshot(name)`, `refresh_now(name, actor=…)`, and telemetry helpers.

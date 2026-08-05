@@ -145,8 +145,11 @@ def normalize_lookup(value: object) -> str:
     return text.lstrip("!").strip()
 
 
-def find_row(rows: Sequence[HelpCommandRow], query: object) -> HelpCommandRow | None:
+def find_rows(
+    rows: Sequence[HelpCommandRow], query: object
+) -> tuple[HelpCommandRow, ...]:
     needle = normalize_lookup(query)
+    matches: list[HelpCommandRow] = []
     for row in rows:
         candidates = (
             row.command_key.replace("_", " "),
@@ -154,8 +157,13 @@ def find_row(rows: Sequence[HelpCommandRow], query: object) -> HelpCommandRow | 
             row.usage.split(" ", 1)[0],
         )
         if any(normalize_lookup(candidate) == needle for candidate in candidates):
-            return row
-    return None
+            matches.append(row)
+    return tuple(matches)
+
+
+def find_row(rows: Sequence[HelpCommandRow], query: object) -> HelpCommandRow | None:
+    matches = find_rows(rows, query)
+    return matches[0] if matches else None
 
 
 def visible_rows(

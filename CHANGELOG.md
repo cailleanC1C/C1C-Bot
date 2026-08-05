@@ -1,4 +1,8 @@
 # Changelog
+### Unreleased
+**Core Infra**
+* Rebased Woadkeeper external command-error handling onto the shared-config runtime so commands owned exclusively by other bots are silently ignored via the cached HelpCommands registry while Woadkeeper, mixed-owner, blank-owner, unknown, and fail-safe cases continue normal reporting.
+
 ### v0.9.8.2 — 2025-12-02
 **Community**
 * Added a sheet-driven reaction roles module with admin `!reactrole <key>`, cached config loader, and grant/revoke handlers for emoji reacts.
