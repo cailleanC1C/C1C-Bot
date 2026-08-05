@@ -3,6 +3,7 @@ import logging
 from types import SimpleNamespace
 
 from modules.common import runtime as runtime_module
+from shared import config as shared_config
 
 
 class _Bot:
@@ -103,3 +104,83 @@ def test_optional_scheduler_quota_skip_returns_false_and_logs(caplog):
     )
     assert "config_source=Feature Toggle:reset_reminders" in caplog.text
     assert "exception_type=_QuotaError" in caplog.text
+
+
+def _patch_scheduler_dependencies(monkeypatch, runtime):
+    from shared.sheets import cache_scheduler
+    from shared.sheets import recruitment as recruitment_sheets
+    from modules.common import feature_flags
+    from modules.recruitment import clan_ads
+    from modules.ops import server_map
+    from modules.community.leagues import scheduler as leagues_scheduler
+    from modules.community.fusion import scheduler as fusion_scheduler
+    from modules.community.shard_tracker import scheduler as shard_scheduler
+    from modules.community.reset_reminders import scheduler as reset_scheduler
+
+    monkeypatch.setattr(cache_scheduler, "ensure_cache_registration", lambda: None)
+
+    def fake_register_refresh_job(owner, *, bucket, interval, cadence_label):
+        job = owner.scheduler.every(hours=1, tag=bucket, name=f"{bucket}_refresh")
+        return SimpleNamespace(bucket=bucket, cadence_label=cadence_label), job
+
+    monkeypatch.setattr(
+        cache_scheduler, "register_refresh_job", fake_register_refresh_job
+    )
+
+    async def fake_config_value(key, default=None):
+        return default
+
+    monkeypatch.setattr(recruitment_sheets, "get_config_value_async", fake_config_value)
+    monkeypatch.setattr(feature_flags, "is_enabled", lambda key: False)
+
+    async def no_clan_ads(*, force=False):
+        return SimpleNamespace(refresh_interval_hours=None)
+
+    monkeypatch.setattr(clan_ads, "load_config", no_clan_ads)
+    monkeypatch.setattr(server_map, "schedule_server_map_job", lambda _runtime: None)
+    monkeypatch.setattr(
+        leagues_scheduler, "schedule_leagues_jobs", lambda _runtime: None
+    )
+    monkeypatch.setattr(fusion_scheduler, "schedule_fusion_jobs", lambda _runtime: None)
+    monkeypatch.setattr(shard_scheduler, "schedule_shard_jobs", lambda _runtime: None)
+    monkeypatch.setattr(
+        reset_scheduler, "schedule_reset_reminder_jobs", lambda _runtime: None
+    )
+    monkeypatch.setattr(
+        runtime_module.shared_config,
+        "features",
+        SimpleNamespace(housekeeping_enabled=False, mirralith_overview_enabled=True),
+    )
+
+
+def test_mirralith_post_cron_env_reaches_scheduler_through_config(monkeypatch):
+    monkeypatch.setenv("MIRRALITH_POST_CRON", "17 4 * * *")
+    shared_config.reload_config()
+    runtime = runtime_module.Runtime(_Bot())
+    _patch_scheduler_dependencies(monkeypatch, runtime)
+
+    asyncio.run(runtime._register_ready_schedulers_inner())
+
+    jobs = [
+        job
+        for job in runtime.scheduler.jobs
+        if getattr(job, "name", None) == "mirralith_overview"
+    ]
+    assert len(jobs) == 1
+    assert getattr(jobs[0], "cadence_label", None) == "17 4 * * *"
+
+
+def test_empty_mirralith_post_cron_still_skips_scheduler(monkeypatch):
+    monkeypatch.setenv("MIRRALITH_POST_CRON", "")
+    shared_config.reload_config()
+    runtime = runtime_module.Runtime(_Bot())
+    _patch_scheduler_dependencies(monkeypatch, runtime)
+
+    asyncio.run(runtime._register_ready_schedulers_inner())
+
+    names = [getattr(job, "name", None) for job in runtime.scheduler.jobs]
+    assert "mirralith_overview" not in names
+    assert (
+        runtime.scheduler.registration_skips["mirralith_overview"]
+        == "MIRRALITH_POST_CRON is not set"
+    )

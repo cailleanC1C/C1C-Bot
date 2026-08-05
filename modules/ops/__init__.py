@@ -6,4 +6,5 @@ __all__ = [
     "permissions_ui",
     "server_map",
     "cluster_role_map",
+    "server_rules",
 ]

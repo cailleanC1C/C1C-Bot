@@ -110,6 +110,7 @@ _REQUIRED_ENV = (
     "RECRUITMENT_SHEET_ID",
 )
 
+
 def _require_env(name: str) -> str:
     value = os.getenv(name)
     if value is None or str(value).strip() == "":
@@ -482,7 +483,9 @@ async def amerge_onboarding_config_early() -> int:
     try:
         _, milestone_values = await _aload_milestones_config_values()
     except RuntimeError:
-        log.debug("config: milestones sheet id not configured; skipping async tab merge")
+        log.debug(
+            "config: milestones sheet id not configured; skipping async tab merge"
+        )
     except Exception as exc:  # pragma: no cover - network or credential failures
         log.warning("config: failed to async-load milestones Config tab: %s", exc)
     else:
@@ -528,19 +531,29 @@ def _load_config_snapshot() -> Dict[str, object]:
         "DISCORD_TOKEN": os.getenv("DISCORD_TOKEN", ""),
         "ENV_NAME": _runtime.get_env_name(),
         "GUILD_IDS": _int_set(os.getenv("GUILD_IDS")),
-        "TIMEZONE": (os.getenv("TIMEZONE") or "Europe/Vienna").strip() or "Europe/Vienna",
+        "TIMEZONE": (os.getenv("TIMEZONE") or "Europe/Vienna").strip()
+        or "Europe/Vienna",
         "REFRESH_TIMES": _parse_schedule(os.getenv("REFRESH_TIMES"), refresh_default),
         "GSPREAD_CREDENTIALS": os.getenv("GSPREAD_CREDENTIALS", ""),
         "RECRUITMENT_SHEET_ID": (os.getenv("RECRUITMENT_SHEET_ID") or "").strip(),
         "ONBOARDING_SHEET_ID": (os.getenv("ONBOARDING_SHEET_ID") or "").strip(),
         "MILESTONES_SHEET_ID": (os.getenv("MILESTONES_SHEET_ID") or "").strip(),
         "LEAGUES_SHEET_ID": (os.getenv("LEAGUES_SHEET_ID") or "").strip(),
-        "LEAGUES_CONFIG_TAB": (os.getenv("LEAGUES_CONFIG_TAB") or "Config").strip() or "Config",
-        "LEAGUES_SUBMISSION_CHANNEL_ID": _first_int(os.getenv("LEAGUES_SUBMISSION_CHANNEL_ID")),
-        "LEAGUES_LEGENDARY_THREAD_ID": _first_int(os.getenv("LEAGUES_LEGENDARY_THREAD_ID")),
+        "LEAGUES_CONFIG_TAB": (os.getenv("LEAGUES_CONFIG_TAB") or "Config").strip()
+        or "Config",
+        "LEAGUES_SUBMISSION_CHANNEL_ID": _first_int(
+            os.getenv("LEAGUES_SUBMISSION_CHANNEL_ID")
+        ),
+        "LEAGUES_LEGENDARY_THREAD_ID": _first_int(
+            os.getenv("LEAGUES_LEGENDARY_THREAD_ID")
+        ),
         "LEAGUES_RISING_THREAD_ID": _first_int(os.getenv("LEAGUES_RISING_THREAD_ID")),
-        "LEAGUES_STORMFORGED_THREAD_ID": _first_int(os.getenv("LEAGUES_STORMFORGED_THREAD_ID")),
-        "LEAGUES_REMINDER_THREAD_ID": _first_int(os.getenv("LEAGUES_REMINDER_THREAD_ID")),
+        "LEAGUES_STORMFORGED_THREAD_ID": _first_int(
+            os.getenv("LEAGUES_STORMFORGED_THREAD_ID")
+        ),
+        "LEAGUES_REMINDER_THREAD_ID": _first_int(
+            os.getenv("LEAGUES_REMINDER_THREAD_ID")
+        ),
         "ANNOUNCEMENT_CHANNEL_ID": _first_int(os.getenv("ANNOUNCEMENT_CHANNEL_ID")),
         "C1C_LEAGUE_ROLE_ID": _first_int(os.getenv("C1C_LEAGUE_ROLE_ID")),
         "LEAGUE_ADMIN_IDS": _int_set(os.getenv("LEAGUE_ADMIN_IDS")),
@@ -552,7 +565,9 @@ def _load_config_snapshot() -> Dict[str, object]:
         "CLAN_ROLE_IDS": _int_set(os.getenv("CLAN_ROLE_IDS")),
         "RAID_ROLE_ID": _first_int(os.getenv("RAID_ROLE_ID")),
         "WANDERING_SOULS_ROLE_ID": _first_int(os.getenv("WANDERING_SOULS_ROLE_ID")),
-        "WANDERING_SOULS_EXCLUDE_ROLE_ID": _first_int(os.getenv("WANDERING_SOULS_EXCLUDE_ROLE_ID")),
+        "WANDERING_SOULS_EXCLUDE_ROLE_ID": _first_int(
+            os.getenv("WANDERING_SOULS_EXCLUDE_ROLE_ID")
+        ),
         "VISITOR_ROLE_ID": _first_int(os.getenv("VISITOR_ROLE_ID")),
         "LEAD_ROLE_IDS": _int_set(os.getenv("LEAD_ROLE_IDS")),
         "CLAN_LEAD_IDS": _int_set(os.getenv("CLAN_LEAD_IDS")),
@@ -564,7 +579,9 @@ def _load_config_snapshot() -> Dict[str, object]:
         "RECRUITMENT_INTERACT_CHANNEL": _first_int(
             os.getenv("RECRUITMENT_INTERACT_CHANNEL")
         ),
-        "WELCOME_GENERAL_CHANNEL_ID": _first_int(os.getenv("WELCOME_GENERAL_CHANNEL_ID")),
+        "WELCOME_GENERAL_CHANNEL_ID": _first_int(
+            os.getenv("WELCOME_GENERAL_CHANNEL_ID")
+        ),
         "WELCOME_CHANNEL_ID": _first_int(os.getenv("WELCOME_CHANNEL_ID")),
         "PROMO_CHANNEL_ID": _first_int(os.getenv("PROMO_CHANNEL_ID")),
         "ROLEMAP_CHANNEL_ID": _first_int(os.getenv("ROLEMAP_CHANNEL_ID")),
@@ -578,24 +595,32 @@ def _load_config_snapshot() -> Dict[str, object]:
         "WATCHDOG_CHECK_SEC": keepalive,
         "WATCHDOG_STALL_SEC": stall,
         "WATCHDOG_DISCONNECT_GRACE_SEC": grace,
-        "CLAN_TAGS_CACHE_TTL_SEC": _int_env("CLAN_TAGS_CACHE_TTL_SEC", 3600, min_value=60),
+        "CLAN_TAGS_CACHE_TTL_SEC": _int_env(
+            "CLAN_TAGS_CACHE_TTL_SEC", 3600, min_value=60
+        ),
         "PERMS_BLACKLIST_CHANNEL_IDS": _int_set(
             os.getenv("PERMS_BLACKLIST_CHANNEL_IDS")
         ),
         "PERMS_BLACKLIST_CATEGORY_IDS": _int_set(
             os.getenv("PERMS_BLACKLIST_CATEGORY_IDS")
         ),
-        "PANEL_THREAD_MODE": (os.getenv("PANEL_THREAD_MODE") or "same").strip().lower() or "same",
+        "PANEL_THREAD_MODE": (os.getenv("PANEL_THREAD_MODE") or "same").strip().lower()
+        or "same",
         "PANEL_FIXED_THREAD_ID": _first_int(os.getenv("PANEL_FIXED_THREAD_ID")),
         "BOT_VERSION": os.getenv("BOT_VERSION", "dev"),
+        "MIRRALITH_POST_CRON": (os.getenv("MIRRALITH_POST_CRON") or "").strip(),
         "LOG_LEVEL": os.getenv("LOG_LEVEL", "INFO"),
         "PUBLIC_BASE_URL": (os.getenv("PUBLIC_BASE_URL") or "").strip(),
         "RENDER_EXTERNAL_URL": (os.getenv("RENDER_EXTERNAL_URL") or "").strip(),
         "EMOJI_MAX_BYTES": _int_env("EMOJI_MAX_BYTES", 2_000_000, min_value=1),
         "EMOJI_PAD_SIZE": _int_env("EMOJI_PAD_SIZE", 256, min_value=64, max_value=512),
-        "EMOJI_PAD_BOX": _float_env("EMOJI_PAD_BOX", 0.85, min_value=0.2, max_value=0.95),
+        "EMOJI_PAD_BOX": _float_env(
+            "EMOJI_PAD_BOX", 0.85, min_value=0.2, max_value=0.95
+        ),
         "TAG_BADGE_PX": _int_env("TAG_BADGE_PX", 128, min_value=32, max_value=512),
-        "TAG_BADGE_BOX": _float_env("TAG_BADGE_BOX", 0.90, min_value=0.2, max_value=0.95),
+        "TAG_BADGE_BOX": _float_env(
+            "TAG_BADGE_BOX", 0.90, min_value=0.2, max_value=0.95
+        ),
         "STRICT_EMOJI_PROXY": _env_bool("STRICT_EMOJI_PROXY", True),
         "SHARD_PANEL_OVERVIEW_EMOJI": (
             os.getenv("SHARD_PANEL_OVERVIEW_EMOJI") or ""
@@ -790,6 +815,7 @@ def get_config_snapshot() -> Dict[str, object]:
 
     return dict(_CONFIG)
 
+
 def get_env_name(default: str = "dev") -> str:
     value = _CONFIG.get("ENV_NAME")
     return str(value) if isinstance(value, str) and value else default
@@ -939,7 +965,9 @@ def get_who_we_are_channel_id() -> Optional[int]:
     return _optional_id("WHO_WE_ARE_CHANNEL_ID")
 
 
-def get_refresh_times(default: Iterable[str] = ("02:00", "10:00", "18:00")) -> list[str]:
+def get_refresh_times(
+    default: Iterable[str] = ("02:00", "10:00", "18:00")
+) -> list[str]:
     raw = _CONFIG.get("REFRESH_TIMES")
     if isinstance(raw, (list, tuple, set)):
         values = [str(part).strip() for part in raw if str(part).strip()]
@@ -1143,7 +1171,6 @@ def get_clan_tags_cache_ttl_sec(default: int = 3600) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
-
 
 
 def get_perms_blacklist_channel_ids() -> Set[int]:

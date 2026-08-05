@@ -3,7 +3,6 @@ import importlib
 
 import pytest
 
-
 _REQUIRED_ENV = {
     "DISCORD_TOKEN": "token",
     "GSPREAD_CREDENTIALS": "{}",
@@ -46,8 +45,7 @@ def test_reload_config_populates_shard_emoji_getters(monkeypatch):
     cfg.reload_config()
 
     assert (
-        cfg.get_shard_panel_overview_emoji()
-        == configured["SHARD_PANEL_OVERVIEW_EMOJI"]
+        cfg.get_shard_panel_overview_emoji() == configured["SHARD_PANEL_OVERVIEW_EMOJI"]
     )
     assert cfg.get_shard_emoji_mystery() == configured["SHARD_EMOJI_MYSTERY"]
     assert cfg.get_shard_emoji_ancient() == configured["SHARD_EMOJI_ANCIENT"]
@@ -88,5 +86,18 @@ def test_reload_config_fails_when_required_missing(monkeypatch, missing):
     _apply_required_env(monkeypatch)
     monkeypatch.delenv(missing, raising=False)
     import shared.config as cfg
+
     with pytest.raises(RuntimeError):
         cfg.reload_config()
+
+
+def test_reload_config_trims_mirralith_post_cron(monkeypatch):
+    _apply_required_env(monkeypatch)
+    monkeypatch.setenv("MIRRALITH_POST_CRON", " 17 4 * * * ")
+    import shared.config as cfg
+
+    monkeypatch.setattr(cfg, "_CONFIG", dict(cfg._CONFIG))
+    snapshot = cfg.reload_config()
+
+    assert snapshot["MIRRALITH_POST_CRON"] == "17 4 * * *"
+    assert cfg.cfg.get("MIRRALITH_POST_CRON") == "17 4 * * *"
