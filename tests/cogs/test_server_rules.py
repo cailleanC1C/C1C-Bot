@@ -748,6 +748,138 @@ def test_supported_colour_names_and_hex_rejection():
     assert server_rules.parse_colour("purple") is None
 
 
+def test_supported_server_rules_faq_hex_colours_are_explicit_palette():
+    from modules.common import embeds
+
+    assert server_rules.parse_colour("#4472c4") == embeds.SERVER_RULES_FAQ_BLUE
+    assert server_rules.parse_colour("#356854") == embeds.SERVER_RULES_FAQ_GREEN
+    assert server_rules.parse_colour("#ffd666") == embeds.SERVER_RULES_FAQ_YELLOW
+    assert server_rules.parse_colour("#607d8b") == embeds.SERVER_RULES_FAQ_SLATE
+    assert server_rules.parse_colour("#4472C4") == embeds.SERVER_RULES_FAQ_BLUE
+    assert server_rules.parse_colour("#00ff00") is None
+
+
+def test_publish_fetches_known_old_id_and_never_deletes_forged_message(monkeypatch):
+    async def run():
+        chan = Chan()
+        forged = Msg(333333333333333333, server_rules.marker_for("rule"), author_id=99)
+        old = Msg(222222222222222222, server_rules.marker_for("rule"))
+        chan.messages[forged.id] = forged
+        chan.messages[old.id] = old
+        fetched = []
+
+        original_fetch = chan.fetch_message
+
+        async def fetch_message(mid):
+            fetched.append(mid)
+            return await original_fetch(mid)
+
+        chan.fetch_message = fetch_message
+        await fake_load(
+            monkeypatch,
+            sheet(
+                [
+                    "",
+                    "222222222222222222",
+                    "yes",
+                    "D",
+                    "rule",
+                    "",
+                    "T",
+                    "1",
+                    "#4472c4",
+                    "",
+                    "",
+                    "",
+                ]
+            ),
+            chan,
+        )
+        summary, _ = await server_rules.publish(Bot(chan))
+        assert summary.created == 1
+        assert summary.removed == 1
+        assert 222222222222222222 in fetched
+        assert old.deleted
+        assert not forged.deleted
+
+    asyncio.run(run())
+
+
+def test_publish_cleanup_failures_report_after_commit_without_rollback(monkeypatch):
+    async def run():
+        chan = Chan()
+        old = Msg(222222222222222222, server_rules.marker_for("rule"))
+        chan.messages[old.id] = old
+
+        async def delete_failure():
+            raise discord.HTTPException(response=None, message="delete failed")
+
+        old.delete = delete_failure
+        writes = await fake_load(
+            monkeypatch,
+            sheet(
+                [
+                    "",
+                    "222222222222222222",
+                    "yes",
+                    "D",
+                    "rule",
+                    "",
+                    "T",
+                    "1",
+                    "#356854",
+                    "",
+                    "",
+                    "",
+                ]
+            ),
+            chan,
+        )
+        summary, _ = await server_rules.publish(Bot(chan))
+        assert summary.created == 1
+        assert summary.failed == 1
+        assert writes["batch"] == [[{"range": "B2", "values": [["100"]]}]]
+        assert not chan.sent[0].deleted
+
+    asyncio.run(run())
+
+
+def test_publish_history_scan_failure_reported_without_rollback(monkeypatch):
+    async def run():
+        chan = Chan()
+        writes = await fake_load(
+            monkeypatch,
+            sheet(
+                [
+                    "",
+                    "",
+                    "yes",
+                    "D",
+                    "rule",
+                    "",
+                    "T",
+                    "1",
+                    "#607d8b",
+                    "",
+                    "",
+                    "",
+                ]
+            ),
+            chan,
+        )
+
+        async def fail_iter(target, bot_id):
+            raise discord.HTTPException(response=None, message="history failed")
+
+        monkeypatch.setattr(server_rules, "_iter_feature_messages", fail_iter)
+        summary, _ = await server_rules.publish(Bot(chan))
+        assert summary.created == 1
+        assert summary.failed == 1
+        assert writes["batch"] == [[{"range": "B2", "values": [["100"]]}]]
+        assert not chan.sent[0].deleted
+
+    asyncio.run(run())
+
 def test_feature_enabled_invokes_publish(monkeypatch):
     async def run():
         chan = Chan()

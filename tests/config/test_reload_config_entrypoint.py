@@ -23,6 +23,20 @@ def test_reload_config_happy_path(monkeypatch):
     cfg.reload_config()
 
 
+def test_reload_config_includes_trimmed_mirralith_post_cron(monkeypatch):
+    _apply_required_env(monkeypatch)
+    monkeypatch.setenv("MIRRALITH_POST_CRON", "  15 9 * * *  ")
+    import shared.config as cfg
+
+    monkeypatch.setattr(cfg, "_CONFIG", dict(cfg._CONFIG))
+    monkeypatch.setattr(cfg, "_merge_onboarding_tab", lambda _config: None)
+    monkeypatch.setattr(cfg, "_merge_milestones_tab", lambda _config: None)
+
+    snapshot = cfg.reload_config()
+
+    assert snapshot["MIRRALITH_POST_CRON"] == "15 9 * * *"
+
+
 def test_reload_config_populates_shard_emoji_getters(monkeypatch):
     _apply_required_env(monkeypatch)
     import shared.config as cfg

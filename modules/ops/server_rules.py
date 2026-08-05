@@ -11,7 +11,13 @@ from urllib.parse import urlparse
 import discord
 
 from modules.common.discord_utils import resolve_message_target
-from modules.common.embeds import get_embed_colour
+from modules.common.embeds import (
+    SERVER_RULES_FAQ_BLUE,
+    SERVER_RULES_FAQ_GREEN,
+    SERVER_RULES_FAQ_SLATE,
+    SERVER_RULES_FAQ_YELLOW,
+    get_embed_colour,
+)
 from shared.sheets import async_adapter
 from shared.sheets import core as sheets_core
 from shared.sheets import recruitment as recruitment_sheet
@@ -40,6 +46,12 @@ MAX_TOTAL = 6000
 MIN_SNOWFLAKE_LEN = 17
 MAX_SNOWFLAKE_LEN = 20
 MAX_UINT64 = 2**64 - 1
+SERVER_RULES_HEX_COLOURS = {
+    "#4472c4": SERVER_RULES_FAQ_BLUE,
+    "#356854": SERVER_RULES_FAQ_GREEN,
+    "#ffd666": SERVER_RULES_FAQ_YELLOW,
+    "#607d8b": SERVER_RULES_FAQ_SLATE,
+}
 
 
 class FetchState(Enum):
@@ -155,6 +167,8 @@ def parse_colour(value: Any) -> discord.Colour | None:
         return colors.c1c_blue
     if text == "theme_admin":
         return colors.admin
+    if text in SERVER_RULES_HEX_COLOURS:
+        return SERVER_RULES_HEX_COLOURS[text]
     return None
 
 
@@ -361,20 +375,57 @@ async def _fetch(target: Any, message_id: str) -> tuple[FetchState, Any | None, 
         )
 
 
+def _is_bot_authored(message: Any, bot_id: int | None) -> bool:
+    return (
+        bot_id is not None
+        and getattr(getattr(message, "author", None), "id", None) == bot_id
+    )
+
+
+def _is_deletable_feature_message(
+    message: Any, bot_id: int | None, keys: set[str] | None = None
+) -> bool:
+    return _is_bot_authored(message, bot_id) and is_feature_message(message, keys)
+
+
 async def _iter_feature_messages(target: Any, bot_id: int | None) -> list[Any]:
     history = getattr(target, "history", None)
     if not callable(history):
         return []
     found: list[Any] = []
     async for message in history(limit=500):
-        if (
-            bot_id is not None
-            and getattr(getattr(message, "author", None), "id", None) != bot_id
-        ):
-            continue
-        if is_feature_message(message):
+        if _is_deletable_feature_message(message, bot_id):
             found.append(message)
     return found
+
+
+async def _delete_old_stored_messages(
+    target: Any,
+    rows: list[Row],
+    new_ids: set[str],
+    bot_id: int | None,
+    summary: Summary,
+) -> set[str]:
+    seen: set[str] = set()
+    for row in rows:
+        old_id = row.message_id
+        if not old_id or old_id in new_ids or old_id in seen:
+            continue
+        seen.add(old_id)
+        state, msg, reason = await _fetch(target, old_id)
+        if state is FetchState.MISSING:
+            continue
+        if state is FetchState.UNKNOWN:
+            summary.fail(row.key, reason)
+            continue
+        if msg is None or not _is_deletable_feature_message(msg, bot_id, {row.key}):
+            continue
+        try:
+            await msg.delete()
+            summary.removed += 1
+        except Exception:
+            summary.fail(row.key, "failed to remove old managed message after rebuild")
+    return seen
 
 
 async def _delete_new(messages: list[Any]) -> None:
@@ -426,16 +477,25 @@ async def publish(bot: discord.Client) -> tuple[Summary, Any | None]:
             summary.removed += 0
     new_ids = {str(getattr(msg, "id", "")) for _row, msg in new_pairs}
     bot_id = getattr(getattr(bot, "user", None), "id", None)
-    for msg in await _iter_feature_messages(target, bot_id):
-        if str(getattr(msg, "id", "")) in new_ids:
-            continue
-        try:
-            await msg.delete()
-            summary.removed += 1
-        except Exception:
-            summary.fail(
-                "old messages", "failed to remove old managed message after rebuild"
-            )
+    seen_old_ids = await _delete_old_stored_messages(
+        target, rows, new_ids, bot_id, summary
+    )
+    try:
+        old_messages = await _iter_feature_messages(target, bot_id)
+    except Exception:
+        summary.fail("old messages", "failed to scan channel history after rebuild")
+    else:
+        for msg in old_messages:
+            msg_id = str(getattr(msg, "id", ""))
+            if msg_id in new_ids or msg_id in seen_old_ids:
+                continue
+            try:
+                await msg.delete()
+                summary.removed += 1
+            except Exception:
+                summary.fail(
+                    "old messages", "failed to remove old managed message after rebuild"
+                )
     return summary, target
 
 
@@ -496,7 +556,9 @@ async def refresh(bot: discord.Client) -> tuple[Summary, Any | None]:
                         )
                     else:
                         summary.skipped += 1
-                elif msg is not None and is_feature_message(msg, {row.key}):
+                elif msg is not None and _is_deletable_feature_message(
+                    msg, getattr(getattr(bot, "user", None), "id", None), {row.key}
+                ):
                     try:
                         await msg.delete()
                         await _write_message_id(tab, header_map, row, "")
