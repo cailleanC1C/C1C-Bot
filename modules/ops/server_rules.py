@@ -64,6 +64,14 @@ class FetchState(Enum):
     UNKNOWN = "unknown"
 
 
+class LegacyMarkerState(Enum):
+    """Migration-only state for markers emitted by older publisher versions."""
+
+    ABSENT = "absent"
+    VALID = "valid"
+    INVALID = "invalid"
+
+
 @dataclass
 class Row:
     row_number: int
@@ -145,8 +153,39 @@ def _extract_hidden_marker(message: Any) -> str | None:
     return decoded
 
 
+def _legacy_marker_state(message: Any) -> tuple[LegacyMarkerState, str | None]:
+    """Distinguish markerless posts from valid and malformed migration markers."""
+
+    content = getattr(message, "content", "") or ""
+    embeds = getattr(message, "embeds", None) or []
+    description = (getattr(embeds[0], "description", None) or "") if embeds else ""
+    visible_artifact = content.startswith(LEGACY_MARKER_PREFIX)
+    hidden_needle = f"[{HIDDEN_MARKER_LABEL}]({HIDDEN_MARKER_PREFIX}"
+    hidden_artifact = (
+        HIDDEN_MARKER_PREFIX in description or hidden_needle in description
+    )
+    if not visible_artifact and not hidden_artifact:
+        return LegacyMarkerState.ABSENT, None
+
+    keys: list[str] = []
+    if visible_artifact:
+        key = _extract_legacy_marker(message)
+        if key is None:
+            return LegacyMarkerState.INVALID, None
+        keys.append(key)
+    if hidden_artifact:
+        key = _extract_hidden_marker(message)
+        if key is None:
+            return LegacyMarkerState.INVALID, None
+        keys.append(key)
+    if len(set(keys)) != 1:
+        return LegacyMarkerState.INVALID, None
+    return LegacyMarkerState.VALID, keys[0]
+
+
 def _managed_message_key(message: Any) -> str | None:
-    return _extract_hidden_marker(message) or _extract_legacy_marker(message)
+    state, key = _legacy_marker_state(message)
+    return key if state is LegacyMarkerState.VALID else None
 
 
 def is_feature_message(message: Any, keys: set[str] | None = None) -> bool:
@@ -182,14 +221,6 @@ def _embed_text_len(embed: discord.Embed) -> int:
 
 def _copy_embed(embed: discord.Embed) -> discord.Embed:
     return discord.Embed.from_dict(embed.to_dict())
-
-
-def legacy_hidden_marker_for(message_key: str) -> str:
-    """Return the PR #1059 hidden marker format for migration-only tests/cleanup."""
-
-    return (
-        f"[{HIDDEN_MARKER_LABEL}]({HIDDEN_MARKER_PREFIX}{quote(message_key, safe='')})"
-    )
 
 
 def _clean_embed_payload(group: MessageGroup) -> list[discord.Embed]:
@@ -581,8 +612,10 @@ def _stored_managed_message_matches(
 ) -> bool:
     if not (_is_bot_authored(message, bot_id) and _is_in_target(message, target)):
         return False
-    legacy_key = _managed_message_key(message)
-    if legacy_key is not None:
+    marker_state, legacy_key = _legacy_marker_state(message)
+    if marker_state is LegacyMarkerState.INVALID:
+        return False
+    if marker_state is LegacyMarkerState.VALID:
         return keys is None or legacy_key in keys
     return _has_plausible_server_rules_embeds(message)
 

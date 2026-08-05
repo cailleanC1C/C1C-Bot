@@ -1,9 +1,16 @@
 import asyncio
 import discord
 from unittest.mock import AsyncMock
+from urllib.parse import quote
 
 from modules.ops import server_rules
 from cogs.server_rules import ServerRulesCog
+
+
+def legacy_hidden_marker(message_key):
+    """Build the migration-only marker emitted before clean payloads."""
+
+    return f"[\u2063](https://c1c.invalid/serverrules/{quote(message_key, safe='')})"
 
 
 class Msg:
@@ -1761,7 +1768,7 @@ def test_legacy_hidden_marker_refreshes_to_clean_embeds(monkeypatch):
         hidden.embeds = [
             discord.Embed(
                 title="Old",
-                description="Old desc" + server_rules.legacy_hidden_marker_for("rule"),
+                description="Old desc" + legacy_hidden_marker("rule"),
             )
         ]
         chan.messages[hidden.id] = hidden
@@ -1790,6 +1797,117 @@ def test_legacy_hidden_marker_refreshes_to_clean_embeds(monkeypatch):
         assert hidden.content is None
         assert hidden.embeds[0].description == "Clean desc"
         assert "c1c.invalid" not in hidden.embeds[0].description
+
+    asyncio.run(run())
+
+
+def test_malformed_or_wrong_legacy_marker_cannot_refresh_as_markerless(monkeypatch):
+    async def run():
+        chan = Chan()
+        malformed_hidden = Msg(555555555555555551, None)
+        malformed_hidden.embeds = [
+            discord.Embed(
+                title="Old",
+                description="Old desc[\u2063](https://c1c.invalid/serverrules/rule",
+            )
+        ]
+        malformed_visible = Msg(555555555555555552, server_rules.LEGACY_MARKER_PREFIX)
+        malformed_visible.embeds = [discord.Embed(title="Old", description="Old")]
+        wrong_key = Msg(555555555555555553, server_rules.marker_for("other"))
+        wrong_key.embeds = [discord.Embed(title="Old", description="Old")]
+        for message in (malformed_hidden, malformed_visible, wrong_key):
+            chan.messages[message.id] = message
+        await fake_load(
+            monkeypatch,
+            sheet(
+                [
+                    "",
+                    str(malformed_hidden.id),
+                    "yes",
+                    "A",
+                    "hidden",
+                    "",
+                    "A",
+                    "1",
+                    "blue",
+                    "",
+                    "",
+                    "rules",
+                ],
+                [
+                    "",
+                    str(malformed_visible.id),
+                    "yes",
+                    "B",
+                    "visible",
+                    "",
+                    "B",
+                    "2",
+                    "blue",
+                    "",
+                    "",
+                    "rules",
+                ],
+                [
+                    "",
+                    str(wrong_key.id),
+                    "yes",
+                    "C",
+                    "expected",
+                    "",
+                    "C",
+                    "3",
+                    "blue",
+                    "",
+                    "",
+                    "rules",
+                ],
+            ),
+            chan,
+        )
+        summary, _ = await server_rules.refresh(Bot(chan))
+        assert summary.refreshed == 0
+        assert summary.skipped == 3
+        assert all(not message.edits for message in chan.messages.values())
+
+    asyncio.run(run())
+
+
+def test_malformed_legacy_marker_stored_post_is_not_deleted(monkeypatch):
+    async def run():
+        chan = Chan()
+        old = Msg(555555555555555554, None)
+        old.embeds = [
+            discord.Embed(
+                title="Old",
+                description="Old[\u2063](https://c1c.invalid/serverrules/rule%ZZ)",
+            )
+        ]
+        chan.messages[old.id] = old
+        await fake_load(
+            monkeypatch,
+            sheet(
+                [
+                    "",
+                    str(old.id),
+                    "yes",
+                    "New",
+                    "rule",
+                    "",
+                    "Rule",
+                    "1",
+                    "blue",
+                    "",
+                    "",
+                    "rules",
+                ]
+            ),
+            chan,
+        )
+        summary, _ = await server_rules.publish(Bot(chan))
+        assert summary.created == 1
+        assert not old.deleted
+        assert not chan.sent[0].deleted
 
     asyncio.run(run())
 
