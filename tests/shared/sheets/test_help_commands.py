@@ -205,3 +205,19 @@ def test_manual_helpcommands_bucket_refresh_reloads_immediately(monkeypatch) -> 
     assert first is not None and first[0].summary == "version 1"
     assert bucket is not None and bucket.value[0].summary == "version 2"
     assert reads == 2
+
+
+def test_find_rows_returns_all_matching_owners_and_find_row_keeps_first_match() -> None:
+    rows = help_commands.parse_rows(
+        [
+            HEADERS,
+            _row(bot_key="reminder", command="!remind", command_key="remind", usage="!remind me"),
+            _row(bot_key="achievements", command="!remind", command_key="remind", usage="!remind stats"),
+            _row(bot_key="woadkeeper", command="!other", command_key="other", usage="!other"),
+        ]
+    )
+
+    matches = help_commands.find_rows(rows, "!remind")
+
+    assert [row.bot_key for row in matches] == ["reminder", "achievements"]
+    assert help_commands.find_row(rows, "remind") == matches[0]

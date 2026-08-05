@@ -22,6 +22,7 @@ from shared.config import (
 )
 from shared.logfmt import LogTemplates, guild_label, user_label, human_reason
 from shared.redaction import sanitize_text
+from shared.sheets import help_commands
 from shared import health as healthmod
 from shared import socket_heartbeat as hb
 from modules.common.runtime import Runtime, StartupPhaseError, scheduler_report_lines
@@ -51,6 +52,7 @@ logging.basicConfig(
 log = logging.getLogger("c1c.app")
 
 LOG_MESSAGE_CONTENT_MAX_LEN = 200
+WOADKEEPER_BOT_KEY = "woadkeeper"
 
 
 def _traceback_file_label(filename: str) -> str:
@@ -695,8 +697,48 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 
+def _attempted_command_root(ctx: commands.Context) -> str:
+    invoked_with = str(getattr(ctx, "invoked_with", None) or "").strip()
+    if invoked_with:
+        return help_commands.normalize_lookup(invoked_with.split()[0])
+    content = str(getattr(getattr(ctx, "message", None), "content", "") or "").strip()
+    if content:
+        token = content.split(maxsplit=1)[0]
+        return help_commands.normalize_lookup(token)
+    return ""
+
+
+async def _should_ignore_external_command_not_found(
+    ctx: commands.Context, error: Exception
+) -> bool:
+    if not isinstance(error, commands.CommandNotFound):
+        return False
+
+    attempted_root = _attempted_command_root(ctx)
+    if not attempted_root:
+        return False
+
+    try:
+        rows = await help_commands.get_rows()
+        if rows is None:
+            return False
+        matches = help_commands.find_rows(rows, attempted_root)
+    except Exception:
+        log.warning("failed to resolve shared help command ownership", exc_info=True)
+        return False
+
+    if not matches:
+        return False
+
+    owners = {help_commands.normalize_lookup(row.bot_key) for row in matches}
+    return bool(owners) and "" not in owners and owners.isdisjoint({WOADKEEPER_BOT_KEY})
+
+
 @bot.event
 async def on_command_error(ctx: commands.Context, error: Exception):
+    if await _should_ignore_external_command_not_found(ctx, error):
+        return
+
     log.warning(
         "cmd error: cmd=%s user=%s err=%r",
         getattr(ctx.command, "name", None),
