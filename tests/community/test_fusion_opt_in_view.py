@@ -1115,7 +1115,10 @@ def test_traditional_overview_has_share_and_event_detail_does_not():
 
 
 def test_traditional_reopened_progress_merges_saved_rows_with_event_defaults():
-    events = [_event_row(f"e{i}", start_at_utc=dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc), end_at_utc=dt.datetime(2026, 8, 2, tzinfo=dt.timezone.utc)) for i in range(1, 17)]
+    now = dt.datetime.now(dt.timezone.utc)
+    event_start = now + dt.timedelta(days=1)
+    event_end = now + dt.timedelta(days=2)
+    events = [_event_row(f"e{i}", start_at_utc=event_start, end_at_utc=event_end) for i in range(1, 17)]
     raw_progress = {"progress": {"e1": "done", "e2": "done", "e3": "done", "e4": "in_progress", "stale": "done"}}
 
     progress_by_event = opt_in_view._normalize_saved_progress(raw_progress=raw_progress, events=events)
