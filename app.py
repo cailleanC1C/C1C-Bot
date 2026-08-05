@@ -13,6 +13,7 @@ from typing import Optional
 import discord
 from discord.ext import commands
 
+from shared import config as shared_config
 from shared.config import (
     get_env_name,
     get_allowed_guild_ids,
@@ -44,7 +45,7 @@ from modules.recruitment.reporting.daily_recruiter_update import (
 )
 
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
+    level=shared_config.cfg.get("LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 log = logging.getLogger("c1c.app")
@@ -202,19 +203,22 @@ _shutdown_started = False
 _startup_summary_lock: asyncio.Lock | None = None
 
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    value = raw.strip().lower()
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off"}:
-        return False
-    return default
+LOG_MESSAGE_CONTENT = bool(shared_config.cfg.get("LOG_MESSAGE_CONTENT", False))
 
 
-LOG_MESSAGE_CONTENT = _env_bool("LOG_MESSAGE_CONTENT", False)
+def _startup_channel_config_id(config_key: str) -> int | None:
+    value = shared_config.cfg.get(config_key)
+    return value if isinstance(value, int) else None
+
+
+def _startup_channel_mention_id(config_key: str) -> str:
+    channel_id = _startup_channel_config_id(config_key)
+    return str(channel_id) if channel_id is not None else ""
+
+
+def _startup_channel_raw_id(config_key: str) -> str:
+    channel_id = _startup_channel_config_id(config_key)
+    return str(channel_id) if channel_id is not None else "-"
 
 
 def _truncate_text(text: str, max_len: int = LOG_MESSAGE_CONTENT_MAX_LEN) -> str:
@@ -484,13 +488,13 @@ async def on_ready():
     watchers_lines = [
         "✅ Watchers",
         "• Promo watcher — event=enabled",
-        "  • channel=<#{}>".format(os.getenv("PROMO_CHANNEL_ID", "")),
-        f"  • channel_id={os.getenv('PROMO_CHANNEL_ID', '-')}",
+        "  • channel=<#{}>".format(_startup_channel_mention_id("PROMO_CHANNEL_ID")),
+        f"  • channel_id={_startup_channel_raw_id('PROMO_CHANNEL_ID')}",
         "  • triggers=3",
         "  • flow=promo",
         "• Welcome watcher — event=enabled",
-        "  • channel=<#{}>".format(os.getenv("WELCOME_CHANNEL_ID", "")),
-        f"  • channel_id={os.getenv('WELCOME_CHANNEL_ID', '-')}",
+        "  • channel=<#{}>".format(_startup_channel_mention_id("WELCOME_CHANNEL_ID")),
+        f"  • channel_id={_startup_channel_raw_id('WELCOME_CHANNEL_ID')}",
         "  • flow=welcome",
     ]
     if watchdog_tuple is None:
@@ -713,7 +717,7 @@ async def on_command_error(ctx: commands.Context, error: Exception):
         log.exception("failed to send command error to log channel")
 
 
-BOT_VERSION = os.getenv("BOT_VERSION", "dev")
+BOT_VERSION = str(shared_config.cfg.get("BOT_VERSION", "dev") or "dev")
 _STARTED_MONO = time.monotonic()
 
 
