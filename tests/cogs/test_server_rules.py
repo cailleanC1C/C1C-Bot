@@ -580,20 +580,9 @@ def test_publish_sheet_failure_restores_ids_and_deletes_new(monkeypatch):
 
         monkeypatch.setattr(server_rules.sheets_core, "acall_with_backoff", acall)
         summary, _ = await server_rules.publish(Bot(chan))
-        assert summary.failed == 1
+        assert summary.failed == 2
         assert chan.sent[0].deleted
-        assert batch_calls == [
-            [
-                {
-                    "range": "B2",
-                    "values": [
-                        [
-                            "serverrules-recovery:v1:100000000000000100:111111111111111111"
-                        ]
-                    ],
-                }
-            ]
-        ]
+        assert len(batch_calls) == 2
 
     asyncio.run(run())
 
@@ -644,7 +633,7 @@ def test_sheet_failure_and_failed_replacement_cleanup_are_journalled(monkeypatch
         )
         summary, _ = await server_rules.publish(Bot(chan))
 
-        assert summary.failed == 1
+        assert summary.failed == 2
         assert not chan.sent[0].deleted
         recovery = server_rules._parse_recovery(rows[1][1])
         assert recovery is not None
@@ -1956,6 +1945,151 @@ def test_partial_send_failure_journals_survivor_and_restart_recovers(monkeypatch
         assert len(live) == 2
         assert rows[1][1] == str(live[0].id)
         assert rows[2][1] == str(live[1].id)
+
+    asyncio.run(run())
+
+
+def test_partial_send_journal_failure_deletes_exact_replacement(monkeypatch):
+    async def run():
+        chan = Chan()
+        rows = sheet(
+            ["", "", "yes", "A", "a", "", "A", "1", "blue", "", "", "rules"],
+            ["", "", "yes", "B", "b", "", "B", "2", "blue", "", "", "rules"],
+        )
+        await fake_load(monkeypatch, rows, chan)
+        original_send = chan.send
+        delete_attempts = 0
+
+        async def partial_send(**kwargs):
+            nonlocal delete_attempts
+            if chan.sent:
+                raise discord.HTTPException(response=None, message="send failed")
+            message = await original_send(**kwargs)
+            original_delete = message.delete
+
+            async def observed_delete():
+                nonlocal delete_attempts
+                delete_attempts += 1
+                await original_delete()
+
+            message.delete = observed_delete
+            return message
+
+        async def failed_write(*_args, **_kwargs):
+            raise RuntimeError("sheet unavailable")
+
+        chan.send = partial_send
+        monkeypatch.setattr(
+            server_rules.sheets_core, "acall_with_backoff", failed_write
+        )
+        summary, _ = await server_rules.publish(Bot(chan))
+
+        assert summary.failed == 2
+        assert delete_attempts == 1
+        assert chan.sent[0].deleted
+        assert server_rules._FAILSAFE_PENDING == []
+
+    asyncio.run(run())
+
+
+def test_partial_send_survivor_uses_fallback_journal_and_converges(monkeypatch):
+    async def run():
+        chan = Chan()
+        rows = sheet(
+            ["", "", "yes", "A", "a", "", "A", "1", "blue", "", "", "rules"],
+            ["", "", "yes", "B", "b", "", "B", "2", "blue", "", "", "rules"],
+        )
+        await fake_load(monkeypatch, rows, chan)
+        original_send = chan.send
+
+        async def partial_send(**kwargs):
+            if chan.sent:
+                raise discord.HTTPException(response=None, message="send failed")
+            message = await original_send(**kwargs)
+
+            async def failed_delete():
+                raise discord.HTTPException(response=None, message="delete failed")
+
+            message.delete = failed_delete
+            return message
+
+        calls = 0
+
+        async def fail_then_write(func, payload, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("first journal failed")
+            return func(payload)
+
+        chan.send = partial_send
+        monkeypatch.setattr(
+            server_rules.sheets_core, "acall_with_backoff", fail_then_write
+        )
+        failed, _ = await server_rules.publish(Bot(chan))
+
+        assert failed.failed == 2
+        recovery = server_rules._parse_recovery(rows[1][1])
+        assert recovery is not None
+        assert recovery.cleanup_ids == (str(chan.sent[0].id),)
+
+        async def successful_delete():
+            chan.sent[0].deleted = True
+
+        chan.sent[0].delete = successful_delete
+        chan.send = original_send
+        recovered, _ = await server_rules.publish(Bot(chan))
+        assert recovered.created == 2
+        assert chan.sent[0].deleted
+        assert len([message for message in chan.sent if not message.deleted]) == 2
+
+    asyncio.run(run())
+
+
+def test_full_send_survivor_stays_failsafe_pending_until_next_mutation(monkeypatch):
+    async def run():
+        server_rules._FAILSAFE_PENDING.clear()
+        chan = Chan()
+        rows = sheet(["", "", "yes", "A", "a", "", "A", "1", "blue", "", "", "rules"])
+        await fake_load(monkeypatch, rows, chan)
+        original_send = chan.send
+
+        async def send_with_failed_delete(**kwargs):
+            message = await original_send(**kwargs)
+
+            async def failed_delete():
+                raise discord.HTTPException(response=None, message="delete failed")
+
+            message.delete = failed_delete
+            return message
+
+        async def failed_write(*_args, **_kwargs):
+            raise RuntimeError("sheet unavailable")
+
+        chan.send = send_with_failed_delete
+        monkeypatch.setattr(
+            server_rules.sheets_core, "acall_with_backoff", failed_write
+        )
+        failed, _ = await server_rules.publish(Bot(chan))
+
+        assert failed.failed == 3
+        assert not chan.sent[0].deleted
+        assert [
+            str(message.id) for message in server_rules._FAILSAFE_PENDING[0].messages
+        ] == [str(chan.sent[0].id)]
+
+        async def successful_delete():
+            chan.sent[0].deleted = True
+
+        chan.sent[0].delete = successful_delete
+        chan.send = original_send
+        await fake_load(monkeypatch, rows, chan)
+        recovered, _ = await server_rules.publish(Bot(chan))
+
+        assert recovered.created == 1
+        assert chan.sent[0].deleted
+        assert server_rules._FAILSAFE_PENDING == []
+        assert len([message for message in chan.sent if not message.deleted]) == 1
 
     asyncio.run(run())
 

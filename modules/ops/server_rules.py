@@ -137,6 +137,16 @@ class Row:
 
 
 @dataclass
+class PendingRollback:
+    row_number: int
+    keep_id: str
+    messages: list[Any]
+
+
+_FAILSAFE_PENDING: list[PendingRollback] = []
+
+
+@dataclass
 class MessageGroup:
     key: str
     rows: list[Row]
@@ -654,6 +664,8 @@ async def _delete_new_survivors(messages: list[Any]) -> list[Any]:
     for sent in messages:
         try:
             await sent.delete()
+        except discord.NotFound:
+            continue
         except Exception:
             survivors.append(sent)
     return survivors
@@ -661,6 +673,105 @@ async def _delete_new_survivors(messages: list[Any]) -> list[Any]:
 
 async def _delete_new(messages: list[Any]) -> bool:
     return not await _delete_new_survivors(messages)
+
+
+async def _persist_rollback_journal(
+    tab: str,
+    header_map: dict[str, int],
+    pairs: list[tuple[MessageGroup, Any]],
+) -> list[tuple[Row, str]]:
+    updates = [
+        (
+            group.first_row,
+            _recovery_value(group.stored_message_id, [str(message.id)]),
+        )
+        for group, message in pairs
+    ]
+    await _write_ids_batch(tab, header_map, updates)
+    for row, value in updates:
+        row.data["message_id"] = value
+    return updates
+
+
+async def _rollback_replacements(
+    target: Any,
+    tab: str,
+    header_map: dict[str, int],
+    rows: list[Row],
+    pairs: list[tuple[MessageGroup, Any]],
+    bot_id: int | None,
+    summary: Summary,
+) -> None:
+    """Delete or durably journal only replacements created by this mutation."""
+
+    if not pairs:
+        return
+    try:
+        await _persist_rollback_journal(tab, header_map, pairs)
+    except Exception:
+        summary.fail("sheet", "failed to journal replacement rollback")
+    else:
+        await _recover_pending(target, tab, header_map, rows, bot_id, summary)
+        return
+
+    survivors = await _delete_new_survivors([message for _group, message in pairs])
+    if not survivors:
+        return
+    survivor_ids = {str(message.id) for message in survivors}
+    survivor_pairs = [
+        (group, message) for group, message in pairs if str(message.id) in survivor_ids
+    ]
+    try:
+        await _persist_rollback_journal(tab, header_map, survivor_pairs)
+    except Exception:
+        summary.fail("sheet", "failed to journal replacement rollback survivors")
+        for group, message in survivor_pairs:
+            _FAILSAFE_PENDING.append(
+                PendingRollback(
+                    group.first_row.row_number,
+                    group.stored_message_id,
+                    [message],
+                )
+            )
+
+
+async def _resolve_failsafe_pending(
+    target: Any,
+    tab: str,
+    header_map: dict[str, int],
+    rows: list[Row],
+    summary: Summary,
+) -> bool:
+    """Block mutations until in-memory rollback survivors are deleted or journalled."""
+
+    if not _FAILSAFE_PENDING:
+        return True
+    by_number = {row.row_number: row for row in rows}
+    unresolved: list[PendingRollback] = []
+    for pending in list(_FAILSAFE_PENDING):
+        survivors = await _delete_new_survivors(pending.messages)
+        if not survivors:
+            continue
+        row = by_number.get(pending.row_number)
+        if row is None:
+            pending.messages = survivors
+            unresolved.append(pending)
+            continue
+        value = _recovery_value(
+            pending.keep_id, [str(message.id) for message in survivors]
+        )
+        try:
+            await _write_ids_batch(tab, header_map, [(row, value)])
+        except Exception:
+            pending.messages = survivors
+            unresolved.append(pending)
+        else:
+            row.data["message_id"] = value
+    _FAILSAFE_PENDING[:] = unresolved
+    if unresolved:
+        summary.fail("rollback", "server-rules rollback survivors remain pending")
+        return False
+    return True
 
 
 async def _recover_pending(
@@ -741,6 +852,8 @@ async def _publish(bot: discord.Client) -> tuple[Summary, Any | None]:
     assert target is not None
     summary = Summary()
     bot_id = getattr(getattr(bot, "user", None), "id", None)
+    if not await _resolve_failsafe_pending(target, tab, header_map, rows, summary):
+        return summary, target
     if not await _recover_pending(target, tab, header_map, rows, bot_id, summary):
         return summary, target
     groups, _ = build_groups(rows)
@@ -752,24 +865,9 @@ async def _publish(bot: discord.Client) -> tuple[Summary, Any | None]:
             )
     except Exception:
         summary.fail(group.key, "Discord send failed during rebuild")
-        recovery_updates = [
-            (
-                sent_group.first_row,
-                _recovery_value(
-                    sent_group.stored_message_id, [str(getattr(message, "id", ""))]
-                ),
-            )
-            for sent_group, message in new_pairs
-        ]
-        if recovery_updates:
-            try:
-                await _write_ids_batch(tab, header_map, recovery_updates)
-            except Exception:
-                summary.fail("sheet", "failed to journal partial Discord sends")
-            else:
-                for row, value in recovery_updates:
-                    row.data["message_id"] = value
-                await _recover_pending(target, tab, header_map, rows, bot_id, summary)
+        await _rollback_replacements(
+            target, tab, header_map, rows, new_pairs, bot_id, summary
+        )
         return summary, target
     updates: list[tuple[Row, str]] = []
     for group, msg in new_pairs:
@@ -793,23 +891,9 @@ async def _publish(bot: discord.Client) -> tuple[Summary, Any | None]:
             "sheet",
             "failed to journal replacement messages during rebuild",
         )
-        survivors = await _delete_new_survivors([msg for _row, msg in new_pairs])
-        if survivors:
-            survivor_ids = {str(getattr(message, "id", "")) for message in survivors}
-            fallback_updates = [
-                (
-                    group.first_row,
-                    _recovery_value(group.stored_message_id, [str(message.id)]),
-                )
-                for group, message in new_pairs
-                if str(message.id) in survivor_ids
-            ]
-            try:
-                await _write_ids_batch(tab, header_map, fallback_updates)
-            except Exception:
-                summary.fail(
-                    "rollback", "failed to journal surviving replacement messages"
-                )
+        await _rollback_replacements(
+            target, tab, header_map, rows, new_pairs, bot_id, summary
+        )
         return summary, target
     for row, value in updates:
         row.data["message_id"] = value
@@ -853,6 +937,8 @@ async def _refresh(bot: discord.Client) -> tuple[Summary, Any | None]:
     assert target is not None
     summary = Summary()
     bot_id = getattr(getattr(bot, "user", None), "id", None)
+    if not await _resolve_failsafe_pending(target, tab, header_map, rows, summary):
+        return summary, target
     if not await _recover_pending(target, tab, header_map, rows, bot_id, summary):
         return summary, target
     groups, _ = build_groups(rows)
