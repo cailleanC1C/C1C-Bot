@@ -620,8 +620,9 @@ async def _delete_old_stored_messages(
     new_ids: set[str],
     bot_id: int | None,
     summary: Summary,
-) -> set[str]:
+) -> tuple[set[str], bool]:
     seen: set[str] = set()
+    complete = True
     for row in rows:
         old_id = row.message_id
         if not old_id or old_id in new_ids or old_id in seen:
@@ -631,14 +632,24 @@ async def _delete_old_stored_messages(
             continue
         if state is FetchState.UNKNOWN:
             summary.fail(row.key, reason)
+            complete = False
             continue
-        if msg is None or not _is_valid_stored_message(
+        if msg is None:
+            complete = False
+            continue
+        if not _is_valid_stored_message(
             msg,
             stored_message_id=old_id,
             target=target,
             bot_id=bot_id,
             permitted_legacy_keys=_cleanup_keys_for_row(row),
         ):
+            marker = _legacy_marker(msg)
+            if not (
+                _is_bot_authored(msg, bot_id)
+                and marker.state is LegacyMarkerState.VALID
+            ):
+                complete = False
             continue
         seen.add(old_id)
         try:
@@ -646,15 +657,18 @@ async def _delete_old_stored_messages(
             summary.removed += 1
         except Exception:
             summary.fail(row.key, "failed to remove old managed message after rebuild")
-    return seen
+            complete = False
+    return seen, complete
 
 
-async def _delete_new(messages: list[Any]) -> None:
+async def _delete_new(messages: list[Any]) -> bool:
+    complete = True
     for sent in messages:
         try:
             await sent.delete()
         except Exception:
-            pass
+            complete = False
+    return complete
 
 
 async def publish(bot: discord.Client) -> tuple[Summary, Any | None]:
@@ -699,9 +713,27 @@ async def publish(bot: discord.Client) -> tuple[Summary, Any | None]:
             summary.removed += 0
     new_ids = {str(getattr(msg, "id", "")) for _group, msg in new_pairs}
     bot_id = getattr(getattr(bot, "user", None), "id", None)
-    seen_old_ids = await _delete_old_stored_messages(
+    seen_old_ids, cleanup_complete = await _delete_old_stored_messages(
         target, rows, new_ids, bot_id, summary
     )
+    if not cleanup_complete:
+        replacements = [msg for _group, msg in new_pairs]
+        try:
+            await _restore_ids_batch(tab, header_map, snapshot)
+        except Exception:
+            summary.fail(
+                "sheet",
+                "failed to restore stored message IDs after cleanup rollback",
+            )
+        else:
+            summary.created = 0
+        replacements_removed = await _delete_new(replacements)
+        if not replacements_removed:
+            summary.fail(
+                "rollback",
+                "failed to remove replacement messages after old-message cleanup failed",
+            )
+        return summary, target
     try:
         old_messages = await _iter_feature_messages(target, bot_id)
     except Exception:

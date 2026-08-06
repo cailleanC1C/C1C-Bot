@@ -828,7 +828,7 @@ def test_publish_fetches_known_old_id_and_never_deletes_forged_message(monkeypat
     asyncio.run(run())
 
 
-def test_publish_cleanup_failures_report_after_commit_without_rollback(monkeypatch):
+def test_publish_cleanup_failures_restore_ids_and_remove_replacement(monkeypatch):
     async def run():
         chan = Chan()
         old = Msg(222222222222222222, legacy_marker("rule"))
@@ -859,10 +859,76 @@ def test_publish_cleanup_failures_report_after_commit_without_rollback(monkeypat
             chan,
         )
         summary, _ = await server_rules.publish(Bot(chan))
-        assert summary.created == 1
+        assert summary.created == 0
         assert summary.failed == 1
-        assert writes["batch"] == [[{"range": "B2", "values": [["100"]]}]]
-        assert not chan.sent[0].deleted
+        assert writes["batch"] == [
+            [{"range": "B2", "values": [["100"]]}],
+            [{"range": "B2", "values": [[str(old.id)]]}],
+        ]
+        assert chan.sent[0].deleted
+
+    asyncio.run(run())
+
+
+def test_markerless_cleanup_failure_rolls_back_and_publish_retry_converges(
+    monkeypatch,
+):
+    async def run():
+        chan = Chan()
+        old = Msg(222222222222222222, "")
+        old.embeds = [discord.Embed(title="Previous", description="Clean")]
+        chan.messages[old.id] = old
+        rows = sheet(
+            [
+                "",
+                str(old.id),
+                "yes",
+                "Replacement",
+                "rule",
+                "",
+                "Current",
+                "1",
+                "blue",
+                "",
+                "",
+                "rules",
+            ]
+        )
+        first_writes = await fake_load(monkeypatch, rows, chan)
+        original_delete = old.delete
+        delete_attempts = 0
+
+        async def fail_once():
+            nonlocal delete_attempts
+            delete_attempts += 1
+            if delete_attempts == 1:
+                raise discord.HTTPException(response=None, message="temporary")
+            await original_delete()
+
+        old.delete = fail_once
+        first, _ = await server_rules.publish(Bot(chan))
+
+        assert first.created == 0
+        assert first.failed == 1
+        assert not old.deleted
+        assert chan.sent[0].deleted
+        assert first_writes["batch"] == [
+            [{"range": "B2", "values": [["100"]]}],
+            [{"range": "B2", "values": [[str(old.id)]]}],
+        ]
+
+        second_writes = await fake_load(monkeypatch, rows, chan)
+        second, _ = await server_rules.publish(Bot(chan))
+
+        assert second.created == 1
+        assert second.failed == 0
+        assert old.deleted
+        assert second_writes["batch"] == [[{"range": "B2", "values": [["101"]]}]]
+        live_publication = [message for message in chan.sent if not message.deleted]
+        assert len(live_publication) == 1
+        assert live_publication[0].id == 101
+        assert live_publication[0].content is None
+        assert live_publication[0].embeds[0].description == "Replacement"
 
     asyncio.run(run())
 
@@ -933,6 +999,8 @@ def test_grouped_rows_publish_one_message_with_ordered_embeds_and_group_ids(
 ):
     async def run():
         chan = Chan()
+        previous = Msg(999999999999999999, legacy_marker("rule"))
+        chan.messages[previous.id] = previous
         writes = await fake_load(
             monkeypatch,
             sheet(
