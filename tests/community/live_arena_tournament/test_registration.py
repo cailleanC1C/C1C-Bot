@@ -18,9 +18,9 @@ from modules.community.live_arena_tournament.views import PersistentPanel
 from modules.community.live_arena_tournament.models import Tournament
 
 TABLES = (
-    "tournament_config",
+    "tournaments",
     "eligible_clans",
-    "tournament_roles",
+    "roles",
     "destinations",
     "participants",
     "availability_slots",
@@ -43,6 +43,8 @@ def config_rows():
 def test_system_config_routes_without_fallback_names():
     cfg = parse_system_config(config_rows(), "sheet")
     assert cfg.tabs["participants"] == "route-participants"
+    assert cfg.tabs["tournaments"] == "route-tournaments"
+    assert cfg.tabs["roles"] == "route-roles"
 
 
 def test_missing_route_is_actionable():
@@ -81,13 +83,19 @@ def test_availability_one_day_fails():
 
 
 def test_timezone_conversion_is_dst_aware():
-    winter = slot_local_datetime(slots()[0], "Europe/Vienna")
+    current = slot_local_datetime(slots()[0], "Europe/Vienna")
+    winter = slot_local_datetime(
+        slots()[0],
+        "Europe/Vienna",
+        anchor_monday=datetime(2026, 1, 5, tzinfo=timezone.utc),
+    )
     summer = slot_local_datetime(
         slots()[0],
         "Europe/Vienna",
         anchor_monday=datetime(2026, 7, 6, tzinfo=timezone.utc),
     )
     assert winter.utcoffset() != summer.utcoffset()
+    assert current.utcoffset() == summer.utcoffset()
 
 
 def test_eligibility_uses_role_ids_and_removed_is_detectable():
@@ -143,7 +151,50 @@ def test_repository_reads_named_system_config_not_first_tab():
         new=AsyncMock(return_value=config_rows()),
     ) as read:
         asyncio.run(repo.load_config())
-    read.assert_awaited_once_with("sheet", "'System_Config'!A:Z")
+    read.assert_awaited_once_with("sheet", "System_Config!A:Z")
+
+
+def test_shared_sheets_helper_receives_unquoted_worksheet_name(monkeypatch):
+    from shared.sheets import core
+
+    workbook = object()
+    worksheet = object()
+    monkeypatch.setattr(core, "aopen_by_key", AsyncMock(return_value=workbook))
+    by_title = AsyncMock(return_value=worksheet)
+    values = AsyncMock(return_value=[["Key", "Value"]])
+    monkeypatch.setattr(core.async_adapter, "aworksheet_by_title", by_title)
+    monkeypatch.setattr(core.async_adapter, "aworksheet_values_get", values)
+    asyncio.run(core.asheets_read("sheet", "System_Config!A:Z"))
+    assert by_title.await_args.args == (workbook, "System_Config")
+    assert values.await_args.args == (worksheet, "A:Z")
+
+
+def test_config_snapshot_loads_optional_live_arena_sheet_id(monkeypatch):
+    from shared import config
+
+    monkeypatch.setenv("LIVE_ARENA_TOURNAMENT_SHEET_ID", " workbook-id ")
+    assert (
+        config._load_config_snapshot()["LIVE_ARENA_TOURNAMENT_SHEET_ID"]
+        == "workbook-id"
+    )
+
+
+def test_all_real_message_placeholders_are_resolved():
+    values = {
+        "participant_count": 7,
+        "max_participants": 8,
+        "tournament_status": "signup_open",
+        "roster_parity_summary": "Odd roster",
+    }
+    for key in ("signup_open", "signup_closed", "registration_organizer"):
+        embed = configured_embed(
+            {
+                "message_key": key,
+                "body_template": "{participant_count}/{max_participants} {tournament_status} {roster_parity_summary}",
+            },
+            values,
+        )
+        assert "{" not in embed.description
 
 
 def test_register_and_update_use_idempotent_participant_and_availability_writes():
@@ -207,3 +258,36 @@ def test_removed_participant_cannot_self_withdraw():
             )
         )
     repo.replace_row.assert_not_awaited()
+
+
+def test_disqualified_participant_cannot_self_register():
+    repo = AsyncMock()
+    repo.rows.return_value = [
+        {"tournament_id": "T1", "discord_user_id": "42", "status": "disqualified"}
+    ]
+    with pytest.raises(Exception, match="cannot be changed through self-service"):
+        asyncio.run(
+            LiveArenaService(repo).register(
+                tournament=Tournament("T1", "Cup", "signup_open", 8, 3),
+                user_id="42",
+                display_name="Player",
+                member_role_ids=[7],
+                timezone_name="UTC",
+                slot_ids=["a", "b", "c"],
+            )
+        )
+    repo.replace_row.assert_not_awaited()
+
+
+def test_capacity_disables_join_but_not_update():
+    view = PersistentPanel(
+        object(),
+        [
+            {"action_id": action, "label": action, "active": "true"}
+            for action in ("join_tournament", "update_availability")
+        ],
+        ["join_tournament", "update_availability"],
+    )
+    view.disable_actions({"join_tournament"})
+    states = {item.action: item.disabled for item in view.children}
+    assert states == {"join_tournament": True, "update_availability": False}

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
@@ -38,7 +38,7 @@ class Tournament:
     status: str
     maximum_participants: int
     minimum_availability: int = 3
-    signup_deadline: str = ""
+    signup_closes_at: str = ""
     eligibility_scope: str = "selected_clans"
 
 
@@ -101,11 +101,12 @@ def validate_timezone(name: str) -> str:
 def slot_local_datetime(
     slot: AvailabilitySlot, timezone_name: str, *, anchor_monday: datetime | None = None
 ) -> datetime:
-    anchor = anchor_monday or datetime(2026, 1, 5, tzinfo=timezone.utc)
-    hour, minute = map(int, slot.start_time_utc.split(":")[:2])
-    value = anchor.replace(hour=hour, minute=minute) + __import__("datetime").timedelta(
-        days=slot.weekday_utc
+    now = datetime.now(timezone.utc)
+    anchor = anchor_monday or (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
     )
+    hour, minute = map(int, slot.start_time_utc.split(":")[:2])
+    value = anchor.replace(hour=hour, minute=minute) + timedelta(days=slot.weekday_utc)
     return value.astimezone(ZoneInfo(timezone_name))
 
 

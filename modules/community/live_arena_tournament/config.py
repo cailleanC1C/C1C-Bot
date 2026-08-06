@@ -9,9 +9,9 @@ from .models import SchemaError, norm
 ENV_KEY = "LIVE_ARENA_TOURNAMENT_SHEET_ID"
 REQUIRED_TABLE_KEYS = frozenset(
     {
-        "tournament_config",
+        "tournaments",
         "eligible_clans",
-        "tournament_roles",
+        "roles",
         "destinations",
         "participants",
         "availability_slots",

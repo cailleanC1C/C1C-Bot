@@ -22,7 +22,7 @@ class LiveArenaRepository:
 
     async def load_config(self):
         self.config = parse_system_config(
-            await asheets_read(self.sheet_id, "'System_Config'!A:Z"), self.sheet_id
+            await asheets_read(self.sheet_id, "System_Config!A:Z"), self.sheet_id
         )
         return self.config
 

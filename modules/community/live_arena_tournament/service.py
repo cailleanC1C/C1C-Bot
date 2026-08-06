@@ -80,9 +80,13 @@ class LiveArenaService:
                 ("tournament_id", "participant_slot", "status", "discord_user_id"),
             )
             existing = self.participant_for(participants, tid, user_id)
-            if existing and norm(existing.get("status")) == "removed":
+            if existing and norm(existing.get("status")) not in {
+                "open",
+                "withdrawn",
+                "confirmed",
+            }:
                 raise RegistrationError(
-                    "An organizer removed this registration; contact a tournament organizer."
+                    "This registration cannot be changed through self-service; contact a tournament organizer."
                 )
             if norm(tournament.status) != "signup_open":
                 raise RegistrationError("Registration is not open.")
@@ -104,7 +108,7 @@ class LiveArenaService:
                     parse_weekday(r["weekday_utc"]),
                     str(r["start_time_utc"]),
                     str(r.get("end_time_utc", "")),
-                    truthy(r.get("active", r.get("enabled", True))),
+                    truthy(r.get("enabled", r.get("active", True))),
                     int(r.get("sort_order") or 0),
                 )
                 for r in raw_slots
@@ -138,7 +142,11 @@ class LiveArenaService:
                 "status": "confirmed",
                 "clan_verification_status": "verified",
                 "signed_up_at": target.get("signed_up_at") or now,
-                "confirmed_at": now,
+                "confirmed_at": (
+                    target.get("confirmed_at")
+                    if existing and norm(target.get("status")) == "confirmed"
+                    else now
+                ),
                 "withdrawn_at": "",
                 "withdrawal_reason": "",
             }
@@ -159,7 +167,9 @@ class LiveArenaService:
                     pass
                 raise
             await self.repository.audit(
-                "registration_confirmed",
+                "availability_updated"
+                if existing and norm(old.get("status")) == "confirmed"
+                else "registration_confirmed",
                 tid,
                 user_id,
                 "participant",

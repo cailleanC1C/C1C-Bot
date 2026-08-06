@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import logging
+from datetime import datetime, timedelta, timezone
 import discord
 from discord.ext import commands
 from c1c_coreops.rbac import is_admin_member
@@ -14,6 +15,7 @@ from .models import (
     norm,
     truthy,
     parse_weekday,
+    slot_local_datetime,
 )
 from .repository import LiveArenaRepository
 from .rendering import choose_row, configured_embed
@@ -74,9 +76,7 @@ class LiveArenaTournamentCog(commands.Cog):
         if not self.repository:
             raise RegistrationError("Live Arena registration is disabled.")
         cfg = self.repository.config or await self.repository.load_config()
-        rows = await self.repository.rows(
-            "tournament_config", ("tournament_id", "status")
-        )
+        rows = await self.repository.rows("tournaments", ("tournament_id", "status"))
         row = next(
             (
                 r
@@ -95,7 +95,7 @@ class LiveArenaTournamentCog(commands.Cog):
             norm(row["status"]),
             int(row.get("maximum_participants", row.get("max_participants", 0))),
             int(row.get("minimum_availability", 3)),
-            str(row.get("signup_deadline", "")),
+            str(row.get("signup_closes_at", row.get("signup_deadline", ""))),
             norm(row.get("eligibility_scope", "selected_clans")),
         )
         return cfg, tournament, row
@@ -104,9 +104,7 @@ class LiveArenaTournamentCog(commands.Cog):
         if is_admin_member(member):
             return True
         cfg, _, _ = await self._bundle()
-        rows = await self.repository.rows(
-            "tournament_roles", ("role_type", "discord_role_id")
-        )
+        rows = await self.repository.rows("roles", ("role_type", "discord_role_id"))
         ids = {
             str(r["discord_role_id"])
             for r in rows
@@ -124,6 +122,64 @@ class LiveArenaTournamentCog(commands.Cog):
             else interaction.response.send_message
         )
         await target(embed=embed, view=view, ephemeral=True)
+
+    async def _message_text(self, key, values, fallback):
+        messages = await self.repository.rows("messages")
+        row = choose_row(messages, key, self.repository.config.active_tournament_id)
+        if not row:
+            return fallback
+        embed = configured_embed(row, values)
+        return embed.description or embed.title or fallback
+
+    async def _report_role_failure(self, guild, member, exc):
+        cfg = self.repository.config
+        log.error(
+            "Live Arena participant role sync failed: %s",
+            exc,
+            extra={"tournament_id": cfg.active_tournament_id, "member_id": member.id},
+        )
+        await self.repository.audit(
+            "participant_role_sync_failed",
+            cfg.active_tournament_id,
+            self.bot.user.id,
+            "participant",
+            member.id,
+            {},
+            {"role_synced": False},
+            str(exc),
+        )
+        destinations = await self.repository.rows("destinations")
+        row = next(
+            (
+                r
+                for r in destinations
+                if str(r.get("tournament_id")) == cfg.active_tournament_id
+                and norm(r.get("destination_key")) == "organizer_log"
+                and truthy(r.get("active", True))
+            ),
+            None,
+        )
+        channel = guild.get_channel(int(row["channel_id"])) if row else None
+        if channel:
+            await channel.send(
+                embed=discord.Embed(
+                    description=(
+                        f"⚠️ Participant role sync failed for <@{member.id}>. The confirmed "
+                        "registration was retained; run Refresh Registration."
+                    )
+                )
+            )
+
+    @staticmethod
+    def _availability_anchor(raw):
+        try:
+            value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            value = value.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            value = datetime.now(timezone.utc)
+        return (value - timedelta(days=value.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
 
     async def handle_action(self, action, interaction):
         try:
@@ -144,11 +200,18 @@ class LiveArenaTournamentCog(commands.Cog):
                 if (
                     action == "join_tournament"
                     and current
-                    and norm(current.get("status")) == "removed"
+                    and norm(current.get("status"))
+                    not in {"open", "withdrawn", "confirmed"}
                 ):
                     raise RegistrationError(
-                        "An organizer removed this registration; contact a tournament organizer."
+                        "This registration cannot be changed through self-service; contact a tournament organizer."
                     )
+                if (
+                    action == "join_tournament"
+                    and current
+                    and norm(current.get("status")) == "confirmed"
+                ):
+                    return await self.show_registration(interaction)
                 if (
                     action == "join_tournament"
                     and not current
@@ -187,7 +250,7 @@ class LiveArenaTournamentCog(commands.Cog):
 
         try:
             timezone_name = validate_timezone(timezone_name)
-            cfg, _, _ = await self._bundle()
+            cfg, tournament, _ = await self._bundle()
             raw = await self.repository.rows(
                 "availability_slots", ("slot_id", "weekday_utc", "start_time_utc")
             )
@@ -197,13 +260,13 @@ class LiveArenaTournamentCog(commands.Cog):
                     parse_weekday(r["weekday_utc"]),
                     str(r["start_time_utc"]),
                     str(r.get("end_time_utc", "")),
-                    truthy(r.get("active", True)),
+                    truthy(r.get("enabled", r.get("active", True))),
                     int(r.get("sort_order") or 0),
                 )
                 for r in raw
                 if str(r.get("tournament_id", cfg.active_tournament_id))
                 in ("", cfg.active_tournament_id)
-                and truthy(r.get("active", True))
+                and truthy(r.get("enabled", r.get("active", True)))
             ]
             selected = []
             if mode == "update":
@@ -219,7 +282,16 @@ class LiveArenaTournamentCog(commands.Cog):
             await self._reply(
                 interaction,
                 "Choose local-time windows.",
-                view=AvailabilityView(self, mode, timezone_name, slots, selected),
+                view=AvailabilityView(
+                    self,
+                    mode,
+                    timezone_name,
+                    slots,
+                    selected,
+                    anchor_monday=self._availability_anchor(
+                        tournament.signup_closes_at
+                    ),
+                ),
             )
         except RegistrationError as exc:
             await self._reply(interaction, str(exc))
@@ -235,22 +307,38 @@ class LiveArenaTournamentCog(commands.Cog):
                 timezone_name=session.timezone,
                 slot_ids=list(session.selected),
             )
-            await self._set_participant_role(interaction.user, True)
+            role_warning = ""
+            try:
+                await self._set_participant_role(interaction.user, True)
+            except Exception as exc:
+                role_warning = " Registration succeeded, but the Discord role could not be synced; an organizer has been alerted."
+                await self._report_role_failure(
+                    interaction.guild, interaction.user, exc
+                )
             await self.publish_panels(interaction.guild)
             await self._reply(
                 interaction,
-                "Registration saved."
-                if result["created"]
-                else "Your registration is already current.",
+                await self._message_text(
+                    "signup_confirmed",
+                    {
+                        "tournament_name": tournament.name,
+                        "participant_count": "",
+                        "max_participants": tournament.maximum_participants,
+                        "tournament_status": tournament.status,
+                        "roster_parity_summary": "",
+                    },
+                    "Registration saved."
+                    if result["created"]
+                    else "Availability update saved.",
+                )
+                + role_warning,
             )
         except Exception as exc:
             await self._reply(interaction, str(exc))
 
     async def _participant_role_id(self):
         cfg, _, _ = await self._bundle()
-        roles = await self.repository.rows(
-            "tournament_roles", ("role_type", "discord_role_id")
-        )
+        roles = await self.repository.rows("roles", ("role_type", "discord_role_id"))
         row = next(
             (
                 r
@@ -288,11 +376,41 @@ class LiveArenaTournamentCog(commands.Cog):
             ),
             None,
         )
+        availability = (
+            await self.repository.rows("participant_availability") if p else []
+        )
+        raw_slots = await self.repository.rows("availability_slots") if p else []
+        selected = {
+            str(r.get("slot_id"))
+            for r in availability
+            if str(r.get("tournament_id")) == cfg.active_tournament_id
+            and str(r.get("discord_user_id")) == str(interaction.user.id)
+        }
+        grouped = {}
+        anchor = self._availability_anchor(t.signup_closes_at)
+        for row in raw_slots:
+            if str(row.get("slot_id")) not in selected:
+                continue
+            slot = AvailabilitySlot(
+                str(row["slot_id"]),
+                parse_weekday(row["weekday_utc"]),
+                str(row["start_time_utc"]),
+                str(row.get("end_time_utc", "")),
+            )
+            local = slot_local_datetime(
+                slot, str(p.get("timezone") or "UTC"), anchor_monday=anchor
+            )
+            grouped.setdefault(local.strftime("%A"), []).append(local.strftime("%H:%M"))
+        saved = (
+            "\n".join(f"{day}: {', '.join(times)}" for day, times in grouped.items())
+            or "None saved"
+        )
+        valid = len(selected) >= t.minimum_availability and len(grouped) >= 2
         await self._reply(
             interaction,
             "No registration was found."
             if not p
-            else f"**{t.name}**\nStatus: {p.get('status')}\nName: {p.get('display_name_at_signup')}\nClan: {p.get('clan_tag_at_signup')}\nTimezone: {p.get('timezone')}",
+            else f"**{t.name}**\nStatus: {p.get('status')}\nName: {p.get('display_name_at_signup')}\nClan: {p.get('clan_tag_at_signup')}\nTimezone: {p.get('timezone')}\n\n**Saved availability**\n{saved}\nSelected windows: {len(selected)}\nMinimum validity: {'Valid' if valid else 'Needs attention'}",
         )
 
     async def withdraw(self, interaction):
@@ -318,7 +436,20 @@ class LiveArenaTournamentCog(commands.Cog):
         )
         await self._set_participant_role(interaction.user, False)
         await self.publish_panels(interaction.guild)
-        await self._reply(interaction, "Your registration has been withdrawn.")
+        await self._reply(
+            interaction,
+            await self._message_text(
+                "withdrawal_confirmed",
+                {
+                    "tournament_name": "",
+                    "participant_count": "",
+                    "max_participants": "",
+                    "tournament_status": "withdrawn",
+                    "roster_parity_summary": "",
+                },
+                "Your registration has been withdrawn.",
+            ),
+        )
 
     async def organizer_action(self, action, interaction):
         if action == "refresh_registration":
@@ -359,9 +490,9 @@ class LiveArenaTournamentCog(commands.Cog):
             raise RegistrationError(
                 f"Cannot change registration from {t.status} to {desired}."
             )
-        rows = await self.repository.rows("tournament_config")
+        rows = await self.repository.rows("tournaments")
         rn = int(row.get("_row_number") or rows.index(row) + 2)
-        await self.repository.replace_row("tournament_config", rn, {"status": desired})
+        await self.repository.replace_row("tournaments", rn, {"status": desired})
         event = (
             {
                 "signup_open": "registration_opened",
@@ -400,18 +531,37 @@ class LiveArenaTournamentCog(commands.Cog):
             return await self._reply(
                 interaction, "Tournament organizer access is required."
             )
-        cfg, _, _ = await self._bundle()
+        cfg, tournament, _ = await self._bundle()
+        member = (
+            interaction.guild.get_member(int(user_id))
+            if str(user_id).isdigit()
+            else None
+        )
+        if status == "confirmed":
+            if tournament.status != "signup_open":
+                raise RegistrationError(
+                    "Participants can only be restored while registration is open."
+                )
+            if not member:
+                raise RegistrationError(
+                    "The participant is no longer a member of this server."
+                )
+            participants = await self.repository.rows("participants")
+            if (
+                self.service.confirmed_count(participants, cfg.active_tournament_id)
+                >= tournament.maximum_participants
+            ):
+                raise RegistrationError("The tournament is at capacity.")
+            clans = await self.repository.rows("eligible_clans")
+            self.service.eligible_clan(
+                [role.id for role in member.roles], clans, cfg.active_tournament_id
+            )
         await self.service.change_participant_status(
             cfg.active_tournament_id,
             user_id,
             status,
             interaction.user.id,
             "organizer_action",
-        )
-        member = (
-            interaction.guild.get_member(int(user_id))
-            if str(user_id).isdigit()
-            else None
         )
         if member:
             await self._set_participant_role(member, status == "confirmed")
@@ -434,11 +584,45 @@ class LiveArenaTournamentCog(commands.Cog):
         }
         for member in list(role.members):
             if member.id not in wanted:
-                await member.remove_roles(role, reason="Live Arena role reconciliation")
+                try:
+                    await member.remove_roles(
+                        role, reason="Live Arena role reconciliation"
+                    )
+                    await self.repository.audit(
+                        "participant_role_reconciled",
+                        cfg.active_tournament_id,
+                        self.bot.user.id,
+                        "participant",
+                        member.id,
+                        {"role": True},
+                        {"role": False},
+                    )
+                except Exception as exc:
+                    log.error(
+                        "Live Arena role reconciliation failed for %s: %s",
+                        member.id,
+                        exc,
+                    )
         for user_id in wanted:
             member = guild.get_member(user_id)
             if member and role not in member.roles:
-                await member.add_roles(role, reason="Live Arena role reconciliation")
+                try:
+                    await member.add_roles(
+                        role, reason="Live Arena role reconciliation"
+                    )
+                    await self.repository.audit(
+                        "participant_role_reconciled",
+                        cfg.active_tournament_id,
+                        self.bot.user.id,
+                        "participant",
+                        member.id,
+                        {"role": False},
+                        {"role": True},
+                    )
+                except Exception as exc:
+                    log.error(
+                        "Live Arena role reconciliation failed for %s: %s", user_id, exc
+                    )
 
     async def publish_panels(self, guild):
         cfg, t, _ = await self._bundle()
@@ -454,10 +638,12 @@ class LiveArenaTournamentCog(commands.Cog):
             for p in participants
         )
         if self.public_view:
-            unavailable = t.status != "signup_open" or count >= t.maximum_participants
-            self.public_view.disable_actions(
-                {"join_tournament", "update_availability"} if unavailable else set()
-            )
+            disabled = set()
+            if t.status != "signup_open":
+                disabled.update({"join_tournament", "update_availability"})
+            elif count >= t.maximum_participants:
+                disabled.add("join_tournament")
+            self.public_view.disable_actions(disabled)
         if self.organizer_view:
             disabled = {
                 "open_registration",
@@ -474,11 +660,18 @@ class LiveArenaTournamentCog(commands.Cog):
             self.organizer_view.disable_actions(disabled)
         values = {
             "tournament_name": t.name,
-            "signup_deadline": t.signup_deadline,
+            "signup_closes_at": t.signup_closes_at,
+            "signup_deadline": t.signup_closes_at,
             "confirmed_count": count,
             "maximum_participants": t.maximum_participants,
             "minimum_availability": t.minimum_availability,
             "status": t.status,
+            "participant_count": count,
+            "max_participants": t.maximum_participants,
+            "tournament_status": t.status,
+            "roster_parity_summary": "Even roster"
+            if count % 2 == 0
+            else "Odd roster — one player is unmatched",
         }
         state_map = {
             norm(x.get("state_key")): x

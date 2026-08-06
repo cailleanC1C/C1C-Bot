@@ -99,7 +99,7 @@ class SlotSelect(discord.ui.Select):
         self.parent_view = parent
         options = [
             discord.SelectOption(
-                label=f"{slot_local_datetime(s, parent.timezone).strftime('%A %H:%M')} local",
+                label=f"{parent.local_datetime(s).strftime('%A %H:%M')} local",
                 value=s.slot_id,
                 default=s.slot_id in parent.selected,
             )
@@ -123,22 +123,24 @@ class SlotSelect(discord.ui.Select):
 class AvailabilityView(discord.ui.View):
     """Ephemeral, restart-safe-until-submit selector; Sheets remain the durable state."""
 
-    def __init__(self, cog, mode, timezone, slots, selected=()):
+    def __init__(self, cog, mode, timezone, slots, selected=(), anchor_monday=None):
         super().__init__(timeout=600)
         self.cog, self.mode, self.timezone = cog, mode, timezone
         self.slots, self.selected, self.page = slots, set(selected), 0
-        self.days = sorted(
-            {slot_local_datetime(s, timezone).strftime("%A") for s in slots}
-        )
+        self.anchor_monday = anchor_monday
+        self.days = sorted({self.local_datetime(s).strftime("%A") for s in slots})
         self._render()
+
+    def local_datetime(self, slot):
+        return slot_local_datetime(
+            slot, self.timezone, anchor_monday=self.anchor_monday
+        )
 
     def _render(self):
         self.clear_items()
         day = self.days[self.page]
         choices = [
-            s
-            for s in self.slots
-            if slot_local_datetime(s, self.timezone).strftime("%A") == day
+            s for s in self.slots if self.local_datetime(s).strftime("%A") == day
         ]
         self.add_item(SlotSelect(self, day, choices))
         previous = discord.ui.Button(
@@ -175,7 +177,7 @@ class AvailabilityView(discord.ui.View):
 
     async def review(self, interaction):
         labels = [
-            slot_local_datetime(s, self.timezone).strftime("%A %H:%M")
+            self.local_datetime(s).strftime("%A %H:%M")
             for s in self.slots
             if s.slot_id in self.selected
         ]
