@@ -1,9 +1,21 @@
 import asyncio
 import discord
 from unittest.mock import AsyncMock
+from urllib.parse import quote
 
 from modules.ops import server_rules
 from cogs.server_rules import ServerRulesCog
+
+
+def legacy_marker(key):
+    return f"{server_rules.LEGACY_MARKER_PREFIX}{key}\u2060\u2063"
+
+
+def hidden_marker(key):
+    return (
+        f"[{server_rules.HIDDEN_MARKER_LABEL}]"
+        f"({server_rules.HIDDEN_MARKER_PREFIX}{quote(key, safe='')})"
+    )
 
 
 class Msg:
@@ -12,7 +24,8 @@ class Msg:
         self.content = content
         self.author = type("A", (), {"id": author_id})()
         self.deleted = False
-        self.embeds = []
+        self.embeds = [discord.Embed(description="legacy payload")]
+        self.channel = None
         self.edits = []
 
     async def edit(self, **kw):
@@ -38,6 +51,7 @@ class Chan:
         msg = Msg(100 + len(self.sent), kw.get("content", ""))
         msg.kw = kw
         msg.embeds = kw.get("embeds") or ([kw["embed"]] if "embed" in kw else [])
+        msg.channel = self
         self.sent.append(msg)
         self.messages[msg.id] = msg
         return msg
@@ -45,6 +59,7 @@ class Chan:
     async def fetch_message(self, mid):
         if mid not in self.messages:
             raise discord.NotFound(response=None, message="missing")
+        self.messages[mid].channel = self
         return self.messages[mid]
 
     def history(self, limit=500):
@@ -167,7 +182,7 @@ def test_publish_sorts_and_writes_message_ids_header_order_independent(monkeypat
         assert summary.created == 2
         assert [m.kw["embeds"][0].title for m in chan.sent] == ["Title A", "Title B"]
         assert chan.sent[0].kw["embeds"][0].thumbnail.url == "https://e.test/t.png"
-        assert "content" not in chan.sent[0].kw
+        assert chan.sent[0].kw["content"] is None
         assert writes["batch"] == [
             [{"range": "B3", "values": [["100"]]}, {"range": "B2", "values": [["101"]]}]
         ]
@@ -212,9 +227,9 @@ def test_preflight_abort_no_mutations_on_invalid_rows(monkeypatch):
 def test_refresh_edits_recreates_and_deletes(monkeypatch):
     async def run():
         chan = Chan()
-        existing = Msg(555555555555555555, server_rules.marker_for("keep"))
+        existing = Msg(555555555555555555, legacy_marker("keep"))
         chan.messages[555555555555555555] = existing
-        disabled = Msg(777777777777777777, server_rules.marker_for("old"))
+        disabled = Msg(777777777777777777, legacy_marker("old"))
         chan.messages[777777777777777777] = disabled
         writes = await fake_load(
             monkeypatch,
@@ -293,7 +308,7 @@ def test_unrelated_messages_untouched_on_rebuild(monkeypatch):
         chan = Chan()
         unrelated = Msg(1, "hello")
         chan.messages[1] = unrelated
-        old = Msg(222222222222222222, server_rules.marker_for("rule"))
+        old = Msg(222222222222222222, legacy_marker("rule"))
         chan.messages[222222222222222222] = old
         await fake_load(
             monkeypatch,
@@ -770,8 +785,8 @@ def test_supported_server_rules_faq_hex_colours_are_explicit_palette():
 def test_publish_fetches_known_old_id_and_never_deletes_forged_message(monkeypatch):
     async def run():
         chan = Chan()
-        forged = Msg(333333333333333333, server_rules.marker_for("rule"), author_id=99)
-        old = Msg(222222222222222222, server_rules.marker_for("rule"))
+        forged = Msg(333333333333333333, legacy_marker("rule"), author_id=99)
+        old = Msg(222222222222222222, legacy_marker("rule"))
         chan.messages[forged.id] = forged
         chan.messages[old.id] = old
         fetched = []
@@ -816,7 +831,7 @@ def test_publish_fetches_known_old_id_and_never_deletes_forged_message(monkeypat
 def test_publish_cleanup_failures_report_after_commit_without_rollback(monkeypatch):
     async def run():
         chan = Chan()
-        old = Msg(222222222222222222, server_rules.marker_for("rule"))
+        old = Msg(222222222222222222, legacy_marker("rule"))
         chan.messages[old.id] = old
 
         async def delete_failure():
@@ -970,14 +985,17 @@ def test_grouped_rows_publish_one_message_with_ordered_embeds_and_group_ids(
         summary, _ = await server_rules.publish(Bot(chan))
         assert summary.created == 2
         assert len(chan.sent) == 2
-        assert chan.sent[0].content == ""
+        assert chan.sent[0].content is None
         assert [e.title for e in chan.sent[0].embeds] == ["T1", "T2", "T3"]
         assert chan.sent[0].embeds[0].thumbnail.url == "https://e.test/icon.png"
         assert not chan.sent[0].embeds[1].thumbnail.url
         assert not chan.sent[0].embeds[1].footer.text
         assert chan.sent[0].embeds[2].footer.text == "Foot"
         assert "serverrules:" not in (chan.sent[0].embeds[0].description or "")
-        assert server_rules._is_managed_message(chan.sent[0], 42, "rule")
+        assert (
+            server_rules._legacy_marker(chan.sent[0]).state
+            is server_rules.LegacyMarkerState.NONE
+        )
         assert writes["batch"] == [
             [
                 {"range": "B2", "values": [["100"]]},
@@ -1107,10 +1125,10 @@ def test_faq_topic_metadata_does_not_combine_or_render(monkeypatch):
     asyncio.run(run())
 
 
-def test_hidden_marker_validation_and_legacy_refresh(monkeypatch):
+def test_legacy_marker_validation_and_clean_refresh(monkeypatch):
     async def run():
         chan = Chan()
-        legacy = Msg(555555555555555555, server_rules.marker_for("keep"))
+        legacy = Msg(555555555555555555, legacy_marker("keep"))
         chan.messages[legacy.id] = legacy
         await fake_load(
             monkeypatch,
@@ -1135,28 +1153,126 @@ def test_hidden_marker_validation_and_legacy_refresh(monkeypatch):
         summary, _ = await server_rules.refresh(Bot(chan))
         assert summary.refreshed == 1
         assert legacy.content is None
-        assert server_rules._is_managed_message(legacy, 42, "keep")
-        assert not server_rules._is_managed_message(legacy, 42, "wrong")
+        assert (
+            server_rules._legacy_marker(legacy).state
+            is server_rules.LegacyMarkerState.NONE
+        )
+        assert legacy.embeds[0].description == "Updated"
         forged = Msg(1, author_id=99)
         forged.embeds = legacy.embeds
-        assert not server_rules._is_managed_message(forged, 42, "keep")
+        assert (
+            server_rules._legacy_marker(forged).state
+            is server_rules.LegacyMarkerState.NONE
+        )
         malformed = Msg(2, author_id=42)
         e = discord.Embed(description="[\u2063](https://c1c.invalid/serverrules/%ZZ)")
         malformed.embeds = [e]
-        assert not server_rules._is_managed_message(malformed, 42, "keep")
-        ordinary = Msg(3, "hello", 42)
-        assert not server_rules._is_managed_message(ordinary, 42)
-        assert server_rules._is_managed_message(
-            Msg(4, server_rules.marker_for("old")), 42, "old"
+        assert (
+            server_rules._legacy_marker(malformed).state
+            is server_rules.LegacyMarkerState.MALFORMED
         )
+        ordinary = Msg(3, "hello", 42)
+        assert (
+            server_rules._legacy_marker(ordinary).state
+            is server_rules.LegacyMarkerState.NONE
+        )
+        assert server_rules.is_feature_message(Msg(4, legacy_marker("old")), {"old"})
 
     asyncio.run(run())
+
+
+def test_hidden_marker_migrates_then_markerless_stored_id_refreshes(monkeypatch):
+    async def run():
+        chan = Chan()
+        message_id = 555555555555555555
+        existing = Msg(message_id, "")
+        existing.embeds = [discord.Embed(description=f"Old{hidden_marker('keep')}")]
+        chan.messages[message_id] = existing
+        rows = sheet(
+            [
+                "",
+                str(message_id),
+                "yes",
+                "Clean Sheet description",
+                "keep",
+                "",
+                "Keep",
+                "1",
+                "blue",
+                "Sheet footer",
+                "",
+                "rules",
+            ]
+        )
+        await fake_load(monkeypatch, rows, chan)
+
+        first, _ = await server_rules.refresh(Bot(chan))
+        second, _ = await server_rules.refresh(Bot(chan))
+
+        assert first.refreshed == second.refreshed == 1
+        assert len(existing.edits) == 2
+        assert existing.content is None
+        assert existing.embeds[0].description == "Clean Sheet description"
+        assert existing.embeds[0].footer.text == "Sheet footer"
+        assert "serverrules:" not in existing.embeds[0].description
+        assert "c1c.invalid" not in existing.embeds[0].description
+
+    asyncio.run(run())
+
+
+def test_stored_message_verifier_rejects_untrusted_identity_and_payload():
+    target = Chan(9)
+    stored_id = "555555555555555555"
+
+    def valid_message():
+        message = Msg(int(stored_id), "")
+        message.channel = target
+        message.embeds = [discord.Embed(description="valid")]
+        return message
+
+    def accepted(message):
+        return server_rules._is_valid_stored_message(
+            message,
+            stored_message_id=stored_id,
+            target=target,
+            bot_id=42,
+            permitted_legacy_keys={"keep"},
+        )
+
+    assert accepted(valid_message())
+    wrong_id = valid_message()
+    wrong_id.id += 1
+    assert not accepted(wrong_id)
+    wrong_channel = valid_message()
+    wrong_channel.channel = Chan(10)
+    assert not accepted(wrong_channel)
+    wrong_author = valid_message()
+    wrong_author.author.id = 99
+    assert not accepted(wrong_author)
+    empty = valid_message()
+    empty.embeds = []
+    assert not accepted(empty)
+    invalid = valid_message()
+    invalid.embeds[0].description = "x" * (server_rules.MAX_DESCRIPTION + 1)
+    assert not accepted(invalid)
+    visible_content = valid_message()
+    visible_content.content = "not management data"
+    assert not accepted(visible_content)
+    wrong_key = valid_message()
+    wrong_key.content = legacy_marker("wrong")
+    assert not accepted(wrong_key)
+    malformed = valid_message()
+    malformed.embeds[0].description = (
+        f"[{server_rules.HIDDEN_MARKER_LABEL}]"
+        f"({server_rules.HIDDEN_MARKER_PREFIX}%ZZ)"
+    )
+    assert not accepted(malformed)
 
 
 def test_refresh_group_edits_once_and_conflicting_ids_fail(monkeypatch):
     async def run():
         chan = Chan()
-        existing = Msg(555555555555555555, server_rules.marker_for("rule"))
+        existing = Msg(555555555555555555, legacy_marker("rule"))
         chan.messages[existing.id] = existing
         await fake_load(
             monkeypatch,
@@ -1237,10 +1353,9 @@ def test_refresh_group_edits_once_and_conflicting_ids_fail(monkeypatch):
     asyncio.run(run())
 
 
-def test_hidden_marker_description_overflow_rejected_before_side_effects(monkeypatch):
+def test_clean_description_overflow_rejected_before_side_effects(monkeypatch):
     async def run():
         chan = Chan()
-        marker_len = len(server_rules.hidden_marker_for("near"))
         writes = await fake_load(
             monkeypatch,
             sheet(
@@ -1248,7 +1363,7 @@ def test_hidden_marker_description_overflow_rejected_before_side_effects(monkeyp
                     "",
                     "",
                     "yes",
-                    "x" * (server_rules.MAX_DESCRIPTION - marker_len + 1),
+                    "x" * (server_rules.MAX_DESCRIPTION + 1),
                     "near",
                     "",
                     "",
@@ -1269,12 +1384,11 @@ def test_hidden_marker_description_overflow_rejected_before_side_effects(monkeyp
     asyncio.run(run())
 
 
-def test_hidden_marker_combined_total_overflow_rejected_before_side_effects(
+def test_clean_combined_total_overflow_rejected_before_side_effects(
     monkeypatch,
 ):
     async def run():
         chan = Chan()
-        marker_len = len(server_rules.hidden_marker_for("combo"))
         writes = await fake_load(
             monkeypatch,
             sheet(
@@ -1296,7 +1410,7 @@ def test_hidden_marker_combined_total_overflow_rejected_before_side_effects(
                     "",
                     "",
                     "yes",
-                    "b" * (server_rules.MAX_TOTAL - 3000 - marker_len + 1),
+                    "b" * (server_rules.MAX_TOTAL - 3000 + 1),
                     "combo",
                     "",
                     "",
@@ -1317,10 +1431,9 @@ def test_hidden_marker_combined_total_overflow_rejected_before_side_effects(
     asyncio.run(run())
 
 
-def test_valid_near_limit_marked_payload_publishes(monkeypatch):
+def test_valid_4096_character_clean_payload_publishes(monkeypatch):
     async def run():
         chan = Chan()
-        marker_len = len(server_rules.hidden_marker_for("ok"))
         writes = await fake_load(
             monkeypatch,
             sheet(
@@ -1328,7 +1441,7 @@ def test_valid_near_limit_marked_payload_publishes(monkeypatch):
                     "",
                     "",
                     "yes",
-                    "x" * (server_rules.MAX_DESCRIPTION - marker_len),
+                    "x" * server_rules.MAX_DESCRIPTION,
                     "ok",
                     "",
                     "",
@@ -1466,7 +1579,7 @@ def test_blank_rule_topic_metadata_remains_valid(monkeypatch):
 def test_cleanup_accepts_legacy_faq_topic_marker_for_stored_question_row(monkeypatch):
     async def run():
         chan = Chan()
-        old = Msg(222222222222222222, server_rules.marker_for("topic_legacy"))
+        old = Msg(222222222222222222, legacy_marker("topic_legacy"))
         chan.messages[old.id] = old
         rows = actual_sheet(
             [
@@ -1500,9 +1613,9 @@ def test_cleanup_accepts_legacy_faq_topic_marker_for_stored_question_row(monkeyp
 def test_failed_direct_cleanup_verification_does_not_hide_orphan(monkeypatch):
     async def run():
         chan = Chan()
-        orphan = Msg(222222222222222222, server_rules.marker_for("old_cluster"))
+        orphan = Msg(222222222222222222, legacy_marker("old_cluster"))
         wrong_author = Msg(
-            333333333333333333, server_rules.marker_for("old_cluster"), author_id=99
+            333333333333333333, legacy_marker("old_cluster"), author_id=99
         )
         malformed = Msg(444444444444444444, "")
         malformed.embeds = [
@@ -1548,8 +1661,8 @@ def test_failed_direct_cleanup_verification_does_not_hide_orphan(monkeypatch):
 def test_refresh_failed_group_does_not_stop_other_group(monkeypatch):
     async def run():
         chan = Chan()
-        bad = Msg(111111111111111111, server_rules.marker_for("bad"))
-        good = Msg(222222222222222222, server_rules.marker_for("good"))
+        bad = Msg(111111111111111111, legacy_marker("bad"))
+        good = Msg(222222222222222222, legacy_marker("good"))
         chan.messages[bad.id] = bad
         chan.messages[good.id] = good
 
@@ -1595,6 +1708,9 @@ def test_refresh_failed_group_does_not_stop_other_group(monkeypatch):
         assert summary.failed == 1
         assert summary.refreshed == 1
         assert good.content is None
-        assert server_rules._is_managed_message(good, 42, "good")
+        assert (
+            server_rules._legacy_marker(good).state
+            is server_rules.LegacyMarkerState.NONE
+        )
 
     asyncio.run(run())

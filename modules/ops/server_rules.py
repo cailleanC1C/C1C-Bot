@@ -64,6 +64,20 @@ class FetchState(Enum):
     UNKNOWN = "unknown"
 
 
+class LegacyMarkerState(Enum):
+    """Migration-only classification for markers emitted by older releases."""
+
+    NONE = "none"
+    VALID = "valid"
+    MALFORMED = "malformed"
+
+
+@dataclass(frozen=True)
+class LegacyMarkerResult:
+    state: LegacyMarkerState
+    key: str | None = None
+
+
 @dataclass
 class Row:
     row_number: int
@@ -90,7 +104,7 @@ class MessageGroup:
     rows: list[Row]
     embeds: list[discord.Embed]
     stored_message_id: str = ""
-    marked_embeds: list[discord.Embed] = field(default_factory=list)
+    payload_embeds: list[discord.Embed] = field(default_factory=list)
 
     @property
     def first_row(self) -> Row:
@@ -111,66 +125,64 @@ class Summary:
         self.failures.setdefault(key or "row", []).append(reason)
 
 
-def marker_for(message_key: str) -> str:
-    return f"{LEGACY_MARKER_PREFIX}{message_key}\u2060\u2063"
-
-
-def hidden_marker_for(message_key: str) -> str:
-    return (
-        f"[{HIDDEN_MARKER_LABEL}]({HIDDEN_MARKER_PREFIX}{quote(message_key, safe='')})"
-    )
-
-
-def _extract_legacy_marker(message: Any) -> str | None:
+def _extract_legacy_marker(message: Any) -> tuple[bool, str | None]:
     content = getattr(message, "content", "") or ""
+    if LEGACY_MARKER_PREFIX not in content:
+        return False, None
     if not content.startswith(LEGACY_MARKER_PREFIX):
-        return None
+        return True, None
     rest = content[len(LEGACY_MARKER_PREFIX) :]
     for suffix in ("\u2060\u2063", "\n", " "):
         rest = rest.split(suffix, 1)[0]
-    return rest or None
+    return True, rest or None
 
 
-def _extract_hidden_marker(message: Any) -> str | None:
+def _extract_hidden_marker(message: Any) -> tuple[bool, str | None]:
     embeds = getattr(message, "embeds", None) or []
     if not embeds:
-        return None
+        return False, None
     description = getattr(embeds[0], "description", None) or ""
     needle = f"[{HIDDEN_MARKER_LABEL}]({HIDDEN_MARKER_PREFIX}"
     pos = description.rfind(needle)
     if pos < 0:
-        return None
+        return (HIDDEN_MARKER_PREFIX in description), None
     start = pos + len(needle)
     end = description.find(")", start)
     if end < 0:
-        return None
+        return True, None
     encoded = description[start:end]
     decoded = unquote(encoded)
     if not decoded or quote(decoded, safe="") != encoded:
-        return None
-    return decoded
+        return True, None
+    return True, decoded
 
 
-def _managed_message_key(message: Any) -> str | None:
-    return _extract_hidden_marker(message) or _extract_legacy_marker(message)
+def _legacy_marker(message: Any) -> LegacyMarkerResult:
+    """Parse old marker formats solely to migrate or clean existing posts.
+
+    Marker artifacts are deliberately distinguished from markerless messages so
+    corrupt or conflicting legacy data can never use the trusted stored-ID path.
+    """
+
+    visible_present, visible_key = _extract_legacy_marker(message)
+    hidden_present, hidden_key = _extract_hidden_marker(message)
+    if not visible_present and not hidden_present:
+        return LegacyMarkerResult(LegacyMarkerState.NONE)
+    if (visible_present and visible_key is None) or (
+        hidden_present and hidden_key is None
+    ):
+        return LegacyMarkerResult(LegacyMarkerState.MALFORMED)
+    keys = {key for key in (visible_key, hidden_key) if key is not None}
+    if len(keys) != 1:
+        return LegacyMarkerResult(LegacyMarkerState.MALFORMED)
+    return LegacyMarkerResult(LegacyMarkerState.VALID, keys.pop())
 
 
 def is_feature_message(message: Any, keys: set[str] | None = None) -> bool:
-    key = _managed_message_key(message)
-    if key is None:
+    marker = _legacy_marker(message)
+    if marker.state is not LegacyMarkerState.VALID:
         return False
-    return keys is None or key in keys
-
-
-def _is_managed_message(
-    message: Any, bot_id: int | None = None, expected_key: str | None = None
-) -> bool:
-    if bot_id is not None and not _is_bot_authored(message, bot_id):
-        return False
-    key = _managed_message_key(message)
-    if key is None:
-        return False
-    return expected_key is None or key == expected_key
+    return keys is None or marker.key in keys
 
 
 def _embed_text_len(embed: discord.Embed) -> int:
@@ -179,9 +191,9 @@ def _embed_text_len(embed: discord.Embed) -> int:
     )
     footer = getattr(embed, "footer", None)
     total += len(getattr(footer, "text", None) or "")
-    for field in getattr(embed, "fields", []) or []:
-        total += len(getattr(field, "name", "") or "") + len(
-            getattr(field, "value", "") or ""
+    for embed_field in getattr(embed, "fields", []) or []:
+        total += len(getattr(embed_field, "name", "") or "") + len(
+            getattr(embed_field, "value", "") or ""
         )
     return total
 
@@ -190,12 +202,10 @@ def _copy_embed(embed: discord.Embed) -> discord.Embed:
     return discord.Embed.from_dict(embed.to_dict())
 
 
-def _embeds_with_marker(group: MessageGroup) -> list[discord.Embed]:
-    embeds = [_copy_embed(embed) for embed in group.embeds]
-    embeds[0].description = (
-        f"{embeds[0].description or ''}{hidden_marker_for(group.key)}"
-    )
-    return embeds
+def _clean_embed_payload(group: MessageGroup) -> list[discord.Embed]:
+    """Copy rendered Sheet embeds without adding management metadata."""
+
+    return [_copy_embed(embed) for embed in group.embeds]
 
 
 def _validate_embed_payload(embeds: list[discord.Embed]) -> list[str]:
@@ -447,9 +457,9 @@ def build_groups(rows: list[Row]) -> tuple[list[MessageGroup], list[tuple[str, s
                 (group.key, "message group has multiple different stored message IDs")
             )
         group.stored_message_id = next(iter(ids), "")
-        group.marked_embeds = _embeds_with_marker(group) if group.embeds else []
+        group.payload_embeds = _clean_embed_payload(group) if group.embeds else []
         errors.extend(
-            (group.key, err) for err in _validate_embed_payload(group.marked_embeds)
+            (group.key, err) for err in _validate_embed_payload(group.payload_embeds)
         )
     return groups, errors
 
@@ -549,6 +559,37 @@ def _is_bot_authored(message: Any, bot_id: int | None) -> bool:
     )
 
 
+def _is_valid_stored_message(
+    message: Any,
+    *,
+    stored_message_id: str,
+    target: Any,
+    bot_id: int | None,
+    permitted_legacy_keys: set[str],
+) -> bool:
+    """Verify an exact stored post, accepting legacy markers only for migration."""
+
+    if str(getattr(message, "id", "")) != stored_message_id:
+        return False
+    if getattr(getattr(message, "channel", None), "id", None) != getattr(
+        target, "id", None
+    ):
+        return False
+    if not _is_bot_authored(message, bot_id):
+        return False
+    embeds = list(getattr(message, "embeds", None) or [])
+    if not 1 <= len(embeds) <= MAX_EMBEDS_PER_MESSAGE:
+        return False
+    if _validate_embed_payload(embeds):
+        return False
+    marker = _legacy_marker(message)
+    if marker.state is LegacyMarkerState.MALFORMED:
+        return False
+    if marker.state is LegacyMarkerState.VALID:
+        return marker.key in permitted_legacy_keys
+    return not (getattr(message, "content", "") or "")
+
+
 def _is_deletable_feature_message(
     message: Any, bot_id: int | None, keys: set[str] | None = None
 ) -> bool:
@@ -591,8 +632,12 @@ async def _delete_old_stored_messages(
         if state is FetchState.UNKNOWN:
             summary.fail(row.key, reason)
             continue
-        if msg is None or not _is_deletable_feature_message(
-            msg, bot_id, _cleanup_keys_for_row(row)
+        if msg is None or not _is_valid_stored_message(
+            msg,
+            stored_message_id=old_id,
+            target=target,
+            bot_id=bot_id,
+            permitted_legacy_keys=_cleanup_keys_for_row(row),
         ):
             continue
         seen.add(old_id)
@@ -623,7 +668,9 @@ async def publish(bot: discord.Client) -> tuple[Summary, Any | None]:
     new_pairs: list[tuple[MessageGroup, Any]] = []
     try:
         for group in groups:
-            new_pairs.append((group, await target.send(embeds=group.marked_embeds)))
+            new_pairs.append(
+                (group, await target.send(content=None, embeds=group.payload_embeds))
+            )
     except Exception:
         summary.fail(group.key, "Discord send failed during rebuild")
         await _delete_new([msg for _group, msg in new_pairs])
@@ -692,12 +739,17 @@ async def refresh(bot: discord.Client) -> tuple[Summary, Any | None]:
             if (
                 state is FetchState.FOUND
                 and msg is not None
-                and _is_managed_message(
-                    msg, getattr(getattr(bot, "user", None), "id", None), group.key
+                and _is_valid_stored_message(
+                    msg,
+                    stored_message_id=group.stored_message_id,
+                    target=target,
+                    bot_id=getattr(getattr(bot, "user", None), "id", None),
+                    permitted_legacy_keys={group.key}
+                    | {row.topic_key for row in group.rows if row.topic_key},
                 )
             ):
                 try:
-                    await msg.edit(content=None, embeds=group.marked_embeds)
+                    await msg.edit(content=None, embeds=group.payload_embeds)
                 except Exception:
                     summary.fail(row.key, "failed to edit stored message")
                 else:
@@ -725,8 +777,12 @@ async def refresh(bot: discord.Client) -> tuple[Summary, Any | None]:
                     )
                 else:
                     summary.skipped += 1
-            elif msg is not None and _is_deletable_feature_message(
-                msg, getattr(getattr(bot, "user", None), "id", None), {row.key}
+            elif msg is not None and _is_valid_stored_message(
+                msg,
+                stored_message_id=row.message_id,
+                target=target,
+                bot_id=getattr(getattr(bot, "user", None), "id", None),
+                permitted_legacy_keys=_cleanup_keys_for_row(row),
             ):
                 try:
                     await msg.delete()
