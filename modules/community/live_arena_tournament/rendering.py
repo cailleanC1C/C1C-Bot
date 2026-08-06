@@ -29,9 +29,15 @@ def configured_embed(row, values):
             return "{" + key + "}"
 
     fmt = Safe(values)
-    title = str(row.get("title", "")).format_map(fmt)
-    body = str(row.get("description", row.get("content", ""))).format_map(fmt)
-    raw = str(row.get("color", row.get("colour", "0"))).strip().lstrip("#")
+    title = str(row.get("title_template", row.get("title", ""))).format_map(fmt)
+    body = str(
+        row.get("body_template", row.get("description", row.get("content", "")))
+    ).format_map(fmt)
+    raw = (
+        str(row.get("embed_color_hex", row.get("color", row.get("colour", "0"))))
+        .strip()
+        .lstrip("#")
+    )
     try:
         color = int(raw, 16)
     except ValueError:

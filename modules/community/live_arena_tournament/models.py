@@ -52,6 +52,28 @@ class AvailabilitySlot:
     sort_order: int = 0
 
 
+WEEKDAYS = {
+    name.lower(): index
+    for index, name in enumerate(
+        ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+    )
+}
+
+
+def parse_weekday(value: object) -> int:
+    """Accept the workbook's weekday names (and legacy zero-based numbers)."""
+    text = str(value).strip()
+    if text.lower() in WEEKDAYS:
+        return WEEKDAYS[text.lower()]
+    try:
+        number = int(text)
+    except ValueError as exc:
+        raise SchemaError(f"Invalid weekday_utc value: {value!r}") from exc
+    if not 0 <= number <= 6:
+        raise SchemaError(f"weekday_utc must be Monday-Sunday or 0-6: {value!r}")
+    return number
+
+
 @dataclass(slots=True)
 class Participant:
     participant_slot: int

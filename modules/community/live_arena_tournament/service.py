@@ -9,6 +9,7 @@ from .models import (
     RegistrationError,
     validate_availability,
     validate_timezone,
+    parse_weekday,
     norm,
     truthy,
 )
@@ -79,15 +80,13 @@ class LiveArenaService:
                 ("tournament_id", "participant_slot", "status", "discord_user_id"),
             )
             existing = self.participant_for(participants, tid, user_id)
-            if existing and norm(existing.get("status")) == "confirmed":
-                return {"participant": existing, "created": False}
             if existing and norm(existing.get("status")) == "removed":
                 raise RegistrationError(
                     "An organizer removed this registration; contact a tournament organizer."
                 )
             if norm(tournament.status) != "signup_open":
                 raise RegistrationError("Registration is not open.")
-            if (
+            if not existing and (
                 self.confirmed_count(participants, tid)
                 >= tournament.maximum_participants
             ):
@@ -102,7 +101,7 @@ class LiveArenaService:
             slots = [
                 AvailabilitySlot(
                     str(r["slot_id"]),
-                    int(r["weekday_utc"]),
+                    parse_weekday(r["weekday_utc"]),
                     str(r["start_time_utc"]),
                     str(r.get("end_time_utc", "")),
                     truthy(r.get("active", r.get("enabled", True))),
@@ -170,9 +169,52 @@ class LiveArenaService:
             )
             return {
                 "participant": {**target, **changes},
-                "created": True,
+                "created": not existing or norm(old.get("status")) != "confirmed",
                 "slots": selected,
             }
+
+    async def change_participant_status(
+        self, tournament_id, user_id, status, actor, reason=""
+    ):
+        """Withdraw/remove/restore without allowing invalid participant-state overwrites."""
+        async with self._locks[tournament_id]:
+            rows = await self.repository.rows("participants")
+            participant = self.participant_for(rows, tournament_id, user_id)
+            if not participant:
+                raise RegistrationError("No registration was found.")
+            old_status = norm(participant.get("status"))
+            allowed = {
+                "withdrawn": {"confirmed"},
+                "removed": {"confirmed", "withdrawn"},
+                "confirmed": {"removed", "withdrawn"},
+            }
+            if old_status not in allowed.get(status, set()):
+                raise RegistrationError(
+                    f"Cannot change participant from {old_status} to {status}."
+                )
+            now = datetime.now(timezone.utc).isoformat()
+            changes = {"status": status}
+            if status == "withdrawn":
+                changes.update(
+                    withdrawn_at=now,
+                    withdrawal_reason=reason or "self_service_withdrawal",
+                )
+            elif status == "confirmed":
+                changes.update(withdrawn_at="", withdrawal_reason="", confirmed_at=now)
+            row_number = int(
+                participant.get("_row_number") or rows.index(participant) + 2
+            )
+            await self.repository.replace_row("participants", row_number, changes)
+            await self.repository.audit(
+                f"participant_{status}",
+                tournament_id,
+                actor,
+                "participant",
+                user_id,
+                participant,
+                changes,
+            )
+            return {**participant, **changes}
 
     @staticmethod
     def _unsupported():

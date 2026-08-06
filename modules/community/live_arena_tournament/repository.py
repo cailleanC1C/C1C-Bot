@@ -22,7 +22,7 @@ class LiveArenaRepository:
 
     async def load_config(self):
         self.config = parse_system_config(
-            await asheets_read(self.sheet_id, "A:Z"), self.sheet_id
+            await asheets_read(self.sheet_id, "'System_Config'!A:Z"), self.sheet_id
         )
         return self.config
 
@@ -31,6 +31,8 @@ class LiveArenaRepository:
             await self.load_config()
         rows = await afetch_records(self.sheet_id, self.config.tabs[table])
         normalized = [{norm(k): v for k, v in r.items()} for r in rows]
+        for index, row in enumerate(normalized, 2):
+            row.setdefault("_row_number", index)
         present = {norm(k) for r in normalized for k in r}
         missing = {norm(x) for x in required} - present
         if missing:
@@ -176,6 +178,14 @@ class LiveArenaRepository:
                     ws.update,
                     f"A{row_number}:{self._column(len(headers))}{row_number}",
                     [old + [""] * (len(headers) - len(old))],
+                    value_input_option="RAW",
+                )
+            appended = max(0, len(slot_ids) - len(matches))
+            for row_number in range(len(values) + 1, len(values) + appended + 1):
+                await acall_with_backoff(
+                    ws.update,
+                    f"A{row_number}:{self._column(len(headers))}{row_number}",
+                    [[""] * len(headers)],
                     value_input_option="RAW",
                 )
             raise

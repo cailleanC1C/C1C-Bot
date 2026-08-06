@@ -44,7 +44,7 @@ def parse_system_config(
     values: list[list[object]], configured_sheet_id: str
 ) -> FeatureConfig:
     if not values:
-        raise SchemaError("System_Config (the workbook's first tab) is empty")
+        raise SchemaError("System_Config is empty")
     headers = [norm(x) for x in values[0]]
     key_aliases = ("key", "config_key", "setting")
     value_aliases = ("value", "config_value", "setting_value")

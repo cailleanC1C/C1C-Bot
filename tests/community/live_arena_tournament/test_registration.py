@@ -1,4 +1,6 @@
+import asyncio
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock, patch
 import pytest
 from modules.community.live_arena_tournament.config import parse_system_config
 from modules.community.live_arena_tournament.models import (
@@ -7,8 +9,13 @@ from modules.community.live_arena_tournament.models import (
     SchemaError,
     slot_local_datetime,
     validate_availability,
+    parse_weekday,
 )
 from modules.community.live_arena_tournament.service import LiveArenaService
+from modules.community.live_arena_tournament.repository import LiveArenaRepository
+from modules.community.live_arena_tournament.rendering import configured_embed
+from modules.community.live_arena_tournament.views import PersistentPanel
+from modules.community.live_arena_tournament.models import Tournament
 
 TABLES = (
     "tournament_config",
@@ -101,3 +108,102 @@ def test_transitions_are_registration_only():
     assert LiveArenaService.can_transition("draft", "signup_open")
     assert LiveArenaService.can_transition("signup_open", "signup_closed")
     assert not LiveArenaService.can_transition("draft", "signup_closed")
+
+
+def test_real_workbook_headers_render_and_route_components():
+    embed = configured_embed(
+        {
+            "title_template": "{tournament_name}",
+            "body_template": "{status}",
+            "embed_color_hex": "#123456",
+        },
+        {"tournament_name": "Cup", "status": "Open"},
+    )
+    assert embed.title == "Cup" and embed.description == "Open"
+    view = PersistentPanel(
+        object(),
+        [
+            {
+                "action_id": "join_tournament",
+                "label": "Join",
+                "style": "success",
+                "active": "true",
+            }
+        ],
+        ["join_tournament"],
+    )
+    assert view.children[0].custom_id.endswith("join_tournament")
+    assert parse_weekday("Monday") == 0
+
+
+def test_repository_reads_named_system_config_not_first_tab():
+    repo = LiveArenaRepository("sheet")
+    with patch(
+        "modules.community.live_arena_tournament.repository.asheets_read",
+        new=AsyncMock(return_value=config_rows()),
+    ) as read:
+        asyncio.run(repo.load_config())
+    read.assert_awaited_once_with("sheet", "'System_Config'!A:Z")
+
+
+def test_register_and_update_use_idempotent_participant_and_availability_writes():
+    repo = AsyncMock()
+    participant = {
+        "_row_number": 2,
+        "tournament_id": "T1",
+        "participant_slot": "1",
+        "status": "open",
+        "discord_user_id": "",
+    }
+    repo.rows.side_effect = [
+        [participant],
+        [
+            {
+                "tournament_id": "T1",
+                "discord_role_id": "7",
+                "clan_tag": "C1C",
+                "active": "true",
+            }
+        ],
+        [
+            {
+                "tournament_id": "T1",
+                "slot_id": x,
+                "weekday_utc": day,
+                "start_time_utc": "12:00",
+                "active": "true",
+            }
+            for x, day in (("a", "Monday"), ("b", "Tuesday"), ("c", "Wednesday"))
+        ],
+    ]
+    service = LiveArenaService(repo)
+    result = asyncio.run(
+        service.register(
+            tournament=Tournament("T1", "Cup", "signup_open", 8, 3),
+            user_id="42",
+            display_name="Player",
+            member_role_ids=[7],
+            timezone_name="UTC",
+            slot_ids=["a", "b", "c"],
+        )
+    )
+    assert result["created"] is True
+    repo.replace_row.assert_awaited_once()
+    repo.replace_availability.assert_awaited_once_with(
+        "T1", "42", ["a", "b", "c"], repo.replace_availability.await_args.args[3]
+    )
+    repo.audit.assert_awaited_once()
+
+
+def test_removed_participant_cannot_self_withdraw():
+    repo = AsyncMock()
+    repo.rows.return_value = [
+        {"tournament_id": "T1", "discord_user_id": "42", "status": "removed"}
+    ]
+    with pytest.raises(Exception, match="Cannot change participant"):
+        asyncio.run(
+            LiveArenaService(repo).change_participant_status(
+                "T1", "42", "withdrawn", "42"
+            )
+        )
+    repo.replace_row.assert_not_awaited()
