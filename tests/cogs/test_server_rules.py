@@ -48,7 +48,7 @@ class Chan:
         self.messages = {}
 
     async def send(self, **kw):
-        msg = Msg(100 + len(self.sent), kw.get("content", ""))
+        msg = Msg(100000000000000100 + len(self.sent), kw.get("content", ""))
         msg.kw = kw
         msg.embeds = kw.get("embeds") or ([kw["embed"]] if "embed" in kw else [])
         msg.channel = self
@@ -80,11 +80,23 @@ class Bot:
 
 
 class Ws:
-    def __init__(self, batch_writes):
+    def __init__(self, batch_writes, matrix=None):
         self.batch_writes = batch_writes
+        self.matrix = matrix
 
     def batch_update(self, payload):
         self.batch_writes.append(payload)
+        if self.matrix is not None:
+            for update in payload:
+                cell = update["range"]
+                letters = "".join(char for char in cell if char.isalpha())
+                row_number = int("".join(char for char in cell if char.isdigit()))
+                column = 0
+                for char in letters:
+                    column = column * 26 + ord(char.upper()) - 64
+                while len(self.matrix[row_number - 1]) < column:
+                    self.matrix[row_number - 1].append("")
+                self.matrix[row_number - 1][column - 1] = update["values"][0][0]
         return {"updated": len(payload)}
 
 
@@ -105,7 +117,7 @@ async def fake_load(monkeypatch, rows, chan):
     )
     writes = []
     batch_writes = []
-    ws = Ws(batch_writes)
+    ws = Ws(batch_writes, rows)
     monkeypatch.setattr(
         server_rules.sheets_core, "aget_worksheet", AsyncMock(return_value=ws)
     )
@@ -184,7 +196,10 @@ def test_publish_sorts_and_writes_message_ids_header_order_independent(monkeypat
         assert chan.sent[0].kw["embeds"][0].thumbnail.url == "https://e.test/t.png"
         assert chan.sent[0].kw["content"] is None
         assert writes["batch"] == [
-            [{"range": "B3", "values": [["100"]]}, {"range": "B2", "values": [["101"]]}]
+            [
+                {"range": "B3", "values": [["100000000000000100"]]},
+                {"range": "B2", "values": [["100000000000000101"]]},
+            ]
         ]
         assert writes["single"] == []
 
@@ -297,7 +312,7 @@ def test_refresh_edits_recreates_and_deletes(monkeypatch):
         assert summary.removed == 1
         assert existing.edits
         assert disabled.deleted
-        assert ("B3", [["100"]]) not in writes["single"]
+        assert ("B3", [["100000000000000100"]]) not in writes["single"]
         assert ("B4", [[""]]) in writes["single"]
 
     asyncio.run(run())
@@ -524,7 +539,10 @@ def test_publish_send_failure_deletes_new_and_keeps_sheet_ids(monkeypatch):
         assert summary.failed == 1
         assert chan.sent[0].deleted
         assert writes["single"] == []
-        assert writes["batch"] == []
+        assert len(writes["batch"]) == 2
+        assert writes["batch"][-1] == [
+            {"range": "B2", "values": [["111111111111111111"]]}
+        ]
 
     asyncio.run(run())
 
@@ -564,7 +582,74 @@ def test_publish_sheet_failure_restores_ids_and_deletes_new(monkeypatch):
         summary, _ = await server_rules.publish(Bot(chan))
         assert summary.failed == 1
         assert chan.sent[0].deleted
-        assert [{"range": "B2", "values": [["111111111111111111"]]}] in batch_calls
+        assert batch_calls == [
+            [
+                {
+                    "range": "B2",
+                    "values": [
+                        [
+                            "serverrules-recovery:v1:100000000000000100:111111111111111111"
+                        ]
+                    ],
+                }
+            ]
+        ]
+
+    asyncio.run(run())
+
+
+def test_sheet_failure_and_failed_replacement_cleanup_are_journalled(monkeypatch):
+    async def run():
+        chan = Chan()
+        rows = sheet(
+            [
+                "",
+                "111111111111111111",
+                "true",
+                "D",
+                "a",
+                "",
+                "A",
+                "1",
+                "community",
+                "",
+                "",
+                "",
+            ]
+        )
+        await fake_load(monkeypatch, rows, chan)
+        original_send = chan.send
+
+        async def send_with_failed_delete(**kwargs):
+            message = await original_send(**kwargs)
+
+            async def failed_delete():
+                raise discord.HTTPException(response=None, message="delete failed")
+
+            message.delete = failed_delete
+            return message
+
+        chan.send = send_with_failed_delete
+        calls = 0
+
+        async def fail_then_write(func, payload, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("temporary sheet failure")
+            return func(payload)
+
+        monkeypatch.setattr(
+            server_rules.sheets_core, "acall_with_backoff", fail_then_write
+        )
+        summary, _ = await server_rules.publish(Bot(chan))
+
+        assert summary.failed == 1
+        assert not chan.sent[0].deleted
+        recovery = server_rules._parse_recovery(rows[1][1])
+        assert recovery is not None
+        assert recovery.keep_id == "111111111111111111"
+        assert recovery.cleanup_ids == (str(chan.sent[0].id),)
 
     asyncio.run(run())
 
@@ -698,7 +783,9 @@ def test_trailing_false_placeholder_rows_are_ignored_with_actual_header_order(
         summary, _ = await server_rules.publish(Bot(chan))
         assert summary.created == 1
         assert len(chan.sent) == 1
-        assert writes["batch"] == [[{"range": "L2", "values": [["100"]]}]]
+        assert writes["batch"] == [
+            [{"range": "L2", "values": [["100000000000000100"]]}]
+        ]
 
     asyncio.run(run())
 
@@ -828,7 +915,7 @@ def test_publish_fetches_known_old_id_and_never_deletes_forged_message(monkeypat
     asyncio.run(run())
 
 
-def test_publish_cleanup_failures_restore_ids_and_remove_replacement(monkeypatch):
+def test_publish_cleanup_failures_leave_durable_recovery_journal(monkeypatch):
     async def run():
         chan = Chan()
         old = Msg(222222222222222222, legacy_marker("rule"))
@@ -861,11 +948,15 @@ def test_publish_cleanup_failures_restore_ids_and_remove_replacement(monkeypatch
         summary, _ = await server_rules.publish(Bot(chan))
         assert summary.created == 0
         assert summary.failed == 1
-        assert writes["batch"] == [
-            [{"range": "B2", "values": [["100"]]}],
-            [{"range": "B2", "values": [[str(old.id)]]}],
+        assert writes["batch"][-1] == [
+            {
+                "range": "B2",
+                "values": [
+                    ["serverrules-recovery:v1:100000000000000100:222222222222222222"]
+                ],
+            }
         ]
-        assert chan.sent[0].deleted
+        assert not chan.sent[0].deleted
 
     asyncio.run(run())
 
@@ -911,22 +1002,24 @@ def test_markerless_cleanup_failure_rolls_back_and_publish_retry_converges(
         assert first.created == 0
         assert first.failed == 1
         assert not old.deleted
-        assert chan.sent[0].deleted
-        assert first_writes["batch"] == [
-            [{"range": "B2", "values": [["100"]]}],
-            [{"range": "B2", "values": [[str(old.id)]]}],
-        ]
+        assert not chan.sent[0].deleted
+        recovery_value = first_writes["batch"][-1][0]["values"][0][0]
+        assert str(old.id) in recovery_value
+        assert str(chan.sent[0].id) in recovery_value
 
+        rows[1][1] = recovery_value
         second_writes = await fake_load(monkeypatch, rows, chan)
         second, _ = await server_rules.publish(Bot(chan))
 
         assert second.created == 1
         assert second.failed == 0
         assert old.deleted
-        assert second_writes["batch"] == [[{"range": "B2", "values": [["101"]]}]]
+        assert second_writes["batch"][-1] == [
+            {"range": "B2", "values": [["100000000000000101"]]}
+        ]
         live_publication = [message for message in chan.sent if not message.deleted]
         assert len(live_publication) == 1
-        assert live_publication[0].id == 101
+        assert live_publication[0].id == 100000000000000101
         assert live_publication[0].content is None
         assert live_publication[0].embeds[0].description == "Replacement"
 
@@ -964,7 +1057,9 @@ def test_publish_history_scan_failure_reported_without_rollback(monkeypatch):
         summary, _ = await server_rules.publish(Bot(chan))
         assert summary.created == 1
         assert summary.failed == 1
-        assert writes["batch"] == [[{"range": "B2", "values": [["100"]]}]]
+        assert writes["batch"] == [
+            [{"range": "B2", "values": [["100000000000000100"]]}]
+        ]
         assert not chan.sent[0].deleted
 
     asyncio.run(run())
@@ -1064,12 +1159,8 @@ def test_grouped_rows_publish_one_message_with_ordered_embeds_and_group_ids(
             server_rules._legacy_marker(chan.sent[0]).state
             is server_rules.LegacyMarkerState.NONE
         )
-        assert writes["batch"] == [
-            [
-                {"range": "B2", "values": [["100"]]},
-                {"range": "B3", "values": [[""]]},
-                {"range": "B5", "values": [["101"]]},
-            ]
+        assert writes["batch"][-1] == [
+            {"range": "B2", "values": [["100000000000000100"]]}
         ]
 
     asyncio.run(run())
@@ -1184,9 +1275,9 @@ def test_faq_topic_metadata_does_not_combine_or_render(monkeypatch):
         assert chan.sent[2].embeds[0].footer.text == "Topic foot"
         assert writes["batch"] == [
             [
-                {"range": "L2", "values": [["100"]]},
-                {"range": "L3", "values": [["101"]]},
-                {"range": "L4", "values": [["102"]]},
+                {"range": "L2", "values": [["100000000000000100"]]},
+                {"range": "L3", "values": [["100000000000000101"]]},
+                {"range": "L4", "values": [["100000000000000102"]]},
             ]
         ]
 
@@ -1525,7 +1616,9 @@ def test_valid_4096_character_clean_payload_publishes(monkeypatch):
         summary, _ = await server_rules.publish(Bot(chan))
         assert summary.created == 1
         assert len(chan.sent[0].embeds[0].description) == server_rules.MAX_DESCRIPTION
-        assert writes["batch"] == [[{"range": "B2", "values": [["100"]]}]]
+        assert writes["batch"] == [
+            [{"range": "B2", "values": [["100000000000000100"]]}]
+        ]
 
     asyncio.run(run())
 
@@ -1636,8 +1729,8 @@ def test_blank_rule_topic_metadata_remains_valid(monkeypatch):
         assert summary.created == 2
         assert summary_target["batch"] == [
             [
-                {"range": "L2", "values": [["100"]]},
-                {"range": "L3", "values": [["101"]]},
+                {"range": "L2", "values": [["100000000000000100"]]},
+                {"range": "L3", "values": [["100000000000000101"]]},
             ]
         ]
 
@@ -1780,5 +1873,127 @@ def test_refresh_failed_group_does_not_stop_other_group(monkeypatch):
             server_rules._legacy_marker(good).state
             is server_rules.LegacyMarkerState.NONE
         )
+
+    asyncio.run(run())
+
+
+def test_concurrent_publishes_are_serialized_and_leave_one_generation(monkeypatch):
+    async def run():
+        chan = Chan()
+        rows = sheet(
+            ["", "", "yes", "Clean", "rule", "", "Rule", "1", "blue", "", "", "rules"]
+        )
+        writes = await fake_load(monkeypatch, rows, chan)
+        original_send = chan.send
+        active_sends = 0
+        max_active_sends = 0
+
+        async def observed_send(**kwargs):
+            nonlocal active_sends, max_active_sends
+            active_sends += 1
+            max_active_sends = max(max_active_sends, active_sends)
+            await asyncio.sleep(0.01)
+            message = await original_send(**kwargs)
+            active_sends -= 1
+            return message
+
+        chan.send = observed_send
+        first, second = await asyncio.gather(
+            server_rules.publish(Bot(chan)), server_rules.publish(Bot(chan))
+        )
+
+        assert first[0].created == second[0].created == 1
+        assert max_active_sends == 1
+        live = [message for message in chan.sent if not message.deleted]
+        assert [message.id for message in live] == [100000000000000101]
+        assert rows[1][1] == str(live[0].id)
+        assert writes["batch"][-1] == [{"range": "B2", "values": [[str(live[0].id)]]}]
+
+    asyncio.run(run())
+
+
+def test_partial_send_failure_journals_survivor_and_restart_recovers(monkeypatch):
+    async def run():
+        chan = Chan()
+        rows = sheet(
+            ["", "", "yes", "A", "a", "", "A", "1", "blue", "", "", "rules"],
+            ["", "", "yes", "B", "b", "", "B", "2", "blue", "", "", "rules"],
+        )
+        await fake_load(monkeypatch, rows, chan)
+        original_send = chan.send
+
+        async def partial_send(**kwargs):
+            if chan.sent:
+                raise discord.HTTPException(response=None, message="send failed")
+            message = await original_send(**kwargs)
+
+            async def failed_delete():
+                raise discord.HTTPException(response=None, message="delete failed")
+
+            message.delete = failed_delete
+            return message
+
+        chan.send = partial_send
+        failed, _ = await server_rules.publish(Bot(chan))
+
+        assert failed.failed == 2
+        assert not chan.sent[0].deleted
+        recovery = server_rules._parse_recovery(rows[1][1])
+        assert recovery is not None
+        assert recovery.keep_id == ""
+        assert recovery.cleanup_ids == (str(chan.sent[0].id),)
+
+        async def successful_delete():
+            chan.sent[0].deleted = True
+
+        chan.sent[0].delete = successful_delete
+        chan.send = original_send
+        recovered, _ = await server_rules.publish(Bot(chan))
+
+        assert recovered.created == 2
+        assert chan.sent[0].deleted
+        live = [message for message in chan.sent if not message.deleted]
+        assert len(live) == 2
+        assert rows[1][1] == str(live[0].id)
+        assert rows[2][1] == str(live[1].id)
+
+    asyncio.run(run())
+
+
+def test_refresh_resumes_recovery_journal_after_restart(monkeypatch):
+    async def run():
+        chan = Chan()
+        current = Msg(555555555555555555, "")
+        current.embeds = [discord.Embed(description="Current")]
+        stale = Msg(666666666666666666, "")
+        stale.embeds = [discord.Embed(description="Stale")]
+        chan.messages[current.id] = current
+        chan.messages[stale.id] = stale
+        journal = server_rules._recovery_value(str(current.id), [str(stale.id)])
+        rows = sheet(
+            [
+                "",
+                journal,
+                "yes",
+                "Updated",
+                "rule",
+                "",
+                "Rule",
+                "1",
+                "blue",
+                "",
+                "",
+                "rules",
+            ]
+        )
+        await fake_load(monkeypatch, rows, chan)
+
+        summary, _ = await server_rules.refresh(Bot(chan))
+
+        assert summary.removed == 1
+        assert summary.refreshed == 1
+        assert stale.deleted
+        assert rows[1][1] == str(current.id)
+        assert current.embeds[0].description == "Updated"
 
     asyncio.run(run())
