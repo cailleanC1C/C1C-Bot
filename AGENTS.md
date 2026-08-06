@@ -29,6 +29,7 @@ docs/ops/.env.example
 - `REMINDER_SHEET_ID`
 - `MILESTONES_SHEET_ID`
 - `ACHIEVEMENTS_SHEET_ID`
+- `LIVE_ARENA_TOURNAMENT_SHEET_ID` — optional; blank safely disables Live Arena registration
 - *(other sheet IDs live in env.example — keep doc updates in sync with env.example when adding new sheets)*
 
 **Logging / Telemetry (ENV var names — exact):**
@@ -131,4 +132,4 @@ For PR formatting rules, labels, and doc footers see `docs/contracts/Collaborati
 
 ---
 
-Doc last updated: 2025-12-31 (v0.9.8.2)
+Doc last updated: 2026-08-06 (v0.9.8.2)

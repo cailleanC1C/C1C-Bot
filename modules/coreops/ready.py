@@ -9,6 +9,7 @@ from discord.ext import commands
 from shared.config import cfg, get_feature_toggles
 
 from modules.community.fusion.opt_in_view import register_persistent_fusion_views
+from modules.community.live_arena_tournament.cog import LiveArenaTournamentCog
 from modules.community.shard_tracker.views import register_persistent_shard_views
 from modules.community.reset_reminders.scheduler import register_persistent_reset_views
 from modules.onboarding import watcher_promo, watcher_welcome
@@ -62,6 +63,16 @@ async def on_ready(bot: commands.Bot) -> None:
                 reset_feature_enabled,
             )
             return
+
+        try:
+            live_arena = bot.get_cog("LiveArenaTournamentCog")
+            if live_arena and live_arena.repository:
+                if live_arena.public_view:
+                    bot.add_view(live_arena.public_view)
+                if live_arena.organizer_view:
+                    bot.add_view(live_arena.organizer_view)
+        except Exception:
+            log.exception("CORE_READY FAILURE: register Live Arena persistent views")
 
         # Ensure both onboarding watchers are wired
         try:

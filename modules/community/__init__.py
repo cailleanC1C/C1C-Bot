@@ -1,6 +1,7 @@
 """Community extensions registry."""
 
 COMMUNITY_EXTENSIONS: tuple[str, ...] = (
+    "modules.community.live_arena_tournament",
     "modules.community.shard_tracker",
     "modules.community.fusion",
     "modules.community.leagues",
