@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 from dataclasses import dataclass, field
 from enum import Enum
@@ -27,6 +28,9 @@ from shared.theme import colors
 LEGACY_MARKER_PREFIX = "\u2063\u200bserverrules:"
 HIDDEN_MARKER_PREFIX = "https://c1c.invalid/serverrules/"
 HIDDEN_MARKER_LABEL = "\u2063"
+RECOVERY_PREFIX = "serverrules-recovery:v1:"
+RECOVERY_EMPTY = "-"
+MUTATION_LOCK = asyncio.Lock()
 MAX_EMBEDS_PER_MESSAGE = 10
 REQUIRED_HEADERS = {
     "message_key",
@@ -64,6 +68,54 @@ class FetchState(Enum):
     UNKNOWN = "unknown"
 
 
+class LegacyMarkerState(Enum):
+    """Migration-only classification for markers emitted by older releases."""
+
+    NONE = "none"
+    VALID = "valid"
+    MALFORMED = "malformed"
+
+
+@dataclass(frozen=True)
+class LegacyMarkerResult:
+    state: LegacyMarkerState
+    key: str | None = None
+
+
+@dataclass(frozen=True)
+class RecoveryState:
+    keep_id: str
+    cleanup_ids: tuple[str, ...]
+
+
+def _recovery_value(keep_id: str, cleanup_ids: list[str] | tuple[str, ...]) -> str:
+    unique = tuple(dict.fromkeys(value for value in cleanup_ids if value != keep_id))
+    if not unique:
+        return keep_id
+    return f"{RECOVERY_PREFIX}{keep_id or RECOVERY_EMPTY}:{','.join(unique)}"
+
+
+def _parse_recovery(value: str) -> RecoveryState | None:
+    if not value.startswith(RECOVERY_PREFIX):
+        return None
+    payload = value[len(RECOVERY_PREFIX) :]
+    keep_raw, separator, cleanup_raw = payload.partition(":")
+    if not separator:
+        return None
+    keep_id = "" if keep_raw == RECOVERY_EMPTY else keep_raw
+    cleanup_ids = tuple(item for item in cleanup_raw.split(",") if item)
+    all_ids = ((keep_id,) if keep_id else ()) + cleanup_ids
+    if not cleanup_ids or any(not valid_snowflake(item) for item in all_ids):
+        return None
+    if len(set(all_ids)) != len(all_ids):
+        return None
+    return RecoveryState(keep_id, cleanup_ids)
+
+
+def _is_recovery_artifact(value: str) -> bool:
+    return value.startswith(RECOVERY_PREFIX)
+
+
 @dataclass
 class Row:
     row_number: int
@@ -85,12 +137,22 @@ class Row:
 
 
 @dataclass
+class PendingRollback:
+    row_number: int
+    keep_id: str
+    messages: list[Any]
+
+
+_FAILSAFE_PENDING: list[PendingRollback] = []
+
+
+@dataclass
 class MessageGroup:
     key: str
     rows: list[Row]
     embeds: list[discord.Embed]
     stored_message_id: str = ""
-    marked_embeds: list[discord.Embed] = field(default_factory=list)
+    payload_embeds: list[discord.Embed] = field(default_factory=list)
 
     @property
     def first_row(self) -> Row:
@@ -111,66 +173,64 @@ class Summary:
         self.failures.setdefault(key or "row", []).append(reason)
 
 
-def marker_for(message_key: str) -> str:
-    return f"{LEGACY_MARKER_PREFIX}{message_key}\u2060\u2063"
-
-
-def hidden_marker_for(message_key: str) -> str:
-    return (
-        f"[{HIDDEN_MARKER_LABEL}]({HIDDEN_MARKER_PREFIX}{quote(message_key, safe='')})"
-    )
-
-
-def _extract_legacy_marker(message: Any) -> str | None:
+def _extract_legacy_marker(message: Any) -> tuple[bool, str | None]:
     content = getattr(message, "content", "") or ""
+    if LEGACY_MARKER_PREFIX not in content:
+        return False, None
     if not content.startswith(LEGACY_MARKER_PREFIX):
-        return None
+        return True, None
     rest = content[len(LEGACY_MARKER_PREFIX) :]
     for suffix in ("\u2060\u2063", "\n", " "):
         rest = rest.split(suffix, 1)[0]
-    return rest or None
+    return True, rest or None
 
 
-def _extract_hidden_marker(message: Any) -> str | None:
+def _extract_hidden_marker(message: Any) -> tuple[bool, str | None]:
     embeds = getattr(message, "embeds", None) or []
     if not embeds:
-        return None
+        return False, None
     description = getattr(embeds[0], "description", None) or ""
     needle = f"[{HIDDEN_MARKER_LABEL}]({HIDDEN_MARKER_PREFIX}"
     pos = description.rfind(needle)
     if pos < 0:
-        return None
+        return (HIDDEN_MARKER_PREFIX in description), None
     start = pos + len(needle)
     end = description.find(")", start)
     if end < 0:
-        return None
+        return True, None
     encoded = description[start:end]
     decoded = unquote(encoded)
     if not decoded or quote(decoded, safe="") != encoded:
-        return None
-    return decoded
+        return True, None
+    return True, decoded
 
 
-def _managed_message_key(message: Any) -> str | None:
-    return _extract_hidden_marker(message) or _extract_legacy_marker(message)
+def _legacy_marker(message: Any) -> LegacyMarkerResult:
+    """Parse old marker formats solely to migrate or clean existing posts.
+
+    Marker artifacts are deliberately distinguished from markerless messages so
+    corrupt or conflicting legacy data can never use the trusted stored-ID path.
+    """
+
+    visible_present, visible_key = _extract_legacy_marker(message)
+    hidden_present, hidden_key = _extract_hidden_marker(message)
+    if not visible_present and not hidden_present:
+        return LegacyMarkerResult(LegacyMarkerState.NONE)
+    if (visible_present and visible_key is None) or (
+        hidden_present and hidden_key is None
+    ):
+        return LegacyMarkerResult(LegacyMarkerState.MALFORMED)
+    keys = {key for key in (visible_key, hidden_key) if key is not None}
+    if len(keys) != 1:
+        return LegacyMarkerResult(LegacyMarkerState.MALFORMED)
+    return LegacyMarkerResult(LegacyMarkerState.VALID, keys.pop())
 
 
 def is_feature_message(message: Any, keys: set[str] | None = None) -> bool:
-    key = _managed_message_key(message)
-    if key is None:
+    marker = _legacy_marker(message)
+    if marker.state is not LegacyMarkerState.VALID:
         return False
-    return keys is None or key in keys
-
-
-def _is_managed_message(
-    message: Any, bot_id: int | None = None, expected_key: str | None = None
-) -> bool:
-    if bot_id is not None and not _is_bot_authored(message, bot_id):
-        return False
-    key = _managed_message_key(message)
-    if key is None:
-        return False
-    return expected_key is None or key == expected_key
+    return keys is None or marker.key in keys
 
 
 def _embed_text_len(embed: discord.Embed) -> int:
@@ -179,9 +239,9 @@ def _embed_text_len(embed: discord.Embed) -> int:
     )
     footer = getattr(embed, "footer", None)
     total += len(getattr(footer, "text", None) or "")
-    for field in getattr(embed, "fields", []) or []:
-        total += len(getattr(field, "name", "") or "") + len(
-            getattr(field, "value", "") or ""
+    for embed_field in getattr(embed, "fields", []) or []:
+        total += len(getattr(embed_field, "name", "") or "") + len(
+            getattr(embed_field, "value", "") or ""
         )
     return total
 
@@ -190,12 +250,10 @@ def _copy_embed(embed: discord.Embed) -> discord.Embed:
     return discord.Embed.from_dict(embed.to_dict())
 
 
-def _embeds_with_marker(group: MessageGroup) -> list[discord.Embed]:
-    embeds = [_copy_embed(embed) for embed in group.embeds]
-    embeds[0].description = (
-        f"{embeds[0].description or ''}{hidden_marker_for(group.key)}"
-    )
-    return embeds
+def _clean_embed_payload(group: MessageGroup) -> list[discord.Embed]:
+    """Copy rendered Sheet embeds without adding management metadata."""
+
+    return [_copy_embed(embed) for embed in group.embeds]
 
 
 def _validate_embed_payload(embeds: list[discord.Embed]) -> list[str]:
@@ -396,7 +454,9 @@ async def preflight(
             summary.fail(label, "message_key is required")
         if parse_enabled(row.data.get("enabled")) is None:
             summary.fail(label, "enabled value is not recognised")
-        if row.message_id and not valid_snowflake(row.message_id):
+        if row.message_id and not (
+            valid_snowflake(row.message_id) or _parse_recovery(row.message_id)
+        ):
             summary.fail(label, "message_id must be blank or a valid Discord snowflake")
         if row.enabled:
             order_text = row.data.get("order", "")
@@ -441,15 +501,19 @@ def build_groups(rows: list[Row]) -> tuple[list[MessageGroup], list[tuple[str, s
     groups.sort(key=lambda group: (group.rows[0].order, group.rows[0].row_number))
     errors: list[tuple[str, str]] = topic_errors
     for group in groups:
-        ids = {row.message_id for row in group.rows if row.message_id}
+        ids = {
+            row.message_id
+            for row in group.rows
+            if row.message_id and not _is_recovery_artifact(row.message_id)
+        }
         if len(ids) > 1:
             errors.append(
                 (group.key, "message group has multiple different stored message IDs")
             )
         group.stored_message_id = next(iter(ids), "")
-        group.marked_embeds = _embeds_with_marker(group) if group.embeds else []
+        group.payload_embeds = _clean_embed_payload(group) if group.embeds else []
         errors.extend(
-            (group.key, err) for err in _validate_embed_payload(group.marked_embeds)
+            (group.key, err) for err in _validate_embed_payload(group.payload_embeds)
         )
     return groups, errors
 
@@ -512,15 +576,6 @@ async def _write_ids_batch(
     )
 
 
-async def _restore_ids_batch(
-    tab: str, header_map: dict[str, int], snapshot: dict[int, str]
-) -> None:
-    rows = [Row(row_number, [], {}, False) for row_number in snapshot]
-    await _write_ids_batch(
-        tab, header_map, [(row, value) for row, value in zip(rows, snapshot.values())]
-    )
-
-
 async def _fetch(target: Any, message_id: str) -> tuple[FetchState, Any | None, str]:
     if not message_id or not valid_snowflake(message_id):
         return FetchState.MISSING, None, "message_id is blank or invalid"
@@ -549,6 +604,37 @@ def _is_bot_authored(message: Any, bot_id: int | None) -> bool:
     )
 
 
+def _is_valid_stored_message(
+    message: Any,
+    *,
+    stored_message_id: str,
+    target: Any,
+    bot_id: int | None,
+    permitted_legacy_keys: set[str],
+) -> bool:
+    """Verify an exact stored post, accepting legacy markers only for migration."""
+
+    if str(getattr(message, "id", "")) != stored_message_id:
+        return False
+    if getattr(getattr(message, "channel", None), "id", None) != getattr(
+        target, "id", None
+    ):
+        return False
+    if not _is_bot_authored(message, bot_id):
+        return False
+    embeds = list(getattr(message, "embeds", None) or [])
+    if not 1 <= len(embeds) <= MAX_EMBEDS_PER_MESSAGE:
+        return False
+    if _validate_embed_payload(embeds):
+        return False
+    marker = _legacy_marker(message)
+    if marker.state is LegacyMarkerState.MALFORMED:
+        return False
+    if marker.state is LegacyMarkerState.VALID:
+        return marker.key in permitted_legacy_keys
+    return not (getattr(message, "content", "") or "")
+
+
 def _is_deletable_feature_message(
     message: Any, bot_id: int | None, keys: set[str] | None = None
 ) -> bool:
@@ -573,88 +659,249 @@ async def _iter_feature_messages(target: Any, bot_id: int | None) -> list[Any]:
     return found
 
 
-async def _delete_old_stored_messages(
-    target: Any,
-    rows: list[Row],
-    new_ids: set[str],
-    bot_id: int | None,
-    summary: Summary,
-) -> set[str]:
-    seen: set[str] = set()
-    for row in rows:
-        old_id = row.message_id
-        if not old_id or old_id in new_ids or old_id in seen:
-            continue
-        state, msg, reason = await _fetch(target, old_id)
-        if state is FetchState.MISSING:
-            continue
-        if state is FetchState.UNKNOWN:
-            summary.fail(row.key, reason)
-            continue
-        if msg is None or not _is_deletable_feature_message(
-            msg, bot_id, _cleanup_keys_for_row(row)
-        ):
-            continue
-        seen.add(old_id)
-        try:
-            await msg.delete()
-            summary.removed += 1
-        except Exception:
-            summary.fail(row.key, "failed to remove old managed message after rebuild")
-    return seen
-
-
-async def _delete_new(messages: list[Any]) -> None:
+async def _delete_new_survivors(messages: list[Any]) -> list[Any]:
+    survivors: list[Any] = []
     for sent in messages:
         try:
             await sent.delete()
+        except discord.NotFound:
+            continue
         except Exception:
-            pass
+            survivors.append(sent)
+    return survivors
 
 
-async def publish(bot: discord.Client) -> tuple[Summary, Any | None]:
+async def _delete_new(messages: list[Any]) -> bool:
+    return not await _delete_new_survivors(messages)
+
+
+async def _persist_rollback_journal(
+    tab: str,
+    header_map: dict[str, int],
+    pairs: list[tuple[MessageGroup, Any]],
+) -> list[tuple[Row, str]]:
+    updates = [
+        (
+            group.first_row,
+            _recovery_value(group.stored_message_id, [str(message.id)]),
+        )
+        for group, message in pairs
+    ]
+    await _write_ids_batch(tab, header_map, updates)
+    for row, value in updates:
+        row.data["message_id"] = value
+    return updates
+
+
+async def _rollback_replacements(
+    target: Any,
+    tab: str,
+    header_map: dict[str, int],
+    rows: list[Row],
+    pairs: list[tuple[MessageGroup, Any]],
+    bot_id: int | None,
+    summary: Summary,
+) -> None:
+    """Delete or durably journal only replacements created by this mutation."""
+
+    if not pairs:
+        return
+    try:
+        await _persist_rollback_journal(tab, header_map, pairs)
+    except Exception:
+        summary.fail("sheet", "failed to journal replacement rollback")
+    else:
+        await _recover_pending(target, tab, header_map, rows, bot_id, summary)
+        return
+
+    survivors = await _delete_new_survivors([message for _group, message in pairs])
+    if not survivors:
+        return
+    survivor_ids = {str(message.id) for message in survivors}
+    survivor_pairs = [
+        (group, message) for group, message in pairs if str(message.id) in survivor_ids
+    ]
+    try:
+        await _persist_rollback_journal(tab, header_map, survivor_pairs)
+    except Exception:
+        summary.fail("sheet", "failed to journal replacement rollback survivors")
+        for group, message in survivor_pairs:
+            _FAILSAFE_PENDING.append(
+                PendingRollback(
+                    group.first_row.row_number,
+                    group.stored_message_id,
+                    [message],
+                )
+            )
+
+
+async def _resolve_failsafe_pending(
+    target: Any,
+    tab: str,
+    header_map: dict[str, int],
+    rows: list[Row],
+    summary: Summary,
+) -> bool:
+    """Block mutations until in-memory rollback survivors are deleted or journalled."""
+
+    if not _FAILSAFE_PENDING:
+        return True
+    by_number = {row.row_number: row for row in rows}
+    unresolved: list[PendingRollback] = []
+    for pending in list(_FAILSAFE_PENDING):
+        survivors = await _delete_new_survivors(pending.messages)
+        if not survivors:
+            continue
+        row = by_number.get(pending.row_number)
+        if row is None:
+            pending.messages = survivors
+            unresolved.append(pending)
+            continue
+        value = _recovery_value(
+            pending.keep_id, [str(message.id) for message in survivors]
+        )
+        try:
+            await _write_ids_batch(tab, header_map, [(row, value)])
+        except Exception:
+            pending.messages = survivors
+            unresolved.append(pending)
+        else:
+            row.data["message_id"] = value
+    _FAILSAFE_PENDING[:] = unresolved
+    if unresolved:
+        summary.fail("rollback", "server-rules rollback survivors remain pending")
+        return False
+    return True
+
+
+async def _recover_pending(
+    target: Any,
+    tab: str,
+    header_map: dict[str, int],
+    rows: list[Row],
+    bot_id: int | None,
+    summary: Summary,
+) -> bool:
+    """Resume exact-ID cleanup recorded in message_id cells."""
+
+    updates: list[tuple[Row, str]] = []
+    complete = True
+    for row in rows:
+        recovery = _parse_recovery(row.message_id)
+        if recovery is None:
+            continue
+        remaining: list[str] = []
+        for message_id in recovery.cleanup_ids:
+            state, message, reason = await _fetch(target, message_id)
+            if state is FetchState.MISSING:
+                continue
+            if state is FetchState.UNKNOWN:
+                summary.fail(row.key, reason)
+                remaining.append(message_id)
+                complete = False
+                continue
+            if message is None or not _is_valid_stored_message(
+                message,
+                stored_message_id=message_id,
+                target=target,
+                bot_id=bot_id,
+                permitted_legacy_keys=_cleanup_keys_for_row(row),
+            ):
+                marker = _legacy_marker(message) if message is not None else None
+                if not (
+                    message is not None
+                    and _is_bot_authored(message, bot_id)
+                    and marker is not None
+                    and marker.state is LegacyMarkerState.VALID
+                ):
+                    summary.fail(
+                        row.key, "recovery message failed stored-ID verification"
+                    )
+                    remaining.append(message_id)
+                    complete = False
+                continue
+            try:
+                await message.delete()
+            except Exception:
+                summary.fail(row.key, "failed to delete stored recovery message")
+                remaining.append(message_id)
+                complete = False
+            else:
+                summary.removed += 1
+        value = (
+            _recovery_value(recovery.keep_id, remaining)
+            if remaining
+            else recovery.keep_id
+        )
+        updates.append((row, value))
+    if updates:
+        try:
+            await _write_ids_batch(tab, header_map, updates)
+        except Exception:
+            summary.fail("sheet", "failed to persist server-rules recovery progress")
+            return False
+        for row, value in updates:
+            row.data["message_id"] = value
+    return complete
+
+
+async def _publish(bot: discord.Client) -> tuple[Summary, Any | None]:
     target, tab, header_map, rows, errors = await preflight(bot)
     if errors:
         return errors, target
     assert target is not None
     summary = Summary()
-    snapshot = {row.row_number: row.message_id for row in rows}
+    bot_id = getattr(getattr(bot, "user", None), "id", None)
+    if not await _resolve_failsafe_pending(target, tab, header_map, rows, summary):
+        return summary, target
+    if not await _recover_pending(target, tab, header_map, rows, bot_id, summary):
+        return summary, target
     groups, _ = build_groups(rows)
     new_pairs: list[tuple[MessageGroup, Any]] = []
     try:
         for group in groups:
-            new_pairs.append((group, await target.send(embeds=group.marked_embeds)))
+            new_pairs.append(
+                (group, await target.send(content=None, embeds=group.payload_embeds))
+            )
     except Exception:
         summary.fail(group.key, "Discord send failed during rebuild")
-        await _delete_new([msg for _group, msg in new_pairs])
+        await _rollback_replacements(
+            target, tab, header_map, rows, new_pairs, bot_id, summary
+        )
         return summary, target
     updates: list[tuple[Row, str]] = []
     for group, msg in new_pairs:
-        updates.append((group.first_row, str(msg.id)))
+        old_ids = [row.message_id for row in group.rows if row.message_id]
+        updates.append(
+            (
+                group.first_row,
+                _recovery_value(str(msg.id), old_ids),
+            )
+        )
         updates.extend((row, "") for row in group.rows[1:] if row.message_id)
-    updates.extend((row, "") for row in rows if not row.enabled and row.message_id)
+    updates.extend(
+        (row, _recovery_value("", [row.message_id]))
+        for row in rows
+        if not row.enabled and row.message_id
+    )
     try:
         await _write_ids_batch(tab, header_map, updates)
-        summary.created = len(new_pairs)
     except Exception:
         summary.fail(
             "sheet",
-            "message_id update failed during rebuild; original IDs were restored where possible",
+            "failed to journal replacement messages during rebuild",
         )
-        try:
-            await _restore_ids_batch(tab, header_map, snapshot)
-        except Exception:
-            summary.fail("sheet", "failed to restore original message_id values")
-        await _delete_new([msg for _row, msg in new_pairs])
+        await _rollback_replacements(
+            target, tab, header_map, rows, new_pairs, bot_id, summary
+        )
         return summary, target
-    for row in rows:
-        if not row.enabled and row.message_id:
-            summary.removed += 0
+    for row, value in updates:
+        row.data["message_id"] = value
+    if not await _recover_pending(target, tab, header_map, rows, bot_id, summary):
+        return summary, target
+    summary.created = len(new_pairs)
     new_ids = {str(getattr(msg, "id", "")) for _group, msg in new_pairs}
-    bot_id = getattr(getattr(bot, "user", None), "id", None)
-    seen_old_ids = await _delete_old_stored_messages(
-        target, rows, new_ids, bot_id, summary
-    )
+    seen_old_ids: set[str] = set()
     try:
         old_messages = await _iter_feature_messages(target, bot_id)
     except Exception:
@@ -662,7 +909,11 @@ async def publish(bot: discord.Client) -> tuple[Summary, Any | None]:
     else:
         for msg in old_messages:
             msg_id = str(getattr(msg, "id", ""))
-            if msg_id in new_ids or msg_id in seen_old_ids:
+            if (
+                msg_id in new_ids
+                or msg_id in seen_old_ids
+                or getattr(msg, "deleted", False)
+            ):
                 continue
             try:
                 await msg.delete()
@@ -674,12 +925,22 @@ async def publish(bot: discord.Client) -> tuple[Summary, Any | None]:
     return summary, target
 
 
-async def refresh(bot: discord.Client) -> tuple[Summary, Any | None]:
+async def publish(bot: discord.Client) -> tuple[Summary, Any | None]:
+    async with MUTATION_LOCK:
+        return await _publish(bot)
+
+
+async def _refresh(bot: discord.Client) -> tuple[Summary, Any | None]:
     target, tab, header_map, rows, errors = await preflight(bot)
     if errors:
         return errors, target
     assert target is not None
     summary = Summary()
+    bot_id = getattr(getattr(bot, "user", None), "id", None)
+    if not await _resolve_failsafe_pending(target, tab, header_map, rows, summary):
+        return summary, target
+    if not await _recover_pending(target, tab, header_map, rows, bot_id, summary):
+        return summary, target
     groups, _ = build_groups(rows)
     grouped_rows = {id(row) for group in groups for row in group.rows}
     for group in groups:
@@ -692,12 +953,17 @@ async def refresh(bot: discord.Client) -> tuple[Summary, Any | None]:
             if (
                 state is FetchState.FOUND
                 and msg is not None
-                and _is_managed_message(
-                    msg, getattr(getattr(bot, "user", None), "id", None), group.key
+                and _is_valid_stored_message(
+                    msg,
+                    stored_message_id=group.stored_message_id,
+                    target=target,
+                    bot_id=getattr(getattr(bot, "user", None), "id", None),
+                    permitted_legacy_keys={group.key}
+                    | {row.topic_key for row in group.rows if row.topic_key},
                 )
             ):
                 try:
-                    await msg.edit(content=None, embeds=group.marked_embeds)
+                    await msg.edit(content=None, embeds=group.payload_embeds)
                 except Exception:
                     summary.fail(row.key, "failed to edit stored message")
                 else:
@@ -725,8 +991,12 @@ async def refresh(bot: discord.Client) -> tuple[Summary, Any | None]:
                     )
                 else:
                     summary.skipped += 1
-            elif msg is not None and _is_deletable_feature_message(
-                msg, getattr(getattr(bot, "user", None), "id", None), {row.key}
+            elif msg is not None and _is_valid_stored_message(
+                msg,
+                stored_message_id=row.message_id,
+                target=target,
+                bot_id=getattr(getattr(bot, "user", None), "id", None),
+                permitted_legacy_keys=_cleanup_keys_for_row(row),
             ):
                 try:
                     await msg.delete()
@@ -742,6 +1012,11 @@ async def refresh(bot: discord.Client) -> tuple[Summary, Any | None]:
         except Exception:
             summary.fail(row.key, "unexpected row processing failure")
     return summary, target
+
+
+async def refresh(bot: discord.Client) -> tuple[Summary, Any | None]:
+    async with MUTATION_LOCK:
+        return await _refresh(bot)
 
 
 def result_embed(action: str, summary: Summary) -> discord.Embed:
