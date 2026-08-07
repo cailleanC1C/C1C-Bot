@@ -21,6 +21,23 @@ from modules.community.live_arena.service import LiveArenaConfigError
 
 log = logging.getLogger("c1c.community.live_arena.views")
 
+TIMEZONE_OPTIONS = (
+    ("US/Canada Pacific — Los Angeles / Vancouver", "America/Los_Angeles"),
+    ("US/Canada Mountain — Denver / Calgary", "America/Denver"),
+    ("US/Canada Central — Chicago / Winnipeg", "America/Chicago"),
+    ("US/Canada Eastern — New York / Toronto", "America/New_York"),
+    ("UK & Ireland — London / Dublin", "Europe/London"),
+    ("Central Europe — Vienna / Berlin / Paris", "Europe/Vienna"),
+    ("Eastern Europe — Athens / Bucharest", "Europe/Athens"),
+    ("India — Delhi / Mumbai", "Asia/Kolkata"),
+    ("Australia Western — Perth", "Australia/Perth"),
+    ("Australia Central — Adelaide", "Australia/Adelaide"),
+    ("Australia Eastern — Sydney / Melbourne", "Australia/Sydney"),
+    ("New Zealand — Auckland", "Pacific/Auckland"),
+)
+TIMEZONE_OTHER = "__other__"
+_TIMEZONE_LABELS = {timezone: label for label, timezone in TIMEZONE_OPTIONS}
+
 
 def error_embed(message: object) -> discord.Embed:
     return discord.Embed(title="Live Arena", description=str(message), color=colors.c1c_blue)
@@ -30,6 +47,60 @@ def _player_error(exc: Exception) -> discord.Embed:
     if isinstance(exc, (RegistrationError, LiveArenaConfigError)):
         return error_embed(exc)
     return error_embed("Something went wrong. Please try again later.")
+
+
+def _timezone_player_error(exc: Exception) -> discord.Embed:
+    if isinstance(exc, RegistrationError) and "valid IANA timezone" in str(exc):
+        return error_embed(
+            "That timezone wasn't recognized. Choose one of the listed regions, or "
+            "enter a city-based timezone such as **Europe/London**, "
+            "**America/New_York**, or **Asia/Kolkata**."
+        )
+    return _player_error(exc)
+
+
+def _log_timezone_flow_error(exc: Exception, user_id: object, *, updating: bool) -> None:
+    flow = "self-service" if updating else "signup"
+    if isinstance(exc, RegistrationError):
+        log.warning(
+            "⚠️ Live Arena %s — timezone/preflight rejected • user=%s • reason=%s",
+            flow,
+            user_id,
+            exc,
+        )
+    elif isinstance(exc, LiveArenaConfigError):
+        log.error(
+            "❌ Live Arena %s — configuration blocked timezone/preflight • user=%s • reason=%s",
+            flow,
+            user_id,
+            exc,
+        )
+    else:
+        log.exception(
+            "❌ Live Arena %s — timezone/preflight failed unexpectedly • user=%s",
+            flow,
+            user_id,
+        )
+
+
+def _timezone_display(timezone: str) -> str:
+    return _TIMEZONE_LABELS.get(timezone, timezone)
+
+
+def timezone_prompt_embed(current_timezone: str = "") -> discord.Embed:
+    description = (
+        "Choose the region that best matches where you live. The bot uses this to "
+        "show availability and future match times in your local time, including "
+        "daylight-saving changes automatically.\n\n"
+        "If none of the listed regions fits, choose **Other / My timezone isn't listed**."
+    )
+    if current_timezone:
+        description += f"\n\n**Current timezone:** {_timezone_display(current_timezone)}"
+    return discord.Embed(
+        title="Choose your timezone",
+        description=description,
+        color=colors.c1c_blue,
+    )
 
 
 def _grouped_lines(localized_slots, selected_ids) -> tuple[str, int, int]:
@@ -49,6 +120,48 @@ def _grouped_lines(localized_slots, selected_ids) -> tuple[str, int, int]:
     return detail, len(selected), len(grouped)
 
 
+async def _prepare_availability(
+    manager,
+    member,
+    timezone: str,
+    *,
+    service=None,
+    snapshot=None,
+):
+    if snapshot is None:
+        service = (manager.service_factory or RegistrationService)(manager.sheet_id)
+        await service.initialize()
+        preparation = await service.prepare_signup(
+            str(member.id),
+            [str(role.id) for role in getattr(member, "roles", [])],
+            timezone,
+        )
+        config, _ = await load_pr3_config(manager.sheet_id)
+        await load_messages(manager.sheet_id, config["MESSAGES_TAB"])
+        return AvailabilityView(manager, service, preparation, timezone, member)
+
+    localized = localize_availability(
+        timezone,
+        list(snapshot.slots),
+        snapshot.tournament["signup_closes_at_utc"],
+    )
+    preparation = SignupPreparation(
+        snapshot.config,
+        snapshot.tournament,
+        snapshot.slots,
+        tuple(localized),
+    )
+    return AvailabilityView(
+        manager,
+        service,
+        preparation,
+        timezone,
+        member,
+        selected=snapshot.selected_slot_ids,
+        updating=True,
+    )
+
+
 class JoinTournamentView(discord.ui.View):
     def __init__(self, manager):
         super().__init__(timeout=None)
@@ -56,7 +169,11 @@ class JoinTournamentView(discord.ui.View):
 
     @discord.ui.button(label="Join Tournament", custom_id="live_arena:join", style=discord.ButtonStyle.primary)
     async def join(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        await interaction.response.send_modal(TimezoneModal(self.manager))
+        await interaction.response.send_message(
+            embed=timezone_prompt_embed(),
+            view=TimezoneSelectView(self.manager),
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="My Registration", custom_id="live_arena:my_registration", style=discord.ButtonStyle.secondary)
     async def my_registration(self, interaction: discord.Interaction, _button: discord.ui.Button):
@@ -89,64 +206,112 @@ class ClosedTournamentView(JoinTournamentView):
         self.remove_item(self.join)
 
 
-class TimezoneModal(discord.ui.Modal, title="Live Arena signup"):
-    timezone_input = discord.ui.TextInput(label="Timezone", required=True, placeholder="Europe/Vienna, America/New_York, Asia/Kolkata")
+class TimezoneSelectView(discord.ui.View):
+    def __init__(self, manager, *, service=None, snapshot=None):
+        super().__init__(timeout=900)
+        self.manager = manager
+        self.service = service
+        self.snapshot = snapshot
+        current = getattr(snapshot, "timezone", "") if snapshot else ""
+        known = {timezone for _, timezone in TIMEZONE_OPTIONS}
+        options = [
+            discord.SelectOption(
+                label=label,
+                value=timezone,
+                default=current == timezone,
+            )
+            for label, timezone in TIMEZONE_OPTIONS
+        ]
+        options.append(
+            discord.SelectOption(
+                label="Other / My timezone isn't listed",
+                value=TIMEZONE_OTHER,
+                description="Enter a city-based timezone, for example Europe/London.",
+                default=bool(current and current not in known),
+            )
+        )
+        self.select = discord.ui.Select(
+            placeholder="Choose your region / timezone",
+            options=options,
+            min_values=1,
+            max_values=1,
+        )
+        self.select.callback = self._selected
+        self.add_item(self.select)
 
-    def __init__(self, manager):
+    async def _selected(self, interaction: discord.Interaction):
+        timezone = self.select.values[0]
+        if timezone == TIMEZONE_OTHER:
+            await interaction.response.send_modal(
+                ManualTimezoneModal(
+                    self.manager,
+                    service=self.service,
+                    snapshot=self.snapshot,
+                )
+            )
+            return
+
+        await interaction.response.defer()
+        try:
+            view = await _prepare_availability(
+                self.manager,
+                interaction.user,
+                timezone,
+                service=self.service,
+                snapshot=self.snapshot,
+            )
+        except Exception as exc:
+            _log_timezone_flow_error(
+                exc,
+                interaction.user.id,
+                updating=self.snapshot is not None,
+            )
+            await interaction.edit_original_response(
+                embed=_timezone_player_error(exc),
+                view=self,
+            )
+            return
+        await interaction.edit_original_response(embed=view.embed(), view=view)
+
+
+class ManualTimezoneModal(discord.ui.Modal, title="Enter your timezone"):
+    def __init__(self, manager, *, service=None, snapshot=None):
         super().__init__()
         self.manager = manager
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        member = interaction.user
-        service = (self.manager.service_factory or RegistrationService)(self.manager.sheet_id)
-        try:
-            await service.initialize()
-            preparation = await service.prepare_signup(
-                str(member.id), [str(role.id) for role in getattr(member, "roles", [])], str(self.timezone_input)
-            )
-            config, _ = await load_pr3_config(self.manager.sheet_id)
-            await load_messages(self.manager.sheet_id, config["MESSAGES_TAB"])
-            view = AvailabilityView(self.manager, service, preparation, str(self.timezone_input), member)
-            await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
-        except Exception as exc:
-            log.exception("❌ Live Arena signup — preflight failed • user=%s", member.id)
-            await interaction.followup.send(embed=_player_error(exc), ephemeral=True)
-
-
-class UpdateTimezoneModal(discord.ui.Modal, title="Update Live Arena availability"):
-    def __init__(self, manager, service, snapshot):
-        super().__init__()
-        self.manager, self.service, self.snapshot = manager, service, snapshot
+        self.service = service
+        self.snapshot = snapshot
+        default = getattr(snapshot, "timezone", None) if snapshot else None
         self.timezone_input = discord.ui.TextInput(
-            label="Timezone", required=True, default=snapshot.timezone,
+            label="City-based timezone (e.g. Europe/London)",
+            required=True,
+            default=default,
             placeholder="Europe/Vienna, America/New_York, Asia/Kolkata",
         )
         self.add_item(self.timezone_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
+        timezone = str(self.timezone_input).strip()
         try:
-            timezone = str(self.timezone_input)
-            localized = localize_availability(
-                timezone, list(self.snapshot.slots), self.snapshot.tournament["signup_closes_at_utc"]
+            view = await _prepare_availability(
+                self.manager,
+                interaction.user,
+                timezone,
+                service=self.service,
+                snapshot=self.snapshot,
             )
-            preparation = SignupPreparation(
-                self.snapshot.config, self.snapshot.tournament, self.snapshot.slots, tuple(localized)
-            )
-            view = AvailabilityView(
-                self.manager, self.service, preparation, timezone, interaction.user,
-                selected=self.snapshot.selected_slot_ids, updating=True,
-            )
-            await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
         except Exception as exc:
-            if not isinstance(exc, (RegistrationError, LiveArenaConfigError)):
-                log.exception(
-                    "❌ Live Arena self-service — availability preparation failed • tournament=%s • user=%s • action=update_timezone",
-                    self.snapshot.config["ACTIVE_TOURNAMENT_ID"],
-                    interaction.user.id,
-                )
-            await interaction.followup.send(embed=_player_error(exc), ephemeral=True)
+            _log_timezone_flow_error(
+                exc,
+                interaction.user.id,
+                updating=self.snapshot is not None,
+            )
+            await interaction.followup.send(
+                embed=_timezone_player_error(exc),
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
 
 
 class AvailabilityView(discord.ui.View):
@@ -170,8 +335,21 @@ class AvailabilityView(discord.ui.View):
     def _build(self):
         self.clear_items()
         day = self.days[self.index]
-        options = [discord.SelectOption(label=f"{slot.local_start:%H:%M}–{slot.local_end:%H:%M}", value=slot.slot_id, default=slot.slot_id in self.selected) for slot in self.grouped[day]]
-        select = discord.ui.Select(placeholder="Select available windows", options=options, min_values=0, max_values=len(options), row=0)
+        options = [
+            discord.SelectOption(
+                label=f"{slot.local_start:%H:%M}–{slot.local_end:%H:%M}",
+                value=slot.slot_id,
+                default=slot.slot_id in self.selected,
+            )
+            for slot in self.grouped[day]
+        ]
+        select = discord.ui.Select(
+            placeholder="Select ALL available times — multiple choices allowed",
+            options=options,
+            min_values=0,
+            max_values=len(options),
+            row=0,
+        )
 
         async def selected(interaction):
             self.selected.difference_update(slot.slot_id for slot in self.grouped[day])
@@ -194,16 +372,26 @@ class AvailabilityView(discord.ui.View):
         count, days = self.counts()
         return discord.Embed(
             title=f"Availability — {self.days[self.index]:%A, %d %B}",
-            description=f"Times shown in **{self.timezone}**. Selected: **{count}** windows across **{days}** local days.",
+            description=(
+                f"Times shown in **{_timezone_display(self.timezone)}**.\n\n"
+                "**Select ALL time windows you could reasonably play on this day. "
+                "You can choose more than one.**\n"
+                "Use **Next Day** to add availability on other days.\n"
+                "You need at least **3 windows across 2 different days**.\n\n"
+                f"Selected: **{count} of minimum 3** windows across "
+                f"**{days} of minimum 2** days."
+            ),
             color=colors.c1c_blue,
         )
 
     async def previous(self, interaction):
-        self.index -= 1; self._build()
+        self.index -= 1
+        self._build()
         await interaction.response.edit_message(embed=self.embed(), view=self)
 
     async def next(self, interaction):
-        self.index += 1; self._build()
+        self.index += 1
+        self._build()
         await interaction.response.edit_message(embed=self.embed(), view=self)
 
     async def clear_day(self, interaction):
@@ -223,8 +411,13 @@ class AvailabilityView(discord.ui.View):
         detail, count, day_count = _grouped_lines(self.preparation.localized_slots, self.selected)
         action = "changes" if self.updating else "registration"
         return discord.Embed(
-            title=f"Review Live Arena {action}", color=colors.c1c_blue,
-            description=(f"**Tournament:** {self.preparation.tournament['tournament_name']}\n**Timezone:** {self.timezone}\n**Windows:** {count}\n**Local days:** {day_count}\n\n{detail}"),
+            title=f"Review Live Arena {action}",
+            color=colors.c1c_blue,
+            description=(
+                f"**Tournament:** {self.preparation.tournament['tournament_name']}\n"
+                f"**Timezone:** {_timezone_display(self.timezone)}\n"
+                f"**Windows:** {count}\n**Local days:** {day_count}\n\n{detail}"
+            ),
         )
 
 
@@ -300,7 +493,8 @@ def registration_embed(snapshot):
     detail, count, day_count = _grouped_lines(snapshot.localized_slots, snapshot.selected_slot_ids)
     description = (
         f"**Tournament:** {snapshot.tournament['tournament_name']}\n"
-        f"**Status:** {snapshot.status or 'unknown'}\n**Timezone:** {snapshot.timezone or 'Not saved'}\n"
+        f"**Status:** {snapshot.status or 'unknown'}\n"
+        f"**Timezone:** {_timezone_display(snapshot.timezone) if snapshot.timezone else 'Not saved'}\n"
         f"**Windows:** {count}\n**Local days:** {day_count}\n\n{detail}"
     )
     if snapshot.status == "withdrawn" and snapshot.tournament_status == "signup_open":
@@ -320,7 +514,14 @@ class RegistrationActionsView(discord.ui.View):
             self.add_item(ActionButton("Withdraw", discord.ButtonStyle.danger, 0, self.withdraw))
 
     async def update(self, interaction):
-        await interaction.response.send_modal(UpdateTimezoneModal(self.manager, self.service, self.snapshot))
+        await interaction.response.edit_message(
+            embed=timezone_prompt_embed(self.snapshot.timezone),
+            view=TimezoneSelectView(
+                self.manager,
+                service=self.service,
+                snapshot=self.snapshot,
+            ),
+        )
 
     async def withdraw(self, interaction):
         embed = discord.Embed(title="Confirm withdrawal", description=f"Withdraw from **{self.snapshot.tournament['tournament_name']}**? Your saved availability will be retained.", color=colors.c1c_blue)
