@@ -165,13 +165,18 @@ class LiveArenaRepository:
     async def update_tournament_cells(
         self, row_number: int, values: dict[str, object]
     ) -> None:
-        """Update only named cells in the frozen TOURNAMENTS row."""
+        """Atomically batch-update only named cells in the frozen TOURNAMENTS row."""
         worksheet = await aget_worksheet(self.sheet_id, self.config["TOURNAMENTS_TAB"])
+        tab = self.config["TOURNAMENTS_TAB"].replace("'", "''")
+        data = []
         for header, value in values.items():
             column = TOURNAMENT_HEADERS.index(header) + 1
-            await acall_with_backoff(
-                worksheet.update_cell, row_number, column, str(value)
-            )
+            cell = f"{_column(column)}{row_number}"
+            data.append({"range": f"'{tab}'!{cell}", "values": [[str(value)]]})
+        await acall_with_backoff(
+            worksheet.spreadsheet.values_batch_update,
+            body={"valueInputOption": "RAW", "data": data},
+        )
 
 
 def _column(number: int) -> str:

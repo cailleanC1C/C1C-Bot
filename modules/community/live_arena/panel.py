@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 
 import discord
 
@@ -23,6 +24,14 @@ _sync_locks: dict[str, asyncio.Lock] = {}
 _managers: dict[tuple[int, str], "LiveArenaPanelManager"] = {}
 
 
+@dataclass(frozen=True)
+class PanelSyncResult:
+    """Outcome of a panel sync, including failures deliberately handled here."""
+
+    ok: bool
+    operation: str = ""
+
+
 class LiveArenaPanelManager:
     def __init__(self, bot, sheet_id: str, service_factory=None):
         self.bot = bot
@@ -32,17 +41,17 @@ class LiveArenaPanelManager:
         # on_ready dispatches).  The workbook, not a transient manager, owns sync.
         self._lock = _sync_locks.setdefault(sheet_id, asyncio.Lock())
 
-    async def sync(self) -> None:
+    async def sync(self) -> PanelSyncResult:
         async with self._lock:
             config, matrix = await load_pr3_config(self.sheet_id)
             tournament = await load_tournament_snapshot(self.sheet_id)
             if tournament.status == "draft":
-                return
+                return PanelSyncResult(True)
             key = (
                 "signup_open" if tournament.status == "signup_open" else "signup_closed"
             )
             if tournament.status not in {"signup_open", "signup_closed"}:
-                return
+                return PanelSyncResult(True)
             messages = await load_messages(self.sheet_id, config["MESSAGES_TAB"], {key})
             repository = LiveArenaRepository(self.sheet_id)
             await repository.initialize()
@@ -74,7 +83,7 @@ class LiveArenaPanelManager:
                     message = None
                 except Exception:
                     log.exception("❌ Live Arena panel — fetch failed")
-                    return
+                    return PanelSyncResult(False, "fetch")
             from modules.community.live_arena.views import (
                 ClosedTournamentView,
                 JoinTournamentView,
@@ -90,7 +99,8 @@ class LiveArenaPanelManager:
                     await message.edit(embed=embed, view=view)
                 except Exception:
                     log.exception("❌ Live Arena panel — edit failed")
-                return
+                    return PanelSyncResult(False, "edit")
+                return PanelSyncResult(True)
             created = await channel.send(embed=embed, view=view)
             try:
                 await self._persist_message_id(matrix, str(created.id))
@@ -103,6 +113,7 @@ class LiveArenaPanelManager:
                         "⚠️ Live Arena panel — untracked message cleanup failed"
                     )
                 raise
+            return PanelSyncResult(True)
 
     async def _persist_message_id(self, matrix, message_id: str) -> None:
         headers = [str(value).strip() for value in matrix[0]]

@@ -12,6 +12,7 @@ from shared.theme import colors
 
 from modules.community.live_arena.messages import load_messages, load_pr5_config
 from modules.community.live_arena.organizer import OrganizerService, status_counts
+from modules.community.live_arena.panel import PanelSyncResult
 from modules.community.live_arena.service import (
     LiveArenaConfigError,
     _text,
@@ -43,7 +44,7 @@ class OrganizerPanelManager:
         )
         return config, tournament, participants, counts, parity
 
-    async def sync(self):
+    async def sync(self) -> PanelSyncResult:
         async with self._lock:
             config, _ = await load_pr5_config(self.sheet_id)
             channel = self.bot.get_channel(int(config["ORGANIZER_CHANNEL_ID"]))
@@ -92,13 +93,14 @@ class OrganizerPanelManager:
                     pass
                 except Exception:
                     log.exception("❌ Live Arena organizer panel — fetch failed")
-                    return
+                    return PanelSyncResult(False, "fetch")
             if message:
                 try:
                     await message.edit(embed=embed, view=self.view(tournament.status))
                 except Exception:
                     log.exception("❌ Live Arena organizer panel — edit failed")
-                return
+                    return PanelSyncResult(False, "edit")
+                return PanelSyncResult(True)
             created = await channel.send(embed=embed, view=self.view(tournament.status))
             try:
                 await self._persist(config, str(created.id))
@@ -113,6 +115,7 @@ class OrganizerPanelManager:
                         "⚠️ Live Arena organizer panel — untracked message cleanup failed"
                     )
                 raise
+            return PanelSyncResult(True)
 
     async def _persist(self, config, message_id):
         from shared.sheets.async_core import afetch_values
@@ -142,7 +145,9 @@ class OrganizerPanelManager:
             ("organizer panel", self.sync),
         ):
             try:
-                await action()
+                result = await action()
+                if isinstance(result, PanelSyncResult) and not result.ok:
+                    warnings.append(label)
             except Exception:
                 log.exception("⚠️ Live Arena %s — post-mutation refresh failed", label)
                 warnings.append(label)
@@ -251,32 +256,7 @@ class OrganizerView(discord.ui.View):
     async def roster(self, interaction, _action):
         if not await self.authorized(interaction):
             return
-        config, tournament, participants, counts, _ = await self.manager.data(
-            interaction.guild
-        )
-        rows = [
-            r
-            for r in participants
-            if _text(r["tournament_id"]) == tournament.tournament_id
-        ]
-        lines = [
-            f"**{_text(r['display_name_at_signup']) or _text(r['discord_user_id'])}** — {_text(r['clan_tag_at_signup']) or '—'} • {_text(r['status']) or 'unknown'} • {_text(r['timezone']) or '—'}"
-            for r in rows
-        ]
-        description = (
-            f"**{tournament.tournament_name}** • {tournament.status}\nConfirmed: **{counts['confirmed']}/{tournament.max_participants}** • {'EVEN' if counts['confirmed'] % 2 == 0 else 'ODD'}\n\n"
-            + ("\n".join(lines) or "No participants.")
-        )
-        if len(description) > 4000:
-            description = description[:3997] + "…"
-        embed = discord.Embed(
-            title="Live Arena roster", description=description, color=colors.c1c_blue
-        )
-        embed.add_field(
-            name="Status counts",
-            value=" • ".join(f"{k}: {v}" for k, v in counts.items()),
-            inline=False,
-        )
+        embed = await roster_embed(self.manager, interaction.guild)
         await interaction.response.send_message(
             embed=embed, view=RosterActions(self.manager), ephemeral=True
         )
@@ -325,9 +305,10 @@ async def execute_transition(interaction, manager, action):
         await service.initialize()
         await service.transition(action, str(interaction.user.id))
         warnings = await manager.secondary_sync()
+        past_tense = {"open": "opened", "close": "closed", "reopen": "reopened"}
         embed = discord.Embed(
             title="Registration updated",
-            description=f"Registration was successfully {action}ed.",
+            description=f"Registration was successfully {past_tense[action]}.",
             color=colors.c1c_blue,
         )
         if warnings:
@@ -359,9 +340,19 @@ class ConfirmReconcile(discord.ui.View):
         )
         role = interaction.guild.get_role(int(config["PARTICIPANT_ROLE_ID"]))
         added = removed = failures = 0
-        for member, add in [(m, True) for m in parity["missing"]] + [
-            (m, False) for m in parity["extra"]
-        ]:
+        if role is None:
+            failures += 1
+            log.error(
+                "❌ Live Arena role reconciliation — configured role missing • tournament=%s • role=%s",
+                tournament.tournament_id,
+                config["PARTICIPANT_ROLE_ID"],
+            )
+        for member, add in (
+            []
+            if role is None
+            else [(m, True) for m in parity["missing"]]
+            + [(m, False) for m in parity["extra"]]
+        ):
             try:
                 if add:
                     await member.add_roles(
@@ -391,10 +382,13 @@ class ConfirmReconcile(discord.ui.View):
             and _text(r["status"]) == "confirmed"
             for r in participants
         )
+        already_correct = (
+            0 if role is None else max(0, confirmed - added - len(parity["unresolved"]))
+        )
         await interaction.followup.send(
             embed=discord.Embed(
                 title="Role reconciliation complete",
-                description=f"Added: **{added}**\nRemoved: **{removed}**\nAlready correct: **{max(0, confirmed - added - len(parity['unresolved']))}**\nUnresolved: **{len(parity['unresolved'])}**\nFailures: **{failures}**",
+                description=f"Added: **{added}**\nRemoved: **{removed}**\nAlready correct: **{already_correct}**\nUnresolved: **{len(parity['unresolved'])}**\nFailures: **{failures}**",
                 color=colors.c1c_blue,
             ),
             ephemeral=True,
@@ -407,6 +401,58 @@ class RosterActions(discord.ui.View):
         self.manager = manager
         self.add_item(TargetSelect(manager, restore=False))
         self.add_item(TargetSelect(manager, restore=True))
+        self.add_item(RefreshRoster(manager))
+
+
+class RefreshRoster(discord.ui.Button):
+    def __init__(self, manager):
+        super().__init__(
+            label="Refresh",
+            custom_id="live_arena:organizer:roster:refresh",
+            style=discord.ButtonStyle.secondary,
+            row=2,
+        )
+        self.manager = manager
+
+    async def callback(self, interaction):
+        if not await OrganizerView(self.manager).authorized(interaction):
+            return
+        embed = await roster_embed(self.manager, interaction.guild)
+        await interaction.response.edit_message(
+            embed=embed, view=RosterActions(self.manager)
+        )
+
+
+async def roster_embed(manager, guild):
+    """Re-read and render the current roster without mutating workbook state."""
+    _, tournament, participants, counts, parity = await manager.data(guild)
+    rows = [
+        row
+        for row in participants
+        if _text(row["tournament_id"]) == tournament.tournament_id
+    ]
+    lines = [
+        f"**{_text(row['display_name_at_signup']) or _text(row['discord_user_id'])}** — {_text(row['clan_tag_at_signup']) or '—'} • {_text(row['status']) or 'unknown'} • {_text(row['timezone']) or '—'}"
+        for row in rows
+    ]
+    description = (
+        f"**{tournament.tournament_name}** • {tournament.status}\n"
+        f"Confirmed: **{counts['confirmed']}/{tournament.max_participants}** • "
+        f"{'EVEN' if counts['confirmed'] % 2 == 0 else 'ODD'}\n"
+        f"Role parity: **{len(parity['missing'])} missing / {len(parity['extra'])} extra / {len(parity['unresolved'])} unresolved**\n\n"
+        + ("\n".join(lines) or "No participants.")
+    )
+    if len(description) > 4000:
+        description = description[:3997] + "…"
+    embed = discord.Embed(
+        title="Live Arena roster", description=description, color=colors.c1c_blue
+    )
+    embed.add_field(
+        name="Status counts",
+        value=" • ".join(f"{key}: {value}" for key, value in counts.items()),
+        inline=False,
+    )
+    return embed
 
 
 class TargetSelect(discord.ui.UserSelect):
