@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from typing import Callable
 from uuid import uuid4
@@ -51,21 +52,29 @@ def _parse_close(value: object) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def validate_availability(
-    timezone: str, slot_ids: list[str], slots: list[dict[str, object]], close: object
-) -> list[str]:
+@dataclass(frozen=True)
+class LocalizedSlot:
+    slot_id: str
+    local_start: datetime
+    local_end: datetime
+
+
+@dataclass(frozen=True)
+class SignupPreparation:
+    config: dict[str, str]
+    tournament: dict[str, object]
+    slots: tuple[dict[str, object], ...]
+    localized_slots: tuple[LocalizedSlot, ...]
+
+
+def localize_availability(
+    timezone: str, slots: list[dict[str, object]], close: object
+) -> list[LocalizedSlot]:
+    """Project enabled slots using PR2's signup-close-week anchor."""
     try:
         zone = ZoneInfo(timezone)
     except (ZoneInfoNotFoundError, ValueError) as exc:
         raise RegistrationError("timezone must be a valid IANA timezone") from exc
-    selected = list(dict.fromkeys(str(value) for value in slot_ids))
-    by_id = {_text(row["slot_id"]): row for row in slots}
-    if any(slot_id not in by_id for slot_id in selected):
-        raise RegistrationError("unknown availability slot ID")
-    if any(not _enabled(by_id[slot_id]["enabled"]) for slot_id in selected):
-        raise RegistrationError("disabled availability slot selected")
-    if len(selected) < 3:
-        raise RegistrationError("select at least 3 distinct availability slots")
     anchor = _parse_close(close)
     monday = anchor.date() - timedelta(days=anchor.weekday())
     weekdays = {
@@ -82,9 +91,11 @@ def validate_availability(
             )
         )
     }
-    local_days = set()
-    for slot_id in selected:
-        row = by_id[slot_id]
+    result = []
+    for row in slots:
+        if not _enabled(row["enabled"]):
+            continue
+        slot_id = _text(row["slot_id"])
         try:
             day = monday + timedelta(days=weekdays[_text(row["weekday_utc"])])
             start = time.fromisoformat(_text(row["start_time_utc"]))
@@ -99,7 +110,27 @@ def validate_availability(
             raise RegistrationError(
                 "selected availability slots must be two-hour windows"
             )
-        local_days.add(start_at.astimezone(zone).date())
+        result.append(
+            LocalizedSlot(slot_id, start_at.astimezone(zone), end_at.astimezone(zone))
+        )
+    return sorted(result, key=lambda slot: slot.local_start)
+
+
+def validate_availability(
+    timezone: str, slot_ids: list[str], slots: list[dict[str, object]], close: object
+) -> list[str]:
+    selected = list(dict.fromkeys(str(value) for value in slot_ids))
+    by_id = {_text(row["slot_id"]): row for row in slots}
+    if any(slot_id not in by_id for slot_id in selected):
+        raise RegistrationError("unknown availability slot ID")
+    if any(not _enabled(by_id[slot_id]["enabled"]) for slot_id in selected):
+        raise RegistrationError("disabled availability slot selected")
+    if len(selected) < 3:
+        raise RegistrationError("select at least 3 distinct availability slots")
+    localized = {
+        slot.slot_id: slot for slot in localize_availability(timezone, slots, close)
+    }
+    local_days = {localized[slot_id].local_start.date() for slot_id in selected}
     if len(local_days) < 2:
         raise RegistrationError("availability must span at least 2 local start-days")
     return selected
@@ -118,6 +149,45 @@ class RegistrationService:
 
     async def initialize(self) -> None:
         await self.repository.initialize()
+
+    async def prepare_signup(
+        self, user_id: str, role_ids: list[str], timezone: str
+    ) -> SignupPreparation:
+        """Perform a write-free preflight using the registration domain rules."""
+        config, tournament, clans, slots = await self._context()
+        self._require_status(tournament, {"signup_open"})
+        localized = localize_availability(
+            timezone, slots, tournament["signup_closes_at_utc"]
+        )
+        self._eligible(tournament, clans, role_ids)
+        participants = await self.repository.participants()
+        existing = next(
+            (
+                row
+                for row in participants
+                if _text(row["tournament_id"]) == config["ACTIVE_TOURNAMENT_ID"]
+                and _text(row["discord_user_id"]) == str(user_id)
+            ),
+            None,
+        )
+        status = _text(existing["status"]) if existing else ""
+        if status == "confirmed":
+            raise RegistrationError("already registered")
+        if status in {"removed", "disqualified"}:
+            raise RegistrationError(f"{status} participant cannot self-register")
+        if status and status != "withdrawn":
+            raise RegistrationError(f"unsupported participant status: {status}")
+        maximum = _required_int(
+            tournament["max_participants"], "TOURNAMENTS.max_participants"
+        )
+        confirmed = sum(
+            _text(row["tournament_id"]) == config["ACTIVE_TOURNAMENT_ID"]
+            and _text(row["status"]) == "confirmed"
+            for row in participants
+        )
+        if confirmed >= maximum:
+            raise RegistrationError("tournament capacity is full")
+        return SignupPreparation(config, tournament, tuple(slots), tuple(localized))
 
     async def _context(self):
         config = await load_config(self.sheet_id)
