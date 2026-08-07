@@ -320,6 +320,55 @@ class ManualTimezoneModal(discord.ui.Modal, title="Enter your timezone"):
 TimezoneModal = ManualTimezoneModal
 
 
+class UpdateTimezoneModal(discord.ui.Modal, title="Update Live Arena availability"):
+    """Compatibility path for the previous PR4 modal; normal UI uses TimezoneSelectView."""
+
+    def __init__(self, manager, service, snapshot):
+        super().__init__()
+        self.manager, self.service, self.snapshot = manager, service, snapshot
+        self.timezone_input = discord.ui.TextInput(
+            label="Timezone",
+            required=True,
+            default=snapshot.timezone,
+            placeholder="Europe/Vienna, America/New_York, Asia/Kolkata",
+        )
+        self.add_item(self.timezone_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            timezone = str(self.timezone_input)
+            localized = localize_availability(
+                timezone,
+                list(self.snapshot.slots),
+                self.snapshot.tournament["signup_closes_at_utc"],
+            )
+            preparation = SignupPreparation(
+                self.snapshot.config,
+                self.snapshot.tournament,
+                self.snapshot.slots,
+                tuple(localized),
+            )
+            view = AvailabilityView(
+                self.manager,
+                self.service,
+                preparation,
+                timezone,
+                interaction.user,
+                selected=self.snapshot.selected_slot_ids,
+                updating=True,
+            )
+            await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
+        except Exception as exc:
+            if not isinstance(exc, (RegistrationError, LiveArenaConfigError)):
+                log.exception(
+                    "❌ Live Arena self-service — availability preparation failed • tournament=%s • user=%s • action=update_timezone",
+                    self.snapshot.config["ACTIVE_TOURNAMENT_ID"],
+                    interaction.user.id,
+                )
+            await interaction.followup.send(embed=_player_error(exc), ephemeral=True)
+
+
 class AvailabilityView(discord.ui.View):
     def __init__(self, manager, service, preparation, timezone: str, member, *, selected=(), updating=False):
         super().__init__(timeout=900)
