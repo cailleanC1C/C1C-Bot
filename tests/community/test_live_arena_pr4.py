@@ -9,6 +9,7 @@ import pytest
 from modules.community.live_arena import messages, views
 from modules.community.live_arena.registration import (
     LocalizedSlot,
+    RegistrationError,
     RegistrationSnapshot,
     SignupPreparation,
 )
@@ -92,6 +93,26 @@ def test_update_timezone_prefills_and_preserves_real_slot_ids():
     assert view.selected == set(current.selected_slot_ids)
 
 
+@pytest.mark.parametrize(
+    ("error", "logged", "visible"),
+    [(RegistrationError("bad timezone"), False, "bad timezone"), (RuntimeError("boom"), True, "Something went wrong")],
+)
+def test_update_timezone_logs_only_unexpected_failures(monkeypatch, caplog, error, logged, visible):
+    current = snapshot()
+    modal = views.UpdateTimezoneModal(SimpleNamespace(), object(), current)
+    modal.timezone_input._value = "UTC"
+    monkeypatch.setattr(views, "localize_availability", lambda *_args: (_ for _ in ()).throw(error))
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=7), response=SimpleNamespace(defer=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+    caplog.set_level("ERROR", logger="c1c.community.live_arena.views")
+    run(modal.on_submit(interaction))
+    embed = interaction.followup.send.await_args.kwargs["embed"]
+    assert visible in embed.description
+    assert ("availability preparation failed" in caplog.text) is logged
+
+
 def test_update_save_calls_pr2_only_and_uses_exact_template(monkeypatch):
     current = snapshot()
     preparation = SignupPreparation(current.config, current.tournament, current.slots, current.localized_slots)
@@ -110,6 +131,23 @@ def test_update_save_calls_pr2_only_and_uses_exact_template(monkeypatch):
     assert args[:2] == ("7", "UTC") and set(args[2]) == set(current.selected_slot_ids)
     manager.sync.assert_not_awaited()
     assert interaction.followup.send.await_args.kwargs["embed"].description == "<@7>, your timezone and availability for Trial Cup were updated."
+
+
+def test_update_save_unexpected_failure_is_logged_and_generic(monkeypatch, caplog):
+    current = snapshot()
+    preparation = SignupPreparation(current.config, current.tournament, current.slots, current.localized_slots)
+    service = SimpleNamespace(update_availability=AsyncMock(side_effect=RuntimeError("database detail")))
+    manager = SimpleNamespace(sheet_id="sheet", sync=AsyncMock())
+    member = SimpleNamespace(id=7, mention="<@7>")
+    flow = views.AvailabilityView(manager, service, preparation, "UTC", member, selected=current.selected_slot_ids, updating=True)
+    monkeypatch.setattr(views, "load_pr3_config", AsyncMock(return_value=({"MESSAGES_TAB": "MESSAGES"}, [])))
+    monkeypatch.setattr(views, "load_messages", AsyncMock(return_value={}))
+    interaction = SimpleNamespace(user=member, response=SimpleNamespace(defer=AsyncMock()), followup=SimpleNamespace(send=AsyncMock()))
+    caplog.set_level("ERROR", logger="c1c.community.live_arena.views")
+    run(views.ReviewView(flow).children[1].callback(interaction))
+    embed = interaction.followup.send.await_args.kwargs["embed"]
+    assert "Something went wrong" in embed.description and "database detail" not in embed.description
+    assert "action=update_availability" in caplog.text
 
 
 def test_withdraw_cancel_is_embed_only_and_does_not_mutate():
@@ -149,6 +187,22 @@ def test_withdraw_calls_pr2_once_then_removes_role_and_refreshes(monkeypatch):
     assert interaction.followup.send.await_args.kwargs["embed"].description == "<@7> has withdrawn from Trial Cup."
 
 
+def test_signup_closed_withdraws_and_removes_role_without_panel_sync(monkeypatch):
+    current = snapshot(tournament_status="signup_closed")
+    service = SimpleNamespace(withdraw=AsyncMock())
+    manager = SimpleNamespace(sheet_id="sheet", sync=AsyncMock())
+    role = SimpleNamespace(id=99)
+    interaction = withdrawal_interaction(role)
+    template = messages.MessageTemplate("withdrawal_confirmed", "Withdrawal recorded", "{participant} has withdrawn from {tournament_name}.", 1)
+    monkeypatch.setattr(views, "load_pr3_config", AsyncMock(return_value=({"MESSAGES_TAB": "MESSAGES", "PARTICIPANT_ROLE_ID": "99"}, [])))
+    monkeypatch.setattr(views, "load_messages", AsyncMock(return_value={"withdrawal_confirmed": template}))
+    run(views.WithdrawalReasonModal(manager, service, current).on_submit(interaction))
+    service.withdraw.assert_awaited_once()
+    interaction.user.remove_roles.assert_awaited_once_with(role, reason="Live Arena registration withdrawn")
+    manager.sync.assert_not_awaited()
+    assert isinstance(interaction.followup.send.await_args.kwargs["embed"], discord.Embed)
+
+
 @pytest.mark.parametrize("role_error,sync_error", [(RuntimeError("denied"), None), (None, RuntimeError("offline"))])
 def test_secondary_withdrawal_failure_keeps_success(monkeypatch, role_error, sync_error):
     current = snapshot()
@@ -168,7 +222,7 @@ def test_secondary_withdrawal_failure_keeps_success(monkeypatch, role_error, syn
     assert bool(embed.fields) is bool(role_error)
 
 
-def test_withdrawal_rejection_has_no_role_or_refresh(monkeypatch):
+def test_withdrawal_rejection_has_no_role_or_refresh(monkeypatch, caplog):
     current = snapshot()
     service = SimpleNamespace(withdraw=AsyncMock(side_effect=Exception("write failed")))
     manager = SimpleNamespace(sheet_id="sheet", sync=AsyncMock())
@@ -176,8 +230,10 @@ def test_withdrawal_rejection_has_no_role_or_refresh(monkeypatch):
     interaction = withdrawal_interaction(role)
     monkeypatch.setattr(views, "load_pr3_config", AsyncMock(return_value=({"MESSAGES_TAB": "MESSAGES", "PARTICIPANT_ROLE_ID": "99"}, [])))
     monkeypatch.setattr(views, "load_messages", AsyncMock(return_value={}))
+    caplog.set_level("ERROR", logger="c1c.community.live_arena.views")
     run(views.WithdrawalReasonModal(manager, service, current).on_submit(interaction))
     interaction.user.remove_roles.assert_not_awaited()
     manager.sync.assert_not_awaited()
     embed = interaction.followup.send.await_args.kwargs["embed"]
     assert isinstance(embed, discord.Embed) and "write failed" not in embed.description
+    assert "action=withdraw" in caplog.text

@@ -187,6 +187,18 @@ def test_draft_creates_no_public_panel(monkeypatch):
     assert channel.sent == []
 
 
+def test_signup_closed_does_not_render_edit_or_recreate_public_panel(monkeypatch):
+    existing = _Message(55)
+    manager, channel = _panel_manager(
+        monkeypatch, status="signup_closed", panel_id="55", channel=_Channel(existing)
+    )
+    asyncio.run(manager.sync())
+    panel.load_messages.assert_not_awaited()
+    existing.edit.assert_not_awaited()
+    assert channel.sent == []
+    manager._persist_message_id.assert_not_awaited()
+
+
 def test_blank_panel_creates_once_and_persists_existing_config_cell(monkeypatch):
     manager, channel = _panel_manager(monkeypatch)
     asyncio.run(manager.sync())

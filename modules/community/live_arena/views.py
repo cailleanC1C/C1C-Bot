@@ -132,6 +132,12 @@ class UpdateTimezoneModal(discord.ui.Modal, title="Update Live Arena availabilit
             )
             await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
         except Exception as exc:
+            if not isinstance(exc, (RegistrationError, LiveArenaConfigError)):
+                log.exception(
+                    "❌ Live Arena self-service — availability preparation failed • tournament=%s • user=%s • action=update_timezone",
+                    self.snapshot.config["ACTIVE_TOURNAMENT_ID"],
+                    interaction.user.id,
+                )
             await interaction.followup.send(embed=_player_error(exc), ephemeral=True)
 
 
@@ -238,6 +244,12 @@ class ReviewView(discord.ui.View):
                 await flow.service.register(str(member.id), member.display_name, [str(role.id) for role in getattr(member, "roles", [])], flow.timezone, list(flow.selected))
                 embed = messages["signup_confirmed"].embed(participant=member.mention, tournament_name=flow.preparation.tournament["tournament_name"], signup_deadline=discord_timestamp(flow.preparation.tournament["signup_closes_at_utc"]))
         except Exception as exc:
+            if flow.updating and not isinstance(exc, (RegistrationError, LiveArenaConfigError)):
+                log.exception(
+                    "❌ Live Arena self-service — save failed • tournament=%s • user=%s • action=update_availability",
+                    flow.preparation.config["ACTIVE_TOURNAMENT_ID"],
+                    member.id,
+                )
             await interaction.followup.send(embed=_player_error(exc), ephemeral=True)
             return
         if flow.updating:
@@ -330,14 +342,21 @@ class WithdrawalReasonModal(discord.ui.Modal, title="Confirm Live Arena withdraw
             messages = await load_messages(self.manager.sheet_id, config["MESSAGES_TAB"])
             await self.service.withdraw(str(member.id), str(self.reason).strip())
         except Exception as exc:
+            if not isinstance(exc, (RegistrationError, LiveArenaConfigError)):
+                log.exception(
+                    "❌ Live Arena self-service — withdrawal failed • tournament=%s • user=%s • action=withdraw",
+                    self.snapshot.config["ACTIVE_TOURNAMENT_ID"],
+                    member.id,
+                )
             await interaction.followup.send(embed=_player_error(exc), ephemeral=True)
             return
         embed = messages["withdrawal_confirmed"].embed(participant=member.mention, tournament_name=self.snapshot.tournament["tournament_name"])
         await self._remove_role(interaction, config, embed)
-        try:
-            await self.manager.sync()
-        except Exception:
-            log.exception("⚠️ Live Arena panel — post-withdrawal refresh failed • tournament=%s • user=%s", self.snapshot.config["ACTIVE_TOURNAMENT_ID"], member.id)
+        if self.snapshot.tournament_status == "signup_open":
+            try:
+                await self.manager.sync()
+            except Exception:
+                log.exception("⚠️ Live Arena panel — post-withdrawal refresh failed • tournament=%s • user=%s", self.snapshot.config["ACTIVE_TOURNAMENT_ID"], member.id)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def _remove_role(self, interaction, config, embed):

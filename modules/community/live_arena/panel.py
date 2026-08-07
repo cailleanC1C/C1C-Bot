@@ -35,12 +35,10 @@ class LiveArenaPanelManager:
     async def sync(self) -> None:
         async with self._lock:
             config, matrix = await load_pr3_config(self.sheet_id)
-            messages = await load_messages(self.sheet_id, config["MESSAGES_TAB"])
             tournament = await load_tournament_snapshot(self.sheet_id)
-            if tournament.status == "draft":
+            if tournament.status != "signup_open":
                 return
-            if tournament.status not in {"signup_open", "signup_closed"}:
-                return
+            messages = await load_messages(self.sheet_id, config["MESSAGES_TAB"])
             repository = LiveArenaRepository(self.sheet_id)
             await repository.initialize()
             participants = await repository.participants()
