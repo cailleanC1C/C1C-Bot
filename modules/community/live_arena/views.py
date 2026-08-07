@@ -169,11 +169,14 @@ class JoinTournamentView(discord.ui.View):
 
     @discord.ui.button(label="Join Tournament", custom_id="live_arena:join", style=discord.ButtonStyle.primary)
     async def join(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        await interaction.response.send_message(
-            embed=timezone_prompt_embed(),
-            view=TimezoneSelectView(self.manager),
-            ephemeral=True,
-        )
+        if hasattr(interaction.response, "send_message"):
+            await interaction.response.send_message(
+                embed=timezone_prompt_embed(),
+                view=TimezoneSelectView(self.manager),
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(TimezoneModal(self.manager))
 
     @discord.ui.button(label="My Registration", custom_id="live_arena:my_registration", style=discord.ButtonStyle.secondary)
     async def my_registration(self, interaction: discord.Interaction, _button: discord.ui.Button):
@@ -312,6 +315,9 @@ class ManualTimezoneModal(discord.ui.Modal, title="Enter your timezone"):
             )
             return
         await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
+
+
+TimezoneModal = ManualTimezoneModal
 
 
 class AvailabilityView(discord.ui.View):
