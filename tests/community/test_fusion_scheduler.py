@@ -169,6 +169,7 @@ def test_announcement_refresh_uses_event_boundaries(monkeypatch) -> None:
     parent = _fusion(now, start_delta=-24, end_delta=24)
     event_start = now + dt.timedelta(hours=2)
     event_end = now + dt.timedelta(hours=3)
+    daily_due = event_end + dt.timedelta(hours=1)
     event = SimpleNamespace()
     runtime = _runtime()
     _patch_fusion_data(monkeypatch, published=(parent,), events=(event,))
@@ -177,6 +178,7 @@ def test_announcement_refresh_uses_event_boundaries(monkeypatch) -> None:
         "get_valid_event_timing",
         lambda _event, **_kwargs: (event_start, event_end),
     )
+    monkeypatch.setattr(fusion_scheduler, "_next_daily", lambda _now: daily_due)
 
     asyncio.run(fusion_scheduler.reconcile_fusion_jobs(runtime))
     job = next(
