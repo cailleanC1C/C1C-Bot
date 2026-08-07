@@ -5,7 +5,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from datetime import datetime, timezone
-from .models import (
+from modules.community.live_arena_tournament.models import (
     AvailabilitySlot,
     RegistrationError,
     validate_availability,
@@ -110,6 +110,10 @@ class LiveArenaService:
                     "This registration cannot be changed through self-service; contact a tournament organizer."
                 )
             if norm(tournament.status) != "signup_open":
+                log.info(
+                    "live_arena_registration_rejected",
+                    extra={"tournament_id": tid, "reason": "registration_not_open"},
+                )
                 raise RegistrationError("Registration is not open.")
             increases_count = old_status != "confirmed"
             if (
@@ -125,7 +129,14 @@ class LiveArenaService:
             clans = await self.repository.rows(
                 "eligible_clans", ("tournament_id", "clan_tag")
             )
-            clan = self.eligible_clan(member_role_ids, clans, tid)
+            try:
+                clan = self.eligible_clan(member_role_ids, clans, tid)
+            except RegistrationError:
+                log.info(
+                    "live_arena_registration_rejected",
+                    extra={"tournament_id": tid, "reason": "eligibility"},
+                )
+                raise
             raw_slots = await self.repository.rows(
                 "availability_slots",
                 (
@@ -151,13 +162,20 @@ class LiveArenaService:
                 for r in raw_slots
                 if str(r.get("tournament_id", tid)) in ("", tid)
             ]
-            selected = validate_availability(
-                slot_ids,
-                slots,
-                timezone_name,
-                tournament.minimum_availability,
-                anchor_monday=anchor_monday,
-            )
+            try:
+                selected = validate_availability(
+                    slot_ids,
+                    slots,
+                    timezone_name,
+                    tournament.minimum_availability,
+                    anchor_monday=anchor_monday,
+                )
+            except RegistrationError:
+                log.info(
+                    "live_arena_registration_rejected",
+                    extra={"tournament_id": tid, "reason": "availability_validation"},
+                )
+                raise
             target = existing or min(
                 (
                     r

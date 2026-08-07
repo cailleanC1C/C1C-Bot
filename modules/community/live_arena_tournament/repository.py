@@ -11,8 +11,11 @@ from shared.sheets.async_core import (
     asheets_read,
     aget_worksheet,
 )
-from .config import FeatureConfig, parse_system_config
-from .models import SchemaError, norm
+from modules.community.live_arena_tournament.config import (
+    FeatureConfig,
+    parse_system_config,
+)
+from modules.community.live_arena_tournament.models import SchemaError, norm
 
 
 class LiveArenaRepository:
@@ -33,7 +36,14 @@ class LiveArenaRepository:
         normalized = [{norm(k): v for k, v in r.items()} for r in rows]
         for index, row in enumerate(normalized, 2):
             row.setdefault("_row_number", index)
-        present = {norm(k) for r in normalized for k in r}
+        # Records contain no header information when a correctly configured table is
+        # header-only.  Read the worksheet header independently so startup validation
+        # does not confuse an empty table with a missing schema.
+        present = set()
+        if required:
+            ws = await aget_worksheet(self.sheet_id, self.config.tabs[table])
+            values = await acall_with_backoff(ws.get_all_values)
+            present = {norm(k) for k in (values[0] if values else [])}
         missing = {norm(x) for x in required} - present
         if missing:
             raise SchemaError(
@@ -160,12 +170,9 @@ class LiveArenaRepository:
                     "discord_user_id": user_id,
                     "slot_id": slot,
                     "preference": "available",
-                    "created_at": (
-                        matches[pos][1][headers.index("created_at")]
-                        if pos < len(matches)
-                        and len(matches[pos][1]) > headers.index("created_at")
-                        else created_by_slot.get(slot, now)
-                    ),
+                    # Creation belongs to the slot identity, never the physical row
+                    # reused for it when selections are reordered.
+                    "created_at": created_by_slot.get(str(slot)) or now,
                     "updated_at": now,
                 }
                 row = [record.get(h, "") for h in headers]

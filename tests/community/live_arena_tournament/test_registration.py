@@ -1,6 +1,6 @@
 import asyncio
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from modules.community.live_arena_tournament.config import parse_system_config
 from modules.community.live_arena_tournament.models import (
@@ -521,3 +521,199 @@ def test_opening_registration_requires_configured_deadline():
     assert LiveArenaTournamentCog._deadline_text("2026-08-10T18:00:00Z").startswith(
         "<t:"
     )
+
+
+def test_required_headers_validate_on_header_only_table():
+    repo = LiveArenaRepository("sheet")
+    repo.config = parse_system_config(config_rows(), "sheet")
+    worksheet = Mock()
+    worksheet.update = Mock()
+    worksheet.get_all_values = Mock(return_value=[["event_id", "created_at"]])
+    with (
+        patch(
+            "modules.community.live_arena_tournament.repository.afetch_records",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch(
+            "modules.community.live_arena_tournament.repository.aget_worksheet",
+            new=AsyncMock(return_value=worksheet),
+        ),
+        patch(
+            "modules.community.live_arena_tournament.repository.acall_with_backoff",
+            new=AsyncMock(side_effect=lambda fn, *args, **kwargs: fn(*args, **kwargs)),
+        ),
+    ):
+        assert asyncio.run(repo.rows("audit_log", ("event_id", "created_at"))) == []
+
+
+def test_replace_availability_preserves_created_at_by_slot_identity_when_reordered():
+    repo = LiveArenaRepository("sheet")
+    headers = [
+        "tournament_id",
+        "discord_user_id",
+        "slot_id",
+        "preference",
+        "created_at",
+        "updated_at",
+    ]
+    worksheet = Mock()
+    worksheet.update = Mock()
+    values = [
+        headers,
+        ["T1", "7", "A", "available", "t1", "old"],
+        ["T1", "7", "B", "available", "t2", "old"],
+    ]
+    repo._values = AsyncMock(return_value=(worksheet, values))
+    asyncio.run(repo.replace_availability("T1", "7", ["B", "C"], "now"))
+    written = [call.args[1][0] for call in worksheet.update.call_args_list]
+    assert written[0][2:6] == ["B", "available", "t2", "now"]
+    assert written[1][2:6] == ["C", "available", "now", "now"]
+
+
+def test_global_availability_slots_do_not_require_tournament_id():
+    from modules.community.live_arena_tournament.cog import LiveArenaTournamentCog
+
+    source = __import__("inspect").getsource(LiveArenaTournamentCog.prepare)
+    availability_contract = source.split('"availability_slots": (', 1)[1].split(
+        "),", 1
+    )[0]
+    assert '"tournament_id"' not in availability_contract
+
+
+def test_tournament_config_does_not_require_minimum_availability_header():
+    from modules.community.live_arena_tournament.cog import LiveArenaTournamentCog
+
+    source = __import__("inspect").getsource(LiveArenaTournamentCog.prepare)
+    tournament_contract = source.split('"tournaments": (', 1)[1].split("),", 1)[0]
+    assert '"minimum_availability"' not in tournament_contract
+
+
+class PrepareRepository:
+    def __init__(self, *, participant_role="22", signup_channel="33"):
+        self.config = parse_system_config(config_rows(), "sheet")
+        tid = "T1"
+        self.data = {
+            "tournaments": [
+                {
+                    "tournament_id": tid,
+                    "tournament_name": "Cup",
+                    "status": "signup_open",
+                    "max_participants": "16",
+                    "signup_closes_at": "2026-08-10T18:00:00Z",
+                    "eligibility_scope": "selected_clans",
+                    "active": "TRUE",
+                }
+            ],
+            "destinations": [
+                {
+                    "tournament_id": tid,
+                    "destination_key": "signup",
+                    "channel_id": signup_channel,
+                    "active": "TRUE",
+                },
+                {
+                    "tournament_id": tid,
+                    "destination_key": "organizer_log",
+                    "channel_id": "44",
+                    "active": "TRUE",
+                },
+            ],
+            "roles": [
+                {
+                    "tournament_id": tid,
+                    "role_type": "organizer",
+                    "discord_role_id": "11",
+                    "active": "TRUE",
+                },
+                {
+                    "tournament_id": tid,
+                    "role_type": "participant",
+                    "discord_role_id": participant_role,
+                    "active": "TRUE",
+                },
+            ],
+            "availability_slots": [
+                {
+                    "slot_id": "A",
+                    "weekday_utc": "Monday",
+                    "start_time_utc": "18:00",
+                    "end_time_utc": "20:00",
+                    "end_day_offset": "0",
+                    "enabled": "TRUE",
+                    "sort_order": "1",
+                }
+            ],
+            "participants": [],
+            "participant_availability": [],
+            "audit_log": [],
+            "bot_state": [],
+            "messages": [
+                {"message_key": key, "active": "TRUE"}
+                for key in (
+                    "signup_open",
+                    "signup_closed",
+                    "signup_confirmed",
+                    "withdrawal_confirmed",
+                    "registration_organizer",
+                )
+            ],
+            "message_components": [
+                {
+                    "action_id": action,
+                    "label": action,
+                    "sort_order": str(i),
+                    "active": "TRUE",
+                }
+                for i, action in enumerate(
+                    (
+                        "join_tournament",
+                        "my_registration",
+                        "update_availability",
+                        "withdraw",
+                        "open_registration",
+                        "close_registration",
+                        "reopen_registration",
+                        "view_roster",
+                        "refresh_registration",
+                    )
+                )
+            ],
+            "eligible_clans": [
+                {
+                    "tournament_id": tid,
+                    "clan_tag": "C1C",
+                    "discord_role_id": "55",
+                    "active": "TRUE",
+                }
+            ],
+        }
+
+    async def load_config(self):
+        return self.config
+
+    async def rows(self, table, required=()):
+        return self.data[table]
+
+
+def _prepare(repository):
+    from modules.community.live_arena_tournament.cog import LiveArenaTournamentCog
+
+    cog = LiveArenaTournamentCog.__new__(LiveArenaTournamentCog)
+    cog.bot = Mock()
+    cog.repository = repository
+    cog.service = LiveArenaService(repository)
+    cog.public_view = cog.organizer_view = None
+    return asyncio.run(cog.prepare())
+
+
+def test_prepare_accepts_exact_current_workbook_schema():
+    assert _prepare(PrepareRepository()) is True
+
+
+@pytest.mark.parametrize(
+    "field,value", [("participant_role", ""), ("signup_channel", "")]
+)
+def test_blank_active_participant_role_or_channel_ids_fail_startup_cleanly(
+    field, value
+):
+    assert _prepare(PrepareRepository(**{field: value})) is False

@@ -63,6 +63,7 @@ Missing any **Required** key causes the bot to exit with an error at startup. If
 | `REMINDER_SHEET_ID` | string | — | Google Sheet ID for reminders (service-specific). |
 | `MILESTONES_SHEET_ID` | string | — | Google Sheet ID for Milestones (claims, appreciation, shard & mercy, missions) (service-specific). |
 | `ACHIEVEMENTS_SHEET_ID` | string | — | Google Sheet ID for achievement definitions used by the Achievement Collector role source. |
+| `LIVE_ARENA_TOURNAMENT_SHEET_ID` | string | — | Optional Live Arena registration workbook ID; leaving it blank safely disables only that feature. |
 | `MILESTONES_CONFIG_TAB` | string | required | Deployment checklist: set `MILESTONES_CONFIG_TAB=Config` in Render for prod before deploy if it is not already configured. |
 | `RECRUITMENT_CONFIG_TAB` | string | `Config` | Worksheet name containing recruitment config. |
 | `ONBOARDING_CONFIG_TAB` | string | `Config` | Worksheet name containing onboarding config. |
@@ -444,4 +445,4 @@ The `LEAGUES_SHEET_ID` Config tab resolves `cluster_capture_config_tab`, `cluste
 
 Before weekly boards are exported, the bot appends one candidate per active clan and enabled capture spec. Unknown/former source clans are ignored; a missing active clan is archived as `evaluation_status=missing`. Blank, invalid, and zero weekly scores stay blank rather than becoming valid zeroes. Existing record keys with identical semantic event data are retry no-ops even when trigger, timestamp, source location, or clan display name changes; audit metadata from the original row remains untouched. Changed semantic event data conflicts, while conflicting keys and negative cumulative deltas fail the job before Discord posting. The capture is append-only and never clears Stormforged inputs. Current CvC/Siege inputs only support weekly scores or cumulative win/loss deltas, not complete cycle/participation/action/class ratings.
 
-Doc last updated: 2026-08-03 (v0.9.8.2)
+Doc last updated: 2026-08-07 (v0.9.8.2)

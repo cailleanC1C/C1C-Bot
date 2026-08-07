@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 import discord
-from .models import slot_local_window
+from modules.community.live_arena_tournament.models import slot_local_window
 
 CUSTOM_IDS = {
     action: f"live_arena:registration:{action}"

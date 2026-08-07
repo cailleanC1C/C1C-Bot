@@ -1,7 +1,7 @@
 """Live Arena tournament registration extension."""
 
 import logging
-from .cog import LiveArenaTournamentCog
+from modules.community.live_arena_tournament.cog import LiveArenaTournamentCog
 
 log = logging.getLogger("c1c.community.live_arena_registration")
 

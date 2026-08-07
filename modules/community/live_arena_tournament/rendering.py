@@ -3,7 +3,7 @@
 from __future__ import annotations
 import string
 import discord
-from .models import SchemaError, norm, truthy
+from modules.community.live_arena_tournament.models import SchemaError, norm, truthy
 
 
 def choose_row(rows, key, tournament_id):
@@ -52,7 +52,7 @@ def configured_embed(row, values):
         .lstrip("#")
     )
     try:
-        color = int(raw, 16)
+        EMBED_COLOR = int(raw, 16)
     except ValueError:
-        color = 0
-    return discord.Embed(title=title, description=body, colour=color)
+        EMBED_COLOR = 0
+    return discord.Embed(title=title, description=body, colour=EMBED_COLOR)

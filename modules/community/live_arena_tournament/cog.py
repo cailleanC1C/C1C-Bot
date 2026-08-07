@@ -7,8 +7,8 @@ import discord
 from discord.ext import commands
 from c1c_coreops.rbac import is_admin_member
 from shared.config import is_guild_allowed
-from . import config
-from .models import (
+from modules.community.live_arena_tournament import config
+from modules.community.live_arena_tournament.models import (
     AvailabilitySlot,
     RegistrationError,
     Tournament,
@@ -16,16 +16,19 @@ from .models import (
     truthy,
     parse_weekday,
 )
-from .repository import LiveArenaRepository
-from .rendering import choose_row, configured_embed
-from .views import (
+from modules.community.live_arena_tournament.repository import LiveArenaRepository
+from modules.community.live_arena_tournament.rendering import (
+    choose_row,
+    configured_embed,
+)
+from modules.community.live_arena_tournament.views import (
     AvailabilityView,
     ConfirmView,
     PersistentPanel,
     RosterView,
     TimezoneModal,
 )
-from .service import LiveArenaService
+from modules.community.live_arena_tournament.service import LiveArenaService
 
 log = logging.getLogger("c1c.community.live_arena_registration")
 PUBLIC = ("join_tournament", "my_registration", "update_availability", "withdraw")
@@ -63,7 +66,6 @@ class LiveArenaTournamentCog(commands.Cog):
                     "tournament_name",
                     "status",
                     "max_participants",
-                    "minimum_availability",
                     "signup_closes_at",
                     "eligibility_scope",
                 ),
@@ -75,7 +77,6 @@ class LiveArenaTournamentCog(commands.Cog):
                 ),
                 "roles": ("tournament_id", "role_type", "discord_role_id", "active"),
                 "availability_slots": (
-                    "tournament_id",
                     "slot_id",
                     "weekday_utc",
                     "start_time_utc",
@@ -93,6 +94,10 @@ class LiveArenaTournamentCog(commands.Cog):
                     "signed_up_at",
                     "confirmed_at",
                     "withdrawn_at",
+                    "display_name_at_signup",
+                    "clan_tag_at_signup",
+                    "clan_verification_status",
+                    "withdrawal_reason",
                 ),
                 "participant_availability": (
                     "tournament_id",
@@ -156,6 +161,7 @@ class LiveArenaTournamentCog(commands.Cog):
                     str(r.get("tournament_id")) == tid
                     and norm(r.get("destination_key")) == key
                     and truthy(r.get("active"))
+                    and str(r.get("channel_id", "")).strip()
                     for r in loaded["destinations"]
                 ):
                     errors.append(f"Destinations requires active {key} row for {tid}.")
@@ -164,6 +170,7 @@ class LiveArenaTournamentCog(commands.Cog):
                     str(r.get("tournament_id")) == tid
                     and norm(r.get("role_type")) == role_type
                     and truthy(r.get("active"))
+                    and str(r.get("discord_role_id", "")).strip()
                     for r in loaded["roles"]
                 ):
                     errors.append(
@@ -322,8 +329,8 @@ class LiveArenaTournamentCog(commands.Cog):
                 await channel.send(
                     embed=discord.Embed(
                         description=(
-                            f"⚠️ Participant role sync failed for <@{member.id}>. The confirmed "
-                            "registration was retained; run Refresh Registration."
+                            f"⚠️ Participant role sync failed for <@{member.id}>. The Sheet "
+                            "state was retained; Discord role sync failed. Run Refresh Registration."
                         )
                     )
                 )
@@ -406,7 +413,7 @@ class LiveArenaTournamentCog(commands.Cog):
             await self._reply(interaction, str(exc))
 
     async def start_availability(self, interaction, mode, timezone_name):
-        from .models import validate_timezone
+        from modules.community.live_arena_tournament.models import validate_timezone
 
         try:
             timezone_name = validate_timezone(timezone_name)
@@ -613,13 +620,15 @@ class LiveArenaTournamentCog(commands.Cog):
                 int(float(row.get("sort_order") or 0)),
                 int(float(row.get("end_day_offset") or 0)),
             )
-            from .models import slot_local_window
+            from modules.community.live_arena_tournament.models import slot_local_window
 
             start, end = slot_local_window(
                 slot, str(p.get("timezone") or "UTC"), anchor_monday=anchor
             )
             ordered_windows.append((start, end))
-        for start, end in sorted(ordered_windows):
+        for start, end in sorted(
+            ordered_windows, key=lambda pair: (pair[0].weekday(), pair[0].time())
+        ):
             grouped.setdefault(start.strftime("%A"), []).append(
                 f"{start.strftime('%H:%M')}–{end.strftime('%a %H:%M')}"
             )
@@ -749,8 +758,6 @@ class LiveArenaTournamentCog(commands.Cog):
         cfg, t, row = await self._bundle()
         if action in {"open_registration", "reopen_registration"}:
             self._deadline_text(t.signup_closes_at)
-        from .service import LiveArenaService
-
         if not LiveArenaService.can_transition(t.status, desired):
             raise RegistrationError(
                 f"Cannot change registration from {t.status} to {desired}."
@@ -774,6 +781,16 @@ class LiveArenaTournamentCog(commands.Cog):
             cfg.active_tournament_id,
             {"status": t.status},
             {"status": desired},
+        )
+        log.info(
+            "live_arena_registration_state_changed",
+            extra={
+                "tournament_id": cfg.active_tournament_id,
+                "actor_id": interaction.user.id,
+                "old_status": t.status,
+                "new_status": desired,
+                "action": action,
+            },
         )
         await self.publish_panels(interaction.guild)
         warning = (
@@ -875,6 +892,7 @@ class LiveArenaTournamentCog(commands.Cog):
                         member.id,
                         exc,
                     )
+                    await self._report_role_failure(guild, member, exc)
         for user_id in wanted:
             member = guild.get_member(user_id)
             if member and role not in member.roles:
@@ -895,6 +913,7 @@ class LiveArenaTournamentCog(commands.Cog):
                     log.error(
                         "Live Arena role reconciliation failed for %s: %s", user_id, exc
                     )
+                    await self._report_role_failure(guild, member, exc)
 
     async def publish_panels(self, guild):
         cfg, t, _ = await self._bundle()

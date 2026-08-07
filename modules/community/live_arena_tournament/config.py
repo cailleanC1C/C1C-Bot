@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 from shared.config import cfg
-from .models import SchemaError, norm
+from modules.community.live_arena_tournament.models import SchemaError, norm
 
 ENV_KEY = "LIVE_ARENA_TOURNAMENT_SHEET_ID"
 REQUIRED_TABLE_KEYS = frozenset(
