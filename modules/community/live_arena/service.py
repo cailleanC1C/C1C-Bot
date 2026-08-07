@@ -16,6 +16,9 @@ CONFIG_KEYS = (
     "ELIGIBLE_CLANS_TAB",
     "AVAILABILITY_SLOTS_TAB",
     "ORGANIZER_ROLE_ID",
+    "PARTICIPANTS_TAB",
+    "PARTICIPANT_AVAILABILITY_TAB",
+    "AUDIT_LOG_TAB",
 )
 TOURNAMENT_HEADERS = (
     "tournament_id",
@@ -45,7 +48,15 @@ AVAILABILITY_SLOT_HEADERS = (
     "sort_order",
     "display_label",
 )
-WEEKDAYS = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"}
+WEEKDAYS = {
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+}
 
 
 class LiveArenaConfigError(RuntimeError):
@@ -71,17 +82,25 @@ def _text(value: object) -> str:
     return str(value or "").strip()
 
 
-def _rows(matrix: Sequence[Sequence[object]], expected: tuple[str, ...], tab: str) -> list[dict[str, object]]:
+def _rows(
+    matrix: Sequence[Sequence[object]], expected: tuple[str, ...], tab: str
+) -> list[dict[str, object]]:
     if not matrix:
         raise LiveArenaConfigError(f"{tab}: required header row missing")
     headers = tuple(_text(value) for value in matrix[0])
     missing = [header for header in expected if header not in headers]
     if missing:
-        raise LiveArenaConfigError(f"{tab}: required header missing: {', '.join(missing)}")
+        raise LiveArenaConfigError(
+            f"{tab}: required header missing: {', '.join(missing)}"
+        )
     unexpected = [header for header in headers if header not in expected]
     if unexpected:
         raise LiveArenaConfigError(f"{tab}: unexpected header: {', '.join(unexpected)}")
-    return [dict(zip(headers, row)) for row in matrix[1:] if any(_text(value) for value in row)]
+    return [
+        dict(zip(headers, row))
+        for row in matrix[1:]
+        if any(_text(value) for value in row)
+    ]
 
 
 def _enabled(value: object) -> bool:
@@ -99,7 +118,7 @@ def _required_int(value: object, label: str) -> int:
 
 
 async def load_config(sheet_id: str) -> dict[str, str]:
-    """Read the literal CONFIG tab and return the five PR1 keys."""
+    """Read the literal CONFIG tab and return the Live Arena routing keys."""
 
     matrix = await afetch_values(sheet_id, CONFIG_TAB)
     rows = _rows(matrix or [], CONFIG_HEADERS, CONFIG_TAB)
@@ -127,27 +146,43 @@ async def load_tournament_snapshot(sheet_id: str) -> TournamentSnapshot:
     slots = _rows(slots_matrix or [], AVAILABILITY_SLOT_HEADERS, slots_tab)
 
     active_id = config["ACTIVE_TOURNAMENT_ID"]
-    tournament = next((row for row in tournaments if _text(row["tournament_id"]) == active_id), None)
+    tournament = next(
+        (row for row in tournaments if _text(row["tournament_id"]) == active_id), None
+    )
     if tournament is None:
-        raise LiveArenaConfigError(f"{tournament_tab}: active tournament not found: {active_id}")
+        raise LiveArenaConfigError(
+            f"{tournament_tab}: active tournament not found: {active_id}"
+        )
 
     for row in slots:
         weekday = _text(row["weekday_utc"])
         if weekday not in WEEKDAYS:
-            raise LiveArenaConfigError(f"{slots_tab}: invalid weekday_utc: {weekday or '(blank)'}")
+            raise LiveArenaConfigError(
+                f"{slots_tab}: invalid weekday_utc: {weekday or '(blank)'}"
+            )
 
     return TournamentSnapshot(
         tournament_id=active_id,
         tournament_name=_text(tournament["tournament_name"]),
         status=_text(tournament["status"]),
         eligibility_scope=_text(tournament["eligibility_scope"]),
-        min_participants=_required_int(tournament["min_participants"], f"{tournament_tab}.min_participants"),
-        max_participants=_required_int(tournament["max_participants"], f"{tournament_tab}.max_participants"),
+        min_participants=_required_int(
+            tournament["min_participants"], f"{tournament_tab}.min_participants"
+        ),
+        max_participants=_required_int(
+            tournament["max_participants"], f"{tournament_tab}.max_participants"
+        ),
         signup_opens_at_utc=_text(tournament["signup_opens_at_utc"]),
         signup_closes_at_utc=_text(tournament["signup_closes_at_utc"]),
         active_eligible_clans=sum(
-            1 for row in clans if _text(row["tournament_id"]) == active_id and _enabled(row["active"])
+            1
+            for row in clans
+            if _text(row["tournament_id"]) == active_id and _enabled(row["active"])
         ),
-        enabled_availability_windows=sum(1 for row in slots if _enabled(row["enabled"])),
-        organizer_role_id=_required_int(config["ORGANIZER_ROLE_ID"], "CONFIG.ORGANIZER_ROLE_ID"),
+        enabled_availability_windows=sum(
+            1 for row in slots if _enabled(row["enabled"])
+        ),
+        organizer_role_id=_required_int(
+            config["ORGANIZER_ROLE_ID"], "CONFIG.ORGANIZER_ROLE_ID"
+        ),
     )
