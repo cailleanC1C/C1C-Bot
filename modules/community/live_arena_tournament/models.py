@@ -50,6 +50,7 @@ class AvailabilitySlot:
     end_time_utc: str
     enabled: bool = True
     sort_order: int = 0
+    end_day_offset: int = 0
 
 
 WEEKDAYS = {
@@ -110,11 +111,28 @@ def slot_local_datetime(
     return value.astimezone(ZoneInfo(timezone_name))
 
 
+def slot_local_window(
+    slot: AvailabilitySlot, timezone_name: str, *, anchor_monday: datetime
+) -> tuple[datetime, datetime]:
+    """Return the configured UTC window converted using one explicit DST anchor."""
+    start = slot_local_datetime(slot, timezone_name, anchor_monday=anchor_monday)
+    end_text = slot.end_time_utc or slot.start_time_utc
+    hour, minute = map(int, end_text.split(":")[:2])
+    end_utc = anchor_monday.replace(hour=hour, minute=minute) + timedelta(
+        days=slot.weekday_utc + slot.end_day_offset
+    )
+    if not slot.end_day_offset and end_utc <= start.astimezone(timezone.utc):
+        end_utc += timedelta(days=1)
+    return start, end_utc.astimezone(ZoneInfo(timezone_name))
+
+
 def validate_availability(
     selected: list[str],
     slots: list[AvailabilitySlot],
     timezone_name: str,
     minimum: int = 3,
+    *,
+    anchor_monday: datetime | None = None,
 ) -> list[str]:
     unique = list(dict.fromkeys(selected))
     enabled = {s.slot_id: s for s in slots if s.enabled}
@@ -125,8 +143,16 @@ def validate_availability(
         )
     if len(unique) < minimum:
         raise AvailabilityError(f"Select at least {minimum} availability windows.")
+    if anchor_monday is None:
+        now = datetime.now(timezone.utc)
+        anchor_monday = (now - timedelta(days=now.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
     days = {
-        slot_local_datetime(enabled[item], timezone_name).weekday() for item in unique
+        slot_local_datetime(
+            enabled[item], timezone_name, anchor_monday=anchor_monday
+        ).weekday()
+        for item in unique
     }
     if len(days) < 2:
         raise AvailabilityError("Availability must cover at least two local weekdays.")

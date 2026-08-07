@@ -9,7 +9,6 @@ from discord.ext import commands
 from shared.config import cfg, get_feature_toggles
 
 from modules.community.fusion.opt_in_view import register_persistent_fusion_views
-from modules.community.live_arena_tournament.cog import LiveArenaTournamentCog
 from modules.community.shard_tracker.views import register_persistent_shard_views
 from modules.community.reset_reminders.scheduler import register_persistent_reset_views
 from modules.onboarding import watcher_promo, watcher_welcome

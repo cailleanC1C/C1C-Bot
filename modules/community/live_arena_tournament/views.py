@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 import discord
-from .models import slot_local_datetime
+from .models import slot_local_window
 
 CUSTOM_IDS = {
     action: f"live_arena:registration:{action}"
@@ -57,9 +57,15 @@ class PersistentPanel(discord.ui.View):
             for r in rows
             if str(r.get("active", "true")).lower() not in {"false", "0", "no"}
         }
-        for action in actions:
-            if action in by_action:
-                self.add_item(RoutedButton(cog, by_action[action]))
+        ordered = sorted(
+            (by_action[action] for action in actions if action in by_action),
+            key=lambda row: (
+                float(row.get("sort_order") or 0),
+                actions.index(str(row.get("action_id"))),
+            ),
+        )
+        for row in ordered:
+            self.add_item(RoutedButton(cog, row))
 
     def disable_actions(self, actions):
         for item in self.children:
@@ -90,8 +96,12 @@ class ConfirmView(discord.ui.View):
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction, button):
-        await self._callback(interaction)
-        self.stop()
+        try:
+            successful = await self._callback(interaction)
+            if successful is not False:
+                self.stop()
+        except Exception as exc:
+            await _callback_error(interaction, exc)
 
 
 class SlotSelect(discord.ui.Select):
@@ -99,7 +109,7 @@ class SlotSelect(discord.ui.Select):
         self.parent_view = parent
         options = [
             discord.SelectOption(
-                label=f"{parent.local_datetime(s).strftime('%A %H:%M')} local",
+                label=parent.window_label(s),
                 value=s.slot_id,
                 default=s.slot_id in parent.selected,
             )
@@ -126,23 +136,37 @@ class AvailabilityView(discord.ui.View):
     def __init__(self, cog, mode, timezone, slots, selected=(), anchor_monday=None):
         super().__init__(timeout=600)
         self.cog, self.mode, self.timezone = cog, mode, timezone
-        self.slots, self.selected, self.page = slots, set(selected), 0
+        self.slots, self.page = (
+            sorted(
+                slots, key=lambda s: (s.sort_order, s.weekday_utc, s.start_time_utc)
+            ),
+            0,
+        )
         self.anchor_monday = anchor_monday
-        self.days = sorted({self.local_datetime(s).strftime("%A") for s in slots})
+        enabled_ids = {s.slot_id for s in self.slots if s.enabled}
+        incoming = set(selected)
+        self.selected = incoming & enabled_ids
+        self.removed_stale = incoming - enabled_ids
+        self.days = sorted(
+            {self.local_window(s)[0].weekday() for s in self.slots},
+        )
         self._render()
 
-    def local_datetime(self, slot):
-        return slot_local_datetime(
-            slot, self.timezone, anchor_monday=self.anchor_monday
-        )
+    def local_window(self, slot):
+        return slot_local_window(slot, self.timezone, anchor_monday=self.anchor_monday)
+
+    def window_label(self, slot):
+        start, end = self.local_window(slot)
+        return f"{start.strftime('%a %H:%M')}–{end.strftime('%a %H:%M')} local"
 
     def _render(self):
         self.clear_items()
         day = self.days[self.page]
-        choices = [
-            s for s in self.slots if self.local_datetime(s).strftime("%A") == day
-        ]
-        self.add_item(SlotSelect(self, day, choices))
+        choices = [s for s in self.slots if self.local_window(s)[0].weekday() == day]
+        choices.sort(key=lambda s: self.local_window(s)[0])
+        self.add_item(
+            SlotSelect(self, self.local_window(choices[0])[0].strftime("%A"), choices)
+        )
         previous = discord.ui.Button(
             label="Previous day", disabled=self.page == 0, row=1
         )
@@ -163,8 +187,24 @@ class AvailabilityView(discord.ui.View):
 
     async def show_page(self, interaction):
         self._render()
-        await interaction.response.edit_message(
-            content=f"Choose local-time windows — {self.days[self.page]}", view=self
+        await interaction.response.edit_message(embed=self.page_embed(), view=self)
+
+    def page_embed(self):
+        weekday = self.local_window(
+            next(
+                s
+                for s in self.slots
+                if self.local_window(s)[0].weekday() == self.days[self.page]
+            )
+        )[0].strftime("%A")
+        warning = (
+            "\n\n⚠️ Disabled saved selections were removed."
+            if self.removed_stale
+            else ""
+        )
+        return discord.Embed(
+            title=f"Availability — {weekday}",
+            description=f"Choose your local start–end windows.{warning}",
         )
 
     async def previous(self, interaction):
@@ -177,13 +217,13 @@ class AvailabilityView(discord.ui.View):
 
     async def review(self, interaction):
         labels = [
-            self.local_datetime(s).strftime("%A %H:%M")
-            for s in self.slots
-            if s.slot_id in self.selected
+            self.window_label(s) for s in self.slots if s.slot_id in self.selected
         ]
         await interaction.response.edit_message(
-            content="Review your availability:\n"
-            + ("\n".join(f"• {x}" for x in labels) or "• None selected"),
+            embed=discord.Embed(
+                title="Review availability",
+                description=("\n".join(f"• {x}" for x in labels) or "• None selected"),
+            ),
             view=SubmitAvailabilityView(self),
         )
 
@@ -199,8 +239,14 @@ class SubmitAvailabilityView(discord.ui.View):
 
     @discord.ui.button(label="Submit registration", style=discord.ButtonStyle.success)
     async def submit(self, interaction, button):
-        await self.session.cog.submit_availability(interaction, self.session)
-        self.stop()
+        try:
+            successful = await self.session.cog.submit_availability(
+                interaction, self.session
+            )
+            if successful:
+                self.stop()
+        except Exception as exc:
+            await _callback_error(interaction, exc)
 
 
 class RosterSelect(discord.ui.Select):
@@ -232,8 +278,24 @@ class RosterView(discord.ui.View):
 
     @discord.ui.button(label="Remove", style=discord.ButtonStyle.danger, row=1)
     async def remove(self, interaction, button):
-        await self.cog.organizer_participant(interaction, self.user_id, "removed")
+        try:
+            await self.cog.organizer_participant(interaction, self.user_id, "removed")
+        except Exception as exc:
+            await _callback_error(interaction, exc)
 
     @discord.ui.button(label="Restore", style=discord.ButtonStyle.success, row=1)
     async def restore(self, interaction, button):
-        await self.cog.organizer_participant(interaction, self.user_id, "confirmed")
+        try:
+            await self.cog.organizer_participant(interaction, self.user_id, "confirmed")
+        except Exception as exc:
+            await _callback_error(interaction, exc)
+
+
+async def _callback_error(interaction, exc):
+    embed = discord.Embed(title="Live Arena", description=str(exc))
+    target = (
+        interaction.followup.send
+        if interaction.response.is_done()
+        else interaction.response.send_message
+    )
+    await target(embed=embed, ephemeral=True)

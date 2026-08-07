@@ -83,7 +83,6 @@ def test_availability_one_day_fails():
 
 
 def test_timezone_conversion_is_dst_aware():
-    current = slot_local_datetime(slots()[0], "Europe/Vienna")
     winter = slot_local_datetime(
         slots()[0],
         "Europe/Vienna",
@@ -95,7 +94,6 @@ def test_timezone_conversion_is_dst_aware():
         anchor_monday=datetime(2026, 7, 6, tzinfo=timezone.utc),
     )
     assert winter.utcoffset() != summer.utcoffset()
-    assert current.utcoffset() == summer.utcoffset()
 
 
 def test_eligibility_uses_role_ids_and_removed_is_detectable():
@@ -222,7 +220,7 @@ def test_register_and_update_use_idempotent_participant_and_availability_writes(
                 "slot_id": x,
                 "weekday_utc": day,
                 "start_time_utc": "12:00",
-                "active": "true",
+                "enabled": "true",
             }
             for x, day in (("a", "Monday"), ("b", "Tuesday"), ("c", "Wednesday"))
         ],
@@ -291,3 +289,235 @@ def test_capacity_disables_join_but_not_update():
     view.disable_actions({"join_tournament"})
     states = {item.action: item.disabled for item in view.children}
     assert states == {"join_tournament": True, "update_availability": False}
+
+
+class MemoryRepository:
+    def __init__(self, participants):
+        self.participants = participants
+        self.audits = []
+
+    async def rows(self, table, required=()):
+        if table == "participants":
+            return self.participants
+        if table == "eligible_clans":
+            return [
+                {
+                    "tournament_id": "T1",
+                    "discord_role_id": "7",
+                    "clan_tag": "C1C",
+                    "active": "true",
+                }
+            ]
+        if table == "availability_slots":
+            return [
+                {
+                    "tournament_id": "T1",
+                    "slot_id": f"s{i}",
+                    "weekday_utc": day,
+                    "start_time_utc": "12:00",
+                    "end_time_utc": "14:00",
+                    "end_day_offset": 0,
+                    "enabled": "true",
+                    "sort_order": i,
+                }
+                for i, day in enumerate(("Monday", "Tuesday", "Wednesday"), 1)
+            ]
+        return []
+
+    async def replace_row(self, table, row_number, changes):
+        self.participants[row_number - 2].update(changes)
+
+    async def append(self, table, changes):
+        if table == "participants":
+            self.participants.append(
+                {**changes, "_row_number": len(self.participants) + 2}
+            )
+
+    async def replace_availability(self, *args):
+        return None
+
+    async def availability_slot_ids(self, *args):
+        return []
+
+    async def audit(self, *args):
+        self.audits.append(args)
+
+
+async def _register(service, user):
+    return await service.register(
+        tournament=Tournament("T1", "Cup", "signup_open", 16, 3),
+        user_id=str(user),
+        display_name=f"P{user}",
+        member_role_ids=[7],
+        timezone_name="UTC",
+        slot_ids=["s1", "s2", "s3"],
+        anchor_monday=datetime(2026, 8, 3, tzinfo=timezone.utc),
+    )
+
+
+def test_withdrawal_frees_capacity_without_overwriting_history():
+    rows = [
+        {
+            "_row_number": i + 2,
+            "tournament_id": "T1",
+            "participant_slot": i + 1,
+            "status": "confirmed",
+            "discord_user_id": str(i + 1),
+        }
+        for i in range(16)
+    ]
+    rows[3]["status"] = "withdrawn"
+    repo = MemoryRepository(rows)
+    result = asyncio.run(_register(LiveArenaService(repo), 99))
+    assert result["created"] is True
+    assert len(repo.participants) == 17
+    assert repo.participants[3]["discord_user_id"] == "4"
+    assert repo.participants[-1]["discord_user_id"] == "99"
+
+
+def test_withdrawn_history_cannot_reregister_as_seventeenth_confirmed():
+    rows = [
+        {
+            "_row_number": i + 2,
+            "tournament_id": "T1",
+            "participant_slot": i + 1,
+            "status": "confirmed",
+            "discord_user_id": str(i + 1),
+        }
+        for i in range(16)
+    ]
+    rows.append(
+        {
+            "_row_number": 18,
+            "tournament_id": "T1",
+            "participant_slot": 17,
+            "status": "withdrawn",
+            "discord_user_id": "99",
+        }
+    )
+    with pytest.raises(Exception, match="capacity"):
+        asyncio.run(_register(LiveArenaService(MemoryRepository(rows)), 99))
+
+
+def test_confirmed_availability_update_is_allowed_at_capacity():
+    rows = [
+        {
+            "_row_number": i + 2,
+            "tournament_id": "T1",
+            "participant_slot": i + 1,
+            "status": "confirmed",
+            "discord_user_id": str(i + 1),
+        }
+        for i in range(16)
+    ]
+    result = asyncio.run(_register(LiveArenaService(MemoryRepository(rows)), 1))
+    assert result["created"] is False
+
+
+def test_restore_and_register_share_capacity_lock():
+    rows = [
+        {
+            "_row_number": i + 2,
+            "tournament_id": "T1",
+            "participant_slot": i + 1,
+            "status": "confirmed",
+            "discord_user_id": str(i + 1),
+        }
+        for i in range(15)
+    ]
+    rows.append(
+        {
+            "_row_number": 17,
+            "tournament_id": "T1",
+            "participant_slot": 16,
+            "status": "withdrawn",
+            "discord_user_id": "50",
+        }
+    )
+    repo = MemoryRepository(rows)
+    service = LiveArenaService(repo)
+
+    async def race():
+        return await asyncio.gather(
+            _register(service, 99),
+            service.change_participant_status(
+                "T1",
+                "50",
+                "confirmed",
+                "organizer",
+                tournament=Tournament("T1", "Cup", "signup_closed", 16, 3),
+                member_present=True,
+                member_role_ids=[7],
+                eligible_rows=await repo.rows("eligible_clans"),
+            ),
+            return_exceptions=True,
+        )
+
+    results = asyncio.run(race())
+    assert sum(isinstance(item, Exception) for item in results) == 1
+    assert service.confirmed_count(repo.participants, "T1") == 16
+
+
+def test_configured_embed_rejects_unresolved_placeholders_and_keeps_colour():
+    from modules.community.live_arena_tournament.models import SchemaError
+
+    row = {
+        "title_template": "Welcome {participant}",
+        "body_template": "{tournament_name} by {signup_deadline}",
+        "embed_color_hex": "#abcdef",
+    }
+    embed = configured_embed(
+        row,
+        {
+            "participant": "Player",
+            "tournament_name": "Cup",
+            "signup_deadline": "<t:1:F>",
+        },
+    )
+    assert embed.title == "Welcome Player" and embed.description == "Cup by <t:1:F>"
+    assert embed.colour.value == 0xABCDEF
+    with pytest.raises(SchemaError, match="signup_deadline"):
+        configured_embed(row, {"participant": "Player", "tournament_name": "Cup"})
+
+
+def test_local_window_cross_midnight_and_component_sort_order():
+    from modules.community.live_arena_tournament.models import slot_local_window
+
+    slot = AvailabilitySlot("night", 0, "23:00", "01:00", True, 2, 1)
+    start, end = slot_local_window(
+        slot, "UTC", anchor_monday=datetime(2026, 8, 3, tzinfo=timezone.utc)
+    )
+    assert start.strftime("%a %H:%M") == "Mon 23:00"
+    assert end.strftime("%a %H:%M") == "Tue 01:00"
+    view = PersistentPanel(
+        object(),
+        [
+            {
+                "action_id": "join_tournament",
+                "label": "Join",
+                "active": "true",
+                "sort_order": "2",
+            },
+            {
+                "action_id": "my_registration",
+                "label": "Mine",
+                "active": "true",
+                "sort_order": "1.0",
+            },
+        ],
+        ["join_tournament", "my_registration"],
+    )
+    assert [item.action for item in view.children] == [
+        "my_registration",
+        "join_tournament",
+    ]
+
+
+def test_opening_registration_requires_configured_deadline():
+    from modules.community.live_arena_tournament.cog import LiveArenaTournamentCog
+
+    with pytest.raises(Exception, match="signup_closes_at is required"):
+        LiveArenaTournamentCog._deadline_text("")
+    assert LiveArenaTournamentCog._deadline_text("2026-08-10T18:00:00Z").startswith(
+        "<t:"
+    )

@@ -143,6 +143,16 @@ class LiveArenaRepository:
                 and str(record["discord_user_id"]) == user_id
             ):
                 matches.append((index, list(row)))
+        created_by_slot = {
+            str(row[headers.index("slot_id")])
+            if len(row) > headers.index("slot_id")
+            else "": (
+                row[headers.index("created_at")]
+                if len(row) > headers.index("created_at")
+                else ""
+            )
+            for _, row in matches
+        }
         try:
             for pos, slot in enumerate(slot_ids):
                 record = {
@@ -150,7 +160,12 @@ class LiveArenaRepository:
                     "discord_user_id": user_id,
                     "slot_id": slot,
                     "preference": "available",
-                    "created_at": now,
+                    "created_at": (
+                        matches[pos][1][headers.index("created_at")]
+                        if pos < len(matches)
+                        and len(matches[pos][1]) > headers.index("created_at")
+                        else created_by_slot.get(slot, now)
+                    ),
                     "updated_at": now,
                 }
                 row = [record.get(h, "") for h in headers]
@@ -189,3 +204,32 @@ class LiveArenaRepository:
                     value_input_option="RAW",
                 )
             raise
+
+    async def availability_slot_ids(self, tournament_id, user_id):
+        rows = await self.rows("participant_availability")
+        return [
+            str(row.get("slot_id"))
+            for row in rows
+            if str(row.get("tournament_id")) == tournament_id
+            and str(row.get("discord_user_id")) == user_id
+            and str(row.get("slot_id", "")).strip()
+        ]
+
+    async def delete_appended_participant(self, tournament_id, user_id):
+        """Compensate a failed availability write without deleting historical rows."""
+        rows = await self.rows("participants")
+        row = next(
+            (
+                r
+                for r in reversed(rows)
+                if str(r.get("tournament_id")) == tournament_id
+                and str(r.get("discord_user_id")) == user_id
+            ),
+            None,
+        )
+        if row:
+            await self.replace_row(
+                "participants",
+                int(row["_row_number"]),
+                {key: "" for key in row if not key.startswith("_")},
+            )

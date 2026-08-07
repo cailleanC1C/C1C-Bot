@@ -1,8 +1,9 @@
 """Configured Discord embed rendering."""
 
 from __future__ import annotations
+import string
 import discord
-from .models import norm, truthy
+from .models import SchemaError, norm, truthy
 
 
 def choose_row(rows, key, tournament_id):
@@ -22,17 +23,29 @@ def choose_row(rows, key, tournament_id):
 
 def configured_embed(row, values):
     if not row:
-        return discord.Embed()
-
-    class Safe(dict):
-        def __missing__(self, key):
-            return "{" + key + "}"
-
-    fmt = Safe(values)
-    title = str(row.get("title_template", row.get("title", ""))).format_map(fmt)
-    body = str(
+        raise SchemaError("Required configured message row is missing.")
+    title_template = str(row.get("title_template", row.get("title", "")))
+    body_template = str(
         row.get("body_template", row.get("description", row.get("content", "")))
-    ).format_map(fmt)
+    )
+    required = {
+        name
+        for template in (title_template, body_template)
+        for _, name, _, _ in string.Formatter().parse(template)
+        if name
+    }
+    missing = sorted(
+        name for name in required if name not in values or values[name] is None
+    )
+    if missing:
+        raise SchemaError("Message template requires values: " + ", ".join(missing))
+    try:
+        title = title_template.format_map(values)
+        body = body_template.format_map(values)
+    except (KeyError, ValueError) as exc:
+        raise SchemaError(f"Invalid configured message template: {exc}") from exc
+    if "{" in title or "{" in body:
+        raise SchemaError("Configured message contains an unresolved placeholder.")
     raw = (
         str(row.get("embed_color_hex", row.get("color", row.get("colour", "0"))))
         .strip()
