@@ -172,7 +172,7 @@ def _panel_manager(monkeypatch, *, status="signup_open", panel_id="", channel=No
     matrix[4][1] = panel_id
     config = {row[0]: row[1] for row in matrix[1:]}
     monkeypatch.setattr(panel, "load_pr3_config", AsyncMock(return_value=(config, matrix)))
-    monkeypatch.setattr(panel, "load_messages", AsyncMock(return_value={"signup_open": _Template()}))
+    monkeypatch.setattr(panel, "load_messages", AsyncMock(return_value={"signup_open": _Template(), "signup_closed": _Template()}))
     monkeypatch.setattr(panel, "load_tournament_snapshot", AsyncMock(return_value=_snapshot(status)))
     monkeypatch.setattr(panel, "LiveArenaRepository", lambda _sheet: _PanelRepository())
     bot = SimpleNamespace(get_channel=lambda _channel_id: channel)
@@ -187,14 +187,15 @@ def test_draft_creates_no_public_panel(monkeypatch):
     assert channel.sent == []
 
 
-def test_signup_closed_does_not_render_edit_or_recreate_public_panel(monkeypatch):
+def test_signup_closed_edits_existing_public_panel_without_recreating(monkeypatch):
     existing = _Message(55)
     manager, channel = _panel_manager(
         monkeypatch, status="signup_closed", panel_id="55", channel=_Channel(existing)
     )
     asyncio.run(manager.sync())
-    panel.load_messages.assert_not_awaited()
-    existing.edit.assert_not_awaited()
+    panel.load_messages.assert_awaited_once()
+    existing.edit.assert_awaited_once()
+    assert len(existing.edit.await_args.kwargs["view"].children) == 1
     assert channel.sent == []
     manager._persist_message_id.assert_not_awaited()
 

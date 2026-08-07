@@ -24,6 +24,15 @@ PR3_CONFIG_KEYS = (
     "PARTICIPANT_ROLE_ID",
     "PUBLIC_PANEL_MESSAGE_ID",
 )
+PR5_CONFIG_KEYS = (
+    "MESSAGES_TAB",
+    "SIGNUP_CHANNEL_ID",
+    "ORGANIZER_CHANNEL_ID",
+    "ORGANIZER_ROLE_ID",
+    "PARTICIPANT_ROLE_ID",
+    "PUBLIC_PANEL_MESSAGE_ID",
+    "ORGANIZER_PANEL_MESSAGE_ID",
+)
 MESSAGE_HEADERS = (
     "message_key",
     "title",
@@ -43,6 +52,16 @@ REQUIRED_MESSAGES = {
     "availability_updated": {"participant", "tournament_name"},
     "withdrawal_confirmed": {"participant", "tournament_name"},
 }
+PR5_MESSAGES = {
+    "signup_closed": {"tournament_name", "confirmed_count"},
+    "organizer_panel": {
+        "tournament_name",
+        "status",
+        "confirmed_count",
+        "max_participants",
+        "parity_summary",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -53,7 +72,7 @@ class MessageTemplate:
     color: int
 
     def embed(self, **values: object) -> discord.Embed:
-        expected = REQUIRED_MESSAGES[self.key]
+        expected = (REQUIRED_MESSAGES | PR5_MESSAGES)[self.key]
         fields = {
             name
             for _, name, _, _ in Formatter().parse(self.title + self.description)
@@ -97,10 +116,45 @@ async def load_pr3_config(sheet_id: str) -> tuple[dict[str, str], list[list[obje
     return result, matrix
 
 
-async def load_messages(sheet_id: str, tab: str) -> dict[str, MessageTemplate]:
+async def load_pr5_config(sheet_id: str) -> tuple[dict[str, str], list[list[object]]]:
+    """Load only the exact Discord/config routing contract used by PR5."""
+    matrix = await afetch_values(sheet_id, CONFIG_TAB) or []
+    rows = _rows(matrix, CONFIG_HEADERS, CONFIG_TAB)
+    result = {}
+    for key in PR5_CONFIG_KEYS:
+        matches = [row for row in rows if _text(row["Key"]) == key]
+        if len(matches) != 1:
+            raise LiveArenaConfigError(f"CONFIG: key {key} must occur exactly once")
+        result[key] = _text(matches[0]["Value"])
+    for key in PR5_CONFIG_KEYS:
+        if (
+            key not in {"PUBLIC_PANEL_MESSAGE_ID", "ORGANIZER_PANEL_MESSAGE_ID"}
+            and not result[key]
+        ):
+            raise LiveArenaConfigError(f"CONFIG: missing required key {key}")
+    try:
+        for key in (
+            "SIGNUP_CHANNEL_ID",
+            "ORGANIZER_CHANNEL_ID",
+            "ORGANIZER_ROLE_ID",
+            "PARTICIPANT_ROLE_ID",
+        ):
+            int(result[key])
+        for key in ("PUBLIC_PANEL_MESSAGE_ID", "ORGANIZER_PANEL_MESSAGE_ID"):
+            if result[key]:
+                int(result[key])
+    except ValueError as exc:
+        raise LiveArenaConfigError("CONFIG: PR5 Discord IDs must be numeric") from exc
+    return result, matrix
+
+
+async def load_messages(
+    sheet_id: str, tab: str, keys=None
+) -> dict[str, MessageTemplate]:
     rows = _rows(await afetch_values(sheet_id, tab) or [], MESSAGE_HEADERS, tab)
     templates = {}
-    for key in REQUIRED_MESSAGES:
+    contracts = REQUIRED_MESSAGES | PR5_MESSAGES
+    for key in keys or REQUIRED_MESSAGES:
         matches = [row for row in rows if _text(row["message_key"]) == key]
         if len(matches) != 1 or not _enabled(matches[0]["active"]):
             raise LiveArenaConfigError(
@@ -120,7 +174,7 @@ async def load_messages(sheet_id: str, tab: str) -> dict[str, MessageTemplate]:
             key, _text(row["title"]), _text(row["description"]), parsed
         )
         # Validate placeholders at load time, before any mutation.
-        template.embed(**{name: "x" for name in REQUIRED_MESSAGES[key]})
+        template.embed(**{name: "x" for name in contracts[key]})
         templates[key] = template
     return templates
 

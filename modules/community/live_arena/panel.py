@@ -36,9 +36,14 @@ class LiveArenaPanelManager:
         async with self._lock:
             config, matrix = await load_pr3_config(self.sheet_id)
             tournament = await load_tournament_snapshot(self.sheet_id)
-            if tournament.status != "signup_open":
+            if tournament.status == "draft":
                 return
-            messages = await load_messages(self.sheet_id, config["MESSAGES_TAB"])
+            key = (
+                "signup_open" if tournament.status == "signup_open" else "signup_closed"
+            )
+            if tournament.status not in {"signup_open", "signup_closed"}:
+                return
+            messages = await load_messages(self.sheet_id, config["MESSAGES_TAB"], {key})
             repository = LiveArenaRepository(self.sheet_id)
             await repository.initialize()
             participants = await repository.participants()
@@ -47,12 +52,15 @@ class LiveArenaPanelManager:
                 and str(row["status"]).strip() == "confirmed"
                 for row in participants
             )
-            embed = messages["signup_open"].embed(
-                tournament_name=tournament.tournament_name,
-                signup_deadline=discord_timestamp(tournament.signup_closes_at_utc),
-                confirmed_count=count,
-                max_participants=tournament.max_participants,
+            values = dict(
+                tournament_name=tournament.tournament_name, confirmed_count=count
             )
+            if key == "signup_open":
+                values.update(
+                    signup_deadline=discord_timestamp(tournament.signup_closes_at_utc),
+                    max_participants=tournament.max_participants,
+                )
+            embed = messages[key].embed(**values)
             channel = self.bot.get_channel(int(config["SIGNUP_CHANNEL_ID"]))
             if channel is None:
                 channel = await self.bot.fetch_channel(int(config["SIGNUP_CHANNEL_ID"]))
@@ -67,9 +75,16 @@ class LiveArenaPanelManager:
                 except Exception:
                     log.exception("❌ Live Arena panel — fetch failed")
                     return
-            from modules.community.live_arena.views import JoinTournamentView
+            from modules.community.live_arena.views import (
+                ClosedTournamentView,
+                JoinTournamentView,
+            )
 
-            view = JoinTournamentView(self)
+            view = (
+                JoinTournamentView(self)
+                if key == "signup_open"
+                else ClosedTournamentView(self)
+            )
             if message is not None:
                 try:
                     await message.edit(embed=embed, view=view)
@@ -115,8 +130,17 @@ async def register_live_arena(bot):
     manager = _managers.setdefault(
         (id(bot), sheet_id), LiveArenaPanelManager(bot, sheet_id)
     )
-    from modules.community.live_arena.views import JoinTournamentView
+    from modules.community.live_arena.organizer_panel import OrganizerPanelManager
+    from modules.community.live_arena.views import (
+        ClosedTournamentView,
+        JoinTournamentView,
+    )
 
     bot.add_view(JoinTournamentView(manager))
+    bot.add_view(ClosedTournamentView(manager))
+    organizer = OrganizerPanelManager(bot, sheet_id, manager)
+    bot.add_view(organizer.view())
     await manager.sync()
+    await organizer.sync()
+    manager.organizer_manager = organizer
     return manager
