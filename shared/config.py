@@ -536,6 +536,9 @@ def _load_config_snapshot() -> Dict[str, object]:
         "ONBOARDING_SHEET_ID": (os.getenv("ONBOARDING_SHEET_ID") or "").strip(),
         "MILESTONES_SHEET_ID": (os.getenv("MILESTONES_SHEET_ID") or "").strip(),
         "LEAGUES_SHEET_ID": (os.getenv("LEAGUES_SHEET_ID") or "").strip(),
+        "LIVE_ARENA_TOURNAMENT_SHEET_ID": (
+            os.getenv("LIVE_ARENA_TOURNAMENT_SHEET_ID") or ""
+        ).strip(),
         "LEAGUES_CONFIG_TAB": (os.getenv("LEAGUES_CONFIG_TAB") or "Config").strip() or "Config",
         "LEAGUES_SUBMISSION_CHANNEL_ID": _first_int(os.getenv("LEAGUES_SUBMISSION_CHANNEL_ID")),
         "LEAGUES_LEGENDARY_THREAD_ID": _first_int(os.getenv("LEAGUES_LEGENDARY_THREAD_ID")),
