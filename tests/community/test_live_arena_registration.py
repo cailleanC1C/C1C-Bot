@@ -144,6 +144,31 @@ def run(awaitable):
     return asyncio.run(awaitable)
 
 
+def test_get_registration_returns_localized_read_only_snapshot():
+    participant = dict(
+        tournament_id=TID,
+        discord_user_id="7",
+        timezone="Asia/Kolkata",
+        status="confirmed",
+    )
+    availability = [
+        dict(tournament_id=TID, discord_user_id="7", slot_id=slot_id)
+        for slot_id in ("mon-a", "tue-a", "wed-a")
+    ]
+    instance = make_service(MemoryRepository([participant], availability))
+    result = run(instance.get_registration("7"))
+    assert result.participant["status"] == "confirmed"
+    assert result.status == "confirmed"
+    assert result.timezone == "Asia/Kolkata"
+    assert result.selected_slot_ids == ("mon-a", "tue-a", "wed-a")
+    assert [slot.slot_id for slot in result.localized_slots] == [
+        "mon-a",
+        "tue-a",
+        "wed-a",
+    ]
+    assert result.can_update is True and result.can_withdraw is True
+
+
 @pytest.mark.parametrize(
     "headers,key",
     [

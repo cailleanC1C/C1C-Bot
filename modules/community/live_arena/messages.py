@@ -1,4 +1,4 @@
-"""Literal PR3 message and CONFIG contracts for Live Arena Discord UI."""
+"""Literal player-flow message and CONFIG contracts for Live Arena Discord UI."""
 
 from __future__ import annotations
 
@@ -40,6 +40,8 @@ REQUIRED_MESSAGES = {
         "max_participants",
     },
     "signup_confirmed": {"participant", "tournament_name", "signup_deadline"},
+    "availability_updated": {"participant", "tournament_name"},
+    "withdrawal_confirmed": {"participant", "tournament_name"},
 }
 
 
