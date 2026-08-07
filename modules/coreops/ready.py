@@ -11,6 +11,7 @@ from shared.config import cfg, get_feature_toggles
 from modules.community.fusion.opt_in_view import register_persistent_fusion_views
 from modules.community.shard_tracker.views import register_persistent_shard_views
 from modules.community.reset_reminders.scheduler import register_persistent_reset_views
+from modules.community.live_arena.panel import register_live_arena
 from modules.onboarding import watcher_promo, watcher_welcome
 from modules.onboarding.ui import panels
 
@@ -40,6 +41,12 @@ async def on_ready(bot: commands.Bot) -> None:
             log.exception("CORE_READY FAILURE: register_persistent_shard_views")
             return
 
+        # Live Arena is optional and must never interrupt unrelated ready wiring.
+        try:
+            await register_live_arena(bot)
+        except Exception:
+            log.exception("CORE_READY FAILURE: register_live_arena")
+
         try:
             await register_persistent_reset_views(bot)
         except Exception:
@@ -58,7 +65,10 @@ async def on_ready(bot: commands.Bot) -> None:
                 hook_name,
                 str(cfg.get("ENV_NAME") or "unknown").strip() or "unknown",
                 len(getattr(bot, "guilds", []) or []),
-                [getattr(guild, "id", None) for guild in (getattr(bot, "guilds", []) or [])],
+                [
+                    getattr(guild, "id", None)
+                    for guild in (getattr(bot, "guilds", []) or [])
+                ],
                 reset_feature_enabled,
             )
             return
