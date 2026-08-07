@@ -120,6 +120,7 @@ sync modules remain available for non-async scripts and cache warmers.
 | `C1C_LEAGUE_ROLE_ID` | snowflake | — | Discord role ID for **@C1CLeague**; granted automatically on first image submission and mentioned in announcements. |
 | `ANNOUNCEMENT_CHANNEL_ID` | snowflake | — | Channel receiving the weekly cross-league announcement (jump links + @C1CLeague). |
 | `LEAGUES_SHEET_ID` | string | — | Google Sheet ID for the `C1C_Leagues` workbook; Config tab declares ranges for each league. |
+| `LIVE_ARENA_TOURNAMENT_SHEET_ID` | string | — | Optional Google Sheet ID for Live Arena tournaments; blank disables the feature. |
 | `LEAGUES_CONFIG_TAB` | string | `Config` | Optional override for the Leagues Config tab name. |
 | `LEAGUES_SUBMISSION_CHANNEL_ID` | snowflake | — | Channel watched for image uploads; grants the C1CLeague role on first qualifying attachment. |
 | `LEAGUES_LEGENDARY_THREAD_ID` | snowflake | — | Thread receiving the Legendary League header + 9 board PNGs. |
@@ -444,4 +445,4 @@ The `LEAGUES_SHEET_ID` Config tab resolves `cluster_capture_config_tab`, `cluste
 
 Before weekly boards are exported, the bot appends one candidate per active clan and enabled capture spec. Unknown/former source clans are ignored; a missing active clan is archived as `evaluation_status=missing`. Blank, invalid, and zero weekly scores stay blank rather than becoming valid zeroes. Existing record keys with identical semantic event data are retry no-ops even when trigger, timestamp, source location, or clan display name changes; audit metadata from the original row remains untouched. Changed semantic event data conflicts, while conflicting keys and negative cumulative deltas fail the job before Discord posting. The capture is append-only and never clears Stormforged inputs. Current CvC/Siege inputs only support weekly scores or cumulative win/loss deltas, not complete cycle/participation/action/class ratings.
 
-Doc last updated: 2026-08-03 (v0.9.8.2)
+Doc last updated: 2026-08-07 (v0.9.8.2)
