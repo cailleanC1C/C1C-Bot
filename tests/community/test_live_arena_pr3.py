@@ -1,5 +1,5 @@
 import asyncio
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -8,7 +8,12 @@ import pytest
 
 from modules.community.live_arena import messages, panel, registration, repository, views
 from modules.community.live_arena.messages import load_messages, load_pr3_config
-from modules.community.live_arena.registration import SignupPreparation, localize_availability
+from modules.community.live_arena.registration import (
+    LocalizedSlot,
+    RegistrationError,
+    SignupPreparation,
+    localize_availability,
+)
 from modules.community.live_arena.service import LiveArenaConfigError, TournamentSnapshot
 from modules.community.live_arena.views import AvailabilityView, JoinTournamentView
 
@@ -270,3 +275,259 @@ def test_timezone_submit_initializes_real_repository_before_preflight(monkeypatc
     sent = interaction.followup.send.await_args.kwargs
     assert isinstance(sent["view"], AvailabilityView)
     assert isinstance(sent["embed"], discord.Embed)
+
+
+@pytest.mark.parametrize(
+    ("key", "change", "match"),
+    [
+        ("signup_open", "remove", "signup_open"),
+        ("signup_confirmed", "remove", "signup_confirmed"),
+        ("signup_open", "inactive", "signup_open"),
+        ("signup_confirmed", "inactive", "signup_confirmed"),
+        ("signup_open", "color", "color_hex"),
+    ],
+)
+def test_required_message_rows_are_strict(monkeypatch, key, change, match):
+    matrix = [row[:] for row in MESSAGE_ROWS]
+    row_index = next(i for i, row in enumerate(matrix) if row[0] == key)
+    if change == "remove":
+        matrix.pop(row_index)
+    elif change == "inactive":
+        matrix[row_index][4] = "FALSE"
+    else:
+        matrix[row_index][3] = "#nothex"
+    monkeypatch.setattr(messages, "afetch_values", AsyncMock(return_value=matrix))
+    with pytest.raises(LiveArenaConfigError, match=match):
+        asyncio.run(load_messages("sheet", "MESSAGES"))
+
+
+def test_signup_confirmed_embed_uses_exact_template_contract(monkeypatch):
+    monkeypatch.setattr(messages, "afetch_values", AsyncMock(return_value=MESSAGE_ROWS))
+    loaded = asyncio.run(load_messages("sheet", "MESSAGES"))
+    embed = loaded["signup_confirmed"].embed(
+        participant="<@7>", tournament_name="Trial Cup", signup_deadline="<t:1:F>"
+    )
+    assert embed.title == "You're aboard"
+    assert embed.description == "<@7>, Trial Cup by <t:1:F>."
+    assert embed.color.value == int("34A853", 16)
+
+
+class _Worksheet:
+    def __init__(self):
+        self.update_cell = AsyncMock()
+
+
+def test_persist_message_id_updates_only_existing_value_cell(monkeypatch):
+    manager, _ = _panel_manager(monkeypatch)
+    worksheet = _Worksheet()
+    matrix = [row[:] for row in CONFIG]
+    original = [row[:] for row in matrix]
+    monkeypatch.setattr(panel, "aget_worksheet", AsyncMock(return_value=worksheet))
+
+    async def call(function, *args):
+        return await function(*args)
+
+    monkeypatch.setattr(panel, "acall_with_backoff", call)
+    asyncio.run(manager.__class__._persist_message_id(manager, matrix, "987"))
+    worksheet.update_cell.assert_awaited_once_with(5, 2, "987")
+    assert matrix == original
+
+
+@pytest.mark.parametrize("matrix", [[*CONFIG[:4]], [*CONFIG, CONFIG[4][:]]])
+def test_persist_message_id_rejects_missing_or_duplicate_key(monkeypatch, matrix):
+    manager, _ = _panel_manager(monkeypatch)
+    monkeypatch.setattr(panel, "aget_worksheet", AsyncMock())
+    with pytest.raises(RuntimeError, match="must occur exactly once"):
+        asyncio.run(manager.__class__._persist_message_id(manager, matrix, "987"))
+    panel.aget_worksheet.assert_not_awaited()
+
+
+def _preparation(slot_count=4):
+    base = datetime(2026, 8, 3, 18, tzinfo=UTC)
+    localized = []
+    rows = []
+    for index in range(slot_count):
+        start = base + timedelta(days=index // 2, hours=2 * (index % 2))
+        slot_id = f"real-{index}"
+        localized.append(LocalizedSlot(slot_id, start, start + timedelta(hours=2)))
+        rows.append(
+            {
+                "slot_id": slot_id,
+                "weekday_utc": start.strftime("%A"),
+                "start_time_utc": start.strftime("%H:%M"),
+                "end_time_utc": (start + timedelta(hours=2)).strftime("%H:%M"),
+                "enabled": "TRUE",
+            }
+        )
+    return SignupPreparation(
+        {"ACTIVE_TOURNAMENT_ID": "LA-1"},
+        {
+            "tournament_name": "Trial Cup",
+            "signup_closes_at_utc": "2026-08-09T20:00:00Z",
+        },
+        tuple(rows),
+        tuple(localized),
+    )
+
+
+def _flow(preparation=None, service=None, manager=None, member=None):
+    manager = manager or SimpleNamespace(sheet_id="sheet", sync=AsyncMock())
+    service = service or SimpleNamespace(register=AsyncMock())
+    member = member or SimpleNamespace(id=7, display_name="Player", roles=[])
+    return AvailabilityView(manager, service, preparation or _preparation(), "UTC", member)
+
+
+def _edit_interaction():
+    return SimpleNamespace(response=SimpleNamespace(edit_message=AsyncMock(), send_message=AsyncMock()))
+
+
+def test_local_day_above_discord_option_limit_fails_clearly():
+    preparation = _preparation(26)
+    same_day = preparation.localized_slots[0].local_start
+    preparation = SignupPreparation(
+        preparation.config,
+        preparation.tournament,
+        preparation.slots,
+        tuple(
+            LocalizedSlot(slot.slot_id, same_day + timedelta(minutes=i), same_day + timedelta(hours=2, minutes=i))
+            for i, slot in enumerate(preparation.localized_slots)
+        ),
+    )
+    with pytest.raises(RegistrationError, match="25-option"):
+        _flow(preparation)
+
+
+def test_navigation_defaults_and_clear_day_preserve_real_slot_ids():
+    flow = _flow()
+    flow.selected.update({"real-0", "real-2"})
+    interaction = _edit_interaction()
+    asyncio.run(flow.next(interaction))
+    assert flow.index == 1
+    assert {option.value for option in flow.children[0].options if option.default} == {"real-2"}
+    asyncio.run(flow.clear_day(interaction))
+    assert flow.selected == {"real-0"}
+    asyncio.run(flow.previous(interaction))
+    assert {option.value for option in flow.children[0].options if option.default} == {"real-0"}
+
+
+def test_review_gating_and_valid_grouped_content_are_embeds():
+    flow = _flow()
+    interaction = _edit_interaction()
+    flow.selected.update({"real-0", "real-1"})
+    asyncio.run(flow.review(interaction))
+    error = interaction.response.send_message.await_args.kwargs
+    assert error["ephemeral"] is True and isinstance(error["embed"], discord.Embed)
+    interaction.response.send_message.reset_mock()
+    flow.selected.add("real-2")
+    asyncio.run(flow.review(interaction))
+    rendered = interaction.response.edit_message.await_args.kwargs["embed"]
+    assert isinstance(rendered, discord.Embed)
+    for expected in ("Trial Cup", "UTC", "**Windows:** 3", "**Local days:** 2", "Monday", "Tuesday"):
+        assert expected in rendered.description
+
+
+def test_invalid_timezone_preflight_is_embed_only_and_write_free(monkeypatch):
+    service = SimpleNamespace(
+        initialize=AsyncMock(), prepare_signup=AsyncMock(side_effect=RegistrationError("timezone must be a valid IANA timezone")), register=AsyncMock()
+    )
+    manager = SimpleNamespace(sheet_id="sheet", service_factory=lambda _sheet: service)
+    modal = views.TimezoneModal(manager)
+    modal.timezone_input._value = "Mars/Olympus"
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=7, roles=[]),
+        response=SimpleNamespace(defer=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+    asyncio.run(modal.on_submit(interaction))
+    result = interaction.followup.send.await_args.kwargs
+    assert result["ephemeral"] is True and isinstance(result["embed"], discord.Embed)
+    service.register.assert_not_awaited()
+
+
+def _submit_interaction(*, roles=(), configured_role=None, add_error=None):
+    member = SimpleNamespace(
+        id=7,
+        display_name="Player",
+        mention="<@7>",
+        roles=list(roles),
+        add_roles=AsyncMock(side_effect=add_error),
+    )
+    guild = SimpleNamespace(get_role=lambda _role_id: configured_role)
+    return SimpleNamespace(
+        user=member,
+        guild=guild,
+        response=SimpleNamespace(defer=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()),
+    )
+
+
+def _run_submit(monkeypatch, *, register_error=None, role=None, held=False, add_error=None, sync_error=None):
+    service = SimpleNamespace(register=AsyncMock(side_effect=register_error))
+    manager = SimpleNamespace(sheet_id="sheet", sync=AsyncMock(side_effect=sync_error))
+    flow = _flow(service=service, manager=manager)
+    flow.selected.update({"real-0", "real-1", "real-2"})
+    role = role if role is not None else SimpleNamespace(id=99)
+    interaction = _submit_interaction(roles=[role] if held else [], configured_role=role, add_error=add_error)
+    config = {"MESSAGES_TAB": "MESSAGES", "PARTICIPANT_ROLE_ID": "99"}
+    monkeypatch.setattr(views, "load_pr3_config", AsyncMock(return_value=(config, CONFIG)))
+    monkeypatch.setattr(views, "load_messages", AsyncMock(return_value={"signup_confirmed": messages.MessageTemplate("signup_confirmed", "Confirmed", "{participant} joined {tournament_name} by {signup_deadline}.", 0x34A853)}))
+    review = views.ReviewView(flow)
+    asyncio.run(review.children[1].callback(interaction))
+    return flow, service, manager, interaction
+
+
+def test_submit_passes_exact_pr2_contract_and_refreshes_panel(monkeypatch):
+    held_role = SimpleNamespace(id=8)
+    service = SimpleNamespace(register=AsyncMock())
+    manager = SimpleNamespace(sheet_id="sheet", sync=AsyncMock())
+    flow = _flow(service=service, manager=manager)
+    flow.selected.update({"real-0", "real-1", "real-2"})
+    participant_role = SimpleNamespace(id=99)
+    interaction = _submit_interaction(roles=[held_role], configured_role=participant_role)
+    monkeypatch.setattr(views, "load_pr3_config", AsyncMock(return_value=({"MESSAGES_TAB": "MESSAGES", "PARTICIPANT_ROLE_ID": "99"}, CONFIG)))
+    monkeypatch.setattr(views, "load_messages", AsyncMock(return_value={"signup_confirmed": messages.MessageTemplate("signup_confirmed", "Confirmed", "{participant} joined {tournament_name} by {signup_deadline}.", 0x34A853)}))
+    review = views.ReviewView(flow)
+    asyncio.run(review.children[1].callback(interaction))
+    args = service.register.await_args.args
+    assert args[:4] == ("7", "Player", ["8"], "UTC")
+    assert set(args[4]) == {"real-0", "real-1", "real-2"}
+    interaction.user.add_roles.assert_awaited_once_with(participant_role, reason="Live Arena registration confirmed")
+    manager.sync.assert_awaited_once()
+    assert isinstance(interaction.followup.send.await_args.kwargs["embed"], discord.Embed)
+
+
+def test_pr2_rejection_is_embed_and_has_no_role_or_refresh(monkeypatch):
+    flow, _, manager, interaction = _run_submit(monkeypatch, register_error=RegistrationError("closed"))
+    interaction.user.add_roles.assert_not_awaited()
+    manager.sync.assert_not_awaited()
+    result = interaction.followup.send.await_args.kwargs
+    assert result["ephemeral"] is True and isinstance(result["embed"], discord.Embed)
+
+
+@pytest.mark.parametrize(("held", "add_error", "warning"), [(True, None, False), (False, RuntimeError("denied"), True)])
+def test_role_assignment_is_nonredundant_and_failure_is_warning(monkeypatch, held, add_error, warning):
+    _, service, manager, interaction = _run_submit(monkeypatch, held=held, add_error=add_error)
+    service.register.assert_awaited_once()
+    manager.sync.assert_awaited_once()
+    if held:
+        interaction.user.add_roles.assert_not_awaited()
+    embed = interaction.followup.send.await_args.kwargs["embed"]
+    assert isinstance(embed, discord.Embed)
+    assert bool(embed.fields) is warning
+
+
+def test_missing_role_and_panel_refresh_failure_keep_success(monkeypatch):
+    _, service, manager, interaction = _run_submit(
+        monkeypatch, role=SimpleNamespace(id=99), sync_error=RuntimeError("refresh failed")
+    )
+    interaction.guild.get_role = lambda _role_id: None
+    # Re-run with the missing role because the helper submits immediately.
+    interaction.followup.send.reset_mock()
+    flow = _flow(service=service, manager=manager)
+    flow.selected.update({"real-0", "real-1", "real-2"})
+    review = views.ReviewView(flow)
+    asyncio.run(review.children[1].callback(interaction))
+    assert service.register.await_count == 2
+    assert manager.sync.await_count == 2
+    embed = interaction.followup.send.await_args.kwargs["embed"]
+    assert isinstance(embed, discord.Embed) and embed.fields
