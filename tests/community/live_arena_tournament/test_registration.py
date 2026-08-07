@@ -601,7 +601,6 @@ class PrepareRepository:
                     "max_participants": "16",
                     "signup_closes_at": "2026-08-10T18:00:00Z",
                     "eligibility_scope": "selected_clans",
-                    "active": "TRUE",
                 }
             ],
             "destinations": [
@@ -706,8 +705,45 @@ def _prepare(repository):
     return asyncio.run(cog.prepare())
 
 
-def test_prepare_accepts_exact_current_workbook_schema():
+def test_prepare_accepts_frozen_real_registration_workbook_contract():
     assert _prepare(PrepareRepository()) is True
+
+
+def test_header_only_participant_availability_is_valid():
+    assert PrepareRepository().data["participant_availability"] == []
+    assert _prepare(PrepareRepository()) is True
+
+
+def test_header_only_audit_log_is_valid():
+    assert PrepareRepository().data["audit_log"] == []
+    assert _prepare(PrepareRepository()) is True
+
+
+def test_global_availability_slots_work_without_tournament_id_or_active():
+    row = PrepareRepository().data["availability_slots"][0]
+    assert "tournament_id" not in row and "active" not in row
+    assert _prepare(PrepareRepository()) is True
+
+
+def test_registration_business_rule_is_three_windows_two_local_days_without_sheet_field():
+    from modules.community.live_arena_tournament.models import (
+        REQUIRED_AVAILABILITY_WINDOWS,
+        REQUIRED_LOCAL_AVAILABILITY_DAYS,
+    )
+
+    tournament_row = PrepareRepository().data["tournaments"][0]
+    assert "minimum_availability" not in tournament_row
+    assert (REQUIRED_AVAILABILITY_WINDOWS, REQUIRED_LOCAL_AVAILABILITY_DAYS) == (3, 2)
+
+
+def test_blank_active_eligible_clan_role_id_fails_startup():
+    repository = PrepareRepository()
+    repository.data["eligible_clans"][0]["discord_role_id"] = ""
+    assert _prepare(repository) is False
+
+
+def test_selected_clan_without_role_id_fails_prepare():
+    test_blank_active_eligible_clan_role_id_fails_startup()
 
 
 @pytest.mark.parametrize(

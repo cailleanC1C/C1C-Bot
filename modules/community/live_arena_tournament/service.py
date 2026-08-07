@@ -7,6 +7,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from modules.community.live_arena_tournament.models import (
     AvailabilitySlot,
+    REQUIRED_AVAILABILITY_WINDOWS,
     RegistrationError,
     validate_availability,
     validate_timezone,
@@ -29,10 +30,10 @@ class LiveArenaService:
         for row in rows:
             if (
                 str(row.get("tournament_id", "")) == tournament_id
-                and truthy(row.get("active", row.get("enabled", True)))
-                and str(row.get("discord_role_id", row.get("role_id", ""))) in roles
+                and truthy(row.get("active"))
+                and str(row.get("discord_role_id", "")) in roles
             ):
-                return str(row.get("clan_tag", row.get("clan", "")))
+                return str(row.get("clan_tag", ""))
         raise RegistrationError(
             "You do not currently hold an eligible clan role for this tournament."
         )
@@ -127,7 +128,7 @@ class LiveArenaService:
                 )
                 raise RegistrationError("The tournament is at capacity.")
             clans = await self.repository.rows(
-                "eligible_clans", ("tournament_id", "clan_tag")
+                "eligible_clans", ("tournament_id", "clan_tag", "discord_role_id", "active")
             )
             try:
                 clan = self.eligible_clan(member_role_ids, clans, tid)
@@ -160,14 +161,14 @@ class LiveArenaService:
                     int(float(r.get("end_day_offset") or 0)),
                 )
                 for r in raw_slots
-                if str(r.get("tournament_id", tid)) in ("", tid)
+                if truthy(r.get("enabled"))
             ]
             try:
                 selected = validate_availability(
                     slot_ids,
                     slots,
                     timezone_name,
-                    tournament.minimum_availability,
+                    REQUIRED_AVAILABILITY_WINDOWS,
                     anchor_monday=anchor_monday,
                 )
             except RegistrationError:

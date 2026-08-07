@@ -10,8 +10,7 @@ def choose_row(rows, key, tournament_id):
     candidates = [
         r
         for r in rows
-        if norm(r.get("message_key", r.get("key"))) == norm(key)
-        and truthy(r.get("active", True))
+        if norm(r.get("message_key")) == norm(key) and truthy(r.get("active"))
     ]
     return next(
         (r for r in candidates if str(r.get("tournament_id", "")) == tournament_id),
@@ -24,10 +23,8 @@ def choose_row(rows, key, tournament_id):
 def configured_embed(row, values):
     if not row:
         raise SchemaError("Required configured message row is missing.")
-    title_template = str(row.get("title_template", row.get("title", "")))
-    body_template = str(
-        row.get("body_template", row.get("description", row.get("content", "")))
-    )
+    title_template = str(row.get("title_template", ""))
+    body_template = str(row.get("body_template", ""))
     required = {
         name
         for template in (title_template, body_template)
@@ -46,11 +43,7 @@ def configured_embed(row, values):
         raise SchemaError(f"Invalid configured message template: {exc}") from exc
     if "{" in title or "{" in body:
         raise SchemaError("Configured message contains an unresolved placeholder.")
-    raw = (
-        str(row.get("embed_color_hex", row.get("color", row.get("colour", "0"))))
-        .strip()
-        .lstrip("#")
-    )
+    raw = str(row.get("embed_color_hex", "0")).strip().lstrip("#")
     try:
         EMBED_COLOR = int(raw, 16)
     except ValueError:

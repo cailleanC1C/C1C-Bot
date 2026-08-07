@@ -31,9 +31,7 @@ def style(value):
 
 class RoutedButton(discord.ui.Button):
     def __init__(self, cog, row):
-        action = str(
-            row.get("action_id", row.get("action", row.get("component_key", "")))
-        ).strip()
+        action = str(row.get("action_id", "")).strip()
         super().__init__(
             label=str(row.get("label", "")),
             emoji=str(row.get("emoji") or "") or None,
@@ -51,11 +49,9 @@ class PersistentPanel(discord.ui.View):
     def __init__(self, cog, rows, actions):
         super().__init__(timeout=None)
         by_action = {
-            str(
-                r.get("action_id", r.get("action", r.get("component_key", "")))
-            ).strip(): r
+            str(r.get("action_id", "")).strip(): r
             for r in rows
-            if str(r.get("active", "true")).lower() not in {"false", "0", "no"}
+            if str(r.get("active", "")).lower() in {"true", "1", "yes", "active"}
         }
         ordered = sorted(
             (by_action[action] for action in actions if action in by_action),

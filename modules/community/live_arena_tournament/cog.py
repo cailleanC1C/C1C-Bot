@@ -150,7 +150,6 @@ class LiveArenaTournamentCog(commands.Cog):
                     r
                     for r in loaded["tournaments"]
                     if str(r.get("tournament_id")) == tid
-                    and truthy(r.get("active", True))
                 ),
                 None,
             )
@@ -207,7 +206,9 @@ class LiveArenaTournamentCog(commands.Cog):
                     ("tournament_id", "clan_tag", "discord_role_id", "active"),
                 )
                 if not any(
-                    str(r.get("tournament_id")) == tid and truthy(r.get("active"))
+                    str(r.get("tournament_id")) == tid
+                    and truthy(r.get("active"))
+                    and str(r.get("discord_role_id", "")).strip()
                     for r in clans
                 ):
                     errors.append(
@@ -251,11 +252,10 @@ class LiveArenaTournamentCog(commands.Cog):
             )
         tournament = Tournament(
             cfg.active_tournament_id,
-            str(row.get("tournament_name", row.get("name", ""))),
+            str(row.get("tournament_name", "")),
             norm(row["status"]),
-            int(row.get("maximum_participants", row.get("max_participants", 0))),
-            int(row.get("minimum_availability", 3)),
-            str(row.get("signup_closes_at", row.get("signup_deadline", ""))),
+            int(row.get("max_participants", 0)),
+            str(row.get("signup_closes_at", "")),
             norm(row.get("eligibility_scope", "selected_clans")),
         )
         return cfg, tournament, row
@@ -379,9 +379,18 @@ class LiveArenaTournamentCog(commands.Cog):
                     and norm(current.get("status")) == "confirmed"
                 ):
                     return await self.show_registration(interaction)
+                clans = await self.repository.rows(
+                    "eligible_clans",
+                    ("tournament_id", "clan_tag", "discord_role_id", "active"),
+                )
+                self.service.eligible_clan(
+                    [role.id for role in interaction.user.roles],
+                    clans,
+                    tournament.tournament_id,
+                )
                 if (
                     action == "join_tournament"
-                    and not current
+                    and (not current or norm(current.get("status")) != "confirmed")
                     and self.service.confirmed_count(
                         participants, tournament.tournament_id
                     )
@@ -427,14 +436,12 @@ class LiveArenaTournamentCog(commands.Cog):
                     parse_weekday(r["weekday_utc"]),
                     str(r["start_time_utc"]),
                     str(r.get("end_time_utc", "")),
-                    truthy(r.get("enabled", r.get("active", True))),
+                    truthy(r.get("enabled")),
                     int(float(r.get("sort_order") or 0)),
                     int(float(r.get("end_day_offset") or 0)),
                 )
                 for r in raw
-                if str(r.get("tournament_id", cfg.active_tournament_id))
-                in ("", cfg.active_tournament_id)
-                and truthy(r.get("enabled", r.get("active", True)))
+                if truthy(r.get("enabled"))
             ]
             selected = []
             if mode == "update":
@@ -603,7 +610,7 @@ class LiveArenaTournamentCog(commands.Cog):
         grouped = {}
         anchor = self._availability_anchor(t.signup_closes_at)
         enabled_rows = [
-            r for r in raw_slots if truthy(r.get("enabled", r.get("active", True)))
+            r for r in raw_slots if truthy(r.get("enabled"))
         ]
         enabled_ids = {str(r.get("slot_id")) for r in enabled_rows}
         selected &= enabled_ids

@@ -31,15 +31,23 @@ class AvailabilityError(RegistrationError):
     pass
 
 
+REQUIRED_AVAILABILITY_WINDOWS = 3
+REQUIRED_LOCAL_AVAILABILITY_DAYS = 2
+
+
 @dataclass(slots=True)
 class Tournament:
     tournament_id: str
     name: str
     status: str
     maximum_participants: int
-    minimum_availability: int = 3
     signup_closes_at: str = ""
     eligibility_scope: str = "selected_clans"
+
+    @property
+    def minimum_availability(self) -> int:
+        """Return the trial's fixed code rule; this is not workbook configuration."""
+        return REQUIRED_AVAILABILITY_WINDOWS
 
 
 @dataclass(slots=True)
@@ -130,7 +138,7 @@ def validate_availability(
     selected: list[str],
     slots: list[AvailabilitySlot],
     timezone_name: str,
-    minimum: int = 3,
+    minimum: int = REQUIRED_AVAILABILITY_WINDOWS,
     *,
     anchor_monday: datetime | None = None,
 ) -> list[str]:
@@ -154,6 +162,6 @@ def validate_availability(
         ).weekday()
         for item in unique
     }
-    if len(days) < 2:
+    if len(days) < REQUIRED_LOCAL_AVAILABILITY_DAYS:
         raise AvailabilityError("Availability must cover at least two local weekdays.")
     return unique
