@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from shared.sheets.async_core import acall_with_backoff, afetch_values, aget_worksheet
 
@@ -74,29 +75,83 @@ class LiveArenaRepository:
             "PARTICIPANT_AVAILABILITY_TAB", PARTICIPANT_AVAILABILITY_HEADERS
         )
 
-    async def replace_participants(self, rows: Sequence[dict[str, object]]) -> None:
-        await self._replace("PARTICIPANTS_TAB", PARTICIPANT_HEADERS, rows)
-
-    async def replace_availability(self, rows: Sequence[dict[str, object]]) -> None:
-        await self._replace(
-            "PARTICIPANT_AVAILABILITY_TAB", PARTICIPANT_AVAILABILITY_HEADERS, rows
+    async def persist_core_state(
+        self,
+        participants: Sequence[dict[str, object]],
+        availability: Sequence[dict[str, object]],
+        *,
+        previous_participants: Sequence[dict[str, object]],
+        previous_availability: Sequence[dict[str, object]],
+    ) -> None:
+        """Persist both core tables in one values batch, compensating ambiguity locally."""
+        await self._persist_tables(
+            (
+                (
+                    "PARTICIPANTS_TAB",
+                    PARTICIPANT_HEADERS,
+                    participants,
+                    previous_participants,
+                ),
+                (
+                    "PARTICIPANT_AVAILABILITY_TAB",
+                    PARTICIPANT_AVAILABILITY_HEADERS,
+                    availability,
+                    previous_availability,
+                ),
+            )
         )
 
-    async def _replace(
-        self, key: str, headers: tuple[str, ...], rows: Sequence[dict[str, object]]
+    async def persist_participants(
+        self,
+        participants: Sequence[dict[str, object]],
+        *,
+        previous_participants: Sequence[dict[str, object]],
     ) -> None:
-        worksheet = await aget_worksheet(self.sheet_id, self.config[key])
-        await acall_with_backoff(worksheet.batch_clear, [f"A2:{_column(len(headers))}"])
-        if rows:
+        """Persist a participant-only mutation, including withdrawal."""
+        await self._persist_tables(
+            (
+                (
+                    "PARTICIPANTS_TAB",
+                    PARTICIPANT_HEADERS,
+                    participants,
+                    previous_participants,
+                ),
+            )
+        )
+
+    async def _persist_tables(self, tables) -> None:
+        worksheet = await aget_worksheet(self.sheet_id, self.config["PARTICIPANTS_TAB"])
+        spreadsheet = worksheet.spreadsheet
+        update = self._batch_body(tables, use_previous=False)
+        rollback = self._batch_body(tables, use_previous=True)
+        try:
+            await acall_with_backoff(spreadsheet.values_batch_update, body=update)
+        except Exception as write_error:
+            try:
+                await acall_with_backoff(spreadsheet.values_batch_update, body=rollback)
+            except Exception as rollback_error:
+                raise CoreStatePersistenceError(
+                    write_error=write_error, rollback_error=rollback_error
+                ) from rollback_error
+            raise
+
+    def _batch_body(self, tables, *, use_previous: bool) -> dict[str, object]:
+        data = []
+        for key, headers, current, previous in tables:
+            rows = previous if use_previous else current
+            row_count = max(len(current), len(previous), 1)
             values = [
                 [str(row.get(header, "") or "") for header in headers] for row in rows
             ]
-            await acall_with_backoff(
-                worksheet.update,
-                f"A2:{_column(len(headers))}{len(values) + 1}",
-                values,
-                value_input_option="RAW",
+            values.extend([[""] * len(headers) for _ in range(row_count - len(values))])
+            tab = self.config[key].replace("'", "''")
+            data.append(
+                {
+                    "range": f"'{tab}'!A2:{_column(len(headers))}{row_count + 1}",
+                    "values": values,
+                }
             )
+        return {"valueInputOption": "RAW", "data": data}
 
     async def append_audit(self, row: dict[str, object]) -> None:
         worksheet = await aget_worksheet(self.sheet_id, self.config["AUDIT_LOG_TAB"])
@@ -111,3 +166,17 @@ def _column(number: int) -> str:
     if not 1 <= number <= 26:
         raise LiveArenaConfigError("Live Arena table has unsupported width")
     return chr(64 + number)
+
+
+@dataclass
+class CoreStatePersistenceError(RuntimeError):
+    """A core write failed and its repository-local compensation also failed."""
+
+    write_error: Exception
+    rollback_error: Exception
+
+    def __str__(self) -> str:
+        return (
+            "Live Arena core persistence and compensation both failed: "
+            f"write={self.write_error!r}; rollback={self.rollback_error!r}"
+        )

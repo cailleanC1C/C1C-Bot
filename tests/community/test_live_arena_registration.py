@@ -86,7 +86,8 @@ class MemoryRepository:
         self.p = deepcopy(participants or [])
         self.a = deepcopy(availability or [])
         self.audit = []
-        self.fail_availability = False
+        self.fail_core = False
+        self.fail_participants = False
         self.fail_audit = False
 
     async def initialize(self):
@@ -98,14 +99,25 @@ class MemoryRepository:
     async def availability(self):
         return deepcopy(self.a)
 
-    async def replace_participants(self, rows):
-        self.p = deepcopy(rows)
-
-    async def replace_availability(self, rows):
-        if self.fail_availability:
-            self.fail_availability = False
+    async def persist_core_state(
+        self,
+        participants,
+        availability,
+        *,
+        previous_participants,
+        previous_availability,
+    ):
+        if self.fail_core:
+            self.fail_core = False
             raise RuntimeError("write failed")
-        self.a = deepcopy(rows)
+        self.p = deepcopy(participants)
+        self.a = deepcopy(availability)
+
+    async def persist_participants(self, participants, *, previous_participants):
+        if self.fail_participants:
+            self.fail_participants = False
+            raise RuntimeError("write failed")
+        self.p = deepcopy(participants)
 
     async def append_audit(self, row):
         if self.fail_audit:
@@ -207,6 +219,30 @@ def test_timezone_slot_count_local_days_cross_midnight_and_dst_anchor():
             "UTC", ["mon-a", "tue-a", "missing"], slots(), "2026-03-08T12:00:00Z"
         )
 
+    dst_boundary_slots = [
+        dict(
+            slot_id=f"dst-{hour}",
+            weekday_utc="Monday",
+            start_time_utc=f"{hour:02}:00",
+            end_time_utc=f"{hour + 2:02}:00",
+            enabled="TRUE",
+        )
+        for hour in (0, 1, 4)
+    ]
+    selected = ["dst-0", "dst-1", "dst-4"]
+    # The same UTC slots cross two New York start-dates only in the week after
+    # DST begins, proving that signup_closes_at_utc selects the anchor week.
+    assert (
+        registration.validate_availability(
+            "America/New_York", selected, dst_boundary_slots, "2026-03-15T12:00:00Z"
+        )
+        == selected
+    )
+    with pytest.raises(registration.RegistrationError, match="2 local"):
+        registration.validate_availability(
+            "America/New_York", selected, dst_boundary_slots, "2026-03-08T12:00:00Z"
+        )
+
 
 def test_new_registration_deduplicates_slots_and_writes_exact_audit():
     repo = MemoryRepository()
@@ -216,6 +252,7 @@ def test_new_registration_deduplicates_slots_and_writes_exact_audit():
     )
     assert len(repo.p) == 1 and repo.p[0]["status"] == "confirmed" and len(repo.a) == 3
     assert repo.audit[0]["event_type"] == "registration_confirmed"
+    assert repo.audit[0]["created_at_utc"] == "2026-03-01T12:00:00Z"
     assert (
         repo.audit[0]["actor_discord_user_id"]
         == repo.audit[0]["target_discord_user_id"]
@@ -310,6 +347,7 @@ def test_reregister_updates_same_row_preserves_signup_and_replaces_availability(
         "created_at_utc"
     ].endswith("Z")
     assert repo.audit[0]["event_type"] == "registration_reconfirmed"
+    assert repo.audit[0]["created_at_utc"] == "2026-03-01T12:00:00Z"
 
 
 def test_capacity_and_concurrent_last_place_race():
@@ -345,6 +383,7 @@ def test_withdraw_preserves_availability_and_frees_capacity():
     assert repo.p[0]["status"] == "withdrawn" and repo.a == saved
     run(svc.register("2", "B", ["10"], "UTC", ["mon-a", "tue-a", "wed-a"]))
     assert repo.audit[0]["event_type"] == "registration_withdrawn"
+    assert repo.audit[0]["created_at_utc"] == "2026-03-01T12:00:00Z"
 
 
 def test_update_preserves_identity_fields_and_rolls_back_core_failure():
@@ -370,7 +409,7 @@ def test_update_preserves_identity_fields_and_rolls_back_core_failure():
     ]
     repo = MemoryRepository([participant], saved)
     svc = make_service(repo)
-    repo.fail_availability = True
+    repo.fail_core = True
     with pytest.raises(RuntimeError):
         run(svc.update_availability("1", "Europe/London", ["mon-a", "tue-a", "wed-a"]))
     assert repo.p == [participant] and repo.a == saved
@@ -392,11 +431,13 @@ def test_update_preserves_identity_fields_and_rolls_back_core_failure():
             "status",
         )
     }
+    assert repo.audit[0]["event_type"] == "availability_updated"
+    assert repo.audit[0]["created_at_utc"] == "2026-03-01T12:00:00Z"
 
 
 def test_failed_new_core_write_has_no_partial_state():
     repo = MemoryRepository()
-    repo.fail_availability = True
+    repo.fail_core = True
     with pytest.raises(RuntimeError):
         run(
             make_service(repo).register(
@@ -404,6 +445,20 @@ def test_failed_new_core_write_has_no_partial_state():
             )
         )
     assert repo.p == [] and repo.a == []
+
+
+def test_failed_reregistration_restores_exact_withdrawn_state():
+    old_p, old_a = core_rows(status="withdrawn", slots=("old-a", "old-b"))
+    repo = MemoryRepository(old_p, old_a)
+    repo.fail_core = True
+    with pytest.raises(RuntimeError, match="write failed"):
+        run(
+            make_service(repo).register(
+                "1", "New", ["10"], "UTC", ["mon-a", "tue-a", "wed-a"]
+            )
+        )
+    assert repo.p == old_p
+    assert repo.a == old_a
 
 
 def test_audit_failure_keeps_core_and_logs(caplog):
@@ -419,3 +474,142 @@ def test_audit_failure_keeps_core_and_logs(caplog):
         "tournament=LA-1" in caplog.text
         and "event=registration_confirmed" in caplog.text
     )
+
+
+class FakeSpreadsheet:
+    def __init__(self, state, failure="before"):
+        self.state = deepcopy(state)
+        self.failure = failure
+        self.calls = 0
+
+    def values_batch_update(self, body):
+        self.calls += 1
+        if self.calls == 1 and self.failure == "before":
+            raise RuntimeError("participant write failed")
+        for index, item in enumerate(body["data"]):
+            self.state[item["range"].split("!", 1)[0].strip("'")] = deepcopy(
+                item["values"]
+            )
+            if (
+                self.calls == 1
+                and self.failure in {"availability", "rollback"}
+                and index == 0
+            ):
+                raise RuntimeError("availability write failed")
+        if self.calls == 2 and self.failure == "rollback":
+            raise RuntimeError("rollback failed")
+
+
+def repository_with_spreadsheet(monkeypatch, state, failure):
+    spreadsheet = FakeSpreadsheet(state, failure)
+    worksheet = type("Worksheet", (), {"spreadsheet": spreadsheet})()
+
+    async def get_worksheet(*_):
+        return worksheet
+
+    async def call(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(repository, "aget_worksheet", get_worksheet)
+    monkeypatch.setattr(repository, "acall_with_backoff", call)
+    repo = repository.LiveArenaRepository("sheet")
+    repo.config = {
+        "PARTICIPANTS_TAB": "PEOPLE",
+        "PARTICIPANT_AVAILABILITY_TAB": "TIMES",
+    }
+    return repo, spreadsheet
+
+
+def core_rows(status="confirmed", slots=("old",)):
+    participant = [dict(tournament_id=TID, discord_user_id="1", status=status)]
+    availability = [
+        dict(tournament_id=TID, discord_user_id="1", slot_id=slot) for slot in slots
+    ]
+    return participant, availability
+
+
+@pytest.mark.parametrize("failure", ["before", "availability"])
+def test_repository_core_failure_restores_exact_prior_tables(monkeypatch, failure):
+    old_p, old_a = core_rows(status="withdrawn", slots=("old-a", "old-b"))
+    new_p, new_a = core_rows(status="confirmed", slots=("new-a", "new-b", "new-c"))
+    state = {"PEOPLE": [["prior participant"]], "TIMES": [["prior availability"]]}
+    repo, spreadsheet = repository_with_spreadsheet(monkeypatch, state, failure)
+
+    with pytest.raises(RuntimeError, match="write failed"):
+        run(
+            repo.persist_core_state(
+                new_p,
+                new_a,
+                previous_participants=old_p,
+                previous_availability=old_a,
+            )
+        )
+
+    rollback = repo._batch_body(
+        (
+            ("PARTICIPANTS_TAB", repository.PARTICIPANT_HEADERS, new_p, old_p),
+            (
+                "PARTICIPANT_AVAILABILITY_TAB",
+                repository.PARTICIPANT_AVAILABILITY_HEADERS,
+                new_a,
+                old_a,
+            ),
+        ),
+        use_previous=True,
+    )
+    assert spreadsheet.state == {
+        item["range"].split("!", 1)[0].strip("'"): item["values"]
+        for item in rollback["data"]
+    }
+
+
+def test_repository_new_registration_failure_leaves_no_partial_core(monkeypatch):
+    new_p, new_a = core_rows(slots=("one", "two", "three"))
+    repo, spreadsheet = repository_with_spreadsheet(
+        monkeypatch, {"PEOPLE": [], "TIMES": []}, "availability"
+    )
+    with pytest.raises(RuntimeError, match="availability write failed"):
+        run(
+            repo.persist_core_state(
+                new_p,
+                new_a,
+                previous_participants=[],
+                previous_availability=[],
+            )
+        )
+    assert spreadsheet.state["PEOPLE"] == [[""] * len(repository.PARTICIPANT_HEADERS)]
+    assert spreadsheet.state["TIMES"] == [
+        [""] * len(repository.PARTICIPANT_AVAILABILITY_HEADERS)
+        for _ in range(len(new_a))
+    ]
+
+
+def test_repository_failed_withdrawal_preserves_confirmed_participant(monkeypatch):
+    old_p, _ = core_rows()
+    new_p, _ = core_rows(status="withdrawn")
+    repo, spreadsheet = repository_with_spreadsheet(
+        monkeypatch, {"PEOPLE": [["prior"]]}, "before"
+    )
+    with pytest.raises(RuntimeError, match="participant write failed"):
+        run(repo.persist_participants(new_p, previous_participants=old_p))
+    assert spreadsheet.state["PEOPLE"][0][5] == "confirmed"
+
+
+def test_repository_compensation_failure_is_surfaced(monkeypatch):
+    old_p, old_a = core_rows()
+    new_p, new_a = core_rows(status="withdrawn", slots=("new",))
+    repo, _ = repository_with_spreadsheet(
+        monkeypatch, {"PEOPLE": [], "TIMES": []}, "rollback"
+    )
+    with pytest.raises(repository.CoreStatePersistenceError) as caught:
+        run(
+            repo.persist_core_state(
+                new_p,
+                new_a,
+                previous_participants=old_p,
+                previous_availability=old_a,
+            )
+        )
+    assert "compensation both failed" in str(caught.value)
+    assert isinstance(caught.value.write_error, RuntimeError)
+    assert isinstance(caught.value.rollback_error, RuntimeError)

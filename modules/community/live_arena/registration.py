@@ -225,10 +225,8 @@ class RegistrationService:
             timezone, slot_ids, slots, tournament["signup_closes_at_utc"]
         )
         now = utc_iso(self.clock())
-        previous_p, previous_a = (
-            [dict(r) for r in participants],
-            [dict(r) for r in availability],
-        )
+        previous_p = [dict(r) for r in participants]
+        previous_a = [dict(r) for r in availability]
         if existing:
             existing.update(
                 display_name_at_signup=display_name,
@@ -262,7 +260,12 @@ class RegistrationService:
         updated_a = self._replacement(
             availability, tournament_id, str(user_id), selected, now
         )
-        await self._core_write(participants, updated_a, previous_p, previous_a)
+        await self.repository.persist_core_state(
+            participants,
+            updated_a,
+            previous_participants=previous_p,
+            previous_availability=previous_a,
+        )
         await self._audit(
             tournament_id,
             str(user_id),
@@ -296,13 +299,13 @@ class RegistrationService:
                 [dict(r) for r in availability],
             )
             row.update(timezone=timezone, updated_at_utc=now)
-            await self._core_write(
+            await self.repository.persist_core_state(
                 participants,
                 self._replacement(
                     availability, tournament_id, str(user_id), selected, now
                 ),
-                old_p,
-                old_a,
+                previous_participants=old_p,
+                previous_availability=old_a,
             )
             await self._audit(
                 tournament_id,
@@ -327,11 +330,9 @@ class RegistrationService:
                 withdrawal_reason=reason,
                 updated_at_utc=now,
             )
-            try:
-                await self.repository.replace_participants(participants)
-            except Exception:
-                await self.repository.replace_participants(old)
-                raise
+            await self.repository.persist_participants(
+                participants, previous_participants=old
+            )
             await self._audit(
                 tournament_id,
                 str(user_id),
@@ -408,15 +409,6 @@ class RegistrationService:
                 )
             )
         return other
-
-    async def _core_write(self, participants, availability, old_p, old_a):
-        try:
-            await self.repository.replace_participants(participants)
-            await self.repository.replace_availability(availability)
-        except Exception:
-            await self.repository.replace_participants(old_p)
-            await self.repository.replace_availability(old_a)
-            raise
 
     async def _audit(self, tournament_id, user_id, event, details, now):
         try:
