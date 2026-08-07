@@ -383,7 +383,12 @@ class ConfirmReconcile(discord.ui.View):
             for r in participants
         )
         already_correct = (
-            0 if role is None else max(0, confirmed - added - len(parity["unresolved"]))
+            0
+            if role is None
+            else max(
+                0,
+                confirmed - len(parity["missing"]) - len(parity["unresolved"]),
+            )
         )
         await interaction.followup.send(
             embed=discord.Embed(
