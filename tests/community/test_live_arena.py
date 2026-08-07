@@ -18,12 +18,20 @@ def _config_rows(**overrides: str) -> list[list[object]]:
         "ELIGIBLE_CLANS_TAB": "ELIGIBLE_CLANS",
         "AVAILABILITY_SLOTS_TAB": "AVAILABILITY_SLOTS",
         "ORGANIZER_ROLE_ID": "1535031755734777967",
+        "PARTICIPANTS_TAB": "PARTICIPANTS",
+        "PARTICIPANT_AVAILABILITY_TAB": "PARTICIPANT_AVAILABILITY",
+        "AUDIT_LOG_TAB": "AUDIT_LOG",
         **overrides,
     }
-    return [list(service.CONFIG_HEADERS), *[[key, value, ""] for key, value in values.items()]]
+    return [
+        list(service.CONFIG_HEADERS),
+        *[[key, value, ""] for key, value in values.items()],
+    ]
 
 
-def _tournament_rows(headers: tuple[str, ...] = service.TOURNAMENT_HEADERS) -> list[list[object]]:
+def _tournament_rows(
+    headers: tuple[str, ...] = service.TOURNAMENT_HEADERS,
+) -> list[list[object]]:
     row = {
         "tournament_id": "LA-2026-TRIAL-01",
         "tournament_name": "C1C Live Arena Trial Cup",
@@ -52,13 +60,23 @@ def _slot_rows(count: int = 84) -> list[list[object]]:
     return [
         list(service.AVAILABILITY_SLOT_HEADERS),
         *[
-            [f"slot-{index}", weekdays[index % 7], "00:00", "02:00", "TRUE", index, f"Slot {index}"]
+            [
+                f"slot-{index}",
+                weekdays[index % 7],
+                "00:00",
+                "02:00",
+                "TRUE",
+                index,
+                f"Slot {index}",
+            ]
             for index in range(count)
         ],
     ]
 
 
-def _matrices(config: list[list[object]] | None = None) -> dict[str, list[list[object]]]:
+def _matrices(
+    config: list[list[object]] | None = None,
+) -> dict[str, list[list[object]]]:
     return {
         "CONFIG": config or _config_rows(),
         "TOURNAMENTS": _tournament_rows(),
@@ -86,7 +104,10 @@ def test_missing_sheet_id_disables_live_arena_safely(monkeypatch, caplog):
 
 def test_env_key_reaches_shared_config_snapshot(monkeypatch):
     monkeypatch.setenv("LIVE_ARENA_TOURNAMENT_SHEET_ID", "workbook-from-env")
-    assert shared_config._load_config_snapshot()["LIVE_ARENA_TOURNAMENT_SHEET_ID"] == "workbook-from-env"
+    assert (
+        shared_config._load_config_snapshot()["LIVE_ARENA_TOURNAMENT_SHEET_ID"]
+        == "workbook-from-env"
+    )
 
 
 def test_config_is_read_by_actual_name(monkeypatch):
@@ -97,8 +118,18 @@ def test_config_is_read_by_actual_name(monkeypatch):
 
 
 def test_table_names_are_routed_from_config(monkeypatch):
-    matrices = _matrices(_config_rows(TOURNAMENTS_TAB="EVENTS", ELIGIBLE_CLANS_TAB="CLANS", AVAILABILITY_SLOTS_TAB="SLOTS"))
-    matrices.update(EVENTS=matrices.pop("TOURNAMENTS"), CLANS=matrices.pop("ELIGIBLE_CLANS"), SLOTS=matrices.pop("AVAILABILITY_SLOTS"))
+    matrices = _matrices(
+        _config_rows(
+            TOURNAMENTS_TAB="EVENTS",
+            ELIGIBLE_CLANS_TAB="CLANS",
+            AVAILABILITY_SLOTS_TAB="SLOTS",
+        )
+    )
+    matrices.update(
+        EVENTS=matrices.pop("TOURNAMENTS"),
+        CLANS=matrices.pop("ELIGIBLE_CLANS"),
+        SLOTS=matrices.pop("AVAILABILITY_SLOTS"),
+    )
     seen = []
     _install_fetch(monkeypatch, matrices, seen)
     asyncio.run(service.load_tournament_snapshot("sheet-id"))
@@ -108,32 +139,45 @@ def test_table_names_are_routed_from_config(monkeypatch):
 def test_active_tournament_comes_from_config(monkeypatch):
     matrices = _matrices(_config_rows(ACTIVE_TOURNAMENT_ID="missing-id"))
     _install_fetch(monkeypatch, matrices)
-    with pytest.raises(service.LiveArenaConfigError, match="active tournament not found: missing-id"):
+    with pytest.raises(
+        service.LiveArenaConfigError, match="active tournament not found: missing-id"
+    ):
         asyncio.run(service.load_tournament_snapshot("sheet-id"))
 
 
 def test_exact_tournament_headers_pass(monkeypatch):
     _install_fetch(monkeypatch, _matrices())
-    assert (asyncio.run(service.load_tournament_snapshot("sheet-id"))).tournament_id == "LA-2026-TRIAL-01"
+    assert (
+        asyncio.run(service.load_tournament_snapshot("sheet-id"))
+    ).tournament_id == "LA-2026-TRIAL-01"
 
 
 def test_missing_tournament_header_has_useful_error(monkeypatch):
     matrices = _matrices()
-    matrices["TOURNAMENTS"] = _tournament_rows(tuple(h for h in service.TOURNAMENT_HEADERS if h != "status"))
+    matrices["TOURNAMENTS"] = _tournament_rows(
+        tuple(h for h in service.TOURNAMENT_HEADERS if h != "status")
+    )
     _install_fetch(monkeypatch, matrices)
-    with pytest.raises(service.LiveArenaConfigError, match="TOURNAMENTS: required header missing: status"):
+    with pytest.raises(
+        service.LiveArenaConfigError,
+        match="TOURNAMENTS: required header missing: status",
+    ):
         asyncio.run(service.load_tournament_snapshot("sheet-id"))
 
 
 def test_exact_eligible_clan_headers_pass(monkeypatch):
     _install_fetch(monkeypatch, _matrices())
-    assert (asyncio.run(service.load_tournament_snapshot("sheet-id"))).active_eligible_clans == 1
+    assert (
+        asyncio.run(service.load_tournament_snapshot("sheet-id"))
+    ).active_eligible_clans == 1
 
 
 def test_exact_availability_headers_pass_without_tournament_id(monkeypatch):
     assert "tournament_id" not in service.AVAILABILITY_SLOT_HEADERS
     _install_fetch(monkeypatch, _matrices())
-    assert (asyncio.run(service.load_tournament_snapshot("sheet-id"))).enabled_availability_windows == 84
+    assert (
+        asyncio.run(service.load_tournament_snapshot("sheet-id"))
+    ).enabled_availability_windows == 84
 
 
 def test_availability_uses_enabled_never_active():
@@ -145,23 +189,33 @@ def test_weekday_names_are_accepted(monkeypatch):
     matrices = _matrices()
     matrices["AVAILABILITY_SLOTS"][1][1] = "Monday"
     _install_fetch(monkeypatch, matrices)
-    assert (asyncio.run(service.load_tournament_snapshot("sheet-id"))).enabled_availability_windows == 84
+    assert (
+        asyncio.run(service.load_tournament_snapshot("sheet-id"))
+    ).enabled_availability_windows == 84
 
 
 def test_current_fixture_has_84_enabled_windows(monkeypatch):
     _install_fetch(monkeypatch, _matrices())
-    assert (asyncio.run(service.load_tournament_snapshot("sheet-id"))).enabled_availability_windows == 84
+    assert (
+        asyncio.run(service.load_tournament_snapshot("sheet-id"))
+    ).enabled_availability_windows == 84
 
 
 def test_blank_signup_timestamps_are_valid_for_draft(monkeypatch):
     _install_fetch(monkeypatch, _matrices())
     snapshot = asyncio.run(service.load_tournament_snapshot("sheet-id"))
-    assert (snapshot.status, snapshot.signup_opens_at_utc, snapshot.signup_closes_at_utc) == ("draft", "", "")
+    assert (
+        snapshot.status,
+        snapshot.signup_opens_at_utc,
+        snapshot.signup_closes_at_utc,
+    ) == ("draft", "", "")
 
 
 class _Context:
     def __init__(self, role_ids):
-        self.author = SimpleNamespace(roles=[SimpleNamespace(id=value) for value in role_ids])
+        self.author = SimpleNamespace(
+            roles=[SimpleNamespace(id=value) for value in role_ids]
+        )
         self.messages = []
 
     async def send(self, content=None, *, embed=None):
@@ -169,16 +223,32 @@ class _Context:
 
 
 def test_check_rejects_user_without_configured_organizer_role(monkeypatch):
-    monkeypatch.setitem(shared_config._CONFIG, "LIVE_ARENA_TOURNAMENT_SHEET_ID", "sheet-id")
+    monkeypatch.setitem(
+        shared_config._CONFIG, "LIVE_ARENA_TOURNAMENT_SHEET_ID", "sheet-id"
+    )
     _install_fetch(monkeypatch, _matrices())
     ctx = _Context([])
     instance = cog.LiveArenaCog(SimpleNamespace())
     asyncio.run(cog.LiveArenaCog.check.callback(instance, ctx))
-    assert "organizer role" in ctx.messages[0][0]
+    assert ctx.messages[0][0] is None
+    assert "organizer role" in ctx.messages[0][1].description
+
+
+def test_bare_command_uses_embed(monkeypatch):
+    monkeypatch.setitem(
+        shared_config._CONFIG, "LIVE_ARENA_TOURNAMENT_SHEET_ID", "sheet-id"
+    )
+    ctx = _Context([])
+    instance = cog.LiveArenaCog(SimpleNamespace())
+    asyncio.run(cog.LiveArenaCog.latournament.callback(instance, ctx))
+    assert ctx.messages[0][0] is None
+    assert "latournament check" in ctx.messages[0][1].description
 
 
 def test_healthy_check_embed_has_expected_values(monkeypatch):
-    monkeypatch.setitem(shared_config._CONFIG, "LIVE_ARENA_TOURNAMENT_SHEET_ID", "sheet-id")
+    monkeypatch.setitem(
+        shared_config._CONFIG, "LIVE_ARENA_TOURNAMENT_SHEET_ID", "sheet-id"
+    )
     _install_fetch(monkeypatch, _matrices())
     ctx = _Context([1535031755734777967])
     instance = cog.LiveArenaCog(SimpleNamespace())
