@@ -67,6 +67,23 @@ class SignupPreparation:
     localized_slots: tuple[LocalizedSlot, ...]
 
 
+@dataclass(frozen=True)
+class RegistrationSnapshot:
+    """Read-only view of one player's active-tournament registration."""
+
+    config: dict[str, str]
+    tournament: dict[str, object]
+    participant: dict[str, object] | None
+    status: str
+    timezone: str
+    slots: tuple[dict[str, object], ...]
+    selected_slot_ids: tuple[str, ...]
+    localized_slots: tuple[LocalizedSlot, ...]
+    tournament_status: str
+    can_update: bool
+    can_withdraw: bool
+
+
 def localize_availability(
     timezone: str, slots: list[dict[str, object]], close: object
 ) -> list[LocalizedSlot]:
@@ -188,6 +205,56 @@ class RegistrationService:
         if confirmed >= maximum:
             raise RegistrationError("tournament capacity is full")
         return SignupPreparation(config, tournament, tuple(slots), tuple(localized))
+
+    async def get_registration(self, user_id: str) -> RegistrationSnapshot:
+        """Return the active registration without exposing repository reads to UI code."""
+        config, tournament, _, slots = await self._context()
+        tournament_id = config["ACTIVE_TOURNAMENT_ID"]
+        participants, availability = await asyncio.gather(
+            self.repository.participants(), self.repository.availability()
+        )
+        participant = next(
+            (
+                row
+                for row in participants
+                if _text(row["tournament_id"]) == tournament_id
+                and _text(row["discord_user_id"]) == str(user_id)
+            ),
+            None,
+        )
+        status = _text(participant["status"]) if participant else ""
+        timezone = _text(participant["timezone"]) if participant else ""
+        selected = tuple(
+            dict.fromkeys(
+                _text(row["slot_id"])
+                for row in availability
+                if _text(row["tournament_id"]) == tournament_id
+                and _text(row["discord_user_id"]) == str(user_id)
+                and _text(row["slot_id"])
+            )
+        )
+        localized = ()
+        if participant and timezone:
+            enabled = localize_availability(
+                timezone, slots, tournament["signup_closes_at_utc"]
+            )
+            chosen = set(selected)
+            localized = tuple(slot for slot in enabled if slot.slot_id in chosen)
+        tournament_status = _text(tournament["status"])
+        return RegistrationSnapshot(
+            config=config,
+            tournament=tournament,
+            participant=participant,
+            status=status,
+            timezone=timezone,
+            slots=tuple(slots),
+            selected_slot_ids=selected,
+            localized_slots=localized,
+            tournament_status=tournament_status,
+            can_update=status == "confirmed" and tournament_status == "signup_open",
+            can_withdraw=status == "confirmed"
+            and tournament_status in {"signup_open", "signup_closed"},
+        )
 
     async def _context(self):
         config = await load_config(self.sheet_id)

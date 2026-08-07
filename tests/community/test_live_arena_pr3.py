@@ -43,6 +43,22 @@ MESSAGE_ROWS = [
         "TRUE",
         "",
     ],
+    [
+        "availability_updated",
+        "Availability updated",
+        "{participant}, your timezone and availability for {tournament_name} were updated.",
+        "#34A853",
+        "TRUE",
+        "",
+    ],
+    [
+        "withdrawal_confirmed",
+        "Withdrawal recorded",
+        "{participant} has withdrawn from {tournament_name}.",
+        "#34A853",
+        "TRUE",
+        "",
+    ],
 ]
 
 
@@ -59,7 +75,12 @@ def test_literal_pr3_config_and_messages_render(monkeypatch):
         confirmed_count=4,
         max_participants=16,
     )
-    assert set(loaded) == {"signup_open", "signup_confirmed"}
+    assert set(loaded) == {
+        "signup_open",
+        "signup_confirmed",
+        "availability_updated",
+        "withdrawal_confirmed",
+    }
     assert "Trial Cup" in embed.description and "4/16" in embed.description
 
 
@@ -284,6 +305,8 @@ def test_timezone_submit_initializes_real_repository_before_preflight(monkeypatc
         ("signup_confirmed", "remove", "signup_confirmed"),
         ("signup_open", "inactive", "signup_open"),
         ("signup_confirmed", "inactive", "signup_confirmed"),
+        ("availability_updated", "remove", "availability_updated"),
+        ("withdrawal_confirmed", "inactive", "withdrawal_confirmed"),
         ("signup_open", "color", "color_hex"),
     ],
 )

@@ -39,7 +39,7 @@ class LiveArenaPanelManager:
             tournament = await load_tournament_snapshot(self.sheet_id)
             if tournament.status == "draft":
                 return
-            if tournament.status != "signup_open":
+            if tournament.status not in {"signup_open", "signup_closed"}:
                 return
             repository = LiveArenaRepository(self.sheet_id)
             await repository.initialize()
