@@ -4,17 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 
 import discord
 
+from shared.config import cfg
 from shared.sheets.async_core import acall_with_backoff, aget_worksheet
 
-from .messages import discord_timestamp, load_messages, load_pr3_config
-from .repository import LiveArenaRepository
-from .service import load_tournament_snapshot
+from modules.community.live_arena.messages import (
+    discord_timestamp,
+    load_messages,
+    load_pr3_config,
+)
+from modules.community.live_arena.repository import LiveArenaRepository
+from modules.community.live_arena.service import load_tournament_snapshot
 
 log = logging.getLogger("c1c.community.live_arena.panel")
+_sync_locks: dict[str, asyncio.Lock] = {}
+_managers: dict[tuple[int, str], "LiveArenaPanelManager"] = {}
 
 
 class LiveArenaPanelManager:
@@ -22,7 +28,9 @@ class LiveArenaPanelManager:
         self.bot = bot
         self.sheet_id = sheet_id
         self.service_factory = service_factory
-        self._lock = asyncio.Lock()
+        # Registration hooks can be invoked more than once (including overlapping
+        # on_ready dispatches).  The workbook, not a transient manager, owns sync.
+        self._lock = _sync_locks.setdefault(sheet_id, asyncio.Lock())
 
     async def sync(self) -> None:
         async with self._lock:
@@ -61,7 +69,7 @@ class LiveArenaPanelManager:
                 except Exception:
                     log.exception("❌ Live Arena panel — fetch failed")
                     return
-            from .views import JoinTournamentView
+            from modules.community.live_arena.views import JoinTournamentView
 
             view = JoinTournamentView(self)
             if message is not None:
@@ -103,11 +111,13 @@ class LiveArenaPanelManager:
 
 
 async def register_live_arena(bot):
-    sheet_id = os.getenv("LIVE_ARENA_TOURNAMENT_SHEET_ID", "").strip()
+    sheet_id = str(cfg.get("LIVE_ARENA_TOURNAMENT_SHEET_ID", "") or "").strip()
     if not sheet_id:
         return None
-    manager = LiveArenaPanelManager(bot, sheet_id)
-    from .views import JoinTournamentView
+    manager = _managers.setdefault(
+        (id(bot), sheet_id), LiveArenaPanelManager(bot, sheet_id)
+    )
+    from modules.community.live_arena.views import JoinTournamentView
 
     bot.add_view(JoinTournamentView(manager))
     await manager.sync()

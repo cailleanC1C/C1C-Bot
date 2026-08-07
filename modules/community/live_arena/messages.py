@@ -9,7 +9,7 @@ import discord
 
 from shared.sheets.async_core import afetch_values
 
-from .service import (
+from modules.community.live_arena.service import (
     CONFIG_HEADERS,
     CONFIG_TAB,
     LiveArenaConfigError,
@@ -124,6 +124,6 @@ async def load_messages(sheet_id: str, tab: str) -> dict[str, MessageTemplate]:
 
 
 def discord_timestamp(value) -> str:
-    from .registration import _parse_close
+    from modules.community.live_arena.registration import _parse_close
 
     return f"<t:{int(_parse_close(value).timestamp())}:F>"

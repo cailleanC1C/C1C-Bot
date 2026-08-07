@@ -7,15 +7,25 @@ from collections import defaultdict
 
 import discord
 
-from .messages import discord_timestamp, load_messages, load_pr3_config
-from .registration import RegistrationError, RegistrationService, validate_availability
+from shared.theme import colors
+
+from modules.community.live_arena.messages import (
+    discord_timestamp,
+    load_messages,
+    load_pr3_config,
+)
+from modules.community.live_arena.registration import (
+    RegistrationError,
+    RegistrationService,
+    validate_availability,
+)
 
 log = logging.getLogger("c1c.community.live_arena.views")
 
 
 def error_embed(message: object) -> discord.Embed:
     return discord.Embed(
-        title="Live Arena signup", description=str(message), color=0xD93025
+        title="Live Arena signup", description=str(message), color=colors.c1c_blue
     )
 
 
@@ -53,6 +63,7 @@ class TimezoneModal(discord.ui.Modal, title="Live Arena signup"):
             self.manager.sheet_id
         )
         try:
+            await service.initialize()
             preparation = await service.prepare_signup(
                 str(member.id), roles, str(self.timezone_input)
             )
@@ -155,7 +166,7 @@ class AvailabilityView(discord.ui.View):
         return discord.Embed(
             title=f"Availability — {current:%A, %d %B}",
             description=f"Times shown in **{self.timezone}**. Selected: **{count}** windows across **{days}** local days.",
-            color=0x1A73E8,
+            color=colors.c1c_blue,
         )
 
     async def previous(self, interaction):
@@ -209,7 +220,7 @@ class AvailabilityView(discord.ui.View):
             detail = detail[:3497] + "…"
         return discord.Embed(
             title="Review Live Arena registration",
-            color=0x1A73E8,
+            color=colors.c1c_blue,
             description=(
                 f"**Tournament:** {self.preparation.tournament['tournament_name']}\n"
                 f"**Timezone:** {self.timezone}\n**Windows:** {count}\n**Local days:** {day_count}\n\n{detail}"
