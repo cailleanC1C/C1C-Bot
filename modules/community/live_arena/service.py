@@ -124,6 +124,9 @@ async def load_config(sheet_id: str) -> dict[str, str]:
     rows = _rows(matrix or [], CONFIG_HEADERS, CONFIG_TAB)
     values = {_text(row["Key"]): _text(row["Value"]) for row in rows}
     for key in CONFIG_KEYS:
+        matches = [row for row in rows if _text(row["Key"]) == key]
+        if len(matches) != 1:
+            raise LiveArenaConfigError(f"CONFIG: key {key} must occur exactly once")
         if not values.get(key):
             raise LiveArenaConfigError(f"CONFIG: missing required key {key}")
     return {key: values[key] for key in CONFIG_KEYS}

@@ -81,6 +81,14 @@ class JoinTournamentView(discord.ui.View):
             await interaction.followup.send(embed=_player_error(exc), ephemeral=True)
 
 
+class ClosedTournamentView(JoinTournamentView):
+    """Persistent closed-state panel containing self-service only."""
+
+    def __init__(self, manager):
+        super().__init__(manager)
+        self.remove_item(self.join)
+
+
 class TimezoneModal(discord.ui.Modal, title="Live Arena signup"):
     timezone_input = discord.ui.TextInput(label="Timezone", required=True, placeholder="Europe/Vienna, America/New_York, Asia/Kolkata")
 
@@ -261,6 +269,12 @@ class ReviewView(discord.ui.View):
             await flow.manager.sync()
         except Exception:
             log.exception("⚠️ Live Arena panel — post-registration refresh failed")
+        organizer = getattr(flow.manager, "organizer_manager", None)
+        if organizer:
+            try:
+                await organizer.sync()
+            except Exception:
+                log.exception("⚠️ Live Arena organizer panel — post-registration refresh failed")
 
 
 async def _assign_role(config, flow, interaction, embed):
@@ -357,6 +371,12 @@ class WithdrawalReasonModal(discord.ui.Modal, title="Confirm Live Arena withdraw
                 await self.manager.sync()
             except Exception:
                 log.exception("⚠️ Live Arena panel — post-withdrawal refresh failed • tournament=%s • user=%s", self.snapshot.config["ACTIVE_TOURNAMENT_ID"], member.id)
+        organizer = getattr(self.manager, "organizer_manager", None)
+        if organizer:
+            try:
+                await organizer.sync()
+            except Exception:
+                log.exception("⚠️ Live Arena organizer panel — post-withdrawal refresh failed")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def _remove_role(self, interaction, config, embed):

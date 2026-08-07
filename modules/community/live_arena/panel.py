@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 
 import discord
 
@@ -23,6 +24,14 @@ _sync_locks: dict[str, asyncio.Lock] = {}
 _managers: dict[tuple[int, str], "LiveArenaPanelManager"] = {}
 
 
+@dataclass(frozen=True)
+class PanelSyncResult:
+    """Outcome of a panel sync, including failures deliberately handled here."""
+
+    ok: bool
+    operation: str = ""
+
+
 class LiveArenaPanelManager:
     def __init__(self, bot, sheet_id: str, service_factory=None):
         self.bot = bot
@@ -32,13 +41,18 @@ class LiveArenaPanelManager:
         # on_ready dispatches).  The workbook, not a transient manager, owns sync.
         self._lock = _sync_locks.setdefault(sheet_id, asyncio.Lock())
 
-    async def sync(self) -> None:
+    async def sync(self) -> PanelSyncResult:
         async with self._lock:
             config, matrix = await load_pr3_config(self.sheet_id)
             tournament = await load_tournament_snapshot(self.sheet_id)
-            if tournament.status != "signup_open":
-                return
-            messages = await load_messages(self.sheet_id, config["MESSAGES_TAB"])
+            if tournament.status == "draft":
+                return PanelSyncResult(True)
+            key = (
+                "signup_open" if tournament.status == "signup_open" else "signup_closed"
+            )
+            if tournament.status not in {"signup_open", "signup_closed"}:
+                return PanelSyncResult(True)
+            messages = await load_messages(self.sheet_id, config["MESSAGES_TAB"], {key})
             repository = LiveArenaRepository(self.sheet_id)
             await repository.initialize()
             participants = await repository.participants()
@@ -47,12 +61,15 @@ class LiveArenaPanelManager:
                 and str(row["status"]).strip() == "confirmed"
                 for row in participants
             )
-            embed = messages["signup_open"].embed(
-                tournament_name=tournament.tournament_name,
-                signup_deadline=discord_timestamp(tournament.signup_closes_at_utc),
-                confirmed_count=count,
-                max_participants=tournament.max_participants,
+            values = dict(
+                tournament_name=tournament.tournament_name, confirmed_count=count
             )
+            if key == "signup_open":
+                values.update(
+                    signup_deadline=discord_timestamp(tournament.signup_closes_at_utc),
+                    max_participants=tournament.max_participants,
+                )
+            embed = messages[key].embed(**values)
             channel = self.bot.get_channel(int(config["SIGNUP_CHANNEL_ID"]))
             if channel is None:
                 channel = await self.bot.fetch_channel(int(config["SIGNUP_CHANNEL_ID"]))
@@ -66,16 +83,24 @@ class LiveArenaPanelManager:
                     message = None
                 except Exception:
                     log.exception("❌ Live Arena panel — fetch failed")
-                    return
-            from modules.community.live_arena.views import JoinTournamentView
+                    return PanelSyncResult(False, "fetch")
+            from modules.community.live_arena.views import (
+                ClosedTournamentView,
+                JoinTournamentView,
+            )
 
-            view = JoinTournamentView(self)
+            view = (
+                JoinTournamentView(self)
+                if key == "signup_open"
+                else ClosedTournamentView(self)
+            )
             if message is not None:
                 try:
                     await message.edit(embed=embed, view=view)
                 except Exception:
                     log.exception("❌ Live Arena panel — edit failed")
-                return
+                    return PanelSyncResult(False, "edit")
+                return PanelSyncResult(True)
             created = await channel.send(embed=embed, view=view)
             try:
                 await self._persist_message_id(matrix, str(created.id))
@@ -88,6 +113,7 @@ class LiveArenaPanelManager:
                         "⚠️ Live Arena panel — untracked message cleanup failed"
                     )
                 raise
+            return PanelSyncResult(True)
 
     async def _persist_message_id(self, matrix, message_id: str) -> None:
         headers = [str(value).strip() for value in matrix[0]]
@@ -115,8 +141,17 @@ async def register_live_arena(bot):
     manager = _managers.setdefault(
         (id(bot), sheet_id), LiveArenaPanelManager(bot, sheet_id)
     )
-    from modules.community.live_arena.views import JoinTournamentView
+    from modules.community.live_arena.organizer_panel import OrganizerPanelManager
+    from modules.community.live_arena.views import (
+        ClosedTournamentView,
+        JoinTournamentView,
+    )
 
     bot.add_view(JoinTournamentView(manager))
+    bot.add_view(ClosedTournamentView(manager))
+    organizer = OrganizerPanelManager(bot, sheet_id, manager)
+    bot.add_view(organizer.view())
     await manager.sync()
+    await organizer.sync()
+    manager.organizer_manager = organizer
     return manager

@@ -11,6 +11,7 @@ from modules.community.live_arena.service import (
     LiveArenaConfigError,
     _rows,
     load_config,
+    TOURNAMENT_HEADERS,
 )
 
 PARTICIPANT_HEADERS = (
@@ -159,6 +160,22 @@ class LiveArenaRepository:
             worksheet.append_row,
             [str(row.get(header, "") or "") for header in AUDIT_LOG_HEADERS],
             value_input_option="RAW",
+        )
+
+    async def update_tournament_cells(
+        self, row_number: int, values: dict[str, object]
+    ) -> None:
+        """Atomically batch-update only named cells in the frozen TOURNAMENTS row."""
+        worksheet = await aget_worksheet(self.sheet_id, self.config["TOURNAMENTS_TAB"])
+        tab = self.config["TOURNAMENTS_TAB"].replace("'", "''")
+        data = []
+        for header, value in values.items():
+            column = TOURNAMENT_HEADERS.index(header) + 1
+            cell = f"{_column(column)}{row_number}"
+            data.append({"range": f"'{tab}'!{cell}", "values": [[str(value)]]})
+        await acall_with_backoff(
+            worksheet.spreadsheet.values_batch_update,
+            body={"valueInputOption": "RAW", "data": data},
         )
 
 
