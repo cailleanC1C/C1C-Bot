@@ -175,6 +175,27 @@ async def role_parity(guild, config, participants, tournament_id):
     }
 
 
+def _response_is_done(interaction) -> bool:
+    is_done = getattr(interaction.response, "is_done", None)
+    return bool(is_done()) if callable(is_done) else False
+
+
+async def _defer_ephemeral(interaction) -> None:
+    defer = getattr(interaction.response, "defer", None)
+    if callable(defer):
+        await defer(ephemeral=True)
+
+
+async def _send_ephemeral(interaction, *, embed, view=None) -> None:
+    kwargs = {"embed": embed, "ephemeral": True}
+    if view is not None:
+        kwargs["view"] = view
+    if _response_is_done(interaction):
+        await interaction.followup.send(**kwargs)
+    else:
+        await interaction.response.send_message(**kwargs)
+
+
 class OrganizerView(discord.ui.View):
     def __init__(self, manager, status=None):
         super().__init__(timeout=None)
@@ -221,44 +242,67 @@ class OrganizerView(discord.ui.View):
             for r in getattr(interaction.user, "roles", [])
         )
         if not allowed:
-            await interaction.response.send_message(
+            await _send_ephemeral(
+                interaction,
                 embed=error_embed(
                     "You need the configured organizer role to use this control."
                 ),
-                ephemeral=True,
             )
         return allowed
 
     async def transition(self, interaction, action):
-        if not await self.authorized(interaction):
-            return
         if action == "close":
-            _, tournament, _, counts, _ = await self.manager.data(interaction.guild)
-            odd = counts["confirmed"] % 2
-            warning = (
-                " The active confirmed roster is odd. Close is still allowed; no player will be auto-demoted, but qualification/pairing must not begin until it is even."
-                if odd
-                else ""
-            )
-            await interaction.response.send_message(
-                embed=discord.Embed(
+            await _defer_ephemeral(interaction)
+            if not await self.authorized(interaction):
+                return
+            try:
+                _, tournament, _, counts, _ = await self.manager.data(interaction.guild)
+                odd = counts["confirmed"] % 2
+                warning = (
+                    " The active confirmed roster is odd. Close is still allowed; no player will be auto-demoted, but qualification/pairing must not begin until it is even."
+                    if odd
+                    else ""
+                )
+                embed = discord.Embed(
                     title="Confirm close registration",
                     description=f"Close registration with **{counts['confirmed']}** confirmed players?{warning}",
                     color=colors.c1c_blue,
-                ),
+                )
+            except Exception as exc:
+                log.exception(
+                    "❌ Live Arena organizer close preflight failed • user=%s",
+                    interaction.user.id,
+                )
+                await _send_ephemeral(interaction, embed=error_embed(exc))
+                return
+            await _send_ephemeral(
+                interaction,
+                embed=embed,
                 view=ConfirmTransition(self.manager, "close"),
-                ephemeral=True,
             )
+            return
+        if not await self.authorized(interaction):
             return
         await interaction.response.defer(ephemeral=True)
         await execute_transition(interaction, self.manager, action)
 
     async def roster(self, interaction, _action):
+        await _defer_ephemeral(interaction)
         if not await self.authorized(interaction):
             return
-        embed = await roster_embed(self.manager, interaction.guild)
-        await interaction.response.send_message(
-            embed=embed, view=RosterActions(self.manager), ephemeral=True
+        try:
+            embed = await roster_embed(self.manager, interaction.guild)
+        except Exception as exc:
+            log.exception(
+                "❌ Live Arena organizer roster load failed • user=%s",
+                interaction.user.id,
+            )
+            await _send_ephemeral(interaction, embed=error_embed(exc))
+            return
+        await _send_ephemeral(
+            interaction,
+            embed=embed,
+            view=RosterActions(self.manager),
         )
 
     async def reconcile_prompt(self, interaction, _action):
