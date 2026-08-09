@@ -39,7 +39,7 @@ def test_sheet_read_scope_deduplicates_same_tab_sequentially_and_concurrently():
 def test_live_arena_startup_refresh_reuses_identical_sheet_reads(monkeypatch):
     raw = AsyncMock(return_value=[["header"], ["value"]])
 
-    async def shared_read():
+    async def shared_read(*_args, **_kwargs):
         await async_core.afetch_values("sheet", "CONFIG")
 
     manager = SimpleNamespace(sync=AsyncMock(side_effect=shared_read))
