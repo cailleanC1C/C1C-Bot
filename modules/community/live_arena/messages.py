@@ -78,11 +78,20 @@ class MessageTemplate:
             for _, name, _, _ in Formatter().parse(self.title + self.description)
             if name
         }
-        if fields != expected:
-            raise LiveArenaConfigError(
-                f"MESSAGES.{self.key}: placeholders must be exactly {', '.join(sorted(expected))}"
+        allowed = {frozenset(expected)}
+        if self.key == "organizer_panel":
+            # Roster readiness is rendered directly by the organizer panel now.
+            # Keep the legacy placeholder optional so existing Sheet templates
+            # continue to work without forcing it into user-facing copy.
+            allowed.add(frozenset(expected - {"parity_summary"}))
+        if frozenset(fields) not in allowed:
+            choices = " or ".join(
+                ", ".join(sorted(option)) for option in sorted(allowed, key=len)
             )
-        missing = expected - values.keys()
+            raise LiveArenaConfigError(
+                f"MESSAGES.{self.key}: placeholders must be exactly {choices}"
+            )
+        missing = fields - values.keys()
         if missing:
             raise LiveArenaConfigError(
                 f"MESSAGES.{self.key}: missing render value {', '.join(sorted(missing))}"
