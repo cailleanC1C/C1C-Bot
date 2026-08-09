@@ -9,7 +9,12 @@ from dataclasses import dataclass
 import discord
 
 from shared.config import cfg
-from shared.sheets.async_core import acall_with_backoff, aget_worksheet
+from shared.sheets.async_core import (
+    acall_with_backoff,
+    aget_worksheet,
+    sheet_read_scope,
+)
+from shared.sheets.core import is_rate_limited_error
 
 from modules.community.live_arena.messages import (
     discord_timestamp,
@@ -22,6 +27,13 @@ from modules.community.live_arena.service import load_tournament_snapshot
 log = logging.getLogger("c1c.community.live_arena.panel")
 _sync_locks: dict[str, asyncio.Lock] = {}
 _managers: dict[tuple[int, str], "LiveArenaPanelManager"] = {}
+_startup_sync_tasks: dict[tuple[int, str], asyncio.Task] = {}
+
+# Live Arena panel refresh is not required for Discord login. Keep it out of the
+# first-minute Sheets stampede and let the persistent controls wire immediately.
+_STARTUP_SYNC_DELAY_SECONDS = 75
+_STARTUP_RETRY_DELAY_SECONDS = 90
+_STARTUP_MAX_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -132,6 +144,146 @@ class LiveArenaPanelManager:
         )
 
 
+def _schedule_startup_sync(
+    bot,
+    sheet_id: str,
+    manager: LiveArenaPanelManager,
+    organizer,
+    qualification_installed: bool,
+    refresh_qualification_state,
+    reconcile_qualification_publication,
+) -> None:
+    key = (id(bot), sheet_id)
+    existing = _startup_sync_tasks.get(key)
+    if existing is not None and not existing.done():
+        log.info("Live Arena startup refresh already scheduled; keeping existing task")
+        return
+
+    task = asyncio.create_task(
+        _run_startup_sync(
+            manager,
+            organizer,
+            qualification_installed,
+            refresh_qualification_state,
+            reconcile_qualification_publication,
+        ),
+        name=f"live-arena-startup-sync:{sheet_id[-6:]}",
+    )
+    _startup_sync_tasks[key] = task
+
+    def _done(done_task: asyncio.Task) -> None:
+        if _startup_sync_tasks.get(key) is done_task:
+            _startup_sync_tasks.pop(key, None)
+        if done_task.cancelled():
+            return
+        try:
+            done_task.result()
+        except Exception:
+            # The worker is meant to contain its own failures. Keep a final guard so
+            # an unexpected bug still leaves a useful production traceback.
+            log.exception("❌ Live Arena deferred startup refresh task crashed")
+
+    task.add_done_callback(_done)
+
+
+async def _run_startup_sync(
+    manager: LiveArenaPanelManager,
+    organizer,
+    qualification_installed: bool,
+    refresh_qualification_state,
+    reconcile_qualification_publication,
+) -> None:
+    await asyncio.sleep(_STARTUP_SYNC_DELAY_SECONDS)
+
+    for attempt in range(1, _STARTUP_MAX_ATTEMPTS + 1):
+        warnings: list[str] = []
+        try:
+            with sheet_read_scope() as reads:
+                if qualification_installed:
+                    try:
+                        await refresh_qualification_state(organizer)
+                    except Exception as exc:
+                        if is_rate_limited_error(exc):
+                            raise
+                        log.exception("⚠️ Live Arena qualification startup state refresh failed")
+                        warnings.append("qualification state")
+
+                try:
+                    result = await manager.sync()
+                    if isinstance(result, PanelSyncResult) and not result.ok:
+                        warnings.append("public panel")
+                except Exception as exc:
+                    if is_rate_limited_error(exc):
+                        raise
+                    log.exception("⚠️ Live Arena public panel startup refresh failed")
+                    warnings.append("public panel")
+
+                try:
+                    result = await organizer.sync()
+                    if isinstance(result, PanelSyncResult) and not result.ok:
+                        warnings.append("organizer panel")
+                except Exception as exc:
+                    if is_rate_limited_error(exc):
+                        raise
+                    log.exception("⚠️ Live Arena organizer panel startup refresh failed")
+                    warnings.append("organizer panel")
+
+                if qualification_installed:
+                    try:
+                        publication_warnings = await reconcile_qualification_publication(
+                            organizer
+                        )
+                        warnings.extend(publication_warnings)
+                    except Exception as exc:
+                        if is_rate_limited_error(exc):
+                            raise
+                        log.exception(
+                            "⚠️ Live Arena qualification startup publication retry failed"
+                        )
+                        warnings.append("qualification publication")
+
+                log.info(
+                    "Live Arena startup refresh finished • attempt=%s • sheet_reads=%s • reused_reads=%s • warnings=%s",
+                    attempt,
+                    reads.misses,
+                    reads.hits,
+                    ", ".join(dict.fromkeys(warnings)) or "none",
+                )
+        except Exception as exc:
+            if is_rate_limited_error(exc):
+                if attempt < _STARTUP_MAX_ATTEMPTS:
+                    log.warning(
+                        "⚠️ Live Arena startup refresh hit Sheets quota; retrying after startup settles • attempt=%s/%s • delay=%ss • error=%s",
+                        attempt,
+                        _STARTUP_MAX_ATTEMPTS,
+                        _STARTUP_RETRY_DELAY_SECONDS,
+                        exc,
+                    )
+                    await asyncio.sleep(_STARTUP_RETRY_DELAY_SECONDS)
+                    continue
+                log.exception(
+                    "❌ Live Arena startup refresh exhausted Sheets quota retries • attempts=%s",
+                    _STARTUP_MAX_ATTEMPTS,
+                )
+                return
+            log.exception("❌ Live Arena startup refresh failed unexpectedly")
+            return
+
+        if not warnings:
+            return
+        if attempt < _STARTUP_MAX_ATTEMPTS:
+            log.warning(
+                "⚠️ Live Arena startup refresh incomplete; retrying • attempt=%s/%s • delay=%ss • items=%s",
+                attempt,
+                _STARTUP_MAX_ATTEMPTS,
+                _STARTUP_RETRY_DELAY_SECONDS,
+                ", ".join(dict.fromkeys(warnings)),
+            )
+            await asyncio.sleep(_STARTUP_RETRY_DELAY_SECONDS)
+            continue
+        return
+
+
 async def register_live_arena(bot):
     sheet_id = str(cfg.get("LIVE_ARENA_TOURNAMENT_SHEET_ID", "") or "").strip()
     if not sheet_id:
@@ -155,30 +307,26 @@ async def register_live_arena(bot):
     qualification_installed = install_qualification(organizer)
     if qualification_installed:
         install_qualification_roster_lock(organizer)
-        try:
-            await refresh_qualification_state(organizer)
-        except Exception:
-            # Registration remains independently usable if qualification routing is
-            # temporarily unavailable. The organizer action itself will surface the
-            # exact workbook/config error when used.
-            log.exception("⚠️ Live Arena Q1 startup state refresh failed")
-    # Wire player-side mutation hooks before any startup sync. If an initial
-    # organizer-panel sync fails, later signups/withdrawals must still be able
-    # to refresh the organizer panel using this manager.
+
+    # Wire every persistent interaction immediately. Sheet reads and panel refreshes
+    # are deliberately deferred so Live Arena cannot add to the first-minute startup
+    # quota spike or prevent unrelated ready wiring from completing.
     manager.organizer_manager = organizer
     bot.add_view(RegistrationEntryView(manager))
     bot.add_view(ClosedTournamentView(manager))
     bot.add_view(organizer.view())
-    await manager.sync()
-    await organizer.sync()
-    if qualification_installed:
-        try:
-            warnings = await reconcile_qualification_publication(organizer)
-            if warnings:
-                log.warning(
-                    "⚠️ Live Arena Q1 startup publication retry incomplete • %s",
-                    ", ".join(warnings),
-                )
-        except Exception:
-            log.exception("⚠️ Live Arena Q1 startup publication retry failed")
+
+    _schedule_startup_sync(
+        bot,
+        sheet_id,
+        manager,
+        organizer,
+        qualification_installed,
+        refresh_qualification_state,
+        reconcile_qualification_publication,
+    )
+    log.info(
+        "Live Arena persistent controls registered; Sheet refresh deferred by %ss",
+        _STARTUP_SYNC_DELAY_SECONDS,
+    )
     return manager
