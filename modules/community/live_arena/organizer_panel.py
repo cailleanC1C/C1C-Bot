@@ -372,8 +372,8 @@ class OrganizerView(discord.ui.View):
                     warning = (
                         " The confirmed roster currently has an odd number of players "
                         f"(**{counts['confirmed']}**). Closing registration is still "
-                        "allowed, but an even number is required before the first "
-                        "qualification round can be paired."
+                        "allowed and no player will be auto-demoted, but an even number "
+                        "is required before the first qualification round can be paired."
                     )
                 embed = discord.Embed(
                     title="Confirm close registration",
