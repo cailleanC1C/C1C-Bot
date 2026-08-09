@@ -141,6 +141,9 @@ async def register_live_arena(bot):
     )
     from modules.community.live_arena.entry_views import RegistrationEntryView
     from modules.community.live_arena.organizer_panel import OrganizerPanelManager
+    from modules.community.live_arena.qualification_lock import (
+        install_qualification_roster_lock,
+    )
     from modules.community.live_arena.qualification_panel import (
         install_qualification,
         reconcile_qualification_publication,
@@ -151,6 +154,7 @@ async def register_live_arena(bot):
     organizer = OrganizerPanelManager(bot, sheet_id, manager)
     qualification_installed = install_qualification(organizer)
     if qualification_installed:
+        install_qualification_roster_lock(organizer)
         try:
             await refresh_qualification_state(organizer)
         except Exception:
