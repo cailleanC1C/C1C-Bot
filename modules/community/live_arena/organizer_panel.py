@@ -69,7 +69,11 @@ class OrganizerPanelManager:
                 # template no longer needs or displays this placeholder.
                 parity_summary=readiness,
             )
-            if "{parity_summary}" not in template.title + template.description:
+            template_text = (
+                _text(getattr(template, "title", ""))
+                + _text(getattr(template, "description", ""))
+            )
+            if "{parity_summary}" not in template_text:
                 embed.add_field(
                     name="Roster readiness",
                     value=readiness,
@@ -189,6 +193,7 @@ def _status_label(status: str) -> str:
 def _roster_readiness(manager, tournament, counts) -> str:
     confirmed = int(counts.get("confirmed", 0) or 0)
     player_word = "player" if confirmed == 1 else "players"
+    minimum = int(getattr(tournament, "min_participants", 2) or 2)
     qualification_status = _text(
         getattr(manager, "_qualification_q1_status", "")
     ).lower()
@@ -203,13 +208,13 @@ def _roster_readiness(manager, tournament, counts) -> str:
         return (
             "Registration is open. Pairing starts after registration closes. "
             f"Currently: **{confirmed} confirmed {player_word}**. At least "
-            f"**{tournament.min_participants} players** and an even final roster are required."
+            f"**{minimum} players** and an even final roster are required."
         )
     if tournament.status == "signup_closed":
-        if confirmed < tournament.min_participants:
+        if confirmed < minimum:
             return (
                 "Not ready for pairing: at least "
-                f"**{tournament.min_participants} confirmed players** are required. "
+                f"**{minimum} confirmed players** are required. "
                 f"Currently: **{confirmed} {player_word}**."
             )
         if confirmed % 2:
@@ -365,9 +370,10 @@ class OrganizerView(discord.ui.View):
                 warning = ""
                 if counts["confirmed"] % 2:
                     warning = (
-                        f" There are currently {counts['confirmed']} confirmed players. "
-                        "Closing registration is still allowed, but an even number is "
-                        "required before the first qualification round can be paired."
+                        " The confirmed roster currently has an odd number of players "
+                        f"(**{counts['confirmed']}**). Closing registration is still "
+                        "allowed, but an even number is required before the first "
+                        "qualification round can be paired."
                     )
                 embed = discord.Embed(
                     title="Confirm close registration",
