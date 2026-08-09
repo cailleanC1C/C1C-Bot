@@ -91,24 +91,67 @@ class OrganizerPanelManager:
                 value=_tournament_roles_text(parity, participants),
                 inline=False,
             )
+
+            message_id = _text(config["ORGANIZER_PANEL_MESSAGE_ID"])
             message = None
-            if config["ORGANIZER_PANEL_MESSAGE_ID"]:
-                try:
-                    message = await channel.fetch_message(
-                        int(config["ORGANIZER_PANEL_MESSAGE_ID"])
-                    )
-                except discord.NotFound:
-                    pass
-                except Exception:
-                    log.exception("❌ Live Arena organizer panel — fetch failed")
-                    return PanelSyncResult(False, "fetch")
+            if message_id:
+                # We already own and persist the organizer message ID. Prefer a
+                # PartialMessage so refreshing does not depend on Read Message
+                # History or a separate GET succeeding before the edit.
+                get_partial_message = getattr(channel, "get_partial_message", None)
+                if callable(get_partial_message):
+                    try:
+                        message = get_partial_message(int(message_id))
+                    except Exception as exc:
+                        log.exception(
+                            "❌ Live Arena organizer panel — direct edit target failed • message_id=%s • error=%s: %s",
+                            message_id,
+                            type(exc).__name__,
+                            exc,
+                        )
+                        return PanelSyncResult(False, "edit")
+                else:
+                    # Compatibility fallback for messageable channel-like objects
+                    # without discord.py's get_partial_message helper.
+                    try:
+                        message = await channel.fetch_message(int(message_id))
+                    except discord.NotFound:
+                        message = None
+                    except Exception as exc:
+                        log.exception(
+                            "❌ Live Arena organizer panel — fallback fetch failed • message_id=%s • error=%s: %s",
+                            message_id,
+                            type(exc).__name__,
+                            exc,
+                        )
+                        return PanelSyncResult(False, "fetch")
+
             if message:
                 try:
                     await message.edit(embed=embed, view=self.view(tournament.status))
-                except Exception:
-                    log.exception("❌ Live Arena organizer panel — edit failed")
+                except discord.NotFound:
+                    # Only a confirmed 404 should cause recreation. Permission or
+                    # transient edit failures must never create a duplicate panel.
+                    log.warning(
+                        "⚠️ Live Arena organizer panel — saved message missing; recreating • message_id=%s",
+                        message_id,
+                    )
+                except Exception as exc:
+                    log.exception(
+                        "❌ Live Arena organizer panel — edit failed • message_id=%s • error=%s: %s",
+                        message_id,
+                        type(exc).__name__,
+                        exc,
+                    )
                     return PanelSyncResult(False, "edit")
-                return PanelSyncResult(True)
+                else:
+                    log.info(
+                        "✅ Live Arena organizer panel refreshed • message_id=%s • confirmed=%s",
+                        message_id,
+                        counts["confirmed"],
+                    )
+                    return PanelSyncResult(True)
+
             created = await channel.send(embed=embed, view=self.view(tournament.status))
             try:
                 await self._persist(config, str(created.id))
