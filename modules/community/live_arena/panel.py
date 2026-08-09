@@ -141,9 +141,27 @@ async def register_live_arena(bot):
     )
     from modules.community.live_arena.entry_views import RegistrationEntryView
     from modules.community.live_arena.organizer_panel import OrganizerPanelManager
+    from modules.community.live_arena.qualification_lock import (
+        install_qualification_roster_lock,
+    )
+    from modules.community.live_arena.qualification_panel import (
+        install_qualification,
+        reconcile_qualification_publication,
+        refresh_qualification_state,
+    )
     from modules.community.live_arena.views import ClosedTournamentView
 
     organizer = OrganizerPanelManager(bot, sheet_id, manager)
+    qualification_installed = install_qualification(organizer)
+    if qualification_installed:
+        install_qualification_roster_lock(organizer)
+        try:
+            await refresh_qualification_state(organizer)
+        except Exception:
+            # Registration remains independently usable if qualification routing is
+            # temporarily unavailable. The organizer action itself will surface the
+            # exact workbook/config error when used.
+            log.exception("⚠️ Live Arena Q1 startup state refresh failed")
     # Wire player-side mutation hooks before any startup sync. If an initial
     # organizer-panel sync fails, later signups/withdrawals must still be able
     # to refresh the organizer panel using this manager.
@@ -153,4 +171,14 @@ async def register_live_arena(bot):
     bot.add_view(organizer.view())
     await manager.sync()
     await organizer.sync()
+    if qualification_installed:
+        try:
+            warnings = await reconcile_qualification_publication(organizer)
+            if warnings:
+                log.warning(
+                    "⚠️ Live Arena Q1 startup publication retry incomplete • %s",
+                    ", ".join(warnings),
+                )
+        except Exception:
+            log.exception("⚠️ Live Arena Q1 startup publication retry failed")
     return manager
