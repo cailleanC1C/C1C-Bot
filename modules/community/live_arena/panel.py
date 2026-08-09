@@ -84,13 +84,11 @@ class LiveArenaPanelManager:
                 except Exception:
                     log.exception("❌ Live Arena panel — fetch failed")
                     return PanelSyncResult(False, "fetch")
-            from modules.community.live_arena.views import (
-                ClosedTournamentView,
-                JoinTournamentView,
-            )
+            from modules.community.live_arena.entry_views import RegistrationEntryView
+            from modules.community.live_arena.views import ClosedTournamentView
 
             view = (
-                JoinTournamentView(self)
+                RegistrationEntryView(self)
                 if key == "signup_open"
                 else ClosedTournamentView(self)
             )
@@ -141,17 +139,18 @@ async def register_live_arena(bot):
     manager = _managers.setdefault(
         (id(bot), sheet_id), LiveArenaPanelManager(bot, sheet_id)
     )
+    from modules.community.live_arena.entry_views import RegistrationEntryView
     from modules.community.live_arena.organizer_panel import OrganizerPanelManager
-    from modules.community.live_arena.views import (
-        ClosedTournamentView,
-        JoinTournamentView,
-    )
+    from modules.community.live_arena.views import ClosedTournamentView
 
-    bot.add_view(JoinTournamentView(manager))
-    bot.add_view(ClosedTournamentView(manager))
     organizer = OrganizerPanelManager(bot, sheet_id, manager)
+    # Wire player-side mutation hooks before any startup sync. If an initial
+    # organizer-panel sync fails, later signups/withdrawals must still be able
+    # to refresh the organizer panel using this manager.
+    manager.organizer_manager = organizer
+    bot.add_view(RegistrationEntryView(manager))
+    bot.add_view(ClosedTournamentView(manager))
     bot.add_view(organizer.view())
     await manager.sync()
     await organizer.sync()
-    manager.organizer_manager = organizer
     return manager
