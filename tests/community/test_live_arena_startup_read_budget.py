@@ -36,7 +36,7 @@ def test_sheet_read_scope_deduplicates_same_tab_sequentially_and_concurrently():
     assert scope.hits == 2
 
 
-def test_live_arena_startup_refresh_reuses_identical_sheet_reads(monkeypatch):
+def test_live_arena_startup_reuses_read_only_panel_reads(monkeypatch):
     raw = AsyncMock(return_value=[["header"], ["value"]])
 
     async def shared_read(*_args, **_kwargs):
@@ -47,6 +47,8 @@ def test_live_arena_startup_refresh_reuses_identical_sheet_reads(monkeypatch):
     refresh_q = AsyncMock(side_effect=shared_read)
 
     async def reconcile(_organizer):
+        # Reconciliation is deliberately outside the scope because production
+        # reconciliation may write ROUNDS/MATCHES thread and overview IDs.
         await shared_read()
         return []
 
@@ -64,7 +66,9 @@ def test_live_arena_startup_refresh_reuses_identical_sheet_reads(monkeypatch):
             )
         )
 
-    assert raw.await_count == 1
+    # qualification-state + public-panel + organizer-panel all reuse one read;
+    # the write-capable reconciliation phase performs its own fresh read.
+    assert raw.await_count == 2
     refresh_q.assert_awaited_once()
     manager.sync.assert_awaited_once()
     organizer.sync.assert_awaited_once()
