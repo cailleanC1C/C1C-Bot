@@ -52,25 +52,33 @@ class OrganizerPanelManager:
                 channel = await self.bot.fetch_channel(
                     int(config["ORGANIZER_CHANNEL_ID"])
                 )
-            config, tournament, _, counts, parity = await self.data(
+            config, tournament, participants, counts, parity = await self.data(
                 getattr(channel, "guild", None)
             )
             messages = await load_messages(
                 self.sheet_id, config["MESSAGES_TAB"], {"organizer_panel"}
             )
-            even = counts["confirmed"] % 2 == 0
-            parity_summary = (
-                "Roster parity: EVEN."
-                if even
-                else "Roster parity: ODD — qualification cannot start until the active roster is even."
-            )
-            embed = messages["organizer_panel"].embed(
+            template = messages["organizer_panel"]
+            readiness = _roster_readiness(self, tournament, counts)
+            embed = template.embed(
                 tournament_name=tournament.tournament_name,
-                status=tournament.status,
+                status=_status_label(tournament.status),
                 confirmed_count=counts["confirmed"],
                 max_participants=tournament.max_participants,
-                parity_summary=parity_summary,
+                # Backward compatibility for an older Sheet template. The live
+                # template no longer needs or displays this placeholder.
+                parity_summary=readiness,
             )
+            template_text = (
+                _text(getattr(template, "title", ""))
+                + _text(getattr(template, "description", ""))
+            )
+            if "{parity_summary}" not in template_text:
+                embed.add_field(
+                    name="Roster readiness",
+                    value=readiness,
+                    inline=False,
+                )
             embed.add_field(
                 name="Participant statuses",
                 value="\n".join(
@@ -79,8 +87,8 @@ class OrganizerPanelManager:
                 inline=False,
             )
             embed.add_field(
-                name="Participant role parity",
-                value=f"Missing: **{len(parity['missing'])}** • Extra: **{len(parity['extra'])}** • Unresolved: **{len(parity['unresolved'])}**",
+                name="Tournament roles",
+                value=_tournament_roles_text(parity, participants),
                 inline=False,
             )
             message = None
@@ -161,8 +169,6 @@ async def role_parity(guild, config, participants, tournament_id):
         if _text(r["tournament_id"]) == tournament_id
         and _text(r["status"]) == "confirmed"
     }
-    if guild is None:
-        guild = None
     role = guild.get_role(int(config["PARTICIPANT_ROLE_ID"])) if guild else None
     members = {_text(m.id): m for m in getattr(role, "members", [])} if role else {}
     resolved = {uid: guild.get_member(int(uid)) for uid in confirmed} if guild else {}
@@ -172,7 +178,111 @@ async def role_parity(guild, config, participants, tournament_id):
         ],
         "extra": [m for uid, m in members.items() if uid not in confirmed],
         "unresolved": [uid for uid in confirmed if not resolved.get(uid)],
+        "role_missing": role is None,
     }
+
+
+def _status_label(status: str) -> str:
+    return {
+        "draft": "Draft",
+        "signup_open": "Registration open",
+        "signup_closed": "Registration closed",
+    }.get(_text(status), _text(status).replace("_", " ").title() or "Unknown")
+
+
+def _roster_readiness(manager, tournament, counts) -> str:
+    confirmed = int(counts.get("confirmed", 0) or 0)
+    player_word = "player" if confirmed == 1 else "players"
+    minimum = int(getattr(tournament, "min_participants", 2) or 2)
+    qualification_status = _text(
+        getattr(manager, "_qualification_q1_status", "")
+    ).lower()
+
+    if qualification_status == "active":
+        return "Qualification Round 1 is active. The tournament roster is locked."
+    if qualification_status == "completed":
+        return "Qualification Round 1 is complete. The tournament roster remains locked."
+    if tournament.status == "draft":
+        return "Registration has not opened yet."
+    if tournament.status == "signup_open":
+        return (
+            "Registration is open. Pairing starts after registration closes. "
+            f"Currently: **{confirmed} confirmed {player_word}**. At least "
+            f"**{minimum} players** and an even final roster are required."
+        )
+    if tournament.status == "signup_closed":
+        if confirmed < minimum:
+            return (
+                "Not ready for pairing: at least "
+                f"**{minimum} confirmed players** are required. "
+                f"Currently: **{confirmed} {player_word}**."
+            )
+        if confirmed % 2:
+            return (
+                "Not ready for pairing: an even number of confirmed players is needed "
+                "before the first qualification round can be created. "
+                f"Currently: **{confirmed} {player_word}**."
+            )
+        return (
+            f"Ready for pairing: **{confirmed} confirmed players** can be paired "
+            "for the first qualification round."
+        )
+    return f"Current confirmed roster: **{confirmed} {player_word}**."
+
+
+def _member_label(member) -> str:
+    return (
+        _text(getattr(member, "display_name", ""))
+        or _text(getattr(member, "name", ""))
+        or _text(getattr(member, "id", ""))
+        or "Unknown member"
+    )
+
+
+def _tournament_roles_text(parity, participants) -> str:
+    if parity.get("role_missing"):
+        return (
+            "The configured Tournament Participant role could not be found in Discord. "
+            "**Reconcile Roles** cannot fix this until the role configuration is corrected."
+        )
+
+    missing = [_member_label(member) for member in parity.get("missing", [])]
+    extra = [_member_label(member) for member in parity.get("extra", [])]
+    unresolved_ids = {_text(value) for value in parity.get("unresolved", [])}
+    participant_names = {
+        _text(row.get("discord_user_id")): (
+            _text(row.get("display_name_at_signup"))
+            or _text(row.get("discord_user_id"))
+        )
+        for row in participants
+    }
+    unresolved = [
+        participant_names.get(user_id, user_id) for user_id in sorted(unresolved_ids)
+    ]
+
+    if not missing and not extra and not unresolved:
+        return "All confirmed players have the correct Tournament Participant role."
+
+    lines = []
+    if missing:
+        lines.append(
+            "Missing Tournament Participant role: **" + ", ".join(missing) + "**"
+        )
+    if extra:
+        lines.append(
+            "Has Tournament Participant role but is not confirmed: **"
+            + ", ".join(extra)
+            + "**"
+        )
+    if missing or extra:
+        lines.append("Use **Reconcile Roles** below to fix these Discord roles.")
+    if unresolved:
+        lines.append("Could not find in server: **" + ", ".join(unresolved) + "**")
+        lines.append(
+            "**Reconcile Roles** cannot fix unresolved participants automatically. "
+            "Check them manually."
+        )
+    return "\n".join(lines)
 
 
 def _response_is_done(interaction) -> bool:
@@ -257,12 +367,14 @@ class OrganizerView(discord.ui.View):
                 return
             try:
                 _, tournament, _, counts, _ = await self.manager.data(interaction.guild)
-                odd = counts["confirmed"] % 2
-                warning = (
-                    " The active confirmed roster is odd. Close is still allowed; no player will be auto-demoted, but qualification/pairing must not begin until it is even."
-                    if odd
-                    else ""
-                )
+                warning = ""
+                if counts["confirmed"] % 2:
+                    warning = (
+                        " The confirmed roster currently has an odd number of players "
+                        f"(**{counts['confirmed']}**). Closing registration is still "
+                        "allowed and no player will be auto-demoted, but an even number "
+                        "is required before the first qualification round can be paired."
+                    )
                 embed = discord.Embed(
                     title="Confirm close registration",
                     description=f"Close registration with **{counts['confirmed']}** confirmed players?{warning}",
