@@ -198,6 +198,9 @@ async def _run_startup_sync(
     for attempt in range(1, _STARTUP_MAX_ATTEMPTS + 1):
         warnings: list[str] = []
         try:
+            # This scope is intentionally read-only. Qualification publication can
+            # persist thread/message IDs, so reconciliation runs after the scope to
+            # avoid serving pre-write ROUNDS/MATCHES data back to a later write.
             with sheet_read_scope() as reads:
                 if qualification_installed:
                     try:
@@ -228,27 +231,27 @@ async def _run_startup_sync(
                     log.exception("⚠️ Live Arena organizer panel startup refresh failed")
                     warnings.append("organizer panel")
 
-                if qualification_installed:
-                    try:
-                        publication_warnings = await reconcile_qualification_publication(
-                            organizer
-                        )
-                        warnings.extend(publication_warnings)
-                    except Exception as exc:
-                        if is_rate_limited_error(exc):
-                            raise
-                        log.exception(
-                            "⚠️ Live Arena qualification startup publication retry failed"
-                        )
-                        warnings.append("qualification publication")
-
                 log.info(
-                    "Live Arena startup refresh finished • attempt=%s • sheet_reads=%s • reused_reads=%s • warnings=%s",
+                    "Live Arena startup panel refresh finished • attempt=%s • sheet_reads=%s • reused_reads=%s • warnings=%s",
                     attempt,
                     reads.misses,
                     reads.hits,
                     ", ".join(dict.fromkeys(warnings)) or "none",
                 )
+
+            if qualification_installed:
+                try:
+                    publication_warnings = await reconcile_qualification_publication(
+                        organizer
+                    )
+                    warnings.extend(publication_warnings)
+                except Exception as exc:
+                    if is_rate_limited_error(exc):
+                        raise
+                    log.exception(
+                        "⚠️ Live Arena qualification startup publication retry failed"
+                    )
+                    warnings.append("qualification publication")
         except Exception as exc:
             if is_rate_limited_error(exc):
                 if attempt < _STARTUP_MAX_ATTEMPTS:
