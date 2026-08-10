@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from datetime import UTC, datetime
 from types import MethodType
@@ -19,7 +20,6 @@ from modules.community.live_arena.organizer_panel import (
     _role_template_values,
     _roster_message_key,
     _roster_template_values,
-    _send_ephemeral,
     _status_label,
     _status_template_values,
 )
@@ -57,9 +57,10 @@ def install_tournament_lifecycle(manager) -> bool:
     manager._tournament_lifecycle_installed = True
 
     base_view = manager.view
+    accepts_status = bool(inspect.signature(base_view).parameters)
 
     def view(status=None):
-        result = base_view(status)
+        result = base_view(status) if accepts_status else base_view()
         result.add_item(
             TournamentLifecycleButton(
                 manager,
@@ -311,7 +312,7 @@ async def _execute_lifecycle(interaction, manager, action):
         await service.transition(action, str(interaction.user.id))
         warnings = await manager.secondary_sync()
         if action == "archive":
-            config, tournament, *_ = await manager.data(interaction.guild)
+            _, tournament, *_ = await manager.data(interaction.guild)
             repository = LiveArenaRepository(manager.sheet_id)
             await repository.initialize()
             await repository.retire_discord_resources(
