@@ -59,9 +59,60 @@ PR5_MESSAGES = {
         "status",
         "confirmed_count",
         "max_participants",
-        "parity_summary",
     },
+    "organizer_roster_draft": set(),
+    "organizer_roster_open": {
+        "confirmed_count",
+        "player_word",
+        "min_participants",
+    },
+    "organizer_roster_below_minimum": {
+        "confirmed_count",
+        "player_word",
+        "min_participants",
+    },
+    "organizer_roster_odd": {"confirmed_count", "player_word"},
+    "organizer_roster_ready": {"confirmed_count"},
+    "organizer_roster_active": set(),
+    "organizer_roster_completed": set(),
+    "organizer_roster_default": {"confirmed_count", "player_word"},
+    "organizer_statuses": {
+        "confirmed_count",
+        "withdrawn_count",
+        "removed_count",
+        "disqualified_count",
+    },
+    "organizer_roles_ok": set(),
+    "organizer_roles_config_missing": set(),
+    "organizer_roles_missing": {"missing_participants"},
+    "organizer_roles_extra": {"extra_participants"},
+    "organizer_roles_unresolved": {"unresolved_participants"},
+    "organizer_roles_missing_extra": {
+        "missing_participants",
+        "extra_participants",
+    },
+    "organizer_roles_missing_unresolved": {
+        "missing_participants",
+        "unresolved_participants",
+    },
+    "organizer_roles_extra_unresolved": {
+        "extra_participants",
+        "unresolved_participants",
+    },
+    "organizer_roles_missing_extra_unresolved": {
+        "missing_participants",
+        "extra_participants",
+        "unresolved_participants",
+    },
+    "organizer_roster_view": {
+        "tournament_name",
+        "status",
+        "confirmed_count",
+        "max_participants",
+    },
+    "organizer_roster_participants": {"participant_lines"},
 }
+MESSAGE_CONTRACTS = REQUIRED_MESSAGES | PR5_MESSAGES
 
 
 @dataclass(frozen=True)
@@ -71,36 +122,28 @@ class MessageTemplate:
     description: str
     color: int
 
-    def embed(self, **values: object) -> discord.Embed:
-        expected = (REQUIRED_MESSAGES | PR5_MESSAGES)[self.key]
+    def render(self, **values: object) -> tuple[str, str]:
+        expected = MESSAGE_CONTRACTS[self.key]
         fields = {
             name
             for _, name, _, _ in Formatter().parse(self.title + self.description)
             if name
         }
-        allowed = {frozenset(expected)}
-        if self.key == "organizer_panel":
-            # Roster readiness is rendered directly by the organizer panel now.
-            # Keep the legacy placeholder optional so existing Sheet templates
-            # continue to work without forcing it into user-facing copy.
-            allowed.add(frozenset(expected - {"parity_summary"}))
-        if frozenset(fields) not in allowed:
-            choices = " or ".join(
-                ", ".join(sorted(option)) for option in sorted(allowed, key=len)
-            )
+        if frozenset(fields) != frozenset(expected):
             raise LiveArenaConfigError(
-                f"MESSAGES.{self.key}: placeholders must be exactly {choices}"
+                f"MESSAGES.{self.key}: placeholders must be exactly "
+                + ", ".join(sorted(expected))
             )
         missing = fields - values.keys()
         if missing:
             raise LiveArenaConfigError(
                 f"MESSAGES.{self.key}: missing render value {', '.join(sorted(missing))}"
             )
-        return discord.Embed(
-            title=self.title.format(**values),
-            description=self.description.format(**values),
-            color=self.color,
-        )
+        return self.title.format(**values), self.description.format(**values)
+
+    def embed(self, **values: object) -> discord.Embed:
+        title, description = self.render(**values)
+        return discord.Embed(title=title, description=description, color=self.color)
 
 
 async def load_pr3_config(sheet_id: str) -> tuple[dict[str, str], list[list[object]]]:
@@ -162,8 +205,9 @@ async def load_messages(
 ) -> dict[str, MessageTemplate]:
     rows = _rows(await afetch_values(sheet_id, tab) or [], MESSAGE_HEADERS, tab)
     templates = {}
-    contracts = REQUIRED_MESSAGES | PR5_MESSAGES
     for key in keys or REQUIRED_MESSAGES:
+        if key not in MESSAGE_CONTRACTS:
+            raise LiveArenaConfigError(f"MESSAGES: unknown message contract: {key}")
         matches = [row for row in rows if _text(row["message_key"]) == key]
         if len(matches) != 1 or not _enabled(matches[0]["active"]):
             raise LiveArenaConfigError(
@@ -182,8 +226,7 @@ async def load_messages(
         template = MessageTemplate(
             key, _text(row["title"]), _text(row["description"]), parsed
         )
-        # Validate placeholders at load time, before any mutation.
-        template.embed(**{name: "x" for name in contracts[key]})
+        template.render(**{name: "x" for name in MESSAGE_CONTRACTS[key]})
         templates[key] = template
     return templates
 
