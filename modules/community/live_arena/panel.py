@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 import discord
 
 from shared.config import cfg
-from shared.sheets.async_core import sheet_read_scope
+from shared.sheets.async_core import acall_with_backoff, aget_worksheet, sheet_read_scope
 from shared.sheets.core import is_rate_limited_error
 
 from modules.community.live_arena.messages import (
@@ -52,7 +52,7 @@ class LiveArenaPanelManager:
 
     async def sync(self) -> PanelSyncResult:
         async with self._lock:
-            config, _ = await load_pr3_config(self.sheet_id)
+            config, matrix = await load_pr3_config(self.sheet_id)
             tournament = await load_tournament_snapshot(self.sheet_id)
             if tournament.status == "draft":
                 return PanelSyncResult(True)
@@ -88,11 +88,18 @@ class LiveArenaPanelManager:
             if channel is None:
                 channel = await self.bot.fetch_channel(int(config["SIGNUP_CHANNEL_ID"]))
 
-            resource = await repository.discord_resource(
-                tournament.tournament_id, "signup_panel", "main"
+            repository_config = getattr(repository, "config", {}) or {}
+            registry_enabled = bool(
+                _text(repository_config.get("TOURNAMENT_DISCORD_RESOURCES_TAB", ""))
             )
-            if resource is not None and _text(resource["state"]) == "retired":
-                return PanelSyncResult(True)
+            resource = None
+            if registry_enabled:
+                resource = await repository.discord_resource(
+                    tournament.tournament_id, "signup_panel", "main"
+                )
+                if resource is not None and _text(resource["state"]) == "retired":
+                    return PanelSyncResult(True)
+
             registry_message_id = _text(resource["message_id"]) if resource else ""
             legacy_message_id = _text(config.get("PUBLIC_PANEL_MESSAGE_ID", ""))
             message_id = registry_message_id or legacy_message_id
@@ -154,8 +161,10 @@ class LiveArenaPanelManager:
                     )
                     return PanelSyncResult(False, "edit")
                 else:
-                    now = _now_utc()
-                    if using_legacy or resource is None or tournament.status == "archived":
+                    if registry_enabled and (
+                        using_legacy or resource is None or tournament.status == "archived"
+                    ):
+                        now = _now_utc()
                         await repository.upsert_discord_resource(
                             tournament_id=tournament.tournament_id,
                             resource_type="signup_panel",
@@ -176,7 +185,7 @@ class LiveArenaPanelManager:
                     return PanelSyncResult(True)
 
             if tournament.status == "archived":
-                if resource is not None:
+                if registry_enabled and resource is not None:
                     await repository.upsert_discord_resource(
                         tournament_id=tournament.tournament_id,
                         resource_type="signup_panel",
@@ -193,28 +202,52 @@ class LiveArenaPanelManager:
 
             created = await channel.send(embed=embed, view=view)
             try:
-                now = _now_utc()
-                await repository.upsert_discord_resource(
-                    tournament_id=tournament.tournament_id,
-                    resource_type="signup_panel",
-                    resource_key="main",
-                    channel_id=str(channel.id),
-                    message_id=str(created.id),
-                    created_at_utc=(
-                        _text(resource["created_at_utc"]) if resource else now
-                    ),
-                    updated_at_utc=now,
-                    state="active",
-                    notes=_text(resource["notes"]) if resource else "",
-                )
+                if registry_enabled:
+                    now = _now_utc()
+                    await repository.upsert_discord_resource(
+                        tournament_id=tournament.tournament_id,
+                        resource_type="signup_panel",
+                        resource_key="main",
+                        channel_id=str(channel.id),
+                        message_id=str(created.id),
+                        created_at_utc=(
+                            _text(resource["created_at_utc"]) if resource else now
+                        ),
+                        updated_at_utc=now,
+                        state="active",
+                        notes=_text(resource["notes"]) if resource else "",
+                    )
+                else:
+                    # Compatibility only for workbooks that have not yet gained the
+                    # resource registry. The live tournament workbook uses the registry.
+                    await self._persist_message_id(matrix, str(created.id))
             except Exception:
-                log.exception("❌ Live Arena panel — resource persistence failed")
+                log.exception("❌ Live Arena panel — message resource persistence failed")
                 try:
                     await created.delete()
                 except Exception:
                     log.exception("⚠️ Live Arena panel — untracked message cleanup failed")
                 raise
             return PanelSyncResult(True)
+
+    async def _persist_message_id(self, matrix, message_id: str) -> None:
+        """Legacy migration fallback; new workbooks persist panel IDs in resources."""
+        headers = [str(value).strip() for value in matrix[0]]
+        key_col, value_col = headers.index("Key"), headers.index("Value")
+        rows = [
+            index
+            for index, row in enumerate(matrix[1:], 2)
+            if key_col < len(row)
+            and str(row[key_col]).strip() == "PUBLIC_PANEL_MESSAGE_ID"
+        ]
+        if len(rows) != 1:
+            raise RuntimeError(
+                "CONFIG: key PUBLIC_PANEL_MESSAGE_ID must occur exactly once"
+            )
+        worksheet = await aget_worksheet(self.sheet_id, "CONFIG")
+        await acall_with_backoff(
+            worksheet.update_cell, rows[0], value_col + 1, message_id
+        )
 
 
 def _schedule_startup_sync(
