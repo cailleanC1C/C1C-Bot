@@ -111,6 +111,7 @@ PR5_MESSAGES = {
         "max_participants",
     },
     "organizer_roster_participants": {"participant_lines"},
+    "organizer_roster_no_participants": set(),
 }
 MESSAGE_CONTRACTS = REQUIRED_MESSAGES | PR5_MESSAGES
 
