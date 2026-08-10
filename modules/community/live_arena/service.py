@@ -19,6 +19,7 @@ CONFIG_KEYS = (
     "PARTICIPANTS_TAB",
     "PARTICIPANT_AVAILABILITY_TAB",
     "AUDIT_LOG_TAB",
+    "TOURNAMENT_DISCORD_RESOURCES_TAB",
 )
 TOURNAMENT_HEADERS = (
     "tournament_id",
@@ -30,6 +31,11 @@ TOURNAMENT_HEADERS = (
     "signup_opens_at_utc",
     "signup_closes_at_utc",
     "notes",
+    "tournament_short_name",
+    "created_at_utc",
+    "completed_at_utc",
+    "archived_at_utc",
+    "timezone",
 )
 ELIGIBLE_CLAN_HEADERS = (
     "tournament_id",
@@ -60,19 +66,24 @@ WEEKDAYS = {
 
 
 class LiveArenaConfigError(RuntimeError):
-    """The configured Live Arena workbook does not match the PR1 contract."""
+    """The configured Live Arena workbook does not match the required contract."""
 
 
 @dataclass(frozen=True)
 class TournamentSnapshot:
     tournament_id: str
     tournament_name: str
+    tournament_short_name: str
     status: str
     eligibility_scope: str
     min_participants: int
     max_participants: int
     signup_opens_at_utc: str
     signup_closes_at_utc: str
+    created_at_utc: str
+    completed_at_utc: str
+    archived_at_utc: str
+    timezone: str
     active_eligible_clans: int
     enabled_availability_windows: int
     organizer_role_id: int
@@ -149,13 +160,14 @@ async def load_tournament_snapshot(sheet_id: str) -> TournamentSnapshot:
     slots = _rows(slots_matrix or [], AVAILABILITY_SLOT_HEADERS, slots_tab)
 
     active_id = config["ACTIVE_TOURNAMENT_ID"]
-    tournament = next(
-        (row for row in tournaments if _text(row["tournament_id"]) == active_id), None
-    )
-    if tournament is None:
+    matches = [
+        row for row in tournaments if _text(row["tournament_id"]) == active_id
+    ]
+    if len(matches) != 1:
         raise LiveArenaConfigError(
-            f"{tournament_tab}: active tournament not found: {active_id}"
+            f"{tournament_tab}: active tournament must occur exactly once: {active_id}"
         )
+    tournament = matches[0]
 
     for row in slots:
         weekday = _text(row["weekday_utc"])
@@ -164,9 +176,21 @@ async def load_tournament_snapshot(sheet_id: str) -> TournamentSnapshot:
                 f"{slots_tab}: invalid weekday_utc: {weekday or '(blank)'}"
             )
 
+    short_name = _text(tournament["tournament_short_name"])
+    if not short_name:
+        raise LiveArenaConfigError(
+            f"{tournament_tab}: tournament_short_name is required for {active_id}"
+        )
+    timezone = _text(tournament["timezone"])
+    if not timezone:
+        raise LiveArenaConfigError(
+            f"{tournament_tab}: timezone is required for {active_id}"
+        )
+
     return TournamentSnapshot(
         tournament_id=active_id,
         tournament_name=_text(tournament["tournament_name"]),
+        tournament_short_name=short_name,
         status=_text(tournament["status"]),
         eligibility_scope=_text(tournament["eligibility_scope"]),
         min_participants=_required_int(
@@ -177,6 +201,10 @@ async def load_tournament_snapshot(sheet_id: str) -> TournamentSnapshot:
         ),
         signup_opens_at_utc=_text(tournament["signup_opens_at_utc"]),
         signup_closes_at_utc=_text(tournament["signup_closes_at_utc"]),
+        created_at_utc=_text(tournament["created_at_utc"]),
+        completed_at_utc=_text(tournament["completed_at_utc"]),
+        archived_at_utc=_text(tournament["archived_at_utc"]),
+        timezone=timezone,
         active_eligible_clans=sum(
             1
             for row in clans
