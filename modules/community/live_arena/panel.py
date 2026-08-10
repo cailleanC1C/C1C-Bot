@@ -54,13 +54,14 @@ class LiveArenaPanelManager:
         async with self._lock:
             config, _ = await load_pr3_config(self.sheet_id)
             tournament = await load_tournament_snapshot(self.sheet_id)
-            if tournament.status in {"draft", "archived"}:
+            if tournament.status == "draft":
                 return PanelSyncResult(True)
             if tournament.status not in {
                 "signup_open",
                 "signup_closed",
                 "active",
                 "completed",
+                "archived",
             }:
                 return PanelSyncResult(True)
 
@@ -139,10 +140,11 @@ class LiveArenaPanelManager:
                     await message.edit(embed=embed, view=view)
                 except discord.NotFound:
                     log.warning(
-                        "⚠️ Live Arena panel — saved message missing; recreating • tournament=%s • message_id=%s",
+                        "⚠️ Live Arena panel — saved message missing • tournament=%s • message_id=%s",
                         tournament.tournament_id,
                         message_id,
                     )
+                    message = None
                 except Exception as exc:
                     log.exception(
                         "❌ Live Arena panel — edit failed • message_id=%s • error=%s: %s",
@@ -152,8 +154,8 @@ class LiveArenaPanelManager:
                     )
                     return PanelSyncResult(False, "edit")
                 else:
-                    if using_legacy or resource is None:
-                        now = _now_utc()
+                    now = _now_utc()
+                    if using_legacy or resource is None or tournament.status == "archived":
                         await repository.upsert_discord_resource(
                             tournament_id=tournament.tournament_id,
                             resource_type="signup_panel",
@@ -164,12 +166,30 @@ class LiveArenaPanelManager:
                                 _text(resource["created_at_utc"]) if resource else now
                             ),
                             updated_at_utc=now,
-                            state="active",
-                            notes="Migrated from legacy PUBLIC_PANEL_MESSAGE_ID."
-                            if using_legacy
-                            else _text(resource["notes"]) if resource else "",
+                            state="retired" if tournament.status == "archived" else "active",
+                            notes=(
+                                "Migrated from legacy PUBLIC_PANEL_MESSAGE_ID."
+                                if using_legacy
+                                else _text(resource["notes"]) if resource else ""
+                            ),
                         )
                     return PanelSyncResult(True)
+
+            if tournament.status == "archived":
+                if resource is not None:
+                    await repository.upsert_discord_resource(
+                        tournament_id=tournament.tournament_id,
+                        resource_type="signup_panel",
+                        resource_key="main",
+                        channel_id=_text(resource["channel_id"]) or str(channel.id),
+                        message_id=_text(resource["message_id"]),
+                        thread_id=_text(resource["thread_id"]),
+                        created_at_utc=_text(resource["created_at_utc"]),
+                        updated_at_utc=_now_utc(),
+                        state="retired",
+                        notes=_text(resource["notes"]),
+                    )
+                return PanelSyncResult(True)
 
             created = await channel.send(embed=embed, view=view)
             try:
@@ -352,9 +372,13 @@ async def register_live_arena(bot):
         reconcile_qualification_publication,
         refresh_qualification_state,
     )
+    from modules.community.live_arena.tournament_lifecycle import (
+        install_tournament_lifecycle,
+    )
     from modules.community.live_arena.views import ClosedTournamentView
 
     organizer = OrganizerPanelManager(bot, sheet_id, manager)
+    install_tournament_lifecycle(organizer)
     qualification_installed = install_qualification(organizer)
     if qualification_installed:
         install_qualification_roster_lock(organizer)
