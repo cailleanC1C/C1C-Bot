@@ -15,3 +15,5 @@ Tournament-level Discord resources are stored in the CONFIG-routed `TOURNAMENT_D
 Legacy `PUBLIC_PANEL_MESSAGE_ID` and `ORGANIZER_PANEL_MESSAGE_ID` CONFIG values are compatibility fallbacks only. Once a tournament resource row exists, the resource registry is authoritative.
 
 Archival preserves Sheet rows and Discord history. Tournament-level resources are retired rather than deleted, Victory Ledger content is left untouched, and match-thread ownership remains on `MATCHES`.
+
+Doc last updated: 2026-08-10 (v0.9.8.3)
