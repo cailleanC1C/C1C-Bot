@@ -19,8 +19,8 @@ CONFIG_KEYS = (
     "PARTICIPANTS_TAB",
     "PARTICIPANT_AVAILABILITY_TAB",
     "AUDIT_LOG_TAB",
-    "TOURNAMENT_DISCORD_RESOURCES_TAB",
 )
+OPTIONAL_CONFIG_KEYS = ("TOURNAMENT_DISCORD_RESOURCES_TAB",)
 TOURNAMENT_HEADERS = (
     "tournament_id",
     "tournament_name",
@@ -71,22 +71,23 @@ class LiveArenaConfigError(RuntimeError):
 
 @dataclass(frozen=True)
 class TournamentSnapshot:
+    # Keep the original positional field order stable for existing callers/tests.
     tournament_id: str
     tournament_name: str
-    tournament_short_name: str
     status: str
     eligibility_scope: str
     min_participants: int
     max_participants: int
     signup_opens_at_utc: str
     signup_closes_at_utc: str
-    created_at_utc: str
-    completed_at_utc: str
-    archived_at_utc: str
-    timezone: str
     active_eligible_clans: int
     enabled_availability_windows: int
     organizer_role_id: int
+    tournament_short_name: str = ""
+    created_at_utc: str = ""
+    completed_at_utc: str = ""
+    archived_at_utc: str = ""
+    timezone: str = "UTC"
 
 
 def _text(value: object) -> str:
@@ -129,7 +130,7 @@ def _required_int(value: object, label: str) -> int:
 
 
 async def load_config(sheet_id: str) -> dict[str, str]:
-    """Read the literal CONFIG tab and return the Live Arena routing keys."""
+    """Read the literal CONFIG tab and return Live Arena routing keys."""
 
     matrix = await afetch_values(sheet_id, CONFIG_TAB)
     rows = _rows(matrix or [], CONFIG_HEADERS, CONFIG_TAB)
@@ -140,7 +141,16 @@ async def load_config(sheet_id: str) -> dict[str, str]:
             raise LiveArenaConfigError(f"CONFIG: key {key} must occur exactly once")
         if not values.get(key):
             raise LiveArenaConfigError(f"CONFIG: missing required key {key}")
-    return {key: values[key] for key in CONFIG_KEYS}
+    result = {key: values[key] for key in CONFIG_KEYS}
+    for key in OPTIONAL_CONFIG_KEYS:
+        matches = [row for row in rows if _text(row["Key"]) == key]
+        if len(matches) > 1:
+            raise LiveArenaConfigError(f"CONFIG: key {key} must occur at most once")
+        if matches:
+            if not values.get(key):
+                raise LiveArenaConfigError(f"CONFIG: missing required value {key}")
+            result[key] = values[key]
+    return result
 
 
 async def load_tournament_snapshot(sheet_id: str) -> TournamentSnapshot:
@@ -190,7 +200,6 @@ async def load_tournament_snapshot(sheet_id: str) -> TournamentSnapshot:
     return TournamentSnapshot(
         tournament_id=active_id,
         tournament_name=_text(tournament["tournament_name"]),
-        tournament_short_name=short_name,
         status=_text(tournament["status"]),
         eligibility_scope=_text(tournament["eligibility_scope"]),
         min_participants=_required_int(
@@ -201,10 +210,6 @@ async def load_tournament_snapshot(sheet_id: str) -> TournamentSnapshot:
         ),
         signup_opens_at_utc=_text(tournament["signup_opens_at_utc"]),
         signup_closes_at_utc=_text(tournament["signup_closes_at_utc"]),
-        created_at_utc=_text(tournament["created_at_utc"]),
-        completed_at_utc=_text(tournament["completed_at_utc"]),
-        archived_at_utc=_text(tournament["archived_at_utc"]),
-        timezone=timezone,
         active_eligible_clans=sum(
             1
             for row in clans
@@ -216,4 +221,9 @@ async def load_tournament_snapshot(sheet_id: str) -> TournamentSnapshot:
         organizer_role_id=_required_int(
             config["ORGANIZER_ROLE_ID"], "CONFIG.ORGANIZER_ROLE_ID"
         ),
+        tournament_short_name=short_name,
+        created_at_utc=_text(tournament["created_at_utc"]),
+        completed_at_utc=_text(tournament["completed_at_utc"]),
+        archived_at_utc=_text(tournament["archived_at_utc"]),
+        timezone=timezone,
     )
