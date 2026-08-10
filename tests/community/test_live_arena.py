@@ -21,6 +21,7 @@ def _config_rows(**overrides: str) -> list[list[object]]:
         "PARTICIPANTS_TAB": "PARTICIPANTS",
         "PARTICIPANT_AVAILABILITY_TAB": "PARTICIPANT_AVAILABILITY",
         "AUDIT_LOG_TAB": "AUDIT_LOG",
+        "TOURNAMENT_DISCORD_RESOURCES_TAB": "TOURNAMENT_DISCORD_RESOURCES",
         **overrides,
     }
     return [
@@ -42,6 +43,11 @@ def _tournament_rows(
         "signup_opens_at_utc": "",
         "signup_closes_at_utc": "",
         "notes": "",
+        "tournament_short_name": "Trial Cup",
+        "created_at_utc": "",
+        "completed_at_utc": "",
+        "archived_at_utc": "",
+        "timezone": "UTC",
     }
     return [list(headers), *[[row[header] for header in headers]]]
 
@@ -140,16 +146,17 @@ def test_active_tournament_comes_from_config(monkeypatch):
     matrices = _matrices(_config_rows(ACTIVE_TOURNAMENT_ID="missing-id"))
     _install_fetch(monkeypatch, matrices)
     with pytest.raises(
-        service.LiveArenaConfigError, match="active tournament not found: missing-id"
+        service.LiveArenaConfigError, match="active tournament.*missing-id"
     ):
         asyncio.run(service.load_tournament_snapshot("sheet-id"))
 
 
 def test_exact_tournament_headers_pass(monkeypatch):
     _install_fetch(monkeypatch, _matrices())
-    assert (
-        asyncio.run(service.load_tournament_snapshot("sheet-id"))
-    ).tournament_id == "LA-2026-TRIAL-01"
+    snapshot = asyncio.run(service.load_tournament_snapshot("sheet-id"))
+    assert snapshot.tournament_id == "LA-2026-TRIAL-01"
+    assert snapshot.tournament_short_name == "Trial Cup"
+    assert snapshot.timezone == "UTC"
 
 
 def test_missing_tournament_header_has_useful_error(monkeypatch):
