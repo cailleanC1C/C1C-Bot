@@ -86,6 +86,7 @@ class OrganizerService:
             "open": ("draft", "signup_open"),
             "close": ("signup_open", "signup_closed"),
             "reopen": ("signup_closed", "signup_open"),
+            "activate": ("signup_closed", "active"),
             "complete": ("active", "completed"),
             "archive": ("completed", "archived"),
         }
@@ -98,6 +99,8 @@ class OrganizerService:
             _, (row_number, tournament), _, _ = await self.context()
             current = _text(tournament["status"])
             if current != expected:
+                if action == "activate" and current == "active":
+                    return 0
                 if action == "complete" and current in {"completed", "archived"}:
                     raise RegistrationError("tournament has already been completed")
                 if action == "archive" and current == "archived":
@@ -122,14 +125,11 @@ class OrganizerService:
             elif action == "archive":
                 values["archived_at_utc"] = now
             await self.repository.update_tournament_cells(row_number, values)
-            if action == "archive":
-                await self.repository.retire_discord_resources(
-                    tournament_id, updated_at_utc=now
-                )
             event = {
                 "open": "registration_opened",
                 "close": "registration_closed",
                 "reopen": "registration_reopened",
+                "activate": "tournament_started",
                 "complete": "tournament_completed",
                 "archive": "tournament_archived",
             }[action]
