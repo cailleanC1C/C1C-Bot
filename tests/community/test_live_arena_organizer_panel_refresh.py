@@ -1,4 +1,4 @@
-"""Regression coverage for the Live Arena Captains Table refresh."""
+"""Regression coverage for the Live Arena Captains Table refresh and Sheet copy."""
 
 from __future__ import annotations
 
@@ -13,8 +13,9 @@ from modules.community.live_arena.messages import (
 )
 from modules.community.live_arena.organizer_panel import (
     OrganizerPanelManager,
-    _roster_readiness,
-    _tournament_roles_text,
+    _role_message_key,
+    _role_template_values,
+    _roster_message_key,
 )
 
 
@@ -22,7 +23,7 @@ def run(awaitable):
     return asyncio.run(awaitable)
 
 
-def test_organizer_message_no_longer_requires_readiness_placeholder():
+def test_organizer_message_contract_no_longer_contains_readiness_placeholder():
     matrix = [
         list(MESSAGE_HEADERS),
         [
@@ -50,51 +51,51 @@ def test_organizer_message_no_longer_requires_readiness_placeholder():
         status="Registration open",
         confirmed_count=5,
         max_participants=16,
-        parity_summary="legacy value is optional",
     )
     assert "Confirmed: 5/16" in embed.description
+    assert "parity_summary" not in template.description
 
 
-def test_roster_readiness_uses_plain_tournament_language():
+def test_roster_logic_selects_sheet_message_key_instead_of_owning_copy():
     manager = SimpleNamespace(_qualification_q1_status="")
-    tournament = SimpleNamespace(
-        status="signup_closed",
-        min_participants=4,
+    tournament = SimpleNamespace(status="signup_closed", min_participants=4)
+
+    assert (
+        _roster_message_key(manager, tournament, {"confirmed": 5})
+        == "organizer_roster_odd"
+    )
+    assert (
+        _roster_message_key(manager, tournament, {"confirmed": 6})
+        == "organizer_roster_ready"
     )
 
-    text = _roster_readiness(manager, tournament, {"confirmed": 5})
 
-    assert "even number of confirmed players" in text
-    assert "first qualification round" in text
-    assert "Q1" not in text
-    assert "parity" not in text.lower()
-
-
-def test_tournament_role_issue_names_every_affected_participant():
-    text = _tournament_roles_text(
+def test_role_logic_selects_sheet_message_key_and_supplies_participant_names():
+    role_state = {
+        "missing": [SimpleNamespace(display_name="Alice", id=1)],
+        "extra": [SimpleNamespace(display_name="Bob", id=2)],
+        "unresolved": ["3"],
+        "role_missing": False,
+    }
+    participants = [
         {
-            "missing": [SimpleNamespace(display_name="Alice", id=1)],
-            "extra": [SimpleNamespace(display_name="Bob", id=2)],
-            "unresolved": ["3"],
-            "role_missing": False,
-        },
-        [
-            {
-                "discord_user_id": "3",
-                "display_name_at_signup": "Cara",
-                "status": "confirmed",
-            }
-        ],
+            "discord_user_id": "3",
+            "display_name_at_signup": "Cara",
+            "status": "confirmed",
+        }
+    ]
+
+    assert (
+        _role_message_key(role_state)
+        == "organizer_roles_missing_extra_unresolved"
     )
-
-    assert "Alice" in text
-    assert "Bob" in text
-    assert "Cara" in text
-    assert "Reconcile Roles" in text
-    assert "cannot fix unresolved participants automatically" in text
+    values = _role_template_values(role_state, participants)
+    assert values["missing_participants"] == "Alice"
+    assert values["extra_participants"] == "Bob"
+    assert values["unresolved_participants"] == "Cara"
 
 
-def test_organizer_sync_edits_existing_panel_with_current_confirmed_count():
+def test_organizer_sync_uses_sheet_templates_for_all_visible_sections():
     config = {
         "ORGANIZER_CHANNEL_ID": "123",
         "MESSAGES_TAB": "MESSAGES",
@@ -132,15 +133,32 @@ def test_organizer_sync_edits_existing_panel_with_current_confirmed_count():
     manager.data = AsyncMock(
         return_value=(config, tournament, participants, counts, roles)
     )
-    template = MessageTemplate(
-        "organizer_panel",
-        "Tournament registration controls",
-        (
-            "Manage registration for {tournament_name}.\n\n"
-            "Status: {status}.\nConfirmed: {confirmed_count}/{max_participants}."
+    templates = {
+        "organizer_panel": MessageTemplate(
+            "organizer_panel",
+            "SHEET BASE TITLE",
+            "SHEET BASE {tournament_name} {status} {confirmed_count}/{max_participants}",
+            0x5F6368,
         ),
-        0x5F6368,
-    )
+        "organizer_roster_open": MessageTemplate(
+            "organizer_roster_open",
+            "SHEET ROSTER TITLE",
+            "SHEET ROSTER {confirmed_count} {player_word} {min_participants}",
+            0x5F6368,
+        ),
+        "organizer_statuses": MessageTemplate(
+            "organizer_statuses",
+            "SHEET STATUS TITLE",
+            "SHEET STATUS {confirmed_count}/{withdrawn_count}/{removed_count}/{disqualified_count}",
+            0x5F6368,
+        ),
+        "organizer_roles_ok": MessageTemplate(
+            "organizer_roles_ok",
+            "SHEET ROLE TITLE",
+            "SHEET ROLE OK",
+            0x5F6368,
+        ),
+    }
 
     with (
         patch(
@@ -149,23 +167,27 @@ def test_organizer_sync_edits_existing_panel_with_current_confirmed_count():
         ),
         patch(
             "modules.community.live_arena.organizer_panel.load_messages",
-            AsyncMock(return_value={"organizer_panel": template}),
-        ),
+            AsyncMock(return_value=templates),
+        ) as load,
     ):
         result = run(manager.sync())
 
     assert result.ok is True
     message.edit.assert_awaited_once()
     embed = message.edit.await_args.kwargs["embed"]
-    assert "Status: Registration open" in embed.description
-    assert "Confirmed: 5/16" in embed.description
+    assert embed.title == "SHEET BASE TITLE"
+    assert "Registration open" in embed.description
 
     fields = {field.name: field.value for field in embed.fields}
-    assert "Roster readiness" in fields
-    assert "Tournament roles" in fields
-    assert "Q1" not in fields["Roster readiness"]
-    assert "parity" not in fields["Roster readiness"].lower()
-    assert (
-        fields["Tournament roles"]
-        == "All confirmed players have the correct Tournament Participant role."
-    )
+    assert fields == {
+        "SHEET ROSTER TITLE": "SHEET ROSTER 5 players 4",
+        "SHEET STATUS TITLE": "SHEET STATUS 5/0/1/0",
+        "SHEET ROLE TITLE": "SHEET ROLE OK",
+    }
+    requested = load.await_args.args[2]
+    assert requested == {
+        "organizer_panel",
+        "organizer_roster_open",
+        "organizer_statuses",
+        "organizer_roles_ok",
+    }

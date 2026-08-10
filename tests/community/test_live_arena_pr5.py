@@ -15,6 +15,7 @@ from modules.community.live_arena.messages import (
     PR5_CONFIG_KEYS,
     PR5_MESSAGES,
     REQUIRED_MESSAGES,
+    MessageTemplate,
     load_messages,
 )
 from modules.community.live_arena.organizer import OrganizerService
@@ -33,9 +34,7 @@ from modules.community.live_arena.repository import (
     PARTICIPANT_HEADERS,
     LiveArenaRepository,
 )
-from modules.community.live_arena.service import (
-    TOURNAMENT_HEADERS,
-)
+from modules.community.live_arena.service import TOURNAMENT_HEADERS
 
 
 def run(awaitable):
@@ -192,7 +191,7 @@ def test_reconcile_failed_add_does_not_inflate_already_correct():
     assert "Failures: **1**" in description
 
 
-def test_pr5_exact_contracts_are_additive_and_schema_is_frozen():
+def test_pr5_message_contracts_are_additive_and_schema_is_frozen():
     assert PR5_CONFIG_KEYS == (
         "MESSAGES_TAB",
         "SIGNUP_CHANNEL_ID",
@@ -202,16 +201,28 @@ def test_pr5_exact_contracts_are_additive_and_schema_is_frozen():
         "PUBLIC_PANEL_MESSAGE_ID",
         "ORGANIZER_PANEL_MESSAGE_ID",
     )
-    assert PR5_MESSAGES == {
-        "signup_closed": {"tournament_name", "confirmed_count"},
-        "organizer_panel": {
-            "tournament_name",
-            "status",
-            "confirmed_count",
-            "max_participants",
-            "parity_summary",
-        },
+    assert PR5_MESSAGES["signup_closed"] == {
+        "tournament_name",
+        "confirmed_count",
     }
+    assert PR5_MESSAGES["organizer_panel"] == {
+        "tournament_name",
+        "status",
+        "confirmed_count",
+        "max_participants",
+    }
+    assert "parity_summary" not in PR5_MESSAGES["organizer_panel"]
+    assert {
+        "organizer_roster_open",
+        "organizer_roster_ready",
+        "organizer_roster_odd",
+        "organizer_statuses",
+        "organizer_roles_ok",
+        "organizer_roles_missing",
+        "organizer_roster_view",
+        "organizer_roster_participants",
+        "organizer_roster_participant_line",
+    }.issubset(PR5_MESSAGES)
     assert "signup_closed" not in REQUIRED_MESSAGES
     assert "organizer_panel" not in REQUIRED_MESSAGES
     assert PARTICIPANT_HEADERS[-4:] == (
@@ -245,7 +256,7 @@ def test_organizer_message_loading_isolated_from_player_rows():
         [
             "organizer_panel",
             "Panel {tournament_name}",
-            "{status} {confirmed_count}/{max_participants} {parity_summary}",
+            "{status} {confirmed_count}/{max_participants}",
             "#123456",
             "TRUE",
             "",
@@ -263,7 +274,6 @@ def test_organizer_message_loading_isolated_from_player_rows():
             status="draft",
             confirmed_count=0,
             max_participants=32,
-            parity_summary="EVEN",
         ),
         discord.Embed,
     )
@@ -315,15 +325,17 @@ def test_role_parity_reports_missing_extra_and_unresolved_exactly():
     assert parity["unresolved"] == ["3"]
 
 
-def test_roster_is_embed_with_counts_status_parity_and_user_select_controls():
+def test_roster_embed_uses_sheet_copy_and_user_select_controls():
     manager = SimpleNamespace(
+        sheet_id="sheet",
         data=AsyncMock(
             return_value=(
-                {},
+                {"MESSAGES_TAB": "MESSAGES"},
                 SimpleNamespace(
                     tournament_id="cup",
                     tournament_name="Cup",
                     status="signup_open",
+                    min_participants=2,
                     max_participants=16,
                 ),
                 [
@@ -337,14 +349,70 @@ def test_roster_is_embed_with_counts_status_parity_and_user_select_controls():
                     }
                 ],
                 {"confirmed": 1, "withdrawn": 0, "removed": 0, "disqualified": 0},
-                {"missing": [object()], "extra": [], "unresolved": []},
+                {
+                    "missing": [SimpleNamespace(display_name="Ada", id=1)],
+                    "extra": [],
+                    "unresolved": [],
+                    "role_missing": False,
+                },
             )
-        )
+        ),
     )
-    embed = run(roster_embed(manager, object()))
+    templates = {
+        "organizer_roster_view": MessageTemplate(
+            "organizer_roster_view",
+            "SHEET ROSTER",
+            "{tournament_name} {status} {confirmed_count}/{max_participants}",
+            0x5F6368,
+        ),
+        "organizer_roster_open": MessageTemplate(
+            "organizer_roster_open",
+            "SHEET READINESS",
+            "{confirmed_count} {player_word} minimum {min_participants}",
+            0x5F6368,
+        ),
+        "organizer_statuses": MessageTemplate(
+            "organizer_statuses",
+            "SHEET STATUSES",
+            "{confirmed_count}/{withdrawn_count}/{removed_count}/{disqualified_count}",
+            0x5F6368,
+        ),
+        "organizer_roles_missing": MessageTemplate(
+            "organizer_roles_missing",
+            "SHEET ROLE ISSUE",
+            "Missing {missing_participants}",
+            0x5F6368,
+        ),
+        "organizer_roster_participants": MessageTemplate(
+            "organizer_roster_participants",
+            "SHEET PLAYERS",
+            "{participant_lines}",
+            0x5F6368,
+        ),
+        "organizer_roster_participant_line": MessageTemplate(
+            "organizer_roster_participant_line",
+            "",
+            "{participant_name}|{clan_tag}|{participant_status}|{timezone}",
+            0x5F6368,
+        ),
+    }
+    with patch(
+        "modules.community.live_arena.organizer_panel.load_messages",
+        AsyncMock(return_value=templates),
+    ):
+        embed = run(roster_embed(manager, object()))
+
     assert isinstance(embed, discord.Embed)
-    assert "signup_open" in embed.description and "1/16" in embed.description
-    assert "1 missing / 0 extra / 0 unresolved" in embed.description
+    assert embed.title == "SHEET ROSTER"
+    assert "Registration open" in embed.description
+    fields = {field.name: field.value for field in embed.fields}
+    assert fields["SHEET READINESS"] == "1 player minimum 2"
+    assert fields["SHEET STATUSES"] == "1/0/0/0"
+    assert fields["SHEET ROLE ISSUE"] == "Missing Ada"
+    assert fields["SHEET PLAYERS"] == "Ada|C1C|confirmed|Europe/London"
+    visible = "\n".join([embed.description or ""] + list(fields.values()))
+    assert "parity" not in visible.lower()
+    assert "EVEN" not in visible and "ODD" not in visible
     assert (
         sum(
             isinstance(item, discord.ui.UserSelect)

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import discord
 
+from modules.community.live_arena.messages import MessageTemplate
 from modules.community.live_arena.organizer_panel import OrganizerPanelManager
 from modules.community.live_arena.panel import PanelSyncResult
 
@@ -16,19 +17,37 @@ def run(awaitable):
     return asyncio.run(awaitable)
 
 
-class _Template:
-    title = "Tournament registration controls"
-    description = (
-        "Manage registration for {tournament_name}.\n\n"
-        "Status: {status}.\n"
-        "Confirmed: {confirmed_count}/{max_participants}."
-    )
-
-    def embed(self, **values):
-        return discord.Embed(
-            title=self.title,
-            description=self.description.format(**values),
-        )
+def _templates():
+    return {
+        "organizer_panel": MessageTemplate(
+            "organizer_panel",
+            "Tournament registration controls",
+            (
+                "Manage registration for {tournament_name}.\n\n"
+                "Status: {status}.\n"
+                "Confirmed: {confirmed_count}/{max_participants}."
+            ),
+            0x5F6368,
+        ),
+        "organizer_roster_open": MessageTemplate(
+            "organizer_roster_open",
+            "Roster readiness",
+            "{confirmed_count} {player_word} minimum {min_participants}",
+            0x5F6368,
+        ),
+        "organizer_statuses": MessageTemplate(
+            "organizer_statuses",
+            "Participant statuses",
+            "{confirmed_count}/{withdrawn_count}/{removed_count}/{disqualified_count}",
+            0x5F6368,
+        ),
+        "organizer_roles_ok": MessageTemplate(
+            "organizer_roles_ok",
+            "Tournament roles",
+            "Roles correct",
+            0x5F6368,
+        ),
+    }
 
 
 def _not_found():
@@ -95,7 +114,7 @@ def test_saved_organizer_panel_edits_by_id_without_fetching_message_history():
         ),
         patch(
             "modules.community.live_arena.organizer_panel.load_messages",
-            AsyncMock(return_value={"organizer_panel": _Template()}),
+            AsyncMock(return_value=_templates()),
         ),
     ):
         result = run(manager.sync())
@@ -121,7 +140,7 @@ def test_direct_edit_not_found_recreates_and_persists_one_replacement():
         ),
         patch(
             "modules.community.live_arena.organizer_panel.load_messages",
-            AsyncMock(return_value={"organizer_panel": _Template()}),
+            AsyncMock(return_value=_templates()),
         ),
     ):
         result = run(manager.sync())
@@ -145,7 +164,7 @@ def test_direct_edit_transient_failure_never_creates_duplicate_panel():
         ),
         patch(
             "modules.community.live_arena.organizer_panel.load_messages",
-            AsyncMock(return_value={"organizer_panel": _Template()}),
+            AsyncMock(return_value=_templates()),
         ),
     ):
         result = run(manager.sync())

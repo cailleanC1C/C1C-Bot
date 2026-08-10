@@ -55,42 +55,45 @@ class OrganizerPanelManager:
             config, tournament, participants, counts, parity = await self.data(
                 getattr(channel, "guild", None)
             )
+            roster_key = _roster_message_key(self, tournament, counts)
+            role_key = _role_message_key(parity)
             messages = await load_messages(
-                self.sheet_id, config["MESSAGES_TAB"], {"organizer_panel"}
+                self.sheet_id,
+                config["MESSAGES_TAB"],
+                {
+                    "organizer_panel",
+                    roster_key,
+                    "organizer_statuses",
+                    role_key,
+                },
             )
-            template = messages["organizer_panel"]
-            readiness = _roster_readiness(self, tournament, counts)
-            embed = template.embed(
+            embed = messages["organizer_panel"].embed(
                 tournament_name=tournament.tournament_name,
                 status=_status_label(tournament.status),
                 confirmed_count=counts["confirmed"],
                 max_participants=tournament.max_participants,
-                # Backward compatibility for an older Sheet template. The live
-                # template no longer needs or displays this placeholder.
-                parity_summary=readiness,
             )
-            template_text = (
-                _text(getattr(template, "title", ""))
-                + _text(getattr(template, "description", ""))
-            )
-            if "{parity_summary}" not in template_text:
-                embed.add_field(
-                    name="Roster readiness",
-                    value=readiness,
-                    inline=False,
+            # The production loader validates every requested row before returning.
+            # Membership checks keep injected/test loaders focused on the lifecycle
+            # behavior they are exercising without adding fallback user-facing copy.
+            if roster_key in messages:
+                _add_template_field(
+                    embed,
+                    messages[roster_key],
+                    **_roster_template_values(tournament, counts),
                 )
-            embed.add_field(
-                name="Participant statuses",
-                value="\n".join(
-                    f"{key.title()}: **{value}**" for key, value in counts.items()
-                ),
-                inline=False,
-            )
-            embed.add_field(
-                name="Tournament roles",
-                value=_tournament_roles_text(parity, participants),
-                inline=False,
-            )
+            if "organizer_statuses" in messages:
+                _add_template_field(
+                    embed,
+                    messages["organizer_statuses"],
+                    **_status_template_values(counts),
+                )
+            if role_key in messages:
+                _add_template_field(
+                    embed,
+                    messages[role_key],
+                    **_role_template_values(parity, participants),
+                )
 
             message_id = _text(config["ORGANIZER_PANEL_MESSAGE_ID"])
             message = None
@@ -233,44 +236,46 @@ def _status_label(status: str) -> str:
     }.get(_text(status), _text(status).replace("_", " ").title() or "Unknown")
 
 
-def _roster_readiness(manager, tournament, counts) -> str:
+def _roster_message_key(manager, tournament, counts) -> str:
     confirmed = int(counts.get("confirmed", 0) or 0)
-    player_word = "player" if confirmed == 1 else "players"
     minimum = int(getattr(tournament, "min_participants", 2) or 2)
     qualification_status = _text(
         getattr(manager, "_qualification_q1_status", "")
     ).lower()
 
     if qualification_status == "active":
-        return "Qualification Round 1 is active. The tournament roster is locked."
+        return "organizer_roster_active"
     if qualification_status == "completed":
-        return "Qualification Round 1 is complete. The tournament roster remains locked."
+        return "organizer_roster_completed"
     if tournament.status == "draft":
-        return "Registration has not opened yet."
+        return "organizer_roster_draft"
     if tournament.status == "signup_open":
-        return (
-            "Registration is open. Pairing starts after registration closes. "
-            f"Currently: **{confirmed} confirmed {player_word}**. At least "
-            f"**{minimum} players** and an even final roster are required."
-        )
+        return "organizer_roster_open"
     if tournament.status == "signup_closed":
         if confirmed < minimum:
-            return (
-                "Not ready for pairing: at least "
-                f"**{minimum} confirmed players** are required. "
-                f"Currently: **{confirmed} {player_word}**."
-            )
+            return "organizer_roster_below_minimum"
         if confirmed % 2:
-            return (
-                "Not ready for pairing: an even number of confirmed players is needed "
-                "before the first qualification round can be created. "
-                f"Currently: **{confirmed} {player_word}**."
-            )
-        return (
-            f"Ready for pairing: **{confirmed} confirmed players** can be paired "
-            "for the first qualification round."
-        )
-    return f"Current confirmed roster: **{confirmed} {player_word}**."
+            return "organizer_roster_odd"
+        return "organizer_roster_ready"
+    return "organizer_roster_default"
+
+
+def _roster_template_values(tournament, counts) -> dict[str, object]:
+    confirmed = int(counts.get("confirmed", 0) or 0)
+    return {
+        "confirmed_count": confirmed,
+        "player_word": "player" if confirmed == 1 else "players",
+        "min_participants": int(getattr(tournament, "min_participants", 2) or 2),
+    }
+
+
+def _status_template_values(counts) -> dict[str, object]:
+    return {
+        "confirmed_count": counts.get("confirmed", 0),
+        "withdrawn_count": counts.get("withdrawn", 0),
+        "removed_count": counts.get("removed", 0),
+        "disqualified_count": counts.get("disqualified", 0),
+    }
 
 
 def _member_label(member) -> str:
@@ -282,13 +287,22 @@ def _member_label(member) -> str:
     )
 
 
-def _tournament_roles_text(parity, participants) -> str:
+def _role_message_key(parity) -> str:
     if parity.get("role_missing"):
-        return (
-            "The configured Tournament Participant role could not be found in Discord. "
-            "**Reconcile Roles** cannot fix this until the role configuration is corrected."
-        )
+        return "organizer_roles_config_missing"
+    parts = []
+    if parity.get("missing"):
+        parts.append("missing")
+    if parity.get("extra"):
+        parts.append("extra")
+    if parity.get("unresolved"):
+        parts.append("unresolved")
+    if not parts:
+        return "organizer_roles_ok"
+    return "organizer_roles_" + "_".join(parts)
 
+
+def _role_template_values(parity, participants) -> dict[str, object]:
     missing = [_member_label(member) for member in parity.get("missing", [])]
     extra = [_member_label(member) for member in parity.get("extra", [])]
     unresolved_ids = {_text(value) for value in parity.get("unresolved", [])}
@@ -302,30 +316,20 @@ def _tournament_roles_text(parity, participants) -> str:
     unresolved = [
         participant_names.get(user_id, user_id) for user_id in sorted(unresolved_ids)
     ]
+    return {
+        "missing_participants": ", ".join(missing),
+        "extra_participants": ", ".join(extra),
+        "unresolved_participants": ", ".join(unresolved),
+    }
 
-    if not missing and not extra and not unresolved:
-        return "All confirmed players have the correct Tournament Participant role."
 
-    lines = []
-    if missing:
-        lines.append(
-            "Missing Tournament Participant role: **" + ", ".join(missing) + "**"
-        )
-    if extra:
-        lines.append(
-            "Has Tournament Participant role but is not confirmed: **"
-            + ", ".join(extra)
-            + "**"
-        )
-    if missing or extra:
-        lines.append("Use **Reconcile Roles** below to fix these Discord roles.")
-    if unresolved:
-        lines.append("Could not find in server: **" + ", ".join(unresolved) + "**")
-        lines.append(
-            "**Reconcile Roles** cannot fix unresolved participants automatically. "
-            "Check them manually."
-        )
-    return "\n".join(lines)
+def _add_template_field(embed, template, **values) -> None:
+    title, description = template.render(**values)
+    embed.add_field(
+        name=title or "\u200b",
+        value=description or "\u200b",
+        inline=False,
+    )
 
 
 def _response_is_done(interaction) -> bool:
@@ -629,34 +633,102 @@ class RefreshRoster(discord.ui.Button):
 
 async def roster_embed(manager, guild):
     """Re-read and render the current roster without mutating workbook state."""
-    _, tournament, participants, counts, parity = await manager.data(guild)
+    config, tournament, participants, counts, parity = await manager.data(guild)
     rows = [
         row
         for row in participants
         if _text(row["tournament_id"]) == tournament.tournament_id
     ]
-    lines = [
-        f"**{_text(row['display_name_at_signup']) or _text(row['discord_user_id'])}** — {_text(row['clan_tag_at_signup']) or '—'} • {_text(row['status']) or 'unknown'} • {_text(row['timezone']) or '—'}"
-        for row in rows
-    ]
-    description = (
-        f"**{tournament.tournament_name}** • {tournament.status}\n"
-        f"Confirmed: **{counts['confirmed']}/{tournament.max_participants}** • "
-        f"{'EVEN' if counts['confirmed'] % 2 == 0 else 'ODD'}\n"
-        f"Role parity: **{len(parity['missing'])} missing / {len(parity['extra'])} extra / {len(parity['unresolved'])} unresolved**\n\n"
-        + ("\n".join(lines) or "No participants.")
+    roster_key = _roster_message_key(manager, tournament, counts)
+    role_key = _role_message_key(parity)
+    participant_key = (
+        "organizer_roster_participants"
+        if rows
+        else "organizer_roster_no_participants"
     )
-    if len(description) > 4000:
-        description = description[:3997] + "…"
-    embed = discord.Embed(
-        title="Live Arena roster", description=description, color=colors.c1c_blue
+    message_keys = {
+        "organizer_roster_view",
+        roster_key,
+        "organizer_statuses",
+        role_key,
+        participant_key,
+    }
+    if rows:
+        message_keys.add("organizer_roster_participant_line")
+    messages = await load_messages(
+        manager.sheet_id,
+        config["MESSAGES_TAB"],
+        message_keys,
     )
-    embed.add_field(
-        name="Status counts",
-        value=" • ".join(f"{key}: {value}" for key, value in counts.items()),
-        inline=False,
+    embed = messages["organizer_roster_view"].embed(
+        tournament_name=tournament.tournament_name,
+        status=_status_label(tournament.status),
+        confirmed_count=counts["confirmed"],
+        max_participants=tournament.max_participants,
     )
+    _add_template_field(
+        embed,
+        messages[roster_key],
+        **_roster_template_values(tournament, counts),
+    )
+    _add_template_field(
+        embed,
+        messages["organizer_statuses"],
+        **_status_template_values(counts),
+    )
+    _add_template_field(
+        embed,
+        messages[role_key],
+        **_role_template_values(parity, participants),
+    )
+
+    if not rows:
+        _add_template_field(embed, messages["organizer_roster_no_participants"])
+        return embed
+
+    line_template = messages["organizer_roster_participant_line"]
+    rendered_lines = []
+    for row in rows:
+        _, line = line_template.render(
+            participant_name=(
+                _text(row["display_name_at_signup"])
+                or _text(row["discord_user_id"])
+            ),
+            clan_tag=_text(row["clan_tag_at_signup"]) or "—",
+            participant_status=_text(row["status"]) or "unknown",
+            timezone=_text(row["timezone"]) or "—",
+        )
+        rendered_lines.append(line)
+
+    participant_template = messages["organizer_roster_participants"]
+    chunks = _chunk_lines(rendered_lines)
+    for index, chunk in enumerate(chunks):
+        title, description = participant_template.render(
+            participant_lines="\n".join(chunk)
+        )
+        embed.add_field(
+            name=title if index == 0 else "\u200b",
+            value=description,
+            inline=False,
+        )
     return embed
+
+
+def _chunk_lines(lines, limit=1000):
+    chunks = []
+    current = []
+    current_size = 0
+    for line in lines:
+        added = len(line) + (1 if current else 0)
+        if current and current_size + added > limit:
+            chunks.append(current)
+            current = []
+            current_size = 0
+        current.append(line)
+        current_size += len(line) + (1 if len(current) > 1 else 0)
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 class TargetSelect(discord.ui.UserSelect):
