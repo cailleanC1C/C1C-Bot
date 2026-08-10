@@ -125,7 +125,7 @@ def test_already_registered_shortcut_opens_saved_registration():
     assert sent["ephemeral"] is True
 
 
-def test_register_live_arena_wires_organizer_before_startup_sync_failure(monkeypatch):
+def test_register_live_arena_wires_controls_before_deferred_startup_sync(monkeypatch):
     monkeypatch.setattr(panel, "_managers", {})
     monkeypatch.setattr(
         panel,
@@ -156,14 +156,18 @@ def test_register_live_arena_wires_organizer_before_startup_sync_failure(monkeyp
     monkeypatch.setattr(panel, "LiveArenaPanelManager", PublicManager)
     monkeypatch.setattr(organizer_panel, "OrganizerPanelManager", OrganizerManager)
 
+    scheduled = []
+    monkeypatch.setattr(panel, "_schedule_startup_sync", lambda *args: scheduled.append(args))
+
     registered_views = []
     bot = SimpleNamespace(add_view=registered_views.append)
 
-    with pytest.raises(RuntimeError, match="startup organizer sync failed"):
-        asyncio.run(panel.register_live_arena(bot))
+    result = asyncio.run(panel.register_live_arena(bot))
 
     public_manager = next(iter(panel._managers.values()))
+    assert result is public_manager
     assert public_manager.organizer_manager is created[0]
-    public_manager.sync.assert_awaited_once()
-    created[0].sync.assert_awaited_once()
+    public_manager.sync.assert_not_awaited()
+    created[0].sync.assert_not_awaited()
     assert len(registered_views) == 3
+    assert len(scheduled) == 1
