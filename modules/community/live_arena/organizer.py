@@ -1,4 +1,4 @@
-"""Organizer registration lifecycle domain for Live Arena PR5."""
+"""Organizer registration and tournament lifecycle domain for Live Arena."""
 
 from __future__ import annotations
 
@@ -82,18 +82,28 @@ class OrganizerService:
         )
 
     async def transition(self, action, actor_id):
-        expected, new = {
+        transitions = {
             "open": ("draft", "signup_open"),
             "close": ("signup_open", "signup_closed"),
             "reopen": ("signup_closed", "signup_open"),
-        }[action]
+            "complete": ("active", "completed"),
+            "archive": ("completed", "archived"),
+        }
+        if action not in transitions:
+            raise RegistrationError(f"unknown tournament transition: {action}")
+        expected, new = transitions[action]
         config = await load_config(self.sheet_id)
         tournament_id = config["ACTIVE_TOURNAMENT_ID"]
         async with _locks[(self.sheet_id, tournament_id)]:
             _, (row_number, tournament), _, _ = await self.context()
-            if _text(tournament["status"]) != expected:
+            current = _text(tournament["status"])
+            if current != expected:
+                if action == "complete" and current in {"completed", "archived"}:
+                    raise RegistrationError("tournament has already been completed")
+                if action == "archive" and current == "archived":
+                    raise RegistrationError("tournament has already been archived")
                 raise RegistrationError(
-                    f"registration can only {action} from {expected}"
+                    f"tournament can only {action} from {expected}"
                 )
             if action in {"open", "reopen"}:
                 self._future_deadline(tournament["signup_closes_at_utc"])
@@ -107,11 +117,21 @@ class OrganizerService:
             now = utc_iso(self.clock())
             if action == "open":
                 values["signup_opens_at_utc"] = now
+            elif action == "complete":
+                values["completed_at_utc"] = now
+            elif action == "archive":
+                values["archived_at_utc"] = now
             await self.repository.update_tournament_cells(row_number, values)
+            if action == "archive":
+                await self.repository.retire_discord_resources(
+                    tournament_id, updated_at_utc=now
+                )
             event = {
                 "open": "registration_opened",
                 "close": "registration_closed",
                 "reopen": "registration_reopened",
+                "complete": "tournament_completed",
+                "archive": "tournament_archived",
             }[action]
             await self._audit(
                 tournament_id,
