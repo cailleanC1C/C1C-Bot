@@ -112,6 +112,12 @@ PR5_MESSAGES = {
     },
     "organizer_roster_participants": {"participant_lines"},
     "organizer_roster_no_participants": set(),
+    "organizer_roster_participant_line": {
+        "participant_name",
+        "clan_tag",
+        "participant_status",
+        "timezone",
+    },
 }
 MESSAGE_CONTRACTS = REQUIRED_MESSAGES | PR5_MESSAGES
 
