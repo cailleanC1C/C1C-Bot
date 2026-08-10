@@ -74,13 +74,20 @@ class LiveArenaRepository:
             "PARTICIPANT_AVAILABILITY_TAB", PARTICIPANT_AVAILABILITY_HEADERS
         )
         await self._read("AUDIT_LOG_TAB", AUDIT_LOG_HEADERS)
-        await self._read("TOURNAMENT_DISCORD_RESOURCES_TAB", DISCORD_RESOURCE_HEADERS)
 
     async def _read(
         self, key: str, headers: tuple[str, ...]
     ) -> list[dict[str, object]]:
         tab = self.config[key]
         return _rows(await afetch_values(self.sheet_id, tab) or [], headers, tab)
+
+    def _resource_tab(self) -> str:
+        tab = _text(self.config.get("TOURNAMENT_DISCORD_RESOURCES_TAB", ""))
+        if not tab:
+            raise LiveArenaConfigError(
+                "CONFIG: missing required key TOURNAMENT_DISCORD_RESOURCES_TAB"
+            )
+        return tab
 
     async def participants(self) -> list[dict[str, object]]:
         return await self._read("PARTICIPANTS_TAB", PARTICIPANT_HEADERS)
@@ -91,8 +98,9 @@ class LiveArenaRepository:
         )
 
     async def discord_resources(self) -> list[dict[str, object]]:
-        return await self._read(
-            "TOURNAMENT_DISCORD_RESOURCES_TAB", DISCORD_RESOURCE_HEADERS
+        tab = self._resource_tab()
+        return _rows(
+            await afetch_values(self.sheet_id, tab) or [], DISCORD_RESOURCE_HEADERS, tab
         )
 
     async def discord_resource(
@@ -131,16 +139,20 @@ class LiveArenaRepository:
             raise LiveArenaConfigError(
                 "TOURNAMENT_DISCORD_RESOURCES.state must be active or retired"
             )
-        tab = self.config["TOURNAMENT_DISCORD_RESOURCES_TAB"]
+        tab = self._resource_tab()
         matrix = await afetch_values(self.sheet_id, tab) or []
-        rows = _rows(matrix, DISCORD_RESOURCE_HEADERS, tab)
-        matching_indexes = [
-            index
-            for index, row in enumerate(rows, 2)
-            if _text(row["tournament_id"]) == _text(tournament_id)
-            and _text(row["resource_type"]) == _text(resource_type)
-            and _text(row["resource_key"]) == _text(resource_key)
-        ]
+        _rows(matrix, DISCORD_RESOURCE_HEADERS, tab)
+        headers = tuple(_text(value) for value in matrix[0])
+        identity_columns = tuple(headers.index(key) for key in DISCORD_RESOURCE_HEADERS[:3])
+        matching_indexes = []
+        for row_number, raw_row in enumerate(matrix[1:], 2):
+            padded = list(raw_row) + [""] * max(0, len(headers) - len(raw_row))
+            if (
+                _text(padded[identity_columns[0]]) == _text(tournament_id)
+                and _text(padded[identity_columns[1]]) == _text(resource_type)
+                and _text(padded[identity_columns[2]]) == _text(resource_key)
+            ):
+                matching_indexes.append(row_number)
         if len(matching_indexes) > 1:
             raise LiveArenaConfigError(
                 "TOURNAMENT_DISCORD_RESOURCES: duplicate resource identity"
@@ -161,12 +173,13 @@ class LiveArenaRepository:
         }
         if matching_indexes:
             row_number = matching_indexes[0]
+            escaped_tab = tab.replace("'", "''")
             data = []
             for header, value in values.items():
                 column = DISCORD_RESOURCE_HEADERS.index(header) + 1
                 data.append(
                     {
-                        "range": f"'{tab.replace(chr(39), chr(39) * 2)}'!{_column(column)}{row_number}",
+                        "range": f"'{escaped_tab}'!{_column(column)}{row_number}",
                         "values": [[value]],
                     }
                 )
@@ -305,7 +318,7 @@ class LiveArenaRepository:
                 )
             column = TOURNAMENT_HEADERS.index(header) + 1
             cell = f"{_column(column)}{row_number}"
-            data.append({"range": f"'{tab}'!{cell}", "values": [[str(value)] ]})
+            data.append({"range": f"'{tab}'!{cell}", "values": [[str(value)]]})
         await acall_with_backoff(
             worksheet.spreadsheet.values_batch_update,
             body={"valueInputOption": "RAW", "data": data},
