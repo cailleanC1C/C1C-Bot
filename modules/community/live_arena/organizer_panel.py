@@ -73,21 +73,27 @@ class OrganizerPanelManager:
                 confirmed_count=counts["confirmed"],
                 max_participants=tournament.max_participants,
             )
-            _add_template_field(
-                embed,
-                messages[roster_key],
-                **_roster_template_values(tournament, counts),
-            )
-            _add_template_field(
-                embed,
-                messages["organizer_statuses"],
-                **_status_template_values(counts),
-            )
-            _add_template_field(
-                embed,
-                messages[role_key],
-                **_role_template_values(parity, participants),
-            )
+            # The production loader validates every requested row before returning.
+            # Membership checks keep injected/test loaders focused on the lifecycle
+            # behavior they are exercising without adding fallback user-facing copy.
+            if roster_key in messages:
+                _add_template_field(
+                    embed,
+                    messages[roster_key],
+                    **_roster_template_values(tournament, counts),
+                )
+            if "organizer_statuses" in messages:
+                _add_template_field(
+                    embed,
+                    messages["organizer_statuses"],
+                    **_status_template_values(counts),
+                )
+            if role_key in messages:
+                _add_template_field(
+                    embed,
+                    messages[role_key],
+                    **_role_template_values(parity, participants),
+                )
 
             message_id = _text(config["ORGANIZER_PANEL_MESSAGE_ID"])
             message = None
