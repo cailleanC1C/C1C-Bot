@@ -25,6 +25,7 @@ from modules.community.live_arena.bye_manual_validation import install as _insta
 from modules.community.live_arena.withdrawal_hardening import install as _install_withdrawal_hardening
 from modules.community.live_arena.withdrawal_atomic import install as _install_withdrawal_atomic
 from modules.community.live_arena.operations_correction_state import install as _install_operations_correction_state
+from modules.community.live_arena.extension_confirmation import install as _install_extension_confirmation
 
 _install_runtime_hooks()
 _install_repair()
@@ -48,3 +49,4 @@ _install_bye_manual_validation()
 _install_withdrawal_hardening()
 _install_withdrawal_atomic()
 _install_operations_correction_state()
+_install_extension_confirmation()
