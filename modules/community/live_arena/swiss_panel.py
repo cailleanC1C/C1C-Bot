@@ -8,6 +8,7 @@ import discord
 
 from shared.theme import colors
 
+from modules.community.live_arena.organizer import OrganizerService
 from modules.community.live_arena.organizer_panel import OrganizerView
 from modules.community.live_arena.qualification import QualificationService
 from modules.community.live_arena.registration import RegistrationError
@@ -45,9 +46,24 @@ def install() -> None:
             if not callable(add_item):
                 return result
             disabled = status is not None and status != "active"
-            add_item(SwissActionButton(manager, "Preview Next Swiss", "preview", disabled=disabled))
-            add_item(SwissActionButton(manager, "Regenerate Swiss Preview", "regenerate", disabled=disabled))
-            add_item(SwissActionButton(manager, "Approve & Publish Swiss", "publish", disabled=disabled))
+            add_item(
+                SwissActionButton(
+                    manager, "Preview Next Swiss", "preview", disabled=disabled
+                )
+            )
+            add_item(
+                SwissActionButton(
+                    manager,
+                    "Regenerate Swiss Preview",
+                    "regenerate",
+                    disabled=disabled,
+                )
+            )
+            add_item(
+                SwissActionButton(
+                    manager, "Approve & Publish Swiss", "publish", disabled=disabled
+                )
+            )
             return result
 
         manager.view = view
@@ -58,7 +74,11 @@ def install() -> None:
 
 class SwissActionButton(discord.ui.Button):
     def __init__(self, manager, label: str, action: str, *, disabled=False):
-        style = discord.ButtonStyle.success if action == "publish" else discord.ButtonStyle.secondary
+        style = (
+            discord.ButtonStyle.success
+            if action == "publish"
+            else discord.ButtonStyle.secondary
+        )
         super().__init__(
             label=label,
             custom_id=f"live_arena:organizer:swiss:{action}",
@@ -96,7 +116,9 @@ class SwissActionButton(discord.ui.Button):
             try:
                 await self.manager.sync()
             except Exception:
-                log.exception("Live Arena organizer panel refresh after Swiss publication failed")
+                log.exception(
+                    "Live Arena organizer panel refresh after Swiss publication failed"
+                )
                 warnings.append("organizer panel")
             embed = discord.Embed(
                 title=f"Qualification Round {target} published",
@@ -117,7 +139,9 @@ class SwissActionButton(discord.ui.Button):
                 )
             await interaction.followup.send(embed=embed, ephemeral=True)
         except Exception as exc:
-            log.exception("Live Arena Swiss organizer action failed • action=%s", self.action)
+            log.exception(
+                "Live Arena Swiss organizer action failed • action=%s", self.action
+            )
             await interaction.followup.send(embed=error_embed(exc), ephemeral=True)
 
 
@@ -153,14 +177,19 @@ async def _target_round(service: SwissQualificationService) -> int:
         "correction_in_progress",
     }:
         return 3
-    raise RegistrationError("No Q2/Q3 Swiss round is currently available for this action")
+    raise RegistrationError(
+        "No Q2/Q3 Swiss round is currently available for this action"
+    )
 
 
 def preview_embed(snapshot, *, official: bool) -> discord.Embed:
-    number = _text(snapshot.round_row.get("round_number")) if snapshot.round_row else "?"
+    number = (
+        _text(snapshot.round_row.get("round_number")) if snapshot.round_row else "?"
+    )
     embed = discord.Embed(
         title=(
-            f"Qualification Round {number} · {'Official Draw' if official else 'Organizer Preview'}"
+            f"Qualification Round {number} · "
+            f"{'Official Draw' if official else 'Organizer Preview'}"
         ),
         description=(
             "This preview is **not official** and creates no player-facing Discord resources."
@@ -201,10 +230,23 @@ class SwissPublisher:
         snapshot = snapshot or await self._current_open_snapshot()
         if snapshot is None or snapshot.round_row is None:
             return []
-        if snapshot.status not in {"open", "active", "published", "published/open", "ready_to_close", "closed", "correction_in_progress"}:
+        if snapshot.status not in {
+            "open",
+            "active",
+            "published",
+            "published/open",
+            "ready_to_close",
+            "closed",
+            "correction_in_progress",
+        }:
             return []
         config = self.service.repository.config
-        _, (_, tournament), _, slots = await self.service.context()
+        organizer = OrganizerService(
+            self.service.sheet_id,
+            repository=self.service.registration_repository,
+            clock=self.service.clock,
+        )
+        _, (_, tournament), _, slots = await organizer.context()
         warnings = []
         matches = [dict(row) for row in snapshot.matches]
         forum = None
@@ -242,19 +284,27 @@ class SwissPublisher:
                         thread = created[0]
                     if thread is None:
                         thread = created
-                    await self._record_thread_id(_text(match["match_id"]), str(thread.id))
+                    await self._record_thread_id(
+                        _text(match["match_id"]), str(thread.id)
+                    )
                     match["thread_id"] = str(thread.id)
                 except Exception:
                     log.exception(
                         "Live Arena Swiss matchup publication failed • match=%s",
                         _text(match.get("match_id")),
                     )
-                    warnings.append(f"Match {_text(match.get('match_number'))} forum post")
+                    warnings.append(
+                        f"Match {_text(match.get('match_number'))} forum post"
+                    )
 
-        refreshed = await self.service.snapshot(int(_text(snapshot.round_row["round_number"])))
+        refreshed = await self.service.snapshot(
+            int(_text(snapshot.round_row["round_number"]))
+        )
         try:
             warnings.extend(
-                await runtime_hooks._sync_round_discord(self.bot, self.service, refreshed)
+                await runtime_hooks._sync_round_discord(
+                    self.bot, self.service, refreshed
+                )
             )
         except Exception:
             log.exception("Live Arena Swiss public overview synchronization failed")
@@ -265,7 +315,13 @@ class SwissPublisher:
         for number in (3, 2):
             snapshot = await self.service.snapshot(number)
             if snapshot.round_row is not None and snapshot.status in {
-                "open", "active", "published", "published/open", "ready_to_close", "closed", "correction_in_progress"
+                "open",
+                "active",
+                "published",
+                "published/open",
+                "ready_to_close",
+                "closed",
+                "correction_in_progress",
             }:
                 return snapshot
         return None
@@ -284,6 +340,7 @@ def _thread_name(round_row, match) -> str:
     number = int(_text(round_row.get("round_number")) or 0)
     raw = (
         f"Q{number} • M{int(_text(match['match_number'])):02d} • "
-        f"{_text(match['player_a_display_name'])} vs {_text(match['player_b_display_name'])}"
+        f"{_text(match['player_a_display_name'])} vs "
+        f"{_text(match['player_b_display_name'])}"
     )
     return raw[:100]
