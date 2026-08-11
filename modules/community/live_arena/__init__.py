@@ -15,6 +15,8 @@ from modules.community.live_arena.knockout_completion import install as _install
 from modules.community.live_arena.knockout_runtime import install as _install_knockout_runtime
 from modules.community.live_arena.knockout_tiebreak import install as _install_knockout_tiebreak
 from modules.community.live_arena.knockout_recap_repair import install as _install_knockout_recap_repair
+from modules.community.live_arena.competition_operations_runtime import install as _install_competition_operations
+from modules.community.live_arena.bye_support import install as _install_bye_support
 
 _install_runtime_hooks()
 _install_repair()
@@ -28,3 +30,5 @@ _install_knockout_completion()
 _install_knockout_runtime()
 _install_knockout_tiebreak()
 _install_knockout_recap_repair()
+_install_competition_operations()
+_install_bye_support()
