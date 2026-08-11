@@ -10,11 +10,10 @@ import discord
 from shared.theme import colors
 
 from modules.community.live_arena import knockout
-from modules.community.live_arena.competition import calculate_qualification_standings
 from modules.community.live_arena.organizer_panel import OrganizerView
 from modules.community.live_arena.qualification import ROUND_HEADERS
 from modules.community.live_arena.registration import RegistrationError, _locks, utc_iso
-from modules.community.live_arena.service import _text, load_config
+from modules.community.live_arena.service import _text
 from modules.community.live_arena.views import error_embed
 
 _installed = False
@@ -31,11 +30,11 @@ def install() -> None:
     original_freeze = knockout.KnockoutService.freeze_top8
 
     async def freeze_top8_with_recorded_tiebreaks(self, actor_id: str):
-        config = await load_config(self.sheet_id)
+        config = await knockout.load_config(self.sheet_id)
         tid = config["ACTIVE_TOURNAMENT_ID"]
         rounds = await self.repository.rounds()
         matches = await self.repository.matches()
-        standings = calculate_qualification_standings(matches, tid)
+        standings = knockout.calculate_qualification_standings(matches, tid)
         affected = knockout._competitive_ties(standings[:8], standings)
         if not affected:
             return await original_freeze(self, actor_id)
@@ -197,7 +196,7 @@ async def record_tiebreak_resolution(service, actor_id: str, ordered_ids: list[s
     reason = str(reason or "").strip()
     if not reason:
         raise RegistrationError("A BO3 tiebreak result / reason is required")
-    config = await load_config(service.sheet_id)
+    config = await knockout.load_config(service.sheet_id)
     tid = config["ACTIVE_TOURNAMENT_ID"]
     async with _locks[(service.sheet_id, tid)]:
         old_rounds = await service.repository.rounds()
@@ -208,7 +207,7 @@ async def record_tiebreak_resolution(service, actor_id: str, ordered_ids: list[s
         if knockout._seed_row(old_rounds, tid) is not None:
             raise RegistrationError("Top 8 seeds are already frozen")
 
-        standings = calculate_qualification_standings(matches, tid)
+        standings = knockout.calculate_qualification_standings(matches, tid)
         affected = knockout._competitive_ties(standings[:8], standings)
         groups = _affected_groups(affected)
         candidate = set(ordered_ids)
