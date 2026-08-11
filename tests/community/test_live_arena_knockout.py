@@ -255,7 +255,9 @@ def test_completion_requires_closed_final_with_champion(monkeypatch):
 
     assert summary["champion_discord_user_id"] == "5"
     assert summary["runner_up_discord_user_id"] == "2"
-    assert reg.audit[-1]["event_type"] == "knockout_competition_completed"
+    # The competitive gate itself is validation-only. The existing tournament
+    # lifecycle service owns the authoritative completed transition and audit.
+    assert reg.audit == []
 
 
 def test_completion_rejects_unclosed_final(monkeypatch):
