@@ -11,8 +11,8 @@ from functools import lru_cache
 from uuid import uuid4
 
 from modules.community.live_arena.competition import calculate_qualification_standings
+from modules.community.live_arena.organizer import OrganizerService
 from modules.community.live_arena.qualification import (
-    MATCH_HEADERS,
     ROUND_HEADERS,
     QualificationRepository,
     QualificationSnapshot,
@@ -81,6 +81,13 @@ class SwissQualificationService:
         await self.registration_repository.initialize()
         await self.repository.initialize()
 
+    async def context(self):
+        return await OrganizerService(
+            self.sheet_id,
+            repository=self.registration_repository,
+            clock=self.clock,
+        ).context()
+
     async def snapshot(self, round_number: int) -> QualificationSnapshot:
         _require_swiss_round(round_number)
         config = await load_config(self.sheet_id)
@@ -109,19 +116,7 @@ class SwissQualificationService:
         )
         return QualificationSnapshot(round_rows[0] if round_rows else None, qmatches)
 
-    async def generate_preview(
-        self,
-        actor_id: str,
-        round_number: int,
-        *,
-        regenerate: bool = False,
-    ) -> QualificationSnapshot:
-        """Persist one organizer-only preview for Q2/Q3.
-
-        The preview is based only on canonical finalized qualification results. It may
-        be generated before the previous round closes. Its source fingerprint is saved
-        in ROUNDS.notes so stale previews can never be approved or published silently.
-        """
+    async def generate_preview(self, actor_id: str, round_number: int, *, regenerate: bool = False) -> QualificationSnapshot:
         _require_swiss_round(round_number)
         config = await load_config(self.sheet_id)
         tid = config["ACTIVE_TOURNAMENT_ID"]
@@ -143,7 +138,7 @@ class SwissQualificationService:
                 raise RegistrationError(
                     f"Q{round_number} already has a preview; use deterministic regeneration instead"
                 )
-            if existing is not None and _text(existing.get("status")) not in {"preview"}:
+            if existing is not None and _text(existing.get("status")) != "preview":
                 raise RegistrationError(
                     f"Q{round_number} can only be regenerated while it is a preview"
                 )
@@ -165,17 +160,14 @@ class SwissQualificationService:
             history = _opponent_history(old_matches, tid, before_round=round_number)
             pairs = pair_swiss(players, history)
 
-            # Availability affects scheduling only. It is attached after pair selection.
             availability = await self.registration_repository.availability()
-            slots = await self.registration_repository.availability_slots()
+            _, _, _, slots = await self.context()
             selected = _enabled_availability(availability, slots, tid)
             slot_rank = _slot_rank(slots)
 
             round_id = f"{tid}-Q{round_number}"
             generated_matches = []
-            roster_by_id = {
-                _text(row["discord_user_id"]): row for row in roster
-            }
+            roster_by_id = {_text(row["discord_user_id"]): row for row in roster}
             for index, pair in enumerate(pairs, 1):
                 shared = _shared_slots(
                     pair.player_a.user_id,
@@ -197,7 +189,6 @@ class SwissQualificationService:
 
             now = utc_iso(self.clock().astimezone(UTC))
             fingerprint = source_fingerprint(old_matches, tid, before_round=round_number)
-            notes = f"{_SOURCE_NOTE_PREFIX}{fingerprint}"
             round_row = _blank(ROUND_HEADERS)
             if existing is not None:
                 round_row.update(dict(existing))
@@ -217,9 +208,8 @@ class SwissQualificationService:
                 generated_by_discord_user_id=str(actor_id),
                 approved_at_utc="",
                 approved_by_discord_user_id="",
-                notes=notes,
+                notes=f"{_SOURCE_NOTE_PREFIX}{fingerprint}",
             )
-
             rounds = [
                 dict(row)
                 for row in old_rounds
@@ -256,7 +246,6 @@ class SwissQualificationService:
             return QualificationSnapshot(round_row, tuple(generated_matches))
 
     async def approve_preview(self, actor_id: str, round_number: int) -> QualificationSnapshot:
-        """Approve a current final Q2/Q3 draw without publishing Discord resources yet."""
         _require_swiss_round(round_number)
         config = await load_config(self.sheet_id)
         tid = config["ACTIVE_TOURNAMENT_ID"]
@@ -270,9 +259,7 @@ class SwissQualificationService:
                     f"Q{round_number - 1} must be closed before Q{round_number} can be approved"
                 )
             if target is None or _text(target.get("status")) != "preview":
-                raise RegistrationError(
-                    f"Q{round_number} must have a preview before approval"
-                )
+                raise RegistrationError(f"Q{round_number} must have a preview before approval")
             expected = _source_fingerprint_from_notes(_text(target.get("notes")))
             current = source_fingerprint(old_matches, tid, before_round=round_number)
             if not expected or expected != current:
@@ -315,7 +302,6 @@ class SwissQualificationService:
             return QualificationSnapshot(approved, matches)
 
     async def publish_approved(self, actor_id: str, round_number: int) -> QualificationSnapshot:
-        """Open an approved Q2/Q3 draw and start its fixed six-day deadline."""
         _require_swiss_round(round_number)
         config = await load_config(self.sheet_id)
         tid = config["ACTIVE_TOURNAMENT_ID"]
@@ -406,24 +392,9 @@ class SwissQualificationService:
 
 
 def pair_swiss(players: list[SwissPlayer], opponent_history: set[frozenset[str]]) -> list[SwissPair]:
-    """Return deterministic Q2/Q3 pairings under the agreed hard constraints.
-
-    Hard constraints:
-    - no rematches
-    - same record preferred
-    - cross only immediately adjacent record groups
-    - never pair records two wins apart (e.g. 2-0 vs 0-2)
-
-    Optimization order:
-    1. minimize cross-group pairings
-    2. prefer the lowest-ranked eligible player in the stronger group as floater
-    3. within a record group, prefer high-vs-low
-    4. deterministic Discord-ID fallback for technically equivalent solutions
-    """
     if len(players) % 2:
         raise SwissPairingError("Swiss pairing requires an even player count until bye support lands in 6B-4")
     ordered = sorted(players, key=lambda p: (p.ranking_index, p.user_id))
-    index_by_id = {player.user_id: index for index, player in enumerate(ordered)}
     group_members: dict[tuple[int, int], list[SwissPlayer]] = {}
     for player in ordered:
         group_members.setdefault(player.record, []).append(player)
@@ -438,22 +409,17 @@ def pair_swiss(players: list[SwissPlayer], opponent_history: set[frozenset[str]]
         high_low_penalty = 0
         if cross:
             stronger = a if a.wins > b.wins else b
-            # Lower ranked means larger ranking_index; invert so it costs less.
             float_penalty = len(ordered) - stronger.ranking_index
         else:
             pos_a, size = group_pos[a.user_id]
             pos_b, _ = group_pos[b.user_id]
-            # Ideal high-v-low pairs have positions summing to size-1.
             high_low_penalty = abs((pos_a + pos_b) - (size - 1))
         return cross, float_penalty, high_low_penalty
 
     def valid(a: SwissPlayer, b: SwissPlayer) -> bool:
         if frozenset((a.user_id, b.user_id)) in opponent_history:
             return False
-        if abs(a.wins - b.wins) > 1:
-            return False
-        # With equal rounds played, immediately adjacent groups differ by one win.
-        return True
+        return abs(a.wins - b.wins) <= 1
 
     @lru_cache(maxsize=None)
     def solve(mask: int):
@@ -491,7 +457,6 @@ def pair_swiss(players: list[SwissPlayer], opponent_history: set[frozenset[str]]
     result = []
     for a_id, b_id in solved[1]:
         a, b = by_id[a_id], by_id[b_id]
-        # Present the higher-ranked player as A for stable public rendering.
         if (b.ranking_index, b.user_id) < (a.ranking_index, a.user_id):
             a, b = b, a
         if a.record == b.record:
@@ -510,7 +475,6 @@ def pair_swiss(players: list[SwissPlayer], opponent_history: set[frozenset[str]]
 
 
 def source_fingerprint(matches, tournament_id: str, *, before_round: int) -> str:
-    """Hash finalized prior qualification truth so stale previews are detectable."""
     rows = []
     for row in matches:
         if _text(row.get("tournament_id")) != str(tournament_id):
@@ -538,13 +502,11 @@ def source_fingerprint(matches, tournament_id: str, *, before_round: int) -> str
 def _players_from_roster(roster, standings) -> list[SwissPlayer]:
     standing_by_id = {entry.discord_user_id: entry for entry in standings}
     result = []
-    for index, row in enumerate(roster):
+    for row in roster:
         uid = _text(row.get("discord_user_id"))
         standing = standing_by_id.get(uid)
         if standing is None:
-            raise RegistrationError(
-                f"Cannot Swiss-pair {uid}: no qualification standing exists yet"
-            )
+            raise RegistrationError(f"Cannot Swiss-pair {uid}: no qualification standing exists yet")
         result.append(
             SwissPlayer(
                 user_id=uid,
@@ -654,9 +616,7 @@ def _conflict_report(players, history) -> str:
     groups: dict[str, list[str]] = {}
     for player in players:
         groups.setdefault(player.record_label, []).append(player.display_name)
-    group_text = "; ".join(
-        f"{record}: {', '.join(names)}" for record, names in groups.items()
-    )
+    group_text = "; ".join(f"{record}: {', '.join(names)}" for record, names in groups.items())
     blocked = 0
     for i, a in enumerate(players):
         for b in players[i + 1 :]:
