@@ -54,6 +54,15 @@ def q1_match(number, a, b, score_a, score_b):
     return row
 
 
+SLOTS = [
+    {
+        "slot_id": "MON-00",
+        "enabled": "TRUE",
+        "sort_order": "1",
+    }
+]
+
+
 class RegistrationRepo:
     def __init__(self):
         self.audit = []
@@ -74,15 +83,6 @@ class RegistrationRepo:
 
     async def availability(self):
         return []
-
-    async def availability_slots(self):
-        return [
-            {
-                "slot_id": "MON-00",
-                "enabled": "TRUE",
-                "sort_order": "1",
-            }
-        ]
 
     async def append_audit(self, row):
         self.audit.append(deepcopy(row))
@@ -122,6 +122,7 @@ def make_service(monkeypatch):
         qualification_repository=qrepo,
         clock=lambda: NOW,
     )
+    service.context = AsyncMock(return_value=(None, None, None, SLOTS))
     monkeypatch.setattr(
         swiss,
         "load_config",
