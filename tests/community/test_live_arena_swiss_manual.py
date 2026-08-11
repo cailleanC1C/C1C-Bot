@@ -54,7 +54,7 @@ def test_manual_subset_contains_only_players_implicated_by_rematch():
     assert conflicted_preview_players(current, set(players), players, history) == {"1", "2"}
 
 
-def test_missing_and_duplicate_players_expand_conflicted_subset_without_touching_valid_pair():
+def test_duplicate_player_closes_conflict_subset_over_affected_matches_only():
     players = {
         "1": player("1", 1, 0, 1),
         "2": player("2", 1, 0, 2),
@@ -67,7 +67,7 @@ def test_missing_and_duplicate_players_expand_conflicted_subset_without_touching
 
     conflicted = conflicted_preview_players(current, set(players), players, set())
 
-    assert conflicted == {"3", "6"}
+    assert conflicted == {"3", "4", "5", "6"}
     assert "1" not in conflicted and "2" not in conflicted
 
 
