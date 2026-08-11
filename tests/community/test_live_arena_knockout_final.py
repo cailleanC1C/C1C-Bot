@@ -5,7 +5,7 @@ from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
-from modules.community.live_arena import competition_resolution, knockout_final
+from modules.community.live_arena import competition_resolution
 from modules.community.live_arena.competition_resolution import CompetitionResolutionService
 from modules.community.live_arena.qualification import MATCH_HEADERS, ROUND_HEADERS
 
@@ -77,7 +77,7 @@ class QualificationRepo:
         self.m = deepcopy(matches)
 
 
-def test_final_report_enters_explicit_organizer_queue(monkeypatch):
+def make_service(monkeypatch):
     reg = RegistrationRepo()
     qrepo = QualificationRepo()
     service = CompetitionResolutionService(
@@ -91,11 +91,11 @@ def test_final_report_enters_explicit_organizer_queue(monkeypatch):
         "load_config",
         AsyncMock(return_value={"ACTIVE_TOURNAMENT_ID": TID}),
     )
-    monkeypatch.setattr(
-        knockout_final,
-        "load_config",
-        AsyncMock(return_value={"ACTIVE_TOURNAMENT_ID": TID}),
-    )
+    return service, reg, qrepo
+
+
+def test_final_report_enters_explicit_organizer_queue(monkeypatch):
+    service, _, qrepo = make_service(monkeypatch)
     run(service.initialize())
 
     updated = run(
@@ -116,24 +116,7 @@ def test_final_report_enters_explicit_organizer_queue(monkeypatch):
 
 
 def test_organizer_accept_finalizes_final_report(monkeypatch):
-    reg = RegistrationRepo()
-    qrepo = QualificationRepo()
-    service = CompetitionResolutionService(
-        "sheet",
-        registration_repository=reg,
-        qualification_repository=qrepo,
-        clock=lambda: NOW,
-    )
-    monkeypatch.setattr(
-        competition_resolution,
-        "load_config",
-        AsyncMock(return_value={"ACTIVE_TOURNAMENT_ID": TID}),
-    )
-    monkeypatch.setattr(
-        knockout_final,
-        "load_config",
-        AsyncMock(return_value={"ACTIVE_TOURNAMENT_ID": TID}),
-    )
+    service, _, _ = make_service(monkeypatch)
     run(service.initialize())
     run(service.report_result("1", f"{TID}-F-M01", 3, 1, screenshot_present=True))
 
