@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from modules.community.live_arena.registration import _locks
-from modules.community.live_arena.service import _text, load_config
+from modules.community.live_arena.service import _text
 
 _installed = False
 
@@ -38,10 +38,12 @@ def install() -> None:
             score_b,
             screenshot_present=screenshot_present,
         )
-        config = await load_config(self.sheet_id)
-        tid = config["ACTIVE_TOURNAMENT_ID"]
-        old_rounds = await self.repository.rounds()
+        tid = _text(updated.get("tournament_id"))
         round_id = _text(updated.get("round_id"))
+        if not tid or not round_id:
+            return updated
+
+        old_rounds = await self.repository.rounds()
         round_row = next(
             (
                 row
@@ -73,7 +75,10 @@ def install() -> None:
             if _text(target.get("status")) == "pending_confirmation":
                 target["status"] = "organizer_review"
                 target["confirm_due_at_utc"] = ""
-                await self.repository.persist_matches(matches, previous_matches=old_matches)
+                await self.repository.persist_matches(
+                    matches,
+                    previous_matches=old_matches,
+                )
             return dict(target)
 
     service_cls.report_result = report_result_with_final_confirmation
