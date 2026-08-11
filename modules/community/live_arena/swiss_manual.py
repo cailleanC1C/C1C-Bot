@@ -25,7 +25,6 @@ from modules.community.live_arena.swiss import (
     SwissQualificationService,
     _opponent_history,
     _players_from_roster,
-    _source_fingerprint_from_notes,
     source_fingerprint,
 )
 
@@ -187,13 +186,15 @@ async def repair_preview_pairings(
 
 
 def conflicted_preview_players(current, roster_ids, player_by_id, history) -> set[str]:
-    """Return only players implicated by hard Swiss-rule violations."""
+    """Return the smallest closed set of players implicated by hard-rule violations."""
     conflicted: set[str] = set()
     occurrences: dict[str, int] = {}
     paired_ids: set[str] = set()
+    pair_rows: list[tuple[str, str]] = []
     for row in current:
         a = _text(row.get("player_a_discord_user_id"))
         b = _text(row.get("player_b_discord_user_id"))
+        pair_rows.append((a, b))
         if not a or not b or a == b:
             conflicted.update(uid for uid in (a, b) if uid)
             continue
@@ -210,6 +211,18 @@ def conflicted_preview_players(current, roster_ids, player_by_id, history) -> se
             conflicted.update((a, b))
     conflicted.update(uid for uid, count in occurrences.items() if count != 1)
     conflicted.update(roster_ids - paired_ids)
+
+    # If one endpoint must move, its current opponent also belongs to the repair set.
+    # Close transitively so unaffected rows can truly remain byte-for-byte untouched.
+    changed = True
+    while changed:
+        changed = False
+        for a, b in pair_rows:
+            if not a or not b:
+                continue
+            if (a in conflicted) ^ (b in conflicted):
+                conflicted.update((a, b))
+                changed = True
     return conflicted
 
 
