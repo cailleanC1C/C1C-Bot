@@ -3,6 +3,10 @@
 from modules.community.live_arena.runtime_hooks import install as _install_runtime_hooks
 from modules.community.live_arena.competition_repair import install as _install_repair
 from modules.community.live_arena.competition_followup import install as _install_followup
+from modules.community.live_arena.swiss_repository import install as _install_swiss_repository
+
+_install_swiss_repository()
+
 from modules.community.live_arena.swiss_panel import install as _install_swiss
 from modules.community.live_arena.swiss_runtime import install as _install_swiss_runtime
 from modules.community.live_arena.swiss_manual_panel import install as _install_swiss_manual
