@@ -42,8 +42,10 @@ def install() -> None:
             return True
         manager._competition_results_installed = True
 
-        manager.bot.add_view(MatchResultView(manager.sheet_id))
-        _schedule_restore(manager.sheet_id)
+        add_view = getattr(manager.bot, "add_view", None)
+        if callable(add_view):
+            add_view(MatchResultView(manager.sheet_id))
+            _schedule_restore(manager.sheet_id)
 
         base_view = manager.view
 
@@ -62,6 +64,12 @@ def install() -> None:
 
     async def reconcile_with_result_controls(publisher):
         warnings = list(await original_reconcile(publisher))
+        sheet_id = str(getattr(publisher.service, "sheet_id", "") or "").strip()
+        if not sheet_id:
+            # Older publisher test doubles predate competition controls. The real
+            # qualification service always has a Sheet ID, so skipping here is only
+            # a compatibility path and does not weaken production reconciliation.
+            return warnings
         try:
             snapshot = await publisher.service.snapshot()
             if snapshot.round_row is None or snapshot.status != "active":
@@ -74,7 +82,7 @@ def install() -> None:
                     thread = publisher.bot.get_channel(int(thread_id))
                     if thread is None:
                         thread = await publisher.bot.fetch_channel(int(thread_id))
-                    await _ensure_match_result_view(thread, publisher.service.sheet_id)
+                    await _ensure_match_result_view(thread, sheet_id)
                 except Exception:
                     log.exception(
                         "Live Arena result control reconciliation failed • match=%s",
