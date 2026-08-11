@@ -54,10 +54,6 @@ def install_tournament_lifecycle(manager) -> bool:
     """Install lifecycle controls and tournament-owned organizer panel persistence."""
     if getattr(manager, "_tournament_lifecycle_installed", False):
         return True
-    if manager.__class__.__module__ != "modules.community.live_arena.organizer_panel":
-        return False
-    if manager.__class__.__name__ != "OrganizerPanelManager":
-        return False
     manager._tournament_lifecycle_installed = True
 
     base_view = manager.view
@@ -65,7 +61,10 @@ def install_tournament_lifecycle(manager) -> bool:
 
     def view(status=None):
         result = base_view(status) if accepts_status else base_view()
-        result.add_item(
+        add_item = getattr(result, "add_item", None)
+        if not callable(add_item):
+            return result
+        add_item(
             TournamentLifecycleButton(
                 manager,
                 "Complete Tournament",
@@ -74,7 +73,7 @@ def install_tournament_lifecycle(manager) -> bool:
                 disabled=status is not None and status != "active",
             )
         )
-        result.add_item(
+        add_item(
             TournamentLifecycleButton(
                 manager,
                 "Archive Tournament",
