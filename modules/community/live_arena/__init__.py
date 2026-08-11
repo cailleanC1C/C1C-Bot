@@ -18,6 +18,7 @@ from modules.community.live_arena.knockout_recap_repair import install as _insta
 from modules.community.live_arena.competition_operations_runtime import install as _install_competition_operations
 from modules.community.live_arena.operations_ui_hardening import install as _install_operations_ui_hardening
 from modules.community.live_arena.bye_support import install as _install_bye_support
+from modules.community.live_arena.q1_random_pairing import install as _install_q1_random_pairing
 from modules.community.live_arena.q1_bye_approval import install as _install_q1_bye_approval
 from modules.community.live_arena.bye_action_snapshots import install as _install_bye_action_snapshots
 from modules.community.live_arena.bye_ui import install as _install_bye_ui
@@ -42,6 +43,7 @@ _install_knockout_recap_repair()
 _install_competition_operations()
 _install_operations_ui_hardening()
 _install_bye_support()
+_install_q1_random_pairing()
 _install_q1_bye_approval()
 _install_bye_action_snapshots()
 _install_bye_ui()
