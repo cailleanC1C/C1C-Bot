@@ -235,9 +235,9 @@ def _availability_review_embed(self):
         description=(
             f"**Tournament:** {self.preparation.tournament['tournament_name']}\n"
             f"**Timezone:** {views._timezone_display(self.timezone)}\n"
-            f"**Weekly windows:** {count}\n"
-            f"**Weekdays:** {day_count}\n\n"
-            "These windows repeat every week during the tournament.\n\n"
+            f"**Windows:** {count}\n"
+            f"**Local days:** {day_count}\n\n"
+            "**These are weekly recurring windows, not specific calendar dates.**\n\n"
             f"{detail}"
         ),
     )
@@ -339,8 +339,8 @@ def _registration_embed(snapshot):
         f"**Status:** {snapshot.status or 'unknown'}\n"
         f"**Timezone:** "
         f"{views._timezone_display(snapshot.timezone) if snapshot.timezone else 'Not saved'}\n"
-        f"**Weekly windows:** {count}\n"
-        f"**Weekdays:** {day_count}\n\n"
+        f"**Windows:** {count}\n"
+        f"**Local days:** {day_count}\n\n"
         "**These availability windows repeat every week during the tournament. "
         "They are not tied to specific calendar dates.**\n\n"
         f"{detail}"
@@ -364,7 +364,7 @@ def _registration_actions_init(self, manager, service, snapshot):
     if snapshot.can_update:
         self.add_item(
             views.ActionButton(
-                "Review / Update Weekly Availability",
+                "Update Availability",
                 discord.ButtonStyle.primary,
                 0,
                 self.update,
