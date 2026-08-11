@@ -16,6 +16,7 @@ from modules.community.live_arena.swiss import (
     source_fingerprint,
 )
 from modules.community.live_arena.swiss_panel import SwissPublisher, preview_embed
+from modules.community.live_arena.swiss_refresh import regenerate_current_preview
 
 log = logging.getLogger("c1c.community.live_arena.swiss_runtime")
 _installed = False
@@ -122,6 +123,22 @@ async def _reconcile_preview(manager) -> None:
             else:
                 snapshot = await service.snapshot(number)
             await _sync_preview_message(manager, service, snapshot)
+            return
+
+        # Approval is not allowed to survive a source-result change. Before the next
+        # round opens, demote stale approval back to preview and regenerate.
+        if target is not None and status == "approved":
+            expected = _source_fingerprint_from_notes(_text(target.get("notes")))
+            current = source_fingerprint(matches, tid, before_round=number)
+            if expected != current:
+                try:
+                    snapshot = await regenerate_current_preview(
+                        service, "system", number
+                    )
+                except Exception as exc:
+                    await _post_preview_error(manager, number, exc)
+                    return
+                await _sync_preview_message(manager, service, snapshot)
             return
 
         if target is not None and status in _PUBLIC:
