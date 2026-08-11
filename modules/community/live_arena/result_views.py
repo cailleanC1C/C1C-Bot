@@ -102,9 +102,10 @@ class MatchResultView(discord.ui.View):
             await _post_thread_notice(
                 interaction.channel,
                 (
-                    f"⚠️ Result disputed by <@{interaction.user.id}>. "
+                    f"Result disputed by <@{interaction.user.id}>. "
                     "This matchup is frozen pending organizer review."
                 ),
+                title="Result disputed",
             )
             cancel_match_finalizer(self.sheet_id, _text(updated["match_id"]))
             await _run_post_mutation_sync(self.sheet_id)
@@ -116,7 +117,7 @@ class MatchResultView(discord.ui.View):
 class ReportResultModal(discord.ui.Modal, title="Report Match Result"):
     score = discord.ui.TextInput(
         label="Final series score",
-        placeholder="2-0 or 2-1",
+        placeholder="2-1 (BO3) or 3-2 (Final BO5)",
         min_length=3,
         max_length=5,
     )
@@ -168,11 +169,24 @@ class ReportResultModal(discord.ui.Modal, title="Report Match Result"):
                     "dispute it until the objection window closes."
                 )
                 notice = (
-                    f"📜 Result reported by <@{interaction.user.id}>: "
+                    f"Result reported by <@{interaction.user.id}>: "
                     f"**{_text(updated['reported_score_a'])}-"
                     f"{_text(updated['reported_score_b'])}**. The opponent may "
                     "dispute before the confirmation deadline."
                 )
+                notice_title = "Result reported"
+            elif status == "organizer_review":
+                description = (
+                    f"Recorded Final result **{_text(updated['reported_score_a'])}-"
+                    f"{_text(updated['reported_score_b'])}**. The Final requires "
+                    "explicit organizer confirmation before it becomes official."
+                )
+                notice = (
+                    f"Final result reported by <@{interaction.user.id}>: "
+                    f"**{_text(updated['reported_score_a'])}-"
+                    f"{_text(updated['reported_score_b'])}**. Organizer confirmation is required."
+                )
+                notice_title = "Final result awaiting confirmation"
             else:
                 description = (
                     f"Recorded **{_text(updated['reported_score_a'])}-"
@@ -180,10 +194,11 @@ class ReportResultModal(discord.ui.Modal, title="Report Match Result"):
                     "It is waiting for organizer review and does not affect standings yet."
                 )
                 notice = (
-                    f"⏰ Late result reported by <@{interaction.user.id}>: "
+                    f"Late result reported by <@{interaction.user.id}>: "
                     f"**{_text(updated['reported_score_a'])}-"
                     f"{_text(updated['reported_score_b'])}**. Organizer review is required."
                 )
+                notice_title = "Late result awaiting review"
             await interaction.followup.send(
                 embed=discord.Embed(
                     title="Result reported",
@@ -192,7 +207,11 @@ class ReportResultModal(discord.ui.Modal, title="Report Match Result"):
                 ),
                 ephemeral=True,
             )
-            await _post_thread_notice(interaction.channel, notice)
+            await _post_thread_notice(
+                interaction.channel,
+                notice,
+                title=notice_title,
+            )
             await _run_post_mutation_sync(self.sheet_id)
         except Exception as exc:
             log.exception("Live Arena result report failed")
@@ -263,10 +282,11 @@ async def _finalize_when_due(sheet_id: str, match_id: str, due_text: str) -> Non
 
 
 async def _thread_has_result_screenshot(channel, player_ids: set[str]) -> bool:
+    """A participant image anywhere in the persistent matchup thread is valid evidence."""
     history = getattr(channel, "history", None)
     if not callable(history):
         return False
-    async for message in history(limit=100):
+    async for message in history(limit=None):
         author_id = str(getattr(getattr(message, "author", None), "id", ""))
         if author_id not in player_ids:
             continue
@@ -286,11 +306,11 @@ def _score_for_sheet_sides(raw: str, reporter_id: str, match) -> tuple[int, int]
     cleaned = str(raw or "").strip().replace("–", "-").replace("—", "-")
     parts = [part.strip() for part in cleaned.split("-")]
     if len(parts) != 2:
-        raise RegistrationError("Enter the final score like 2-0 or 2-1")
+        raise RegistrationError("Enter the final score like 2-1 or 3-2")
     try:
         reporter_score, opponent_score = int(parts[0]), int(parts[1])
     except ValueError as exc:
-        raise RegistrationError("Enter the final score like 2-0 or 2-1") from exc
+        raise RegistrationError("Enter the final score like 2-1 or 3-2") from exc
     a = _text(match["player_a_discord_user_id"])
     b = _text(match["player_b_discord_user_id"])
     if reporter_id == a:
@@ -310,10 +330,14 @@ def _parse_utc(value: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
-async def _post_thread_notice(channel, content: str) -> None:
+async def _post_thread_notice(channel, content: str, *, title: str) -> None:
     try:
         await channel.send(
-            content,
+            embed=discord.Embed(
+                title=title,
+                description=content,
+                color=colors.c1c_blue,
+            ),
             allowed_mentions=discord.AllowedMentions(
                 users=True, roles=False, everyone=False
             ),
