@@ -14,6 +14,7 @@ from modules.community.live_arena.knockout_match_format import install as _insta
 from modules.community.live_arena.knockout_completion import install as _install_knockout_completion
 from modules.community.live_arena.knockout_runtime import install as _install_knockout_runtime
 from modules.community.live_arena.knockout_tiebreak import install as _install_knockout_tiebreak
+from modules.community.live_arena.knockout_recap_repair import install as _install_knockout_recap_repair
 
 _install_runtime_hooks()
 _install_repair()
@@ -26,3 +27,4 @@ _install_knockout_match_format()
 _install_knockout_completion()
 _install_knockout_runtime()
 _install_knockout_tiebreak()
+_install_knockout_recap_repair()
