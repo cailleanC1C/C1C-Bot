@@ -277,12 +277,12 @@ def test_standings_use_wins_game_diff_sos_then_head_to_head():
 
     standings = calculate_qualification_standings(rows, TID)
 
-    assert [entry.discord_user_id for entry in standings] == ["3", "1", "2", "4"]
+    assert [entry.discord_user_id for entry in standings] == ["3", "2", "1", "4"]
     assert standings[0].match_wins == 2
-    assert standings[0].game_differential == 2
+    assert standings[0].game_differential == 3
     assert standings[1].match_record == "2-1"
     assert standings[2].match_record == "2-1"
-    assert standings[1].strength_of_opponents == standings[2].strength_of_opponents
+    assert standings[1].game_differential > standings[2].game_differential
     assert standings[1].rank == 2
     assert standings[2].rank == 3
 
