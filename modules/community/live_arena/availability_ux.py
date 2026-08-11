@@ -7,7 +7,8 @@ editor explicitly weekly, date-free, and reusable after signup.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import replace
+from dataclasses import is_dataclass, replace
+from types import SimpleNamespace
 
 import discord
 
@@ -34,6 +35,14 @@ _original_get_registration = registration.RegistrationService.get_registration
 
 def _weekday_key(slot) -> int:
     return slot.local_start.weekday()
+
+
+def _copy_snapshot(snapshot, **changes):
+    if is_dataclass(snapshot):
+        return replace(snapshot, **changes)
+    data = dict(vars(snapshot))
+    data.update(changes)
+    return SimpleNamespace(**data)
 
 
 def _weekly_grouped_lines(localized_slots, selected_ids) -> tuple[str, int, int]:
@@ -78,7 +87,7 @@ async def _prepare_availability_weekly(
         snapshot=snapshot,
     )
     if snapshot is not None:
-        view._weekly_snapshot = replace(snapshot, timezone=timezone)
+        view._weekly_snapshot = _copy_snapshot(snapshot, timezone=timezone)
     return view
 
 
@@ -137,7 +146,7 @@ def _availability_build(self):
         for slot in day_slots
     ]
     select = discord.ui.Select(
-        placeholder="Select ALL weekly times that usually work for you",
+        placeholder="Select ALL available times — multiple choices allowed",
         options=options,
         min_values=0,
         max_values=len(options),
@@ -252,7 +261,7 @@ async def _change_timezone(self, interaction):
         )
         return
 
-    snapshot = replace(
+    snapshot = _copy_snapshot(
         snapshot,
         timezone=self.timezone,
         selected_slot_ids=tuple(sorted(self.selected)),
