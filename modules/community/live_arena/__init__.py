@@ -2,6 +2,7 @@
 
 import modules.community.live_arena.swiss_repository  # noqa: F401
 import modules.community.live_arena.swiss_provisional  # noqa: F401
+import modules.community.live_arena.swiss_validation  # noqa: F401
 from modules.community.live_arena.runtime_hooks import install as _install_runtime_hooks
 from modules.community.live_arena.competition_repair import install as _install_repair
 from modules.community.live_arena.competition_followup import install as _install_followup
