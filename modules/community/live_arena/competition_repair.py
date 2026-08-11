@@ -9,6 +9,7 @@ import discord
 from shared.theme import colors
 
 from modules.community.live_arena.organizer_panel import OrganizerView
+from modules.community.live_arena.service import _text
 from modules.community.live_arena.views import error_embed
 
 log = logging.getLogger("c1c.community.live_arena.competition_repair")
@@ -42,10 +43,8 @@ def install() -> None:
                 add_item(
                     RepairCompetitionDiscordButton(
                         manager,
-                        disabled=status is not None and status not in {
-                            "active",
-                            "completed",
-                        },
+                        disabled=status is not None
+                        and status not in {"active", "completed"},
                     )
                 )
             return result
@@ -71,22 +70,24 @@ class RepairCompetitionDiscordButton(discord.ui.Button):
             return
         await interaction.response.defer(ephemeral=True)
         try:
+            warnings = await _repair_missing_match_threads(self.manager)
             sync = getattr(self.manager, "_competition_sync", None)
             if not callable(sync):
                 raise RuntimeError("Competition Discord repair is not installed")
-            warnings = list(await sync())
+            warnings.extend(await sync())
             try:
                 await self.manager.sync()
             except Exception:
                 log.exception("Live Arena organizer panel repair failed")
                 warnings.append("organizer panel")
+            warnings = list(dict.fromkeys(warnings))
             if warnings:
                 embed = discord.Embed(
                     title="Discord repair incomplete",
                     description=(
                         "Sheet tournament state was left unchanged. These Discord items "
                         "still need attention:\n"
-                        + "\n".join(f"• {item}" for item in dict.fromkeys(warnings))
+                        + "\n".join(f"• {item}" for item in warnings)
                     )[:4096],
                     color=colors.c1c_blue,
                 )
@@ -103,3 +104,85 @@ class RepairCompetitionDiscordButton(discord.ui.Button):
             log.exception("Live Arena explicit Discord repair failed")
             embed = error_embed(exc)
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+async def _repair_missing_match_threads(manager) -> list[str]:
+    """Recreate only missing Duelling Deck threads from Sheet match truth."""
+    from modules.community.live_arena import qualification_panel
+
+    factory = getattr(manager, "qualification_service_factory", None)
+    service = (
+        factory(manager.sheet_id)
+        if factory is not None
+        else qualification_panel.QualificationService(manager.sheet_id)
+    )
+    await service.initialize()
+    snapshot = await service.snapshot()
+    if snapshot.round_row is None or not snapshot.matches:
+        return []
+
+    config = service.repository.config
+    _, (_, tournament), _, slots = await service.context()
+    try:
+        forum = await qualification_panel._resolve_channel(
+            manager.bot, int(config["MATCH_FORUM_CHANNEL_ID"])
+        )
+    except Exception:
+        log.exception("Live Arena repair could not resolve Duelling Deck forum")
+        return ["duelling-decks forum"]
+
+    warnings: list[str] = []
+    for match in snapshot.matches:
+        match_id = _text(match.get("match_id"))
+        thread_id = _text(match.get("thread_id"))
+        existing = None
+        if thread_id:
+            try:
+                existing = await qualification_panel._resolve_existing_thread(
+                    manager.bot, thread_id
+                )
+            except Exception:
+                log.exception(
+                    "Live Arena repair could not verify match thread • match=%s",
+                    match_id,
+                )
+                warnings.append(f"Match {_text(match.get('match_number'))} forum post")
+                continue
+        if existing is not None:
+            continue
+        try:
+            created = await forum.create_thread(
+                name=qualification_panel._thread_name(match),
+                content=(
+                    f"<@{_text(match['player_a_discord_user_id'])}> "
+                    f"<@{_text(match['player_b_discord_user_id'])}>"
+                ),
+                embed=qualification_panel.match_embed(
+                    tournament, snapshot.round_row, match, slots
+                ),
+                allowed_mentions=discord.AllowedMentions(
+                    users=True, roles=False, everyone=False
+                ),
+            )
+            thread = getattr(created, "thread", None)
+            if thread is None and isinstance(created, tuple):
+                thread = created[0]
+            if thread is None:
+                thread = created
+            try:
+                await service.record_thread_id(match_id, str(thread.id))
+            except Exception:
+                try:
+                    await thread.delete(
+                        reason="Live Arena repair thread ID persistence failed"
+                    )
+                except Exception:
+                    log.exception("Live Arena repair cleanup failed")
+                raise
+        except Exception:
+            log.exception(
+                "Live Arena repair failed to recreate match thread • match=%s",
+                match_id,
+            )
+            warnings.append(f"Match {_text(match.get('match_number'))} forum post")
+    return warnings
