@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 import discord
 
+from modules.community.live_arena.messages import load_pr5_config
 from modules.community.live_arena.result_views import set_post_mutation_sync
 from modules.community.live_arena.service import _text, load_config
 from modules.community.live_arena.swiss import (
@@ -53,19 +54,26 @@ def install() -> None:
         async def competition_sync():
             service = SwissQualificationService(manager.sheet_id)
             await service.initialize()
+            warnings: list[str] = []
             for number in (3, 2):
                 snapshot = await service.snapshot(number)
                 if snapshot.round_row is not None and snapshot.status in _PUBLIC:
-                    return await SwissPublisher(manager.bot, service).reconcile(snapshot)
+                    warnings.extend(
+                        await SwissPublisher(manager.bot, service).reconcile(snapshot)
+                    )
+                    await _reconcile_preview(manager)
+                    return list(dict.fromkeys(warnings))
             if callable(base_competition_sync):
-                return await base_competition_sync()
-            return []
+                warnings.extend(await base_competition_sync())
+            await _reconcile_preview(manager)
+            return list(dict.fromkeys(warnings))
 
         manager._competition_sync = competition_sync
         set_post_mutation_sync(manager.sheet_id, competition_sync)
 
         base_sync = getattr(manager, "sync", None)
         if callable(base_sync):
+
             async def sync_with_swiss(*args, **kwargs):
                 result = await base_sync(*args, **kwargs)
                 try:
@@ -81,7 +89,7 @@ def install() -> None:
 
 
 async def _reconcile_preview(manager) -> None:
-    """Generate the final preview after closure and keep exactly one Captain's Table preview."""
+    """Keep one preview current and auto-create the final preview after round closure."""
     service = SwissQualificationService(manager.sheet_id)
     await service.initialize()
     config = await load_config(manager.sheet_id)
@@ -96,9 +104,34 @@ async def _reconcile_preview(manager) -> None:
     for number in (2, 3):
         previous = _round(rounds, number - 1)
         target = _round(rounds, number)
+        status = _text(target.get("status")) if target else ""
+
+        # An early organizer preview is live state, even while the current round is
+        # still open. Finalized-result changes invalidate it immediately.
+        if target is not None and status == "preview":
+            expected = _source_fingerprint_from_notes(_text(target.get("notes")))
+            current = source_fingerprint(matches, tid, before_round=number)
+            if expected != current:
+                try:
+                    snapshot = await service.generate_preview(
+                        "system", number, regenerate=True
+                    )
+                except Exception as exc:
+                    await _post_preview_error(manager, number, exc)
+                    return
+            else:
+                snapshot = await service.snapshot(number)
+            await _sync_preview_message(manager, service, snapshot)
+            return
+
+        if target is not None and status in _PUBLIC:
+            await _retire_preview_message(manager, service, number)
+            continue
+
         if previous is None or _text(previous.get("status")) != "closed":
             continue
 
+        # Closure is the final-draw trigger if no preview exists yet.
         if target is None:
             try:
                 snapshot = await service.generate_preview("system", number)
@@ -108,28 +141,10 @@ async def _reconcile_preview(manager) -> None:
             await _sync_preview_message(manager, service, snapshot)
             return
 
-        status = _text(target.get("status"))
-        if status == "preview":
-            expected = _source_fingerprint_from_notes(_text(target.get("notes")))
-            current = source_fingerprint(matches, tid, before_round=number)
-            if expected != current:
-                try:
-                    snapshot = await service.generate_preview("system", number, regenerate=True)
-                except Exception as exc:
-                    await _post_preview_error(manager, number, exc)
-                    return
-            else:
-                snapshot = await service.snapshot(number)
-            await _sync_preview_message(manager, service, snapshot)
-            return
-
-        if status in _PUBLIC:
-            await _retire_preview_message(manager, service, number)
-
 
 async def _sync_preview_message(manager, service, snapshot) -> None:
     number = int(_text(snapshot.round_row.get("round_number")))
-    config = await load_config(manager.sheet_id)
+    config, _ = await load_pr5_config(manager.sheet_id)
     channel_id = _text(config.get("ORGANIZER_CHANNEL_ID"))
     if not channel_id:
         raise RuntimeError("CONFIG: missing ORGANIZER_CHANNEL_ID for Swiss preview")
@@ -141,7 +156,11 @@ async def _sync_preview_message(manager, service, snapshot) -> None:
         _text(snapshot.round_row["tournament_id"]), "swiss_preview", f"q{number}"
     )
     message = None
-    if resource and _text(resource.get("state")) == "active" and _text(resource.get("message_id")):
+    if (
+        resource
+        and _text(resource.get("state")) == "active"
+        and _text(resource.get("message_id"))
+    ):
         try:
             message = await channel.fetch_message(int(_text(resource["message_id"])))
         except discord.NotFound:
@@ -159,9 +178,7 @@ async def _sync_preview_message(manager, service, snapshot) -> None:
         resource_key=f"q{number}",
         channel_id=channel_id,
         message_id=str(message.id),
-        created_at_utc=(
-            _text(resource.get("created_at_utc")) if resource else now
-        ),
+        created_at_utc=(_text(resource.get("created_at_utc")) if resource else now),
         updated_at_utc=now,
         state="active",
         notes="Organizer-only Swiss preview; not official until approved/published",
@@ -205,7 +222,7 @@ async def _retire_preview_message(manager, service, number: int) -> None:
 
 async def _post_preview_error(manager, number: int, exc: Exception) -> None:
     try:
-        config = await load_config(manager.sheet_id)
+        config, _ = await load_pr5_config(manager.sheet_id)
         channel_id = _text(config.get("ORGANIZER_CHANNEL_ID"))
         if not channel_id:
             return
