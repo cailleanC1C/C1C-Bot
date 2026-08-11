@@ -54,6 +54,10 @@ def install_tournament_lifecycle(manager) -> bool:
     """Install lifecycle controls and tournament-owned organizer panel persistence."""
     if getattr(manager, "_tournament_lifecycle_installed", False):
         return True
+    if manager.__class__.__module__ != "modules.community.live_arena.organizer_panel":
+        return False
+    if manager.__class__.__name__ != "OrganizerPanelManager":
+        return False
     manager._tournament_lifecycle_installed = True
 
     base_view = manager.view
