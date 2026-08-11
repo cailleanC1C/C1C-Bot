@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+from modules.community.live_arena import swiss_manual
 from modules.community.live_arena.bye_support import choose_ranked_bye, previous_bye_users
 from modules.community.live_arena.competition_operations import _mandatory_time
 from modules.community.live_arena.result_views import MatchResultView
@@ -100,3 +101,67 @@ def test_scheduling_button_is_disabled_when_result_reporting_is_disabled():
     )
 
     assert scheduling.disabled is True
+
+
+def test_swiss_manual_validation_accepts_one_bye_plus_complete_pairs():
+    current = [
+        {
+            "player_a_discord_user_id": "1",
+            "player_b_discord_user_id": "2",
+            "notes": "Swiss pairing",
+        },
+        {
+            "player_a_discord_user_id": "3",
+            "player_b_discord_user_id": "4",
+            "notes": "Swiss pairing",
+        },
+        {
+            "player_a_discord_user_id": "5",
+            "player_b_discord_user_id": "",
+            "notes": "QUALIFICATION_BYE",
+        },
+    ]
+    players = {
+        uid: SimpleNamespace(wins=1, losses=0)
+        for uid in ("1", "2", "3", "4", "5")
+    }
+
+    swiss_manual._validate_complete_candidate(
+        current,
+        set(players),
+        players,
+        set(),
+    )
+
+
+def test_swiss_conflict_detection_does_not_treat_the_bye_as_missing_pairing():
+    current = [
+        {
+            "player_a_discord_user_id": "1",
+            "player_b_discord_user_id": "2",
+            "notes": "Swiss pairing",
+        },
+        {
+            "player_a_discord_user_id": "3",
+            "player_b_discord_user_id": "4",
+            "notes": "Swiss pairing",
+        },
+        {
+            "player_a_discord_user_id": "5",
+            "player_b_discord_user_id": "",
+            "notes": "QUALIFICATION_BYE",
+        },
+    ]
+    players = {
+        uid: SimpleNamespace(wins=1, losses=0)
+        for uid in ("1", "2", "3", "4", "5")
+    }
+
+    conflicted = swiss_manual.conflicted_preview_players(
+        current,
+        set(players),
+        players,
+        set(),
+    )
+
+    assert conflicted == set()
