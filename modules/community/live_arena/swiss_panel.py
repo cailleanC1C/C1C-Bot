@@ -285,9 +285,20 @@ class SwissPublisher:
                         thread = created[0]
                     if thread is None:
                         thread = created
-                    await self._record_thread_id(
-                        _text(match["match_id"]), str(thread.id)
-                    )
+                    try:
+                        await self._record_thread_id(
+                            _text(match["match_id"]), str(thread.id)
+                        )
+                    except Exception:
+                        try:
+                            await thread.delete(
+                                reason="Live Arena thread ID persistence failed"
+                            )
+                        except Exception:
+                            log.exception(
+                                "Live Arena Swiss untracked forum post cleanup failed"
+                            )
+                        raise
                     match["thread_id"] = str(thread.id)
                 except Exception:
                     log.exception(
