@@ -226,7 +226,7 @@ def _availability_embed(self):
             "**Select ALL time windows you could usually play on this weekday. "
             "You can choose more than one.**\n"
             "Use the **MON–SUN** buttons to move between weekdays.\n"
-            "You need at least **3 windows across 2 different weekdays**.\n\n"
+            "You need at least **3 windows across 2 different days of the week**.\n\n"
             f"Selected: **{count} of minimum 3** windows across "
             f"**{days} of minimum 2** weekdays."
         ),
