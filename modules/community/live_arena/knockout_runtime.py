@@ -19,8 +19,15 @@ from modules.community.live_arena.views import error_embed
 
 log = logging.getLogger("c1c.community.live_arena.knockout_runtime")
 _installed = False
-
-_PUBLIC = {"open", "active", "published", "published/open", "ready_to_close", "closed", "correction_in_progress"}
+_PUBLIC = {
+    "open",
+    "active",
+    "published",
+    "published/open",
+    "ready_to_close",
+    "closed",
+    "correction_in_progress",
+}
 
 
 def install() -> None:
@@ -29,8 +36,7 @@ def install() -> None:
         return
     _installed = True
 
-    from modules.community.live_arena import qualification_panel
-    from modules.community.live_arena import tournament_lifecycle
+    from modules.community.live_arena import qualification_panel, tournament_lifecycle
 
     original_install = qualification_panel.install_qualification
     original_execute_lifecycle = tournament_lifecycle._execute_lifecycle
@@ -73,32 +79,31 @@ def install() -> None:
             return list(dict.fromkeys(warnings))
 
         manager._competition_sync = competition_sync
-
-        # Result views keep a callback reference; the last installed competition sync
-        # must be the one invoked after knockout result mutations.
         from modules.community.live_arena.result_views import set_post_mutation_sync
+
         set_post_mutation_sync(manager.sheet_id, competition_sync)
         return True
 
     async def execute_lifecycle_with_knockout_guard(interaction, manager, action):
-        if action == "complete":
-            try:
-                service = KnockoutService(manager.sheet_id)
-                await service.initialize()
-                summary = await service.complete_tournament(str(interaction.user.id))
-            except Exception as exc:
-                log.exception("Live Arena completion blocked by knockout state")
-                await interaction.followup.send(embed=error_embed(exc), ephemeral=True)
-                return
+        if action != "complete":
             await original_execute_lifecycle(interaction, manager, action)
-            try:
-                _, tournament, *_ = await manager.data(interaction.guild)
-                if _text(getattr(tournament, "status", "")) == "completed":
-                    await _sync_final_recap(manager, service, summary)
-            except Exception:
-                log.exception("Live Arena final recap synchronization failed")
             return
+        try:
+            service = KnockoutService(manager.sheet_id)
+            await service.initialize()
+            summary = await service.complete_tournament(str(interaction.user.id))
+        except Exception as exc:
+            log.exception("Live Arena completion blocked by knockout state")
+            await interaction.followup.send(embed=error_embed(exc), ephemeral=True)
+            return
+
         await original_execute_lifecycle(interaction, manager, action)
+        try:
+            _, tournament, *_ = await manager.data(interaction.guild)
+            if _text(getattr(tournament, "status", "")) == "completed":
+                await _sync_final_recap(manager, service, summary)
+        except Exception:
+            log.exception("Live Arena final recap synchronization failed")
 
     qualification_panel.install_qualification = install_with_knockout
     tournament_lifecycle._execute_lifecycle = execute_lifecycle_with_knockout_guard
@@ -127,7 +132,7 @@ class FreezeTop8Button(discord.ui.Button):
             except RegistrationError as exc:
                 if "already exists" not in str(exc):
                     raise
-                preview = await _snapshot(service, "quarterfinal")
+                preview = await service.snapshot("quarterfinal")
             await _sync_preview_message(self.manager, service, preview)
             lines = [f"**#{seed['seed']}** <@{seed['discord_user_id']}>" for seed in seeds]
             await interaction.followup.send(
@@ -167,18 +172,26 @@ class OpenKnockoutButton(discord.ui.Button):
             stage = await _current_preview_stage(service)
             if stage is None:
                 raise RegistrationError("There is no knockout preview waiting for approval")
+            refreshed = await service.refresh_preview_if_stale(
+                str(interaction.user.id), stage
+            )
+            if refreshed is not None:
+                await _sync_preview_message(self.manager, service, refreshed)
             opened = await service.approve_and_open(str(interaction.user.id), stage)
             warnings = await KnockoutPublisher(self.manager.bot, service).reconcile(opened)
             await _retire_preview_message(self.manager, service, stage)
             try:
                 await self.manager.sync()
             except Exception:
-                log.exception("Live Arena organizer panel refresh after knockout publication failed")
+                log.exception(
+                    "Live Arena organizer panel refresh after knockout publication failed"
+                )
                 warnings.append("organizer panel")
             embed = discord.Embed(
                 title=f"{KNOCKOUT[stage]['name']} opened",
                 description=(
-                    f"**{len(opened.matches)}** matchup{'s are' if len(opened.matches) != 1 else ' is'} now official. "
+                    f"**{len(opened.matches)}** matchup"
+                    f"{'s are' if len(opened.matches) != 1 else ' is'} now official. "
                     "The six-day round window starts now."
                 ),
                 color=colors.c1c_blue,
@@ -186,13 +199,19 @@ class OpenKnockoutButton(discord.ui.Button):
             if stage == "final":
                 embed.add_field(
                     name="Final confirmation",
-                    value="The Final is BO5. A reported result does not become final until an organizer explicitly confirms it.",
+                    value=(
+                        "The Final is BO5. A reported result does not become final "
+                        "until an organizer explicitly confirms it."
+                    ),
                     inline=False,
                 )
             if warnings:
                 embed.add_field(
                     name="Sync warning",
-                    value=("Sheet state is saved, but these Discord items need repair:\n" + "\n".join(f"• {item}" for item in dict.fromkeys(warnings)))[:1024],
+                    value=(
+                        "Sheet state is saved, but these Discord items need repair:\n"
+                        + "\n".join(f"• {item}" for item in dict.fromkeys(warnings))
+                    )[:1024],
                     inline=False,
                 )
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -227,7 +246,9 @@ class KnockoutPublisher:
         warnings: list[str] = []
         matches = [dict(row) for row in snapshot.matches]
         try:
-            forum = await qualification_panel._resolve_channel(self.bot, int(config["MATCH_FORUM_CHANNEL_ID"]))
+            forum = await qualification_panel._resolve_channel(
+                self.bot, int(config["MATCH_FORUM_CHANNEL_ID"])
+            )
         except Exception:
             log.exception("Live Arena knockout forum resolution failed")
             forum = None
@@ -235,16 +256,28 @@ class KnockoutPublisher:
 
         if forum is not None:
             for match in matches:
-                label = f"{KNOCKOUT[stage]['name']} match {_text(match.get('match_number'))} forum post"
+                label = (
+                    f"{KNOCKOUT[stage]['name']} match "
+                    f"{_text(match.get('match_number'))} forum post"
+                )
                 try:
-                    existing = await qualification_panel._resolve_existing_thread(self.bot, _text(match.get("thread_id")))
+                    existing = await qualification_panel._resolve_existing_thread(
+                        self.bot, _text(match.get("thread_id"))
+                    )
                     if existing is not None:
                         continue
                     created = await forum.create_thread(
                         name=_thread_name(stage, match),
-                        content=(f"<@{_text(match['player_a_discord_user_id'])}> <@{_text(match['player_b_discord_user_id'])}>"),
-                        embed=qualification_panel.match_embed(tournament, snapshot.round_row, match, slots),
-                        allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+                        content=(
+                            f"<@{_text(match['player_a_discord_user_id'])}> "
+                            f"<@{_text(match['player_b_discord_user_id'])}>"
+                        ),
+                        embed=qualification_panel.match_embed(
+                            tournament, snapshot.round_row, match, slots
+                        ),
+                        allowed_mentions=discord.AllowedMentions(
+                            users=True, roles=False, everyone=False
+                        ),
                     )
                     thread = getattr(created, "thread", None)
                     if thread is None and isinstance(created, tuple):
@@ -252,20 +285,33 @@ class KnockoutPublisher:
                     if thread is None:
                         thread = created
                     try:
-                        await _record_thread_id(self.service, _text(match["match_id"]), str(thread.id))
+                        await _record_thread_id(
+                            self.service, _text(match["match_id"]), str(thread.id)
+                        )
                     except Exception:
                         try:
-                            await thread.delete(reason="Live Arena knockout thread ID persistence failed")
+                            await thread.delete(
+                                reason="Live Arena knockout thread ID persistence failed"
+                            )
                         except Exception:
-                            log.exception("Live Arena knockout untracked thread cleanup failed")
+                            log.exception(
+                                "Live Arena knockout untracked thread cleanup failed"
+                            )
                         raise
                 except Exception:
-                    log.exception("Live Arena knockout matchup publication failed • match=%s", _text(match.get("match_id")))
+                    log.exception(
+                        "Live Arena knockout matchup publication failed • match=%s",
+                        _text(match.get("match_id")),
+                    )
                     warnings.append(label)
 
-        refreshed = await _snapshot(self.service, stage)
+        refreshed = await self.service.snapshot(stage)
         try:
-            warnings.extend(await runtime_hooks._sync_round_discord(self.bot, self.service, refreshed))
+            warnings.extend(
+                await runtime_hooks._sync_round_discord(
+                    self.bot, self.service, refreshed
+                )
+            )
         except Exception:
             log.exception("Live Arena knockout Victory Ledger synchronization failed")
             warnings.append("Victory Ledger overview")
@@ -276,16 +322,22 @@ async def _reconcile_knockout(manager, service: KnockoutService) -> list[str]:
     warnings: list[str] = []
     config = await load_config(manager.sheet_id)
     tid = config["ACTIVE_TOURNAMENT_ID"]
-    rounds = [row for row in await service.repository.rounds() if _text(row.get("tournament_id")) == tid]
+    rounds = [
+        row
+        for row in await service.repository.rounds()
+        if _text(row.get("tournament_id")) == tid
+    ]
 
-    # Reconcile whichever knockout round is public now.
     for stage in ("final", "semifinal", "quarterfinal"):
         row = _round_for_stage(rounds, tid, stage)
         if row is not None and _text(row.get("status")) in _PUBLIC:
-            warnings.extend(await KnockoutPublisher(manager.bot, service).reconcile(await _snapshot(service, stage)))
+            warnings.extend(
+                await KnockoutPublisher(manager.bot, service).reconcile(
+                    await service.snapshot(stage)
+                )
+            )
             break
 
-    # After a round closes, generate exactly one organizer-only next preview.
     qf = _round_for_stage(rounds, tid, "quarterfinal")
     sf = _round_for_stage(rounds, tid, "semifinal")
     final = _round_for_stage(rounds, tid, "final")
@@ -300,7 +352,10 @@ async def _reconcile_knockout(manager, service: KnockoutService) -> list[str]:
             for stage in ("final", "semifinal", "quarterfinal"):
                 row = _round_for_stage(rounds, tid, stage)
                 if row is not None and _text(row.get("status")) == "preview":
-                    await _sync_preview_message(manager, service, await _snapshot(service, stage))
+                    snapshot = await service.refresh_preview_if_stale("system", stage)
+                    if snapshot is None:
+                        snapshot = await service.snapshot(stage)
+                    await _sync_preview_message(manager, service, snapshot)
                     break
     except Exception:
         log.exception("Live Arena knockout preview reconciliation failed")
@@ -314,13 +369,21 @@ async def _sync_preview_message(manager, service, snapshot) -> None:
     stage = _text(snapshot.round_row.get("round_stage")).lower()
     config, _ = await load_pr5_config(manager.sheet_id)
     channel_id = _text(config.get("ORGANIZER_CHANNEL_ID"))
+    if not channel_id:
+        raise RegistrationError("CONFIG.ORGANIZER_CHANNEL_ID is required")
     channel = manager.bot.get_channel(int(channel_id))
     if channel is None:
         channel = await manager.bot.fetch_channel(int(channel_id))
     tid = _text(snapshot.round_row.get("tournament_id"))
-    resource = await service.registration_repository.discord_resource(tid, "knockout_preview", stage)
+    resource = await service.registration_repository.discord_resource(
+        tid, "knockout_preview", stage
+    )
     message = None
-    if resource and _text(resource.get("state")) == "active" and _text(resource.get("message_id")):
+    if (
+        resource
+        and _text(resource.get("state")) == "active"
+        and _text(resource.get("message_id"))
+    ):
         try:
             message = await channel.fetch_message(int(_text(resource["message_id"])))
         except discord.NotFound:
@@ -345,11 +408,11 @@ async def _sync_preview_message(manager, service, snapshot) -> None:
 
 
 async def _retire_preview_message(manager, service, stage: str) -> None:
-    from modules.community.live_arena.messages import load_pr5_config
-
     config = await load_config(manager.sheet_id)
     tid = config["ACTIVE_TOURNAMENT_ID"]
-    resource = await service.registration_repository.discord_resource(tid, "knockout_preview", stage)
+    resource = await service.registration_repository.discord_resource(
+        tid, "knockout_preview", stage
+    )
     if not resource or _text(resource.get("state")) != "active":
         return
     message_id = _text(resource.get("message_id"))
@@ -380,51 +443,134 @@ async def _retire_preview_message(manager, service, stage: str) -> None:
 
 
 async def _sync_final_recap(manager, service: KnockoutService, summary) -> None:
+    """Create/edit one final recap after lifecycle completion succeeds."""
     from modules.community.live_arena import qualification_panel
 
     config = service.repository.config
-    channel = await qualification_panel._resolve_channel(manager.bot, int(config["ROUND_OVERVIEW_CHANNEL_ID"]))
+    channel = await qualification_panel._resolve_channel(
+        manager.bot, int(config["ROUND_OVERVIEW_CHANNEL_ID"])
+    )
     seeds = await service.seed_snapshot()
-    rounds = await service.repository.rounds()
     matches = await service.repository.matches()
     tid = summary["tournament_id"]
-    qf = [row for row in matches if _text(row.get("tournament_id")) == tid and _text(row.get("round_id")) == f"{tid}-QF"]
-    sf = [row for row in matches if _text(row.get("tournament_id")) == tid and _text(row.get("round_id")) == f"{tid}-SF"]
-    final = [row for row in matches if _text(row.get("tournament_id")) == tid and _text(row.get("round_id")) == f"{tid}-F"]
+    qf = sorted(
+        [
+            row
+            for row in matches
+            if _text(row.get("tournament_id")) == tid
+            and _text(row.get("round_id")) == f"{tid}-QF"
+        ],
+        key=lambda row: int(_text(row.get("match_number")) or 0),
+    )
+    sf = [
+        row
+        for row in matches
+        if _text(row.get("tournament_id")) == tid
+        and _text(row.get("round_id")) == f"{tid}-SF"
+    ]
     champion = summary["champion_discord_user_id"]
     runner = summary["runner_up_discord_user_id"]
-    semifinalists = []
+    semifinalists: list[str] = []
     for row in sf:
         winner = _text(row.get("final_winner_discord_user_id"))
-        for uid in (_text(row.get("player_a_discord_user_id")), _text(row.get("player_b_discord_user_id"))):
+        for uid in (
+            _text(row.get("player_a_discord_user_id")),
+            _text(row.get("player_b_discord_user_id")),
+        ):
             if uid and uid != winner:
                 semifinalists.append(uid)
+
     embed = discord.Embed(
         title="Tournament complete",
         description=f"🏆 **Champion:** <@{champion}>\n🥈 **Runner-up:** <@{runner}>",
         color=colors.c1c_blue,
     )
     if semifinalists:
-        embed.add_field(name="Semifinalists", value="\n".join(f"<@{uid}>" for uid in semifinalists), inline=False)
-    embed.add_field(name="Top 8", value="\n".join(f"**#{seed['seed']}** <@{seed['discord_user_id']}>" for seed in seeds)[:1024], inline=False)
+        embed.add_field(
+            name="Semifinalists",
+            value="\n".join(f"<@{uid}>" for uid in semifinalists),
+            inline=False,
+        )
+    qf_lines = []
+    for row in qf:
+        winner = _text(row.get("final_winner_discord_user_id"))
+        qf_lines.append(
+            f"M{_text(row.get('match_number'))}: "
+            f"<@{_text(row.get('player_a_discord_user_id'))}> vs "
+            f"<@{_text(row.get('player_b_discord_user_id'))}> → "
+            f"<@{winner}>"
+        )
+    if qf_lines:
+        embed.add_field(
+            name="Top 8 bracket",
+            value="\n".join(qf_lines)[:1024],
+            inline=False,
+        )
+    embed.add_field(
+        name="Frozen seeds",
+        value="\n".join(
+            f"**#{seed['seed']}** <@{seed['discord_user_id']}>" for seed in seeds
+        )[:1024],
+        inline=False,
+    )
+
     participants = await service.registration_repository.participants()
-    participated = []
     qualification_ids = {f"{tid}-Q1", f"{tid}-Q2", f"{tid}-Q3"}
-    played_ids = set()
+    played_ids: set[str] = set()
     for row in matches:
-        if _text(row.get("tournament_id")) != tid or _text(row.get("round_id")) not in qualification_ids:
+        if (
+            _text(row.get("tournament_id")) != tid
+            or _text(row.get("round_id")) not in qualification_ids
+            or _text(row.get("final_result_type")) != "played"
+        ):
             continue
-        if _text(row.get("status")) not in {"finalized", "forfeit", "double_forfeit", "bye"}:
-            continue
-        played_ids.update(filter(None, (_text(row.get("player_a_discord_user_id")), _text(row.get("player_b_discord_user_id")))))
+        played_ids.update(
+            filter(
+                None,
+                (
+                    _text(row.get("player_a_discord_user_id")),
+                    _text(row.get("player_b_discord_user_id")),
+                ),
+            )
+        )
     participated = [
         _text(row.get("discord_user_id"))
         for row in participants
-        if _text(row.get("tournament_id")) == tid and _text(row.get("discord_user_id")) in played_ids
+        if _text(row.get("tournament_id")) == tid
+        and _text(row.get("discord_user_id")) in played_ids
     ]
     if participated:
-        embed.add_field(name="Crew who took the field", value=" ".join(f"<@{uid}>" for uid in participated)[:1024], inline=False)
-    await channel.send(embed=embed)
+        embed.add_field(
+            name="Participants",
+            value=" ".join(f"<@{uid}>" for uid in participated)[:1024],
+            inline=False,
+        )
+
+    resource = await service.registration_repository.discord_resource(
+        tid, "final_recap", "main"
+    )
+    message = None
+    if resource and _text(resource.get("message_id")):
+        try:
+            message = await channel.fetch_message(int(_text(resource["message_id"])))
+        except discord.NotFound:
+            message = None
+    if message is None:
+        message = await channel.send(embed=embed)
+    else:
+        await message.edit(embed=embed)
+    now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    await service.registration_repository.upsert_discord_resource(
+        tournament_id=tid,
+        resource_type="final_recap",
+        resource_key="main",
+        channel_id=str(channel.id),
+        message_id=str(message.id),
+        created_at_utc=_text(resource.get("created_at_utc")) if resource else now,
+        updated_at_utc=now,
+        state="active",
+        notes="Final tournament recap",
+    )
 
 
 async def _record_thread_id(service, match_id: str, thread_id: str) -> None:
@@ -435,21 +581,6 @@ async def _record_thread_id(service, match_id: str, thread_id: str) -> None:
         clock=service.clock,
     )
     await helper.record_thread_id(match_id, thread_id)
-
-
-async def _snapshot(service: KnockoutService, stage: str) -> QualificationSnapshot:
-    meta = KNOCKOUT[stage]
-    config = await load_config(service.sheet_id)
-    tid = config["ACTIVE_TOURNAMENT_ID"]
-    round_id = f"{tid}-{meta['suffix']}"
-    rounds = await service.repository.rounds()
-    matches = await service.repository.matches()
-    row = _round_by_id(rounds, tid, round_id)
-    qmatches = tuple(sorted(
-        [dict(item) for item in matches if _text(item.get("tournament_id")) == tid and _text(item.get("round_id")) == round_id],
-        key=lambda item: int(_text(item.get("match_number")) or 0),
-    ))
-    return QualificationSnapshot(dict(row) if row else None, qmatches)
 
 
 async def _current_preview_stage(service: KnockoutService) -> str | None:
@@ -468,25 +599,40 @@ def _preview_embed(snapshot) -> discord.Embed:
     name = KNOCKOUT[stage]["name"]
     embed = discord.Embed(
         title=f"{name} · Organizer Preview",
-        description="This draw is **not official**. No Duelling Deck threads or player notifications exist until approval.",
+        description=(
+            "This draw is **not official**. No Duelling Deck threads or player "
+            "notifications exist until approval."
+        ),
         color=colors.c1c_blue,
     )
     for row in snapshot.matches:
         embed.add_field(
             name=f"Match {_text(row.get('match_number'))}",
-            value=(f"**{_text(row.get('player_a_display_name'))}** vs **{_text(row.get('player_b_display_name'))}**"),
+            value=(
+                f"**{_text(row.get('player_a_display_name'))}** vs "
+                f"**{_text(row.get('player_b_display_name'))}**"
+            ),
             inline=False,
         )
-    if stage == "final":
-        embed.add_field(name="Format", value="BO5 · organizer confirmation required for the final result", inline=False)
-    else:
-        embed.add_field(name="Format", value="BO3", inline=False)
+    embed.add_field(
+        name="Format",
+        value=(
+            "BO5 · organizer confirmation required for the final result"
+            if stage == "final"
+            else "BO3"
+        ),
+        inline=False,
+    )
     return embed
 
 
 def _thread_name(stage: str, match) -> str:
     label = {"quarterfinal": "QF", "semifinal": "SF", "final": "Final"}[stage]
-    raw = f"{label} • M{int(_text(match.get('match_number')) or 0):02d} • {_text(match.get('player_a_display_name'))} vs {_text(match.get('player_b_display_name'))}"
+    raw = (
+        f"{label} • M{int(_text(match.get('match_number')) or 0):02d} • "
+        f"{_text(match.get('player_a_display_name'))} vs "
+        f"{_text(match.get('player_b_display_name'))}"
+    )
     return raw[:100]
 
 
@@ -495,7 +641,12 @@ def _round_for_stage(rounds, tid, stage):
 
 
 def _round_by_id(rounds, tid, round_id):
-    found = [row for row in rounds if _text(row.get("tournament_id")) == tid and _text(row.get("round_id")) == round_id]
+    found = [
+        row
+        for row in rounds
+        if _text(row.get("tournament_id")) == tid
+        and _text(row.get("round_id")) == round_id
+    ]
     if len(found) > 1:
         raise RegistrationError(f"ROUNDS contains duplicate {round_id}")
     return found[0] if found else None
