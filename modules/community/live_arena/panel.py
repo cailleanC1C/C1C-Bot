@@ -88,10 +88,13 @@ class LiveArenaPanelManager:
             if channel is None:
                 channel = await self.bot.fetch_channel(int(config["SIGNUP_CHANNEL_ID"]))
 
-            repository_config = getattr(repository, "config", {}) or {}
-            registry_enabled = bool(
-                _text(repository_config.get("TOURNAMENT_DISCORD_RESOURCES_TAB", ""))
-            )
+            repository_config = getattr(repository, "config", None)
+            if repository_config is None:
+                registry_enabled = callable(getattr(repository, "discord_resource", None))
+            else:
+                registry_enabled = bool(
+                    _text(repository_config.get("TOURNAMENT_DISCORD_RESOURCES_TAB", ""))
+                )
             resource = None
             if registry_enabled:
                 resource = await repository.discord_resource(
