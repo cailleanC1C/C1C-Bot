@@ -1,4 +1,4 @@
-"""Withdrawal effects across unpublished qualification and knockout rounds."""
+"""Withdrawal effects across unpublished knockout rounds."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from modules.community.live_arena.competition import (
     _append_note,
     _mark_round_ready_if_complete,
 )
-from modules.community.live_arena.competition_operations import CompetitionOperationsService
 from modules.community.live_arena.qualification import QualificationSnapshot
 from modules.community.live_arena.registration import utc_iso
 from modules.community.live_arena.service import _text
@@ -26,92 +25,8 @@ def install() -> None:
         return
     _installed = True
 
-    _install_withdrawal_cleanup()
     _install_knockout_progression()
     _install_knockout_publisher()
-
-
-def _install_withdrawal_cleanup() -> None:
-    original = CompetitionOperationsService.withdraw_active_participant
-
-    async def withdraw_with_unpublished_cleanup(self, actor_id: str, target_user_id: str, *, reason: str):
-        result = await original(
-            self,
-            actor_id,
-            target_user_id,
-            reason=reason,
-        )
-        config = await __import__(
-            "modules.community.live_arena.service",
-            fromlist=["load_config"],
-        ).load_config(self.sheet_id)
-        tid = config["ACTIVE_TOURNAMENT_ID"]
-        old_rounds = await self.repository.rounds()
-        old_matches = await self.repository.matches()
-        rounds = [dict(row) for row in old_rounds]
-        matches = [dict(row) for row in old_matches]
-        remove_round_ids: set[str] = set()
-        changed = False
-
-        for round_row in rounds:
-            if _text(round_row.get("tournament_id")) != tid:
-                continue
-            status = _text(round_row.get("status"))
-            if status not in {"preview", "approved", "proposed"}:
-                continue
-            round_id = _text(round_row.get("round_id"))
-            affected = [
-                match
-                for match in matches
-                if _text(match.get("tournament_id")) == tid
-                and _text(match.get("round_id")) == round_id
-                and str(target_user_id)
-                in {
-                    _text(match.get("player_a_discord_user_id")),
-                    _text(match.get("player_b_discord_user_id")),
-                }
-            ]
-            if not affected:
-                continue
-            stage = _text(round_row.get("round_stage")).lower()
-            if stage == "qualification":
-                # Unpublished Q2/Q3 must be rebuilt from the current confirmed roster.
-                remove_round_ids.add(round_id)
-                changed = True
-                continue
-            if stage in knockout.KNOCKOUT:
-                for match in affected:
-                    _mark_withdrawal_advance(match, str(target_user_id), reason)
-                    changed = True
-
-        if remove_round_ids:
-            rounds = [
-                row
-                for row in rounds
-                if not (
-                    _text(row.get("tournament_id")) == tid
-                    and _text(row.get("round_id")) in remove_round_ids
-                )
-            ]
-            matches = [
-                row
-                for row in matches
-                if not (
-                    _text(row.get("tournament_id")) == tid
-                    and _text(row.get("round_id")) in remove_round_ids
-                )
-            ]
-
-        if changed:
-            await self.repository.persist_state(
-                rounds,
-                matches,
-                previous_rounds=old_rounds,
-                previous_matches=old_matches,
-            )
-        return result
-
-    CompetitionOperationsService.withdraw_active_participant = withdraw_with_unpublished_cleanup
 
 
 def _install_knockout_progression() -> None:
@@ -135,13 +50,24 @@ def _install_knockout_progression() -> None:
             source=source,
             regenerate=regenerate,
         )
-        participants = await self.registration_repository.participants()
+        reader = getattr(self.registration_repository, "participants", None)
+        if not callable(reader):
+            return snapshot
+        participants = await reader()
+        tid = _text(snapshot.round_row.get("tournament_id"))
+        tournament_rows = [
+            row
+            for row in participants
+            if _text(row.get("tournament_id")) == tid
+        ]
+        # If the injected repository has no participant truth, do not guess that every
+        # bracket player withdrew. Production repositories always contain tournament rows.
+        if not tournament_rows:
+            return snapshot
         active = {
             _text(row.get("discord_user_id"))
-            for row in participants
-            if _text(row.get("tournament_id"))
-            == _text(snapshot.round_row.get("tournament_id"))
-            and _text(row.get("status")) == "confirmed"
+            for row in tournament_rows
+            if _text(row.get("status")) == "confirmed"
         }
         old_matches = await self.repository.matches()
         matches = [dict(row) for row in old_matches]
@@ -152,7 +78,7 @@ def _install_knockout_progression() -> None:
                 continue
             a = _text(match.get("player_a_discord_user_id"))
             b = _text(match.get("player_b_discord_user_id"))
-            missing = [uid for uid in (a, b) if uid not in active]
+            missing = [uid for uid in (a, b) if uid and uid not in active]
             if len(missing) == 1:
                 _mark_withdrawal_advance(
                     match,
@@ -209,7 +135,12 @@ def _install_knockout_progression() -> None:
                     finalized_at_utc=now,
                     confirmed_at_utc=now,
                 )
-        _mark_round_ready_if_complete(rounds, matches, _text(snapshot.round_row.get("tournament_id")), round_id)
+        _mark_round_ready_if_complete(
+            rounds,
+            matches,
+            _text(snapshot.round_row.get("tournament_id")),
+            round_id,
+        )
         await self.repository.persist_state(
             rounds,
             matches,
