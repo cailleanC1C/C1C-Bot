@@ -14,6 +14,7 @@ from modules.community.live_arena.qualification import QualificationService
 from modules.community.live_arena.registration import RegistrationError
 from modules.community.live_arena.service import _text, load_config
 from modules.community.live_arena.swiss import SwissQualificationService
+from modules.community.live_arena.swiss_refresh import regenerate_current_preview
 from modules.community.live_arena.views import error_embed
 
 log = logging.getLogger("c1c.community.live_arena.swiss_panel")
@@ -104,7 +105,7 @@ class SwissActionButton(discord.ui.Button):
                 )
                 return
             if self.action == "regenerate":
-                snapshot = await service.generate_preview(actor, target, regenerate=True)
+                snapshot = await regenerate_current_preview(service, actor, target)
                 await interaction.followup.send(
                     embed=preview_embed(snapshot, official=False), ephemeral=True
                 )
