@@ -24,7 +24,10 @@ def install() -> None:
         warnings = list(await original(manager, service))
         try:
             _, (_, tournament), _, _ = await service.context()
-            if _text(tournament.get("status")) != "completed":
+            status = getattr(tournament, "status", None)
+            if status is None and isinstance(tournament, dict):
+                status = tournament.get("status")
+            if _text(status) != "completed":
                 return warnings
             summary = await service.complete_tournament("system")
             await knockout_runtime._sync_final_recap(manager, service, summary)
