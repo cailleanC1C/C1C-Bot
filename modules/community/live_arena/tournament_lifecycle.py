@@ -89,7 +89,10 @@ def install_tournament_lifecycle(manager) -> bool:
         return result
 
     manager.view = view
-    manager.sync = MethodType(_sync_organizer_panel, manager)
+    if callable(getattr(manager, "data", None)) and callable(
+        getattr(manager, "secondary_sync", None)
+    ):
+        manager.sync = MethodType(_sync_organizer_panel, manager)
     if not hasattr(manager, "qualification_service_factory"):
         manager.qualification_service_factory = LifecycleQualificationService
     return True
