@@ -312,6 +312,8 @@ def _install_publishers() -> None:
     async def q1_reconcile_without_bye_thread(self):
         real_service = self.service
         real_snapshot = real_service.snapshot
+        full_snapshot = await real_snapshot()
+        has_bye = any(_is_bye(row) for row in full_snapshot.matches)
 
         async def filtered_snapshot():
             snap = await real_snapshot()
@@ -325,6 +327,8 @@ def _install_publishers() -> None:
             warnings = list(await original_q1(self))
         finally:
             real_service.snapshot = real_snapshot
+        if not has_bye:
+            return list(dict.fromkeys(warnings))
         try:
             snap = await real_snapshot()
             warnings.extend(
