@@ -37,3 +37,6 @@ def install() -> None:
         )
 
     LiveArenaRepository.availability_slots = availability_slots
+
+
+install()
