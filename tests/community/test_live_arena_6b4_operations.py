@@ -1,10 +1,13 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import SimpleNamespace
-
-import pytest
 
 from modules.community.live_arena.bye_support import choose_ranked_bye, previous_bye_users
 from modules.community.live_arena.competition_operations import _mandatory_time
+from modules.community.live_arena.result_views import MatchResultView
+from modules.community.live_arena.withdrawal_hardening import (
+    _mark_withdrawal_advance,
+    _withdrawal_marker,
+)
 
 
 def player(uid: str, index: int):
@@ -72,3 +75,28 @@ def test_mandatory_time_is_parsed_from_existing_match_notes():
 
 def test_mandatory_time_absent_returns_none():
     assert _mandatory_time("No shared enabled availability slot") is None
+
+
+def test_knockout_withdrawal_marker_advances_only_the_opponent():
+    match = {
+        "player_a_discord_user_id": "10",
+        "player_b_discord_user_id": "20",
+        "notes": "Fixed knockout bracket slot",
+    }
+
+    _mark_withdrawal_advance(match, "10", "withdrew")
+
+    assert _withdrawal_marker(match) == "20"
+    assert "withdrawn=10" in match["notes"]
+
+
+def test_scheduling_button_is_disabled_when_result_reporting_is_disabled():
+    view = MatchResultView("sheet", report_disabled=True, dispute_disabled=True)
+    scheduling = next(
+        item
+        for item in view.children
+        if getattr(item, "custom_id", "")
+        == "live_arena:match:report_scheduling_problem"
+    )
+
+    assert scheduling.disabled is True
