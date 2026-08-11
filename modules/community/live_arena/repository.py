@@ -1,4 +1,4 @@
-"""Async Google Sheets persistence for Live Arena registration state."""
+"""Async Google Sheets persistence for Live Arena state."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from shared.sheets.async_core import acall_with_backoff, afetch_values, aget_wor
 from modules.community.live_arena.service import (
     LiveArenaConfigError,
     _rows,
+    _text,
     load_config,
     TOURNAMENT_HEADERS,
 )
@@ -45,6 +46,18 @@ AUDIT_LOG_HEADERS = (
     "details",
     "created_at_utc",
 )
+DISCORD_RESOURCE_HEADERS = (
+    "tournament_id",
+    "resource_type",
+    "resource_key",
+    "channel_id",
+    "message_id",
+    "thread_id",
+    "created_at_utc",
+    "updated_at_utc",
+    "state",
+    "notes",
+)
 
 
 class LiveArenaRepository:
@@ -68,6 +81,14 @@ class LiveArenaRepository:
         tab = self.config[key]
         return _rows(await afetch_values(self.sheet_id, tab) or [], headers, tab)
 
+    def _resource_tab(self) -> str:
+        tab = _text(self.config.get("TOURNAMENT_DISCORD_RESOURCES_TAB", ""))
+        if not tab:
+            raise LiveArenaConfigError(
+                "CONFIG: missing required key TOURNAMENT_DISCORD_RESOURCES_TAB"
+            )
+        return tab
+
     async def participants(self) -> list[dict[str, object]]:
         return await self._read("PARTICIPANTS_TAB", PARTICIPANT_HEADERS)
 
@@ -75,6 +96,127 @@ class LiveArenaRepository:
         return await self._read(
             "PARTICIPANT_AVAILABILITY_TAB", PARTICIPANT_AVAILABILITY_HEADERS
         )
+
+    async def discord_resources(self) -> list[dict[str, object]]:
+        tab = self._resource_tab()
+        return _rows(
+            await afetch_values(self.sheet_id, tab) or [], DISCORD_RESOURCE_HEADERS, tab
+        )
+
+    async def discord_resource(
+        self, tournament_id: str, resource_type: str, resource_key: str = "main"
+    ) -> dict[str, object] | None:
+        matches = [
+            row
+            for row in await self.discord_resources()
+            if _text(row["tournament_id"]) == _text(tournament_id)
+            and _text(row["resource_type"]) == _text(resource_type)
+            and _text(row["resource_key"]) == _text(resource_key)
+        ]
+        if len(matches) > 1:
+            raise LiveArenaConfigError(
+                "TOURNAMENT_DISCORD_RESOURCES: resource must occur at most once for "
+                f"{tournament_id}/{resource_type}/{resource_key}"
+            )
+        return matches[0] if matches else None
+
+    async def upsert_discord_resource(
+        self,
+        *,
+        tournament_id: str,
+        resource_type: str,
+        resource_key: str = "main",
+        channel_id: str = "",
+        message_id: str = "",
+        thread_id: str = "",
+        created_at_utc: str = "",
+        updated_at_utc: str = "",
+        state: str = "active",
+        notes: str = "",
+    ) -> None:
+        """Insert or update one tournament-owned Discord resource row."""
+        if state not in {"active", "retired"}:
+            raise LiveArenaConfigError(
+                "TOURNAMENT_DISCORD_RESOURCES.state must be active or retired"
+            )
+        tab = self._resource_tab()
+        matrix = await afetch_values(self.sheet_id, tab) or []
+        _rows(matrix, DISCORD_RESOURCE_HEADERS, tab)
+        headers = tuple(_text(value) for value in matrix[0])
+        identity_columns = tuple(headers.index(key) for key in DISCORD_RESOURCE_HEADERS[:3])
+        matching_indexes = []
+        for row_number, raw_row in enumerate(matrix[1:], 2):
+            padded = list(raw_row) + [""] * max(0, len(headers) - len(raw_row))
+            if (
+                _text(padded[identity_columns[0]]) == _text(tournament_id)
+                and _text(padded[identity_columns[1]]) == _text(resource_type)
+                and _text(padded[identity_columns[2]]) == _text(resource_key)
+            ):
+                matching_indexes.append(row_number)
+        if len(matching_indexes) > 1:
+            raise LiveArenaConfigError(
+                "TOURNAMENT_DISCORD_RESOURCES: duplicate resource identity"
+            )
+
+        worksheet = await aget_worksheet(self.sheet_id, tab)
+        values = {
+            "tournament_id": _text(tournament_id),
+            "resource_type": _text(resource_type),
+            "resource_key": _text(resource_key),
+            "channel_id": _text(channel_id),
+            "message_id": _text(message_id),
+            "thread_id": _text(thread_id),
+            "created_at_utc": _text(created_at_utc),
+            "updated_at_utc": _text(updated_at_utc),
+            "state": _text(state),
+            "notes": _text(notes),
+        }
+        if matching_indexes:
+            row_number = matching_indexes[0]
+            escaped_tab = tab.replace("'", "''")
+            data = []
+            for header, value in values.items():
+                column = DISCORD_RESOURCE_HEADERS.index(header) + 1
+                data.append(
+                    {
+                        "range": f"'{escaped_tab}'!{_column(column)}{row_number}",
+                        "values": [[value]],
+                    }
+                )
+            await acall_with_backoff(
+                worksheet.spreadsheet.values_batch_update,
+                body={"valueInputOption": "RAW", "data": data},
+            )
+            return
+
+        await acall_with_backoff(
+            worksheet.append_row,
+            [values[header] for header in DISCORD_RESOURCE_HEADERS],
+            value_input_option="RAW",
+        )
+
+    async def retire_discord_resources(
+        self, tournament_id: str, *, updated_at_utc: str
+    ) -> None:
+        """Retire all active tournament-level resource rows without deleting history."""
+        resources = await self.discord_resources()
+        for row in resources:
+            if (
+                _text(row["tournament_id"]) == _text(tournament_id)
+                and _text(row["state"]) == "active"
+            ):
+                await self.upsert_discord_resource(
+                    tournament_id=_text(row["tournament_id"]),
+                    resource_type=_text(row["resource_type"]),
+                    resource_key=_text(row["resource_key"]) or "main",
+                    channel_id=_text(row["channel_id"]),
+                    message_id=_text(row["message_id"]),
+                    thread_id=_text(row["thread_id"]),
+                    created_at_utc=_text(row["created_at_utc"]),
+                    updated_at_utc=updated_at_utc,
+                    state="retired",
+                    notes=_text(row["notes"]),
+                )
 
     async def persist_core_state(
         self,
@@ -165,11 +307,15 @@ class LiveArenaRepository:
     async def update_tournament_cells(
         self, row_number: int, values: dict[str, object]
     ) -> None:
-        """Atomically batch-update only named cells in the frozen TOURNAMENTS row."""
+        """Atomically batch-update only named cells in the selected TOURNAMENTS row."""
         worksheet = await aget_worksheet(self.sheet_id, self.config["TOURNAMENTS_TAB"])
         tab = self.config["TOURNAMENTS_TAB"].replace("'", "''")
         data = []
         for header, value in values.items():
+            if header not in TOURNAMENT_HEADERS:
+                raise LiveArenaConfigError(
+                    f"TOURNAMENTS: unsupported update header {header}"
+                )
             column = TOURNAMENT_HEADERS.index(header) + 1
             cell = f"{_column(column)}{row_number}"
             data.append({"range": f"'{tab}'!{cell}", "values": [[str(value)]]})

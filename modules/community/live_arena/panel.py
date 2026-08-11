@@ -1,19 +1,16 @@
-"""Persistent public panel lifecycle for Live Arena PR3."""
+"""Persistent public panel lifecycle for Live Arena."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import discord
 
 from shared.config import cfg
-from shared.sheets.async_core import (
-    acall_with_backoff,
-    aget_worksheet,
-    sheet_read_scope,
-)
+from shared.sheets.async_core import acall_with_backoff, aget_worksheet, sheet_read_scope
 from shared.sheets.core import is_rate_limited_error
 
 from modules.community.live_arena.messages import (
@@ -22,15 +19,13 @@ from modules.community.live_arena.messages import (
     load_pr3_config,
 )
 from modules.community.live_arena.repository import LiveArenaRepository
-from modules.community.live_arena.service import load_tournament_snapshot
+from modules.community.live_arena.service import _text, load_tournament_snapshot
 
 log = logging.getLogger("c1c.community.live_arena.panel")
 _sync_locks: dict[str, asyncio.Lock] = {}
 _managers: dict[tuple[int, str], "LiveArenaPanelManager"] = {}
 _startup_sync_tasks: dict[tuple[int, str], asyncio.Task] = {}
 
-# Live Arena panel refresh is not required for Discord login. Keep it out of the
-# first-minute Sheets stampede and let the persistent controls wire immediately.
 _STARTUP_SYNC_DELAY_SECONDS = 75
 _STARTUP_RETRY_DELAY_SECONDS = 90
 _STARTUP_MAX_ATTEMPTS = 3
@@ -44,13 +39,15 @@ class PanelSyncResult:
     operation: str = ""
 
 
+def _now_utc() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
 class LiveArenaPanelManager:
     def __init__(self, bot, sheet_id: str, service_factory=None):
         self.bot = bot
         self.sheet_id = sheet_id
         self.service_factory = service_factory
-        # Registration hooks can be invoked more than once (including overlapping
-        # on_ready dispatches).  The workbook, not a transient manager, owns sync.
         self._lock = _sync_locks.setdefault(sheet_id, asyncio.Lock())
 
     async def sync(self) -> PanelSyncResult:
@@ -59,11 +56,16 @@ class LiveArenaPanelManager:
             tournament = await load_tournament_snapshot(self.sheet_id)
             if tournament.status == "draft":
                 return PanelSyncResult(True)
-            key = (
-                "signup_open" if tournament.status == "signup_open" else "signup_closed"
-            )
-            if tournament.status not in {"signup_open", "signup_closed"}:
+            if tournament.status not in {
+                "signup_open",
+                "signup_closed",
+                "active",
+                "completed",
+                "archived",
+            }:
                 return PanelSyncResult(True)
+
+            key = "signup_open" if tournament.status == "signup_open" else "signup_closed"
             messages = await load_messages(self.sheet_id, config["MESSAGES_TAB"], {key})
             repository = LiveArenaRepository(self.sheet_id)
             await repository.initialize()
@@ -85,17 +87,27 @@ class LiveArenaPanelManager:
             channel = self.bot.get_channel(int(config["SIGNUP_CHANNEL_ID"]))
             if channel is None:
                 channel = await self.bot.fetch_channel(int(config["SIGNUP_CHANNEL_ID"]))
-            message = None
-            if config["PUBLIC_PANEL_MESSAGE_ID"]:
-                try:
-                    message = await channel.fetch_message(
-                        int(config["PUBLIC_PANEL_MESSAGE_ID"])
-                    )
-                except discord.NotFound:
-                    message = None
-                except Exception:
-                    log.exception("❌ Live Arena panel — fetch failed")
-                    return PanelSyncResult(False, "fetch")
+
+            repository_config = getattr(repository, "config", None)
+            if repository_config is None:
+                registry_enabled = callable(getattr(repository, "discord_resource", None))
+            else:
+                registry_enabled = bool(
+                    _text(repository_config.get("TOURNAMENT_DISCORD_RESOURCES_TAB", ""))
+                )
+            resource = None
+            if registry_enabled:
+                resource = await repository.discord_resource(
+                    tournament.tournament_id, "signup_panel", "main"
+                )
+                if resource is not None and _text(resource["state"]) == "retired":
+                    return PanelSyncResult(True)
+
+            registry_message_id = _text(resource["message_id"]) if resource else ""
+            legacy_message_id = _text(config.get("PUBLIC_PANEL_MESSAGE_ID", ""))
+            message_id = registry_message_id or legacy_message_id
+            using_legacy = bool(message_id and not registry_message_id)
+
             from modules.community.live_arena.entry_views import RegistrationEntryView
             from modules.community.live_arena.views import ClosedTournamentView
 
@@ -104,28 +116,125 @@ class LiveArenaPanelManager:
                 if key == "signup_open"
                 else ClosedTournamentView(self)
             )
+
+            message = None
+            if message_id:
+                get_partial_message = getattr(channel, "get_partial_message", None)
+                if callable(get_partial_message):
+                    try:
+                        message = get_partial_message(int(message_id))
+                    except Exception as exc:
+                        log.exception(
+                            "❌ Live Arena panel — direct edit target failed • message_id=%s • error=%s: %s",
+                            message_id,
+                            type(exc).__name__,
+                            exc,
+                        )
+                        return PanelSyncResult(False, "edit")
+                else:
+                    try:
+                        message = await channel.fetch_message(int(message_id))
+                    except discord.NotFound:
+                        message = None
+                    except Exception as exc:
+                        log.exception(
+                            "❌ Live Arena panel — fetch failed • message_id=%s • error=%s: %s",
+                            message_id,
+                            type(exc).__name__,
+                            exc,
+                        )
+                        return PanelSyncResult(False, "fetch")
+
             if message is not None:
                 try:
                     await message.edit(embed=embed, view=view)
-                except Exception:
-                    log.exception("❌ Live Arena panel — edit failed")
+                except discord.NotFound:
+                    log.warning(
+                        "⚠️ Live Arena panel — saved message missing • tournament=%s • message_id=%s",
+                        tournament.tournament_id,
+                        message_id,
+                    )
+                    message = None
+                except Exception as exc:
+                    log.exception(
+                        "❌ Live Arena panel — edit failed • message_id=%s • error=%s: %s",
+                        message_id,
+                        type(exc).__name__,
+                        exc,
+                    )
                     return PanelSyncResult(False, "edit")
+                else:
+                    if registry_enabled and (
+                        using_legacy or resource is None or tournament.status == "archived"
+                    ):
+                        now = _now_utc()
+                        await repository.upsert_discord_resource(
+                            tournament_id=tournament.tournament_id,
+                            resource_type="signup_panel",
+                            resource_key="main",
+                            channel_id=str(channel.id),
+                            message_id=message_id,
+                            created_at_utc=(
+                                _text(resource["created_at_utc"]) if resource else now
+                            ),
+                            updated_at_utc=now,
+                            state="retired" if tournament.status == "archived" else "active",
+                            notes=(
+                                "Migrated from legacy PUBLIC_PANEL_MESSAGE_ID."
+                                if using_legacy
+                                else _text(resource["notes"]) if resource else ""
+                            ),
+                        )
+                    return PanelSyncResult(True)
+
+            if tournament.status == "archived":
+                if registry_enabled and resource is not None:
+                    await repository.upsert_discord_resource(
+                        tournament_id=tournament.tournament_id,
+                        resource_type="signup_panel",
+                        resource_key="main",
+                        channel_id=_text(resource["channel_id"]) or str(channel.id),
+                        message_id=_text(resource["message_id"]),
+                        thread_id=_text(resource["thread_id"]),
+                        created_at_utc=_text(resource["created_at_utc"]),
+                        updated_at_utc=_now_utc(),
+                        state="retired",
+                        notes=_text(resource["notes"]),
+                    )
                 return PanelSyncResult(True)
+
             created = await channel.send(embed=embed, view=view)
             try:
-                await self._persist_message_id(matrix, str(created.id))
+                if registry_enabled:
+                    now = _now_utc()
+                    await repository.upsert_discord_resource(
+                        tournament_id=tournament.tournament_id,
+                        resource_type="signup_panel",
+                        resource_key="main",
+                        channel_id=str(channel.id),
+                        message_id=str(created.id),
+                        created_at_utc=(
+                            _text(resource["created_at_utc"]) if resource else now
+                        ),
+                        updated_at_utc=now,
+                        state="active",
+                        notes=_text(resource["notes"]) if resource else "",
+                    )
+                else:
+                    # Compatibility only for workbooks that have not yet gained the
+                    # resource registry. The live tournament workbook uses the registry.
+                    await self._persist_message_id(matrix, str(created.id))
             except Exception:
-                log.exception("❌ Live Arena panel — message ID persistence failed")
+                log.exception("❌ Live Arena panel — message resource persistence failed")
                 try:
                     await created.delete()
                 except Exception:
-                    log.exception(
-                        "⚠️ Live Arena panel — untracked message cleanup failed"
-                    )
+                    log.exception("⚠️ Live Arena panel — untracked message cleanup failed")
                 raise
             return PanelSyncResult(True)
 
     async def _persist_message_id(self, matrix, message_id: str) -> None:
+        """Legacy migration fallback; new workbooks persist panel IDs in resources."""
         headers = [str(value).strip() for value in matrix[0]]
         key_col, value_col = headers.index("Key"), headers.index("Value")
         rows = [
@@ -179,8 +288,6 @@ def _schedule_startup_sync(
         try:
             done_task.result()
         except Exception:
-            # The worker is meant to contain its own failures. Keep a final guard so
-            # an unexpected bug still leaves a useful production traceback.
             log.exception("❌ Live Arena deferred startup refresh task crashed")
 
     task.add_done_callback(_done)
@@ -198,9 +305,6 @@ async def _run_startup_sync(
     for attempt in range(1, _STARTUP_MAX_ATTEMPTS + 1):
         warnings: list[str] = []
         try:
-            # This scope is intentionally read-only. Qualification publication can
-            # persist thread/message IDs, so reconciliation runs after the scope to
-            # avoid serving pre-write ROUNDS/MATCHES data back to a later write.
             with sheet_read_scope() as reads:
                 if qualification_installed:
                     try:
@@ -304,16 +408,17 @@ async def register_live_arena(bot):
         reconcile_qualification_publication,
         refresh_qualification_state,
     )
+    from modules.community.live_arena.tournament_lifecycle import (
+        install_tournament_lifecycle,
+    )
     from modules.community.live_arena.views import ClosedTournamentView
 
     organizer = OrganizerPanelManager(bot, sheet_id, manager)
+    install_tournament_lifecycle(organizer)
     qualification_installed = install_qualification(organizer)
     if qualification_installed:
         install_qualification_roster_lock(organizer)
 
-    # Wire every persistent interaction immediately. Sheet reads and panel refreshes
-    # are deliberately deferred so Live Arena cannot add to the first-minute startup
-    # quota spike or prevent unrelated ready wiring from completing.
     manager.organizer_manager = organizer
     bot.add_view(RegistrationEntryView(manager))
     bot.add_view(ClosedTournamentView(manager))
