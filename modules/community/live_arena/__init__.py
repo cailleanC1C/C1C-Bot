@@ -24,6 +24,7 @@ from modules.community.live_arena.bye_ui import install as _install_bye_ui
 from modules.community.live_arena.bye_manual_validation import install as _install_bye_manual_validation
 from modules.community.live_arena.withdrawal_hardening import install as _install_withdrawal_hardening
 from modules.community.live_arena.withdrawal_atomic import install as _install_withdrawal_atomic
+from modules.community.live_arena.operations_correction_state import install as _install_operations_correction_state
 
 _install_runtime_hooks()
 _install_repair()
@@ -46,3 +47,4 @@ _install_bye_ui()
 _install_bye_manual_validation()
 _install_withdrawal_hardening()
 _install_withdrawal_atomic()
+_install_operations_correction_state()
