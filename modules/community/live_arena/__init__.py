@@ -20,6 +20,7 @@ from modules.community.live_arena.operations_ui_hardening import install as _ins
 from modules.community.live_arena.bye_support import install as _install_bye_support
 from modules.community.live_arena.q1_bye_approval import install as _install_q1_bye_approval
 from modules.community.live_arena.bye_ui import install as _install_bye_ui
+from modules.community.live_arena.bye_manual_validation import install as _install_bye_manual_validation
 from modules.community.live_arena.withdrawal_hardening import install as _install_withdrawal_hardening
 
 _install_runtime_hooks()
@@ -39,4 +40,5 @@ _install_operations_ui_hardening()
 _install_bye_support()
 _install_q1_bye_approval()
 _install_bye_ui()
+_install_bye_manual_validation()
 _install_withdrawal_hardening()
