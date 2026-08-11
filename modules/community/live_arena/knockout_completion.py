@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from modules.community.live_arena.competition import MATCH_TERMINAL_STATUSES
 from modules.community.live_arena.registration import RegistrationError, _locks, utc_iso
-from modules.community.live_arena.service import _text, load_config
+from modules.community.live_arena.service import _text
 
 _installed = False
 
@@ -19,7 +19,7 @@ def install() -> None:
 
     async def validate_complete_tournament(self, actor_id: str) -> dict[str, object]:
         """Validate Final truth and build recap data; OrganizerService owns completion persistence/audit."""
-        config = await load_config(self.sheet_id)
+        config = await knockout.load_config(self.sheet_id)
         tid = config["ACTIVE_TOURNAMENT_ID"]
         async with _locks[(self.sheet_id, tid)]:
             rounds = await self.repository.rounds()
