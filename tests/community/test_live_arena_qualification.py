@@ -251,8 +251,8 @@ def test_q1_generation_minimizes_unavoidable_conflicts(monkeypatch):
     )
 
 
-def test_q1_generation_blocks_odd_roster_without_bye(monkeypatch):
-    service, _, qrepo = make_service(
+def test_q1_generation_assigns_random_bye_for_odd_roster(monkeypatch):
+    service, registration_repo, qrepo = make_service(
         monkeypatch,
         roster=[
             participant(1, "One"),
@@ -270,9 +270,21 @@ def test_q1_generation_blocks_odd_roster_without_bye(monkeypatch):
     )
     run(service.initialize())
 
-    with pytest.raises(RegistrationError, match="even confirmed roster"):
-        run(service.generate_draw("999"))
-    assert qrepo.r == [] and qrepo.m == []
+    snapshot = run(service.generate_draw("999"))
+
+    assert snapshot.status == "proposed"
+    assert len(snapshot.matches) == 2
+    bye = next(row for row in snapshot.matches if "QUALIFICATION_BYE" in row["notes"])
+    assert bye["player_a_discord_user_id"] == "1"
+    assert bye["player_b_discord_user_id"] == ""
+    assert bye["status"] == "proposed"
+    normal = next(row for row in snapshot.matches if row is not bye)
+    assert {
+        normal["player_a_discord_user_id"],
+        normal["player_b_discord_user_id"],
+    } == {"2", "3"}
+    assert qrepo.r and len(qrepo.m) == 2
+    assert registration_repo.audit[-1]["event_type"] == "qualification_bye_drawn"
 
 
 def test_swap_players_recalculates_only_affected_pair_availability(monkeypatch):
