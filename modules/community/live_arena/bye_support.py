@@ -43,9 +43,19 @@ def _install_q1() -> None:
         if len(roster) % 2 == 0:
             return await original_generate(self, actor_id, regenerate=regenerate)
 
+        _, (_, tournament), _, _ = await self.context()
+        if _text(tournament.get("status")) != "signup_closed":
+            raise RegistrationError("Q1 can only be generated after registration is closed")
+        minimum = int(_text(tournament.get("min_participants")) or 0)
+        if len(roster) < minimum:
+            raise RegistrationError(
+                f"Q1 requires at least {minimum} confirmed participants; currently {len(roster)}"
+            )
+
         bye_player = self.rng.choice(roster)
         bye_id = _text(bye_player.get("discord_user_id"))
         original_participants = self.registration_repository.participants
+        original_context = self.context
 
         async def even_participants():
             rows = await original_participants()
@@ -58,11 +68,24 @@ def _install_q1() -> None:
                 )
             ]
 
+        async def even_context():
+            base, (row_number, current_tournament), clans, slots = await original_context()
+            adjusted = dict(current_tournament)
+            adjusted["min_participants"] = str(
+                min(
+                    int(_text(current_tournament.get("min_participants")) or 0),
+                    len(roster) - 1,
+                )
+            )
+            return base, (row_number, adjusted), clans, slots
+
         self.registration_repository.participants = even_participants
+        self.context = even_context
         try:
             snapshot = await original_generate(self, actor_id, regenerate=regenerate)
         finally:
             self.registration_repository.participants = original_participants
+            self.context = original_context
 
         old_matches = await self.repository.matches()
         round_id = f"{tid}-Q1"
