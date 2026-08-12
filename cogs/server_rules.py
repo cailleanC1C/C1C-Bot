@@ -14,6 +14,7 @@ from modules.common.embeds import get_embed_colour
 from modules.common.logs import channel_label
 from modules.ops import server_rules
 import modules.ops.server_rules_interactive as server_rules_interactive
+from modules.ops import server_rules_faq_navigation
 
 FEATURE_TOGGLE = "server_rules_faq"
 
@@ -61,6 +62,10 @@ class ServerRulesCog(commands.Cog):
             summary, target = await self.operations.publish(self.bot)
         else:
             summary, target = await self.operations.refresh(self.bot)
+        if self.operations is server_rules_interactive and target is not None:
+            await server_rules_faq_navigation.ensure_faq_jump_link(
+                self.bot, target, summary
+            )
         await ctx.reply(
             embed=server_rules.result_embed(action, summary), mention_author=False
         )
