@@ -105,87 +105,93 @@ def _prune_registration_controls(view, manager, status):
     return view
 
 
+async def _send_close_prompt(interaction, manager) -> None:
+    """Handle Close Registration from the button callback itself.
+
+    Existing persistent OrganizerButton instances capture their original bound
+    transition handler when they are created. Intercepting at OrganizerButton.callback
+    therefore guarantees the live persistent button uses the hardened path even when
+    the view instance was constructed before this install hook ran.
+    """
+    from modules.community.live_arena import organizer_panel
+
+    if manager is None:
+        raise RuntimeError("Live Arena organizer manager is unavailable")
+
+    await _defer_now(interaction)
+    if not await organizer_panel.OrganizerView(manager).authorized(interaction):
+        return
+    try:
+        _, _tournament, _, counts, _ = await manager.data(interaction.guild)
+        confirmed = int(counts.get("confirmed", 0) or 0)
+        warning = ""
+        if confirmed % 2:
+            warning = (
+                " The confirmed roster is odd; no player will be auto-demoted. "
+                "Qualification Round 1 will randomly assign one bye before pairing "
+                "the remaining players."
+            )
+        embed = discord.Embed(
+            title="Confirm close registration",
+            description=f"Close registration with **{confirmed}** confirmed players?{warning}",
+            color=colors.c1c_blue,
+        )
+        await organizer_panel._send_ephemeral(
+            interaction,
+            embed=embed,
+            view=FastCloseConfirmView(manager),
+        )
+    except Exception as exc:
+        log.exception("Live Arena close-registration preflight failed after acknowledgement")
+        await organizer_panel._send_ephemeral(interaction, embed=error_embed(exc))
+
+
+def _button_manager(button):
+    owner = getattr(getattr(button, "handler", None), "__self__", None)
+    return getattr(owner, "manager", None)
+
+
 def install() -> None:
     global _installed
     if _installed:
         return
     _installed = True
 
-    from modules.community.live_arena import organizer_panel, qualification_panel
+    from modules.community.live_arena import organizer_panel
 
-    original_transition = organizer_panel.OrganizerView.transition
+    # Make all defer helpers idempotent. Some handlers already defer internally;
+    # callback-level acknowledgement must never trigger InteractionResponded.
+    organizer_panel._defer_ephemeral = _defer_now
 
-    async def hardened_transition(self, interaction, action):
-        if action != "close":
-            await original_transition(self, interaction, action)
+    # Patch the button callback itself rather than OrganizerView.transition. Live
+    # persistent buttons keep the bound handler captured at construction time, so
+    # replacing the transition method alone does not affect an already-built view.
+    original_button_callback = organizer_panel.OrganizerButton.callback
+
+    async def hardened_button_callback(self, interaction):
+        if getattr(self, "action", None) == "close":
+            await _send_close_prompt(interaction, _button_manager(self))
             return
+        await original_button_callback(self, interaction)
 
-        # Priority bug fix: Discord must be acknowledged before authorization,
-        # config reads, roster counts, or any other Sheet/network I/O.
-        await _defer_now(interaction)
-        if not await self.authorized(interaction):
-            return
+    organizer_panel.OrganizerButton.callback = hardened_button_callback
+
+    # Prune the final, fully-decorated view at the manager sync boundary. This runs
+    # after all later Live Arena modules have added their controls, so the actual
+    # Discord message receives the lifecycle-appropriate subset rather than the
+    # complete control wall.
+    original_sync = organizer_panel.OrganizerPanelManager.sync
+
+    async def hardened_sync(self):
+        original_view = self.view
+
+        def pruned_view(status=None):
+            return _prune_registration_controls(original_view(status), self, status)
+
+        self.view = pruned_view
         try:
-            _, _tournament, _, counts, _ = await self.manager.data(interaction.guild)
-            confirmed = int(counts.get("confirmed", 0) or 0)
-            warning = ""
-            if confirmed % 2:
-                warning = (
-                    " The confirmed roster is odd; no player will be auto-demoted. "
-                    "Qualification Round 1 will randomly assign one bye before pairing "
-                    "the remaining players."
-                )
-            embed = discord.Embed(
-                title="Confirm close registration",
-                description=(
-                    f"Close registration with **{confirmed}** confirmed players?{warning}"
-                ),
-                color=colors.c1c_blue,
-            )
-            await organizer_panel._send_ephemeral(
-                interaction,
-                embed=embed,
-                view=FastCloseConfirmView(self.manager),
-            )
-        except Exception as exc:
-            log.exception(
-                "Live Arena close-registration preflight failed after acknowledgement"
-            )
-            await organizer_panel._send_ephemeral(interaction, embed=error_embed(exc))
+            return await original_sync(self)
+        finally:
+            self.view = original_view
 
-    organizer_panel.OrganizerView.transition = hardened_transition
-
-    # Install last around the accumulated organizer-panel decorators. Pruning is
-    # applied only during the real panel sync so direct view construction used by
-    # internal services/tests still exposes the complete persistent control set.
-    original_install = qualification_panel.install_qualification
-
-    def install_with_registration_pruning(manager) -> bool:
-        installed = original_install(manager)
-        if not installed:
-            return False
-        if getattr(manager, "_registration_control_pruning_installed", False):
-            return True
-        manager._registration_control_pruning_installed = True
-        base_view = manager.view
-        base_sync = manager.sync
-        manager._registration_control_pruning_active = False
-
-        def view(status=None):
-            result = base_view(status)
-            if not getattr(manager, "_registration_control_pruning_active", False):
-                return result
-            return _prune_registration_controls(result, manager, status)
-
-        async def sync():
-            manager._registration_control_pruning_active = True
-            try:
-                return await base_sync()
-            finally:
-                manager._registration_control_pruning_active = False
-
-        manager.view = view
-        manager.sync = sync
-        return True
-
-    qualification_panel.install_qualification = install_with_registration_pruning
+    organizer_panel.OrganizerPanelManager.sync = hardened_sync

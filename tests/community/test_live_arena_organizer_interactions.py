@@ -15,6 +15,10 @@ from modules.community.live_arena.organizer_panel import (
     OrganizerView,
     RosterActions,
 )
+from modules.community.live_arena.organizer_registration_hardening import (
+    FastCloseConfirmView,
+    _prune_registration_controls,
+)
 
 
 def run(awaitable):
@@ -97,6 +101,58 @@ def test_close_registration_defers_before_roster_preflight_and_uses_followup():
     assert isinstance(kwargs["view"], ConfirmTransition)
     assert kwargs["ephemeral"] is True
     interaction.response.send_message.assert_not_awaited()
+
+
+def test_live_close_button_callback_defers_before_captured_handler_work():
+    events = []
+
+    async def data(_guild):
+        assert events == ["defer"]
+        events.append("data")
+        return (
+            {},
+            SimpleNamespace(tournament_name="Trial Cup"),
+            [],
+            {"confirmed": 8},
+            {},
+        )
+
+    manager = SimpleNamespace(sheet_id="sheet", data=AsyncMock(side_effect=data))
+    view = OrganizerView(manager, "signup_open")
+    close_button = next(
+        child
+        for child in view.children
+        if getattr(child, "custom_id", None) == "live_arena:organizer:close"
+    )
+    interaction = _interaction(events)
+
+    with patch.object(OrganizerView, "authorized", AsyncMock(return_value=True)):
+        run(close_button.callback(interaction))
+
+    assert events == ["defer", "data"]
+    kwargs = interaction.followup.send.await_args.kwargs
+    assert isinstance(kwargs["view"], FastCloseConfirmView)
+    assert kwargs["ephemeral"] is True
+
+
+def test_registration_panel_pruning_removes_future_stage_controls():
+    manager = SimpleNamespace(_qualification_q1_status="")
+    view = discord.ui.View(timeout=None)
+    for label in (
+        "Close Registration",
+        "View Roster",
+        "Reconcile Roles",
+        "Generate Q1 Draw",
+        "Approve & Publish Swiss",
+        "Freeze Top 8",
+        "Create Next Tournament",
+    ):
+        view.add_item(discord.ui.Button(label=label))
+
+    pruned = _prune_registration_controls(view, manager, "signup_open")
+    labels = {getattr(child, "label", None) for child in pruned.children}
+
+    assert labels == {"Close Registration", "View Roster", "Reconcile Roles"}
 
 
 def test_deferred_authorization_denial_uses_followup_without_loading_roster():
