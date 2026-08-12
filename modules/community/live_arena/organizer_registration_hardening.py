@@ -115,6 +115,9 @@ async def _send_close_prompt(interaction, manager) -> None:
     """
     from modules.community.live_arena import organizer_panel
 
+    if manager is None:
+        raise RuntimeError("Live Arena organizer manager is unavailable")
+
     await _defer_now(interaction)
     if not await organizer_panel.OrganizerView(manager).authorized(interaction):
         return
@@ -143,6 +146,11 @@ async def _send_close_prompt(interaction, manager) -> None:
         await organizer_panel._send_ephemeral(interaction, embed=error_embed(exc))
 
 
+def _button_manager(button):
+    owner = getattr(getattr(button, "handler", None), "__self__", None)
+    return getattr(owner, "manager", None)
+
+
 def install() -> None:
     global _installed
     if _installed:
@@ -162,7 +170,7 @@ def install() -> None:
 
     async def hardened_button_callback(self, interaction):
         if getattr(self, "action", None) == "close":
-            await _send_close_prompt(interaction, self.view.manager if self.view else None)
+            await _send_close_prompt(interaction, _button_manager(self))
             return
         await original_button_callback(self, interaction)
 
