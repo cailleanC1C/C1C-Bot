@@ -131,7 +131,7 @@ def install() -> None:
             warning = ""
             if confirmed % 2:
                 warning = (
-                    " The confirmed roster is odd. No player will be auto-demoted; "
+                    " The confirmed roster is odd; no player will be auto-demoted. "
                     "Qualification Round 1 will randomly assign one bye before pairing "
                     "the remaining players."
                 )
