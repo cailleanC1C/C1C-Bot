@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import discord
 from discord.ext import commands
 
@@ -11,6 +13,7 @@ from modules.common import feature_flags, runtime as runtime_helpers
 from modules.common.embeds import get_embed_colour
 from modules.common.logs import channel_label
 from modules.ops import server_rules
+import modules.ops.server_rules_interactive as server_rules_interactive
 
 FEATURE_TOGGLE = "server_rules_faq"
 
@@ -32,8 +35,9 @@ def _disabled_embed() -> discord.Embed:
 
 
 class ServerRulesCog(commands.Cog):
-    def __init__(self, bot: commands.Bot) -> None:
+    def __init__(self, bot: commands.Bot, operations: Any = server_rules) -> None:
         self.bot = bot
+        self.operations = operations
 
     @tier("admin")
     @help_metadata(
@@ -54,9 +58,9 @@ class ServerRulesCog(commands.Cog):
             )
             return
         if action == "publish":
-            summary, target = await server_rules.publish(self.bot)
+            summary, target = await self.operations.publish(self.bot)
         else:
-            summary, target = await server_rules.refresh(self.bot)
+            summary, target = await self.operations.refresh(self.bot)
         await ctx.reply(
             embed=server_rules.result_embed(action, summary), mention_author=False
         )
@@ -80,4 +84,5 @@ class ServerRulesCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
-    await bot.add_cog(ServerRulesCog(bot))
+    server_rules_interactive.register_persistent_view(bot)
+    await bot.add_cog(ServerRulesCog(bot, operations=server_rules_interactive))
