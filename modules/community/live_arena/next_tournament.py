@@ -3,23 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
 
 from shared.sheets.async_core import acall_with_backoff, afetch_values, aget_worksheet
-from shared.theme import colors
 
 from modules.community.live_arena.messages import MESSAGE_HEADERS, discord_timestamp, load_pr5_config
 from modules.community.live_arena.organizer import OrganizerService
 from modules.community.live_arena.organizer_panel import OrganizerView
 from modules.community.live_arena.registration import RegistrationError, utc_iso
-from modules.community.live_arena.repository import AUDIT_LOG_HEADERS, LiveArenaRepository
+from modules.community.live_arena.repository import LiveArenaRepository
 from modules.community.live_arena.service import (
     CONFIG_HEADERS,
     CONFIG_TAB,
@@ -124,8 +121,10 @@ async def _load_next_messages(sheet_id: str, keys: set[str]):
             )
         row = matches[0]
         color = _text(row["color_hex"])
+        if len(color) != 7 or not color.startswith("#"):
+            raise LiveArenaConfigError(f"MESSAGES.{key}: color_hex must be #RRGGBB")
         try:
-            parsed = int(color.lstrip("#"), 16)
+            parsed = int(color[1:], 16)
         except ValueError as exc:
             raise LiveArenaConfigError(f"MESSAGES.{key}: invalid color_hex") from exc
         fields = {
@@ -228,8 +227,11 @@ class NextTournamentService:
             )
         if not draft.eligible_role_ids:
             raise RegistrationError("select at least one eligible clan")
-        opens = datetime.fromisoformat(draft.signup_opens_at_utc.replace("Z", "+00:00"))
-        closes = datetime.fromisoformat(draft.signup_closes_at_utc.replace("Z", "+00:00"))
+        try:
+            opens = datetime.fromisoformat(draft.signup_opens_at_utc.replace("Z", "+00:00"))
+            closes = datetime.fromisoformat(draft.signup_closes_at_utc.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise RegistrationError("signup window is invalid") from exc
         now = self.clock().astimezone(UTC)
         if closes <= now:
             raise RegistrationError("signup closing time must still be in the future")
@@ -346,7 +348,7 @@ class NextTournamentService:
             body={"valueInputOption": "RAW", "data": data},
         )
 
-        await self._audit(
+        await self._record_event(
             new_id,
             actor_id,
             "tournament_created",
@@ -370,26 +372,25 @@ class NextTournamentService:
             suffix += 1
         return f"{base}-{suffix}"
 
-    async def _audit(self, tournament_id, actor_id, event_type, details, now):
+    async def _record_event(self, tournament_id, actor_id, event_type, details, now):
         try:
-            config = await load_config(self.sheet_id)
-            worksheet = await aget_worksheet(self.sheet_id, config["AUDIT_LOG_TAB"])
-            row = {
-                "event_id": str(uuid4()),
-                "tournament_id": tournament_id,
-                "event_type": event_type,
-                "actor_discord_user_id": str(actor_id),
-                "target_discord_user_id": "",
-                "details": json.dumps(details, sort_keys=True, separators=(",", ":")),
-                "created_at_utc": utc_iso(now),
-            }
-            await acall_with_backoff(
-                worksheet.append_row,
-                [str(row.get(header, "") or "") for header in AUDIT_LOG_HEADERS],
-                value_input_option="RAW",
+            repository = LiveArenaRepository(self.sheet_id)
+            await repository.initialize()
+            await repository.append_audit(
+                {
+                    "event_id": f"next-{tournament_id}-{int(now.timestamp())}",
+                    "tournament_id": tournament_id,
+                    "event_type": event_type,
+                    "actor_discord_user_id": str(actor_id),
+                    "target_discord_user_id": "",
+                    "details": __import__("json").dumps(
+                        details, sort_keys=True, separators=(",", ":")
+                    ),
+                    "created_at_utc": utc_iso(now),
+                }
             )
         except Exception:
-            log.exception("Live Arena next-tournament audit append failed")
+            log.exception("Live Arena next-tournament event append failed")
 
 
 def _column(number: int) -> str:
