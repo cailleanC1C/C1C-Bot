@@ -27,6 +27,7 @@ from modules.community.live_arena.withdrawal_hardening import install as _instal
 from modules.community.live_arena.withdrawal_atomic import install as _install_withdrawal_atomic
 from modules.community.live_arena.operations_correction_state import install as _install_operations_correction_state
 from modules.community.live_arena.extension_confirmation import install as _install_extension_confirmation
+from modules.community.live_arena.availability_ux import install as _install_availability_ux
 
 _install_runtime_hooks()
 _install_repair()
@@ -52,3 +53,4 @@ _install_withdrawal_hardening()
 _install_withdrawal_atomic()
 _install_operations_correction_state()
 _install_extension_confirmation()
+_install_availability_ux()
