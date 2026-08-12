@@ -29,6 +29,7 @@ from modules.community.live_arena.operations_correction_state import install as 
 from modules.community.live_arena.extension_confirmation import install as _install_extension_confirmation
 from modules.community.live_arena.availability_ux import install as _install_availability_ux
 from modules.community.live_arena.availability_reminder import install as _install_availability_reminder
+from modules.community.live_arena.next_tournament import install as _install_next_tournament
 
 _install_runtime_hooks()
 _install_repair()
@@ -56,3 +57,4 @@ _install_operations_correction_state()
 _install_extension_confirmation()
 _install_availability_ux()
 _install_availability_reminder()
+_install_next_tournament()
