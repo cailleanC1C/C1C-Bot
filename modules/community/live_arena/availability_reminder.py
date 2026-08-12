@@ -14,10 +14,10 @@ from modules.community.live_arena.service import _text
 log = logging.getLogger("c1c.community.live_arena.availability_reminder")
 _installed = False
 
-_original_match_result_init = result_views.MatchResultView.__init__
-_original_match_embed = qualification_panel.match_embed
-_original_sync_round_discord = runtime_hooks._sync_round_discord
-_original_install_qualification = qualification_panel.install_qualification
+_original_match_result_init = None
+_original_match_embed = None
+_original_sync_round_discord = None
+_original_install_qualification = None
 
 
 class WeeklyAvailabilityShortcutButton(discord.ui.Button):
@@ -108,7 +108,7 @@ def _match_embed_with_weekly_reminder(tournament, round_row, match, slots):
         "Availability** below. Updating availability never changes your opponent; it only "
         "keeps scheduling suggestions current."
     )
-    description = (embed.description or "")
+    description = embed.description or ""
     if "**Weekly availability reminder**" not in description:
         embed.description = (description + reminder)[:4096]
     return embed
@@ -155,12 +155,25 @@ def _install_qualification_with_availability(manager) -> bool:
 
 
 def install() -> None:
+    """Layer reminder UX over the already-installed competition behavior."""
     global _installed
+    global _original_match_result_init
+    global _original_match_embed
+    global _original_sync_round_discord
+    global _original_install_qualification
+
     if _installed:
         return
-    _installed = True
+
+    # Capture only now. This installer runs last, so these references include every
+    # previously installed 6B behavior (scheduling controls, Final BO5 rendering, etc.).
+    _original_match_result_init = result_views.MatchResultView.__init__
+    _original_match_embed = qualification_panel.match_embed
+    _original_sync_round_discord = runtime_hooks._sync_round_discord
+    _original_install_qualification = qualification_panel.install_qualification
 
     result_views.MatchResultView.__init__ = _match_result_init_with_availability
     qualification_panel.match_embed = _match_embed_with_weekly_reminder
     runtime_hooks._sync_round_discord = _sync_round_discord_with_availability
     qualification_panel.install_qualification = _install_qualification_with_availability
+    _installed = True
