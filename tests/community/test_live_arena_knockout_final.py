@@ -118,7 +118,7 @@ def test_final_report_enters_explicit_organizer_queue(monkeypatch):
 def test_organizer_accept_finalizes_final_report(monkeypatch):
     service, _, _ = make_service(monkeypatch)
     run(service.initialize())
-    run(service.report_result("1", f"{TID}-F-M01", 3, 1, screenshot_present=True))
+    run(service.report_result("1", f"{TID}-F-M01", 4, 1, screenshot_present=True))
 
     resolved = run(
         service.resolve_match(
@@ -130,6 +130,6 @@ def test_organizer_accept_finalizes_final_report(monkeypatch):
     )
 
     assert resolved["status"] == "finalized"
-    assert resolved["final_score_a"] == "3"
+    assert resolved["final_score_a"] == "4"
     assert resolved["final_score_b"] == "1"
     assert resolved["final_winner_discord_user_id"] == "1"
