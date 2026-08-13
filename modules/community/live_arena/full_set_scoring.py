@@ -58,14 +58,11 @@ def install() -> None:
                 "**Format:** Best of 3",
                 "**Format:** Best of 5 · 5 fights · play all 5",
             )
-            description = description.replace("After the BO5,", "After all 5 fights,")
-            description = description.replace("After the BO3,", "After all 5 fights,")
         else:
             description = description.replace(
                 "**Format:** Best of 3",
                 "**Format:** Best of 3 · 3 fights · play all 3",
             )
-            description = description.replace("After the BO3,", "After all 3 fights,")
         embed.description = description
         return embed
 
