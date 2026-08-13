@@ -38,6 +38,7 @@ from modules.community.live_arena.simulation_ux_hardening import install as _ins
 from modules.community.live_arena.simulation_ux_finalizer import install as _install_simulation_ux_finalizer
 from modules.community.live_arena.full_set_scoring import install as _install_full_set_scoring
 from modules.community.live_arena.captains_table_quota_safe import install as _install_captains_table_quota_safe
+from modules.community.live_arena.scheduling_resolution_ux import install as _install_scheduling_resolution_ux
 
 _install_runtime_hooks()
 _install_repair()
@@ -74,3 +75,4 @@ _install_simulation_ux_hardening()
 _install_simulation_ux_finalizer()
 _install_full_set_scoring()
 _install_captains_table_quota_safe()
+_install_scheduling_resolution_ux()
