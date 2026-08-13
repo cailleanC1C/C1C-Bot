@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from shared.sheets.async_core import sheet_read_scope
+from types import MethodType
+
 from modules.community.live_arena.registration import RegistrationError
 from modules.community.live_arena.service import _text
 
@@ -139,33 +140,22 @@ def install() -> None:
     except Exception:
         pass
 
-    _install_captains_table_ux(qualification_panel, simulation_ux_finalizer)
+    _install_captains_table_core_sync(simulation_ux_finalizer)
     _install_final_ledger_cleanup(qualification_panel, simulation_ux_hardening)
 
 
-def _install_captains_table_ux(qualification_panel, simulation_ux_finalizer) -> None:
-    original_install = qualification_panel.install_qualification
+def _install_captains_table_core_sync(simulation_ux_finalizer) -> None:
+    """Control the visible panel at OrganizerPanelManager.sync, after all view decorators."""
+    from modules.community.live_arena.organizer_panel import OrganizerPanelManager
 
-    def install_mobile_first(manager) -> bool:
-        installed = original_install(manager)
-        if not installed:
-            return False
-        if getattr(manager, "_captains_table_final_ux_installed", False):
-            return True
-        manager._captains_table_final_ux_installed = True
-        base_view = manager.view
-        base_sync = manager.sync
-        manager._captains_table_allowed = None
+    original_sync = OrganizerPanelManager.sync
 
-        def view(status=None):
-            result = base_view(status)
-            # status=None is persistent callback registration. Keep those callbacks
-            # available, but keep the actual visible message state-first and small.
-            if status is None:
-                return result
-            allowed = getattr(manager, "_captains_table_allowed", None)
-            if not allowed:
-                return result
+    async def state_first_sync(self):
+        current_view = self.view
+        allowed = set(await simulation_ux_finalizer._allowed_panel_actions(self))
+
+        def visible_view(_self, status=None):
+            result = current_view(status)
             for item in list(result.children):
                 original_label = _text(getattr(item, "label", ""))
                 if original_label and original_label not in allowed:
@@ -177,21 +167,13 @@ def _install_captains_table_ux(qualification_panel, simulation_ux_finalizer) -> 
                     item.row = _FRIENDLY_ROWS.get(friendly)
             return result
 
-        async def sync():
-            try:
-                with sheet_read_scope():
-                    manager._captains_table_allowed = (
-                        await simulation_ux_finalizer._allowed_panel_actions(manager)
-                    )
-            except Exception:
-                manager._captains_table_allowed = None
-            return await base_sync()
+        self.view = MethodType(visible_view, self)
+        try:
+            return await original_sync(self)
+        finally:
+            self.view = current_view
 
-        manager.view = view
-        manager.sync = sync
-        return True
-
-    qualification_panel.install_qualification = install_mobile_first
+    OrganizerPanelManager.sync = state_first_sync
 
 
 def _install_final_ledger_cleanup(qualification_panel, simulation_ux_hardening) -> None:
