@@ -32,6 +32,7 @@ from modules.community.live_arena.availability_reminder import install as _insta
 from modules.community.live_arena.next_tournament import install as _install_next_tournament
 from modules.community.live_arena.hall_of_fame import install as _install_hall_of_fame
 from modules.community.live_arena.organizer_registration_hardening import install as _install_organizer_registration_hardening
+from modules.community.live_arena.organizer_registration_runtime_finalizer import install as _install_organizer_registration_runtime_finalizer
 
 _install_runtime_hooks()
 _install_repair()
@@ -62,3 +63,4 @@ _install_availability_reminder()
 _install_next_tournament()
 _install_hall_of_fame()
 _install_organizer_registration_hardening()
+_install_organizer_registration_runtime_finalizer()
