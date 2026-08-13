@@ -238,11 +238,16 @@ def install() -> None:
         if getattr(manager, "_organizer_persistent_capacity_installed", False):
             return True
         manager._organizer_persistent_capacity_installed = True
+        manager._registration_control_pruning_active = False
         base_view = manager.view
+        base_sync = manager.sync
 
         def view(status=None):
             result, overflow = _build_view_with_overflow(base_view, status)
-            if status is not None:
+            if (
+                status is not None
+                and getattr(manager, "_registration_control_pruning_active", False)
+            ):
                 result = _prune_registration_controls(
                     result,
                     manager,
@@ -251,7 +256,15 @@ def install() -> None:
                 )
             return result
 
+        async def sync():
+            manager._registration_control_pruning_active = True
+            try:
+                return await base_sync()
+            finally:
+                manager._registration_control_pruning_active = False
+
         manager.view = view
+        manager.sync = sync
 
         # Register callbacks that overflow the primary persistent view. These views
         # are callback registries only; they are not rendered as extra Discord panels.
@@ -267,12 +280,3 @@ def install() -> None:
         return True
 
     qualification_panel.install_qualification = install_with_persistent_capacity
-
-    # Keep the real organizer message phase-aware at every sync. The manager-level
-    # view wrapper above performs the actual pruning before the message edit.
-    original_sync = organizer_panel.OrganizerPanelManager.sync
-
-    async def hardened_sync(self):
-        return await original_sync(self)
-
-    organizer_panel.OrganizerPanelManager.sync = hardened_sync
