@@ -68,3 +68,18 @@ def test_match_embed_explains_play_all_five_in_final():
         [],
     )
     assert "5 fights · play all 5" in (embed.description or "")
+
+
+def test_captains_table_labels_are_organizer_friendly():
+    assert full_set_scoring._FRIENDLY_LABELS["Close Current Round"] == "Finish Round"
+    assert full_set_scoring._FRIENDLY_LABELS["Review Result Issues"] == "Review Match Issues"
+    assert full_set_scoring._FRIENDLY_LABELS["View Roster"] == "View Players"
+    assert full_set_scoring._FRIENDLY_LABELS["Competition Ops"] == "Organizer Actions"
+    assert full_set_scoring._FRIENDLY_LABELS["Repair Discord State"] == "Repair Tournament"
+
+
+def test_captains_table_groups_primary_and_support_actions_for_mobile():
+    assert full_set_scoring._FRIENDLY_ROWS["Finish Round"] == 0
+    assert full_set_scoring._FRIENDLY_ROWS["Review Match Issues"] == 1
+    assert full_set_scoring._FRIENDLY_ROWS["View Players"] == 2
+    assert full_set_scoring._FRIENDLY_ROWS["Repair Tournament"] == 3
