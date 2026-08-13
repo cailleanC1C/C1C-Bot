@@ -137,10 +137,15 @@ class CompetitionOperationsButton(discord.ui.Button):
             return
         await interaction.response.send_message(
             embed=discord.Embed(
-                title="Competition Operations",
+                title="Organizer Actions",
                 description=(
-                    "Scheduling escalations, round extensions, mandatory match times, "
-                    "scheduling forfeits, and post-start withdrawals. All rulings require a reason."
+                    "Use these when a matchup needs staff intervention.\n\n"
+                    "**Scheduling Queue** — see matches where players asked for scheduling help.\n"
+                    "**Extend Round** — move the current round deadline.\n"
+                    "**Mandatory Time** — set a required match time when players cannot agree.\n"
+                    "**Resolve Scheduling Issue** — resolve a scheduling case with a forfeit or double forfeit.\n"
+                    "**Withdraw Player** — remove a player who leaves after the tournament has started.\n\n"
+                    "All rulings require a reason and are recorded in the tournament audit trail."
                 ),
                 color=colors.c1c_blue,
             ),
@@ -191,7 +196,7 @@ class CompetitionOperationsView(discord.ui.View):
     async def mandatory_time(self, interaction, _button):
         await interaction.response.send_modal(MandatoryTimeModal(self.manager))
 
-    @discord.ui.button(label="Scheduling Ruling", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Resolve Scheduling Issue", style=discord.ButtonStyle.danger)
     async def scheduling_ruling(self, interaction, _button):
         await interaction.response.send_modal(SchedulingRulingModal(self.manager))
 
@@ -289,7 +294,7 @@ class SchedulingRulingModal(discord.ui.Modal, title="Resolve Scheduling Case"):
             await _sync(self.manager)
             await interaction.followup.send(
                 embed=discord.Embed(
-                    title="Scheduling ruling saved",
+                    title="Scheduling issue resolved",
                     description=(
                         f"**{_text(row.get('match_id'))}** is now **{_text(row.get('status'))}**."
                     ),

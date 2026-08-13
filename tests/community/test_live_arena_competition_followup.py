@@ -47,6 +47,8 @@ def test_organizer_standings_show_full_tiebreak_and_clean_h2h():
 
     lines = organizer_standings_lines(standings, matches)
 
+    assert "Record **2-1**" in lines[0]
+    assert "MW **2**" in lines[0]
     assert "GD **+1**" in lines[0]
     assert "SoS **4**" in lines[0]
     assert "H2H won vs <@20>" in lines[0]

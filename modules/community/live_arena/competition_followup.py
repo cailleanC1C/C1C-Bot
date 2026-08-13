@@ -82,7 +82,12 @@ class OrganizerStandingsButton(discord.ui.Button):
             embed = discord.Embed(
                 title="Qualification standings · Organizer",
                 description=(
-                    "Full tiebreak detail. Public standings remain rank + match record only.\n\n"
+                    "Full tiebreak detail. Public standings show rank + match record only.\n\n"
+                    "**How ranking works**\n"
+                    "1. **MW** = Match Wins\n"
+                    "2. **GD** = Game Differential\n"
+                    "3. **SoS** = Strength of Schedule\n"
+                    "4. **H2H** = Head-to-Head, used only when it cleanly separates tied players\n\n"
                     + ("\n".join(lines) if lines else "No finalized qualification results yet.")
                 )[:4096],
                 color=colors.c1c_blue,
@@ -100,8 +105,8 @@ def organizer_standings_lines(standings, matches) -> list[str]:
     for entry in standings:
         gd = int(entry.game_differential)
         lines.append(
-            f"**#{entry.rank}** <@{entry.discord_user_id}> · **{entry.match_record}** · "
-            f"GD **{gd:+d}** · SoS **{entry.strength_of_opponents}** · "
+            f"**#{entry.rank}** <@{entry.discord_user_id}> · Record **{entry.match_record}** · "
+            f"MW **{entry.match_wins}** · GD **{gd:+d}** · SoS **{entry.strength_of_opponents}** · "
             f"H2H {h2h.get(entry.discord_user_id, '—')}"
         )
     return lines
