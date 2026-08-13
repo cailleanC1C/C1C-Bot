@@ -195,12 +195,18 @@ def _install_captains_table_ux(qualification_panel, simulation_ux_finalizer) -> 
 
 
 def _install_final_ledger_cleanup(qualification_panel, simulation_ux_hardening) -> None:
-    """Keep the friendly thread jump link after every publisher refresh."""
+    """Keep the friendly thread jump link after every real guild publisher refresh."""
     original_reconcile = qualification_panel.QualificationPublisher.reconcile
 
     async def reconcile_with_friendly_links(publisher):
         warnings = list(await original_reconcile(publisher))
         try:
+            config = publisher.service.repository.config
+            channel = publisher.bot.get_channel(int(config["ROUND_OVERVIEW_CHANNEL_ID"]))
+            if channel is None:
+                channel = await publisher.bot.fetch_channel(int(config["ROUND_OVERVIEW_CHANNEL_ID"]))
+            if getattr(channel, "guild", None) is None:
+                return list(dict.fromkeys(warnings))
             snapshot = await publisher.service.snapshot()
             if snapshot.round_row is not None:
                 await simulation_ux_hardening._refresh_victory_ledger_links(
