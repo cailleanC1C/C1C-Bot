@@ -5,6 +5,7 @@ from modules.community.live_arena import swiss_manual
 from modules.community.live_arena.bye_support import choose_ranked_bye, previous_bye_users
 from modules.community.live_arena.competition_operations import _mandatory_time
 from modules.community.live_arena.result_views import MatchResultView
+from modules.community.live_arena.scheduling_resolution_ux import SchedulingMatchPicker, SchedulingOutcomeView
 from modules.community.live_arena.withdrawal_hardening import (
     _mark_withdrawal_advance,
     _withdrawal_marker,
@@ -101,6 +102,37 @@ def test_scheduling_button_is_disabled_when_result_reporting_is_disabled():
     )
 
     assert scheduling.disabled is True
+
+
+def test_guided_scheduling_picker_shows_real_participant_names():
+    row = {
+        "match_id": "T1-Q1-M2",
+        "match_number": "2",
+        "player_a_discord_user_id": "11",
+        "player_a_display_name": "Atlantic5penguin",
+        "player_b_discord_user_id": "22",
+        "player_b_display_name": "Caillean",
+    }
+    picker = SchedulingMatchPicker(SimpleNamespace(), [row])
+
+    assert picker.options[0].label == "M2 · Atlantic5penguin vs Caillean"
+    assert picker.options[0].value == "T1-Q1-M2"
+
+
+def test_guided_scheduling_outcomes_use_real_participant_names():
+    row = {
+        "match_id": "T1-Q1-M2",
+        "player_a_discord_user_id": "11",
+        "player_a_display_name": "Atlantic5penguin",
+        "player_b_discord_user_id": "22",
+        "player_b_display_name": "Caillean",
+    }
+    view = SchedulingOutcomeView(SimpleNamespace(), row)
+    labels = [item.label for item in view.children]
+
+    assert labels[0].startswith("Atlantic5penguin")
+    assert labels[1].startswith("Caillean")
+    assert labels[2] == "Both players forfeit"
 
 
 def test_swiss_manual_validation_accepts_one_bye_plus_complete_pairs():
