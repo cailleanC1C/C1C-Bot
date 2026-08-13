@@ -112,13 +112,9 @@ def service(monkeypatch, rounds, matches, *, now=NOW):
 
 def test_late_report_is_saved_for_review_instead_of_finalized(monkeypatch):
     expired = round_row(deadline=NOW - timedelta(minutes=1))
-    result, registration, qualification = service(
-        monkeypatch, [expired], [match_row()]
-    )
+    result, registration, qualification = service(monkeypatch, [expired], [match_row()])
 
-    updated = run(
-        result.report_result("1", f"{TID}-Q1-M01", 2, 1, screenshot_present=True)
-    )
+    updated = run(result.report_result("1", f"{TID}-Q1-M01", 2, 1, screenshot_present=True))
 
     assert updated["status"] == "late_review"
     assert updated["confirm_due_at_utc"] == ""
@@ -128,13 +124,9 @@ def test_late_report_is_saved_for_review_instead_of_finalized(monkeypatch):
 
 def test_normal_report_keeps_bounded_objection_window(monkeypatch):
     deadline = NOW + timedelta(hours=3)
-    result, _, _ = service(
-        monkeypatch, [round_row(deadline=deadline)], [match_row()]
-    )
+    result, _, _ = service(monkeypatch, [round_row(deadline=deadline)], [match_row()])
 
-    updated = run(
-        result.report_result("1", f"{TID}-Q1-M01", 2, 0, screenshot_present=True)
-    )
+    updated = run(result.report_result("1", f"{TID}-Q1-M01", 3, 0, screenshot_present=True))
 
     assert updated["status"] == "pending_confirmation"
     assert updated["confirm_due_at_utc"] == deadline.isoformat().replace("+00:00", "Z")
@@ -151,20 +143,10 @@ def test_organizer_ruling_requires_reason(monkeypatch):
 
 def test_accept_disputed_result_finalizes_and_marks_round_ready(monkeypatch):
     disputed = match_row("disputed")
-    disputed.update(
-        reported_score_a="2",
-        reported_score_b="1",
-        reported_by_discord_user_id="1",
-    )
-    result, registration, qualification = service(
-        monkeypatch, [round_row()], [disputed]
-    )
+    disputed.update(reported_score_a="2", reported_score_b="1", reported_by_discord_user_id="1")
+    result, registration, qualification = service(monkeypatch, [round_row()], [disputed])
 
-    updated = run(
-        result.resolve_match(
-            "900", disputed["match_id"], "accept", reason="Screenshot confirms score"
-        )
-    )
+    updated = run(result.resolve_match("900", disputed["match_id"], "accept", reason="Screenshot confirms score"))
 
     assert updated["status"] == "finalized"
     assert updated["final_score_a"] == "2"
@@ -179,16 +161,7 @@ def test_correct_disputed_result_uses_organizer_score(monkeypatch):
     disputed.update(reported_score_a="2", reported_score_b="0")
     result, _, _ = service(monkeypatch, [round_row()], [disputed])
 
-    updated = run(
-        result.resolve_match(
-            "900",
-            disputed["match_id"],
-            "correct",
-            reason="Typed score was reversed",
-            score_a=1,
-            score_b=2,
-        )
-    )
+    updated = run(result.resolve_match("900", disputed["match_id"], "correct", reason="Typed score was reversed", score_a=1, score_b=2))
 
     assert updated["status"] == "finalized"
     assert updated["final_score_a"] == "1"
@@ -198,19 +171,10 @@ def test_correct_disputed_result_uses_organizer_score(monkeypatch):
 
 def test_replay_resets_result_without_erasing_audit_note(monkeypatch):
     disputed = match_row("disputed")
-    disputed.update(
-        reported_by_discord_user_id="1",
-        reported_score_a="2",
-        reported_score_b="1",
-        disputed_by_discord_user_id="2",
-    )
+    disputed.update(reported_by_discord_user_id="1", reported_score_a="2", reported_score_b="1", disputed_by_discord_user_id="2")
     result, _, qualification = service(monkeypatch, [round_row()], [disputed])
 
-    updated = run(
-        result.resolve_match(
-            "900", disputed["match_id"], "replay", reason="Evidence is inconclusive"
-        )
-    )
+    updated = run(result.resolve_match("900", disputed["match_id"], "replay", reason="Evidence is inconclusive"))
 
     assert updated["status"] == "published"
     assert updated["reported_score_a"] == ""
@@ -224,11 +188,7 @@ def test_forfeit_and_double_forfeit_are_terminal_without_fake_scores(monkeypatch
     late.update(reported_score_a="2", reported_score_b="1")
     result, _, _ = service(monkeypatch, [round_row()], [late])
 
-    forfeited = run(
-        result.resolve_match(
-            "900", late["match_id"], "forfeit_a", reason="Player A did not attend"
-        )
-    )
+    forfeited = run(result.resolve_match("900", late["match_id"], "forfeit_a", reason="Player A did not attend"))
     assert forfeited["status"] == "forfeit"
     assert forfeited["final_winner_discord_user_id"] == "2"
     assert forfeited["final_score_a"] == ""
@@ -236,11 +196,7 @@ def test_forfeit_and_double_forfeit_are_terminal_without_fake_scores(monkeypatch
 
     second = match_row("late_review")
     result, _, _ = service(monkeypatch, [round_row()], [second])
-    double = run(
-        result.resolve_match(
-            "900", second["match_id"], "double_forfeit", reason="Neither player attended"
-        )
-    )
+    double = run(result.resolve_match("900", second["match_id"], "double_forfeit", reason="Neither player attended"))
     assert double["status"] == "double_forfeit"
     assert double["final_winner_discord_user_id"] == ""
     assert double["final_score_a"] == ""
@@ -248,15 +204,8 @@ def test_forfeit_and_double_forfeit_are_terminal_without_fake_scores(monkeypatch
 
 def test_correction_round_exposes_terminal_results_for_review(monkeypatch):
     final = match_row("finalized")
-    final.update(
-        final_result_type="played",
-        final_score_a="2",
-        final_score_b="1",
-        final_winner_discord_user_id="1",
-    )
-    result, _, _ = service(
-        monkeypatch, [round_row(status="correction_in_progress")], [final]
-    )
+    final.update(final_result_type="played", final_score_a="2", final_score_b="1", final_winner_discord_user_id="1")
+    result, _, _ = service(monkeypatch, [round_row(status="correction_in_progress")], [final])
 
     rows = run(result.reviewable_matches())
 
@@ -265,14 +214,10 @@ def test_correction_round_exposes_terminal_results_for_review(monkeypatch):
 
 def test_replay_can_be_reported_while_round_is_in_correction(monkeypatch):
     replay = match_row("published")
-    result, _, _ = service(
-        monkeypatch, [round_row(status="correction_in_progress")], [replay]
-    )
+    result, _, _ = service(monkeypatch, [round_row(status="correction_in_progress")], [replay])
 
-    updated = run(
-        result.report_result("2", replay["match_id"], 0, 2, screenshot_present=True)
-    )
+    updated = run(result.report_result("2", replay["match_id"], 0, 3, screenshot_present=True))
 
     assert updated["status"] == "pending_confirmation"
     assert updated["reported_score_a"] == "0"
-    assert updated["reported_score_b"] == "2"
+    assert updated["reported_score_b"] == "3"
