@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import discord
+
+from shared.theme import colors
+
 from modules.community.live_arena.service import _text, load_tournament_snapshot
 
 _installed = False
@@ -15,84 +19,105 @@ def install() -> None:
 
     from modules.community.live_arena import simulation_ux_hardening as ux
 
-    original_submit = ux._submit_report
-
-    async def submit_with_reporter_score(
-        interaction,
-        service,
-        match,
-        *,
-        reporter_id: str,
-        submitted_by_id: str,
-        raw_score: str,
-    ):
-        # The score entered in the modal is always reporter-first. Keep that wording
-        # for the public notice even when the reporter is Sheet-side player B.
-        original_post = ux._post_thread_notice
-        original_send = interaction.followup.send
-        reporter_score = _normalize_score(raw_score)
-
-        async def post_with_score(channel, content: str, *, title: str):
-            content = _replace_sheet_score_with_reporter_score(
-                content,
-                match,
-                reporter_id,
-                reporter_score,
-            )
-            await original_post(channel, content, title=title)
-
-        async def send_with_score(*args, **kwargs):
-            embed = kwargs.get("embed")
-            if embed is not None and getattr(embed, "description", None):
-                embed.description = _replace_sheet_score_with_reporter_score(
-                    embed.description,
-                    match,
-                    reporter_id,
-                    reporter_score,
-                )
-            return await original_send(*args, **kwargs)
-
-        ux._post_thread_notice = post_with_score
-        interaction.followup.send = send_with_score
-        try:
-            return await original_submit(
-                interaction,
-                service,
-                match,
-                reporter_id=reporter_id,
-                submitted_by_id=submitted_by_id,
-                raw_score=raw_score,
-            )
-        finally:
-            interaction.followup.send = original_send
-            ux._post_thread_notice = original_post
-
-    # Keep the implementation above intentionally local to one submission. The
-    # lifecycle correction below is the lasting runtime patch.
-    ux._submit_report = submit_with_reporter_score
+    ux._submit_report = _submit_report
     ux._allowed_panel_actions = _allowed_panel_actions
+
+
+async def _submit_report(
+    interaction,
+    service,
+    match,
+    *,
+    reporter_id: str,
+    submitted_by_id: str,
+    raw_score: str,
+) -> None:
+    """Submit using Sheet-side scores but present the score reporter-first."""
+    from modules.community.live_arena import result_views, simulation_ux_hardening as ux
+
+    score_a, score_b = result_views._score_for_sheet_sides(raw_score, reporter_id, match)
+    updated = await service.report_result(
+        reporter_id,
+        _text(match["match_id"]),
+        score_a,
+        score_b,
+        screenshot_present=True,
+    )
+    if submitted_by_id != reporter_id:
+        await ux._audit_organizer_submission(
+            service,
+            updated,
+            organizer_id=submitted_by_id,
+            participant_id=reporter_id,
+            score_a=score_a,
+            score_b=score_b,
+        )
+
+    status = _text(updated.get("status"))
+    due = _text(updated.get("confirm_due_at_utc"))
+    if status == "pending_confirmation" and due:
+        result_views.schedule_match_finalization(
+            service.sheet_id,
+            _text(updated["match_id"]),
+            due,
+        )
+
+    opponent_id = (
+        _text(updated["player_b_discord_user_id"])
+        if reporter_id == _text(updated["player_a_discord_user_id"])
+        else _text(updated["player_a_discord_user_id"])
+    )
+    score_text = _normalize_score(raw_score)
+    if status == "organizer_review":
+        followup = (
+            f"Recorded **{score_text}**. The Final is awaiting explicit organizer confirmation."
+        )
+        dispute_text = "Organizer confirmation is required before the Final becomes official."
+    elif status == "late_review":
+        followup = f"Recorded **{score_text}**. This late result is awaiting organizer review."
+        dispute_text = "This late report is waiting for organizer review."
+    else:
+        followup = (
+            f"Recorded **{score_text}**. <@{opponent_id}> may dispute it until "
+            f"{ux._discord_timestamp(due)}. No second confirmation is required."
+        )
+        dispute_text = (
+            f"<@{opponent_id}> may dispute this result until {ux._discord_timestamp(due)}. "
+            "If no dispute is raised, the result finalizes automatically; no second confirmation is required."
+        )
+
+    await interaction.followup.send(
+        embed=discord.Embed(
+            title="Result reported",
+            description=followup,
+            color=colors.c1c_blue,
+        ),
+        ephemeral=True,
+        allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+    )
+
+    if submitted_by_id == reporter_id:
+        notice = (
+            f"<@{reporter_id}> reported **{score_text}** against <@{opponent_id}>.\n"
+            f"{dispute_text}"
+        )
+        title = "Result reported"
+    else:
+        notice = (
+            f"<@{submitted_by_id}> reported **{score_text}** on behalf of "
+            f"<@{reporter_id}> against <@{opponent_id}>.\n{dispute_text}"
+        )
+        title = "Result reported by organizer"
+    await ux._post_thread_notice(interaction.channel, notice, title=title)
+    await result_views._run_post_mutation_sync(service.sheet_id)
 
 
 def _normalize_score(raw: str) -> str:
     return str(raw or "").strip().replace("–", "-").replace("—", "-")
 
 
-def _replace_sheet_score_with_reporter_score(
-    text: str,
-    match,
-    reporter_id: str,
-    reporter_score: str,
-) -> str:
-    if reporter_id == _text(match.get("player_a_discord_user_id")):
-        return text
-    parts = reporter_score.split("-")
-    if len(parts) != 2:
-        return text
-    sheet_score = f"{parts[1]}-{parts[0]}"
-    return str(text).replace(f"**{sheet_score}**", f"**{reporter_score}**")
-
-
 async def _allowed_panel_actions(manager) -> set[str]:
+    """Return only actions that make sense in the current tournament lifecycle."""
     from modules.community.live_arena.qualification import QualificationService
 
     tournament = await load_tournament_snapshot(manager.sheet_id)
@@ -135,9 +160,16 @@ async def _allowed_panel_actions(manager) -> set[str]:
         return roster | maintenance
 
     open_rounds = [
-        row for row in rounds if _text(row.get("status")) in {
-            "active", "published", "open", "published/open",
-            "ready_to_close", "correction_in_progress",
+        row
+        for row in rounds
+        if _text(row.get("status"))
+        in {
+            "active",
+            "published",
+            "open",
+            "published/open",
+            "ready_to_close",
+            "correction_in_progress",
         }
     ]
     if open_rounds:
@@ -152,7 +184,8 @@ async def _allowed_panel_actions(manager) -> set[str]:
         return actions
 
     previews = [
-        row for row in rounds
+        row
+        for row in rounds
         if _text(row.get("status")) in {"preview", "approved", "proposed"}
     ]
     if previews:
@@ -173,7 +206,7 @@ async def _allowed_panel_actions(manager) -> set[str]:
             "View Standings",
         } | roster | maintenance
 
-    # Knockout completion must outrank the permanently closed Q3 row.
+    # Knockout completion outranks the permanently closed Q3 row.
     final = _stage_round(rounds, "final")
     if final is not None and _text(final.get("status")) == "closed":
         return {"Complete Tournament", "View Standings"} | roster | maintenance
@@ -184,9 +217,8 @@ async def _allowed_panel_actions(manager) -> set[str]:
         for row in rounds
     )
     if knockout_exists:
-        # Normally the reconciliation layer creates the next knockout preview
-        # immediately. If it has not appeared yet, expose repair instead of
-        # incorrectly returning to the Top 8 freeze controls.
+        # Normally reconciliation creates the next knockout preview immediately.
+        # If not, expose repair rather than incorrectly returning to Top 8 freeze.
         return {"View Standings", "Reopen Closed Round"} | roster | maintenance
 
     closed_q = {
@@ -217,7 +249,8 @@ async def _allowed_panel_actions(manager) -> set[str]:
 def _qualification_round(rounds, number: int):
     return next(
         (
-            row for row in rounds
+            row
+            for row in rounds
             if _text(row.get("round_stage")).lower() == "qualification"
             and int(_text(row.get("round_number")) or 0) == number
         ),
