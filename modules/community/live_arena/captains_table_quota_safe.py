@@ -31,7 +31,6 @@ def _safe_panel_actions(manager, status: str | None) -> set[str]:
     if state == "signup_open":
         return {"Close Registration"} | _SAFE_ROSTER | _SAFE_MAINTENANCE
     if state == "signup_closed":
-        # With no trustworthy round-state read, do not expose draw mutations.
         return {"Reopen Registration"} | _SAFE_ROSTER | _SAFE_MAINTENANCE
     if state == "completed":
         return {
@@ -80,13 +79,14 @@ def install() -> None:
 
         base_view = manager.view
         manager._captains_table_allowed = None
+        manager._captains_table_rendering = False
 
         def view(status=None):
             result = base_view(status)
-            # status=None is the persistent callback-registration surface. Keep the
-            # complete callback set registered even though the visible message is
-            # compact.
-            if status is None:
+            # Keep direct/internal construction and the persistent callback
+            # registration surface unchanged. Pruning is only for the concrete
+            # Discord message render inside this sync path.
+            if status is None or not getattr(manager, "_captains_table_rendering", False):
                 return result
             allowed = getattr(manager, "_captains_table_allowed", None)
             if not allowed:
@@ -94,10 +94,6 @@ def install() -> None:
             return full_set_scoring._finalize_visible_view(result, set(allowed))
 
         async def sync():
-            # One read scope for lifecycle-state calculation plus the real panel
-            # render. Repeated CONFIG/tournament/round reads inside this operation
-            # are therefore reused by the Sheets scope instead of becoming new
-            # physical requests.
             with sheet_read_scope():
                 allowed = None
                 try:
@@ -111,16 +107,15 @@ def install() -> None:
                         exc,
                     )
 
-                # Never fail open to the 25-control mega-view. If the lifecycle
-                # lookup is throttled or otherwise unavailable, manager.view()
-                # derives a small safe set from the already-known tournament
-                # status passed by the lifecycle renderer.
                 manager._captains_table_allowed = set(allowed or ()) or None
-
-                # Call the real lifecycle sync directly. This bypasses the stacked
-                # simulation/full-set sync wrappers that each performed their own
-                # lifecycle lookup and caused duplicate Sheets reads.
-                return await tournament_lifecycle._sync_organizer_panel(manager)
+                manager._captains_table_rendering = True
+                try:
+                    # Bypass the stacked simulation/full-set sync wrappers that
+                    # each performed their own lifecycle lookup. The real lifecycle
+                    # renderer now owns the single visible message edit.
+                    return await tournament_lifecycle._sync_organizer_panel(manager)
+                finally:
+                    manager._captains_table_rendering = False
 
         manager.view = view
         manager.sync = sync
