@@ -36,6 +36,7 @@ from modules.community.live_arena.organizer_registration_hardening import instal
 from modules.community.live_arena.sheets_read_hardening import install as _install_sheets_read_hardening
 from modules.community.live_arena.simulation_ux_hardening import install as _install_simulation_ux_hardening
 from modules.community.live_arena.simulation_ux_finalizer import install as _install_simulation_ux_finalizer
+from modules.community.live_arena.full_set_scoring import install as _install_full_set_scoring
 
 _install_runtime_hooks()
 _install_repair()
@@ -70,3 +71,4 @@ _install_organizer_registration_hardening()
 _install_sheets_read_hardening()
 _install_simulation_ux_hardening()
 _install_simulation_ux_finalizer()
+_install_full_set_scoring()
