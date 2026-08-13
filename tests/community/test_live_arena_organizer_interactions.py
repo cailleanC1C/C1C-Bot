@@ -17,6 +17,8 @@ from modules.community.live_arena.organizer_panel import (
 )
 from modules.community.live_arena.organizer_registration_hardening import (
     FastCloseConfirmView,
+    _build_view_with_overflow,
+    _overflow_persistent_views,
     _prune_registration_controls,
 )
 
@@ -153,6 +155,54 @@ def test_registration_panel_pruning_removes_future_stage_controls():
     labels = {getattr(child, "label", None) for child in pruned.children}
 
     assert labels == {"Close Registration", "View Roster", "Reconcile Roles"}
+
+
+def test_decorated_view_captures_26th_control_instead_of_raising():
+    def builder(_status=None):
+        view = discord.ui.View(timeout=None)
+        for index in range(26):
+            view.add_item(
+                discord.ui.Button(
+                    label=f"Control {index + 1}",
+                    custom_id=f"live_arena:test:{index + 1}",
+                )
+            )
+        return view
+
+    primary, overflow = _build_view_with_overflow(builder)
+
+    assert len(primary.children) == 25
+    assert len(overflow) == 1
+    assert overflow[0].label == "Control 26"
+
+    overflow_views = _overflow_persistent_views(overflow)
+    assert len(overflow_views) == 1
+    assert len(overflow_views[0].children) == 1
+    assert overflow_views[0].children[0].custom_id == "live_arena:test:26"
+
+
+def test_registration_pruning_readds_allowed_overflow_control_after_shrinking():
+    manager = SimpleNamespace(_qualification_q1_status="")
+    view = discord.ui.View(timeout=None)
+    for index in range(25):
+        label = "Close Registration" if index == 0 else f"Future {index}"
+        view.add_item(discord.ui.Button(label=label, custom_id=f"live_arena:test:{index}"))
+    overflow = [
+        discord.ui.Button(
+            label="Player History",
+            custom_id="live_arena:organizer:player_history",
+        )
+    ]
+
+    pruned = _prune_registration_controls(
+        view,
+        manager,
+        "signup_open",
+        overflow=overflow,
+    )
+    labels = {getattr(child, "label", None) for child in pruned.children}
+
+    assert labels == {"Close Registration", "Player History"}
 
 
 def test_deferred_authorization_denial_uses_followup_without_loading_roster():
