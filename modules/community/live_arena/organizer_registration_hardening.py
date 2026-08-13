@@ -13,6 +13,7 @@ from modules.community.live_arena.views import error_embed
 
 log = logging.getLogger("c1c.community.live_arena.organizer_registration_hardening")
 _installed = False
+_PERSISTENT_VIEW_LIMIT = 25
 
 _REGISTRATION_OPEN_ACTIONS = {
     "Close Registration",
@@ -86,23 +87,72 @@ class FastCloseConfirmView(ConfirmTransition):
         await execute_transition(interaction, self.manager, "close")
 
 
-def _prune_registration_controls(view, manager, status):
-    """Hide controls belonging to tournament phases the organizer cannot use yet."""
+def _allowed_registration_actions(manager, status):
     if status == "draft":
-        allowed = _REGISTRATION_DRAFT_ACTIONS
-    elif status == "signup_open":
-        allowed = _REGISTRATION_OPEN_ACTIONS
-    elif status == "signup_closed":
+        return _REGISTRATION_DRAFT_ACTIONS
+    if status == "signup_open":
+        return _REGISTRATION_OPEN_ACTIONS
+    if status == "signup_closed":
         qstatus = str(getattr(manager, "_qualification_q1_status", "") or "").lower()
-        allowed = _REGISTRATION_CLOSED_BASE | _Q1_BY_STATE.get(qstatus, set())
-    else:
+        return _REGISTRATION_CLOSED_BASE | _Q1_BY_STATE.get(qstatus, set())
+    return None
+
+
+def _prune_registration_controls(view, manager, status, *, overflow=()):
+    """Hide controls belonging to tournament phases the organizer cannot use yet."""
+    allowed = _allowed_registration_actions(manager, status)
+    if allowed is None:
         return view
 
     for item in list(view.children):
         label = str(getattr(item, "label", "") or "")
         if label and label not in allowed:
             view.remove_item(item)
+
+    for item in overflow:
+        label = str(getattr(item, "label", "") or "")
+        if label in allowed and len(view.children) < _PERSISTENT_VIEW_LIMIT:
+            view.add_item(item)
     return view
+
+
+def _build_view_with_overflow(builder, status=None):
+    """Build a decorated organizer view without letting the 26th control abort startup.
+
+    discord.py rejects a View as soon as the 26th component is added. The Live Arena
+    organizer surface reached that boundary when Player History was added. Capture any
+    controls beyond the platform limit while construction is synchronous, then let the
+    caller either prune/re-add them for the visible phase or register them separately as
+    persistent callbacks.
+    """
+    original_add_item = discord.ui.View.add_item
+    overflow = []
+
+    def capped_add_item(view, item):
+        if len(view.children) >= _PERSISTENT_VIEW_LIMIT:
+            overflow.append(item)
+            return view
+        return original_add_item(view, item)
+
+    discord.ui.View.add_item = capped_add_item
+    try:
+        result = builder(status)
+    finally:
+        discord.ui.View.add_item = original_add_item
+    return result, overflow
+
+
+def _overflow_persistent_views(items):
+    """Return persistent callback-only views for controls that did not fit."""
+    remaining = list(items)
+    views = []
+    while remaining:
+        chunk = discord.ui.View(timeout=None)
+        for item in remaining[:_PERSISTENT_VIEW_LIMIT]:
+            chunk.add_item(item)
+        del remaining[:_PERSISTENT_VIEW_LIMIT]
+        views.append(chunk)
+    return views
 
 
 async def _send_close_prompt(interaction, manager) -> None:
@@ -157,7 +207,7 @@ def install() -> None:
         return
     _installed = True
 
-    from modules.community.live_arena import organizer_panel
+    from modules.community.live_arena import organizer_panel, qualification_panel
 
     # Make all defer helpers idempotent. Some handlers already defer internally;
     # callback-level acknowledgement must never trigger InteractionResponded.
@@ -176,22 +226,53 @@ def install() -> None:
 
     organizer_panel.OrganizerButton.callback = hardened_button_callback
 
-    # Prune the final, fully-decorated view at the manager sync boundary. This runs
-    # after all later Live Arena modules have added their controls, so the actual
-    # Discord message receives the lifecycle-appropriate subset rather than the
-    # complete control wall.
+    # This wrapper is installed last around the accumulated qualification decorators.
+    # It prevents the fully-decorated organizer view from exceeding Discord's 25-item
+    # limit during bot.add_view(), while registering any overflow callbacks separately.
+    original_install = qualification_panel.install_qualification
+
+    def install_with_persistent_capacity(manager) -> bool:
+        installed = original_install(manager)
+        if not installed:
+            return False
+        if getattr(manager, "_organizer_persistent_capacity_installed", False):
+            return True
+        manager._organizer_persistent_capacity_installed = True
+        base_view = manager.view
+
+        def view(status=None):
+            result, overflow = _build_view_with_overflow(base_view, status)
+            if status is not None:
+                result = _prune_registration_controls(
+                    result,
+                    manager,
+                    status,
+                    overflow=overflow,
+                )
+            return result
+
+        manager.view = view
+
+        # Register callbacks that overflow the primary persistent view. These views
+        # are callback registries only; they are not rendered as extra Discord panels.
+        _, overflow = _build_view_with_overflow(base_view, None)
+        for overflow_view in _overflow_persistent_views(overflow):
+            manager.bot.add_view(overflow_view)
+        if overflow:
+            log.info(
+                "Live Arena organizer persistent controls split across views • primary=%s • overflow=%s",
+                _PERSISTENT_VIEW_LIMIT,
+                len(overflow),
+            )
+        return True
+
+    qualification_panel.install_qualification = install_with_persistent_capacity
+
+    # Keep the real organizer message phase-aware at every sync. The manager-level
+    # view wrapper above performs the actual pruning before the message edit.
     original_sync = organizer_panel.OrganizerPanelManager.sync
 
     async def hardened_sync(self):
-        original_view = self.view
-
-        def pruned_view(status=None):
-            return _prune_registration_controls(original_view(status), self, status)
-
-        self.view = pruned_view
-        try:
-            return await original_sync(self)
-        finally:
-            self.view = original_view
+        return await original_sync(self)
 
     organizer_panel.OrganizerPanelManager.sync = hardened_sync
