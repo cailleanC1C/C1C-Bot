@@ -68,3 +68,60 @@ def test_match_embed_explains_play_all_five_in_final():
         [],
     )
     assert "5 fights · play all 5" in (embed.description or "")
+
+
+class _FakeView:
+    def __init__(self, labels):
+        self.children = [SimpleNamespace(label=label, row=None) for label in labels]
+
+    def remove_item(self, item):
+        self.children.remove(item)
+
+
+def test_visible_captains_table_keeps_only_allowed_actions_and_renames_them():
+    view = _FakeView(
+        [
+            "Open Registration",
+            "Close Current Round",
+            "View Standings",
+            "Review Result Issues",
+            "Competition Ops",
+            "View Roster",
+            "Repair Discord State",
+            "Freeze Top 8",
+        ]
+    )
+
+    result = full_set_scoring._finalize_visible_view(
+        view,
+        {
+            "View Standings",
+            "Review Result Issues",
+            "Competition Ops",
+            "View Roster",
+            "Repair Discord State",
+        },
+    )
+
+    assert [item.label for item in result.children] == [
+        "View Standings",
+        "Review Match Issues",
+        "Organizer Actions",
+        "View Players",
+        "Repair Tournament",
+    ]
+    assert [item.row for item in result.children] == [0, 1, 1, 2, 3]
+
+
+def test_visible_captains_table_accepts_already_friendly_labels():
+    view = _FakeView(["View Players", "Repair Tournament", "Finish Tournament"])
+
+    result = full_set_scoring._finalize_visible_view(
+        view,
+        {"View Roster", "Repair Discord State"},
+    )
+
+    assert [item.label for item in result.children] == [
+        "View Players",
+        "Repair Tournament",
+    ]

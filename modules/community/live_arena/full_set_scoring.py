@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+
 from shared.sheets.async_core import sheet_read_scope
 from modules.community.live_arena.registration import RegistrationError
 from modules.community.live_arena.service import _text
 
+log = logging.getLogger("c1c.community.live_arena.full_set_scoring")
 _installed = False
 
 _FRIENDLY_LABELS = {
@@ -36,6 +39,7 @@ _FRIENDLY_LABELS = {
     "Create Next Tournament": "Create New Tournament",
     "Player History": "Player History",
 }
+_ORIGINAL_LABELS = {friendly: original for original, friendly in _FRIENDLY_LABELS.items()}
 
 _FRIENDLY_ROWS = {
     "Open Signups": 0,
@@ -139,8 +143,82 @@ def install() -> None:
     except Exception:
         pass
 
+    _install_direct_captains_table_sync(simulation_ux_finalizer)
     _install_captains_table_ux(qualification_panel, simulation_ux_finalizer)
     _install_final_ledger_cleanup(qualification_panel, simulation_ux_hardening)
+
+
+def _install_direct_captains_table_sync(simulation_ux_finalizer) -> None:
+    from modules.community.live_arena import organizer_panel
+    from modules.community.live_arena.messages import load_pr5_config
+    from modules.community.live_arena.service import load_tournament_snapshot
+
+    manager_cls = organizer_panel.OrganizerPanelManager
+    if getattr(manager_cls, "_direct_state_first_sync_installed", False):
+        return
+    manager_cls._direct_state_first_sync_installed = True
+    original_sync = manager_cls.sync
+
+    async def sync_state_first(self):
+        with sheet_read_scope():
+            result = await original_sync(self)
+            if not getattr(result, "ok", False):
+                return result
+            try:
+                allowed = set(await simulation_ux_finalizer._allowed_panel_actions(self))
+                config, _ = await load_pr5_config(self.sheet_id)
+                tournament = await load_tournament_snapshot(self.sheet_id)
+                channel = self.bot.get_channel(int(config["ORGANIZER_CHANNEL_ID"]))
+                if channel is None:
+                    channel = await self.bot.fetch_channel(int(config["ORGANIZER_CHANNEL_ID"]))
+
+                if _text(tournament.status) == "active":
+                    allowed.discard("Player History")
+                    qstatus = _text(getattr(self, "_qualification_q1_status", "")).lower()
+                    if qstatus not in {"ready_to_close", "correction_in_progress"}:
+                        allowed.discard("Close Current Round")
+                    try:
+                        _, _, _, _, parity = await self.data(getattr(channel, "guild", None))
+                        if not (
+                            parity.get("role_missing")
+                            or parity.get("missing")
+                            or parity.get("extra")
+                            or parity.get("unresolved")
+                        ):
+                            allowed.discard("Reconcile Roles")
+                    except Exception:
+                        log.exception("Live Arena role-parity check for compact organizer panel failed")
+
+                visible = _finalize_visible_view(self.view(tournament.status), allowed)
+                message_id = _text(config.get("ORGANIZER_PANEL_MESSAGE_ID"))
+                if not message_id:
+                    return result
+                get_partial = getattr(channel, "get_partial_message", None)
+                message = (
+                    get_partial(int(message_id))
+                    if callable(get_partial)
+                    else await channel.fetch_message(int(message_id))
+                )
+                await message.edit(view=visible)
+            except Exception:
+                log.exception("Live Arena direct state-first organizer render failed")
+            return result
+
+    manager_cls.sync = sync_state_first
+
+
+def _finalize_visible_view(view, allowed: set[str]):
+    for item in list(view.children):
+        label = _text(getattr(item, "label", ""))
+        original = _ORIGINAL_LABELS.get(label, label)
+        if not original or original not in allowed:
+            view.remove_item(item)
+            continue
+        friendly = _FRIENDLY_LABELS.get(original, label)
+        if friendly:
+            item.label = friendly
+            item.row = _FRIENDLY_ROWS.get(friendly)
+    return view
 
 
 def _install_captains_table_ux(qualification_panel, simulation_ux_finalizer) -> None:
@@ -159,23 +237,12 @@ def _install_captains_table_ux(qualification_panel, simulation_ux_finalizer) -> 
 
         def view(status=None):
             result = base_view(status)
-            # status=None is persistent callback registration. Keep those callbacks
-            # available, but keep the actual visible message state-first and small.
             if status is None:
                 return result
             allowed = getattr(manager, "_captains_table_allowed", None)
             if not allowed:
                 return result
-            for item in list(result.children):
-                original_label = _text(getattr(item, "label", ""))
-                if original_label and original_label not in allowed:
-                    result.remove_item(item)
-                    continue
-                friendly = _FRIENDLY_LABELS.get(original_label)
-                if friendly:
-                    item.label = friendly
-                    item.row = _FRIENDLY_ROWS.get(friendly)
-            return result
+            return _finalize_visible_view(result, set(allowed))
 
         async def sync():
             try:
