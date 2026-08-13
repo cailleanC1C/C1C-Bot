@@ -152,7 +152,12 @@ def _install_captains_table_core_sync(simulation_ux_finalizer) -> None:
 
     async def state_first_sync(self):
         current_view = self.view
-        allowed = set(await simulation_ux_finalizer._allowed_panel_actions(self))
+        allowed = set(getattr(self, "_captains_table_allowed", None) or ())
+        if not allowed:
+            try:
+                allowed = set(await simulation_ux_finalizer._allowed_panel_actions(self))
+            except Exception:
+                return await original_sync(self)
 
         def visible_view(_self, status=None):
             result = current_view(status)
