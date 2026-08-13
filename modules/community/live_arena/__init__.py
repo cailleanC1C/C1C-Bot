@@ -34,6 +34,8 @@ from modules.community.live_arena.hall_of_fame import install as _install_hall_o
 from modules.community.live_arena.organizer_capacity_guard import install as _install_organizer_capacity_guard
 from modules.community.live_arena.organizer_registration_hardening import install as _install_organizer_registration_hardening
 from modules.community.live_arena.sheets_read_hardening import install as _install_sheets_read_hardening
+from modules.community.live_arena.simulation_ux_hardening import install as _install_simulation_ux_hardening
+from modules.community.live_arena.simulation_ux_finalizer import install as _install_simulation_ux_finalizer
 
 _install_runtime_hooks()
 _install_repair()
@@ -66,3 +68,5 @@ _install_hall_of_fame()
 _install_organizer_capacity_guard()
 _install_organizer_registration_hardening()
 _install_sheets_read_hardening()
+_install_simulation_ux_hardening()
+_install_simulation_ux_finalizer()
