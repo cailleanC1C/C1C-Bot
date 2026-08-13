@@ -40,7 +40,6 @@ def install() -> None:
         simulation_ux_hardening,
     )
 
-    # Patch both the defining module and the alias imported by the resolution layer.
     competition._validate_played_score = _validate_full_set_score
     competition_resolution._validate_played_score = _validate_full_set_score
 
@@ -51,19 +50,27 @@ def install() -> None:
         final = _text(round_row.get("round_stage")).lower() == "final"
         description = str(embed.description or "")
         if final:
-            description = description.replace("**Format:** Best of 5", "**Format:** 5 fights · play all 5")
-            description = description.replace("**Format:** Best of 3", "**Format:** 5 fights · play all 5")
+            description = description.replace(
+                "**Format:** Best of 5",
+                "**Format:** Best of 5 · 5 fights · play all 5",
+            )
+            description = description.replace(
+                "**Format:** Best of 3",
+                "**Format:** Best of 5 · 5 fights · play all 5",
+            )
             description = description.replace("After the BO5,", "After all 5 fights,")
             description = description.replace("After the BO3,", "After all 5 fights,")
         else:
-            description = description.replace("**Format:** Best of 3", "**Format:** 3 fights · play all 3")
+            description = description.replace(
+                "**Format:** Best of 3",
+                "**Format:** Best of 3 · 3 fights · play all 3",
+            )
             description = description.replace("After the BO3,", "After all 3 fights,")
         embed.description = description
         return embed
 
     qualification_panel.match_embed = match_embed_with_full_set_wording
 
-    # Keep every result-entry surface aligned with the same scoring rule.
     try:
         result_views.ReportResultModal.score.placeholder = "3-0 or 2-1 · Final: 5-0, 4-1, 3-2"
     except Exception:
