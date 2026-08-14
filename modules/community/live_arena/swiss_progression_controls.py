@@ -157,6 +157,11 @@ def install() -> None:
         # layer, then expose the Q2/Q3 progression controls immediately.
         if number in {2, 3}:
             await _refresh_previous_closed_overview(manager, number)
+        # The final quota-safe Captain's Table sync now invokes Swiss
+        # reconciliation itself. Do not recurse back into the same final render
+        # while that reconciliation is in progress.
+        if getattr(manager, "_captains_table_stage_reconciling", False):
+            return
         try:
             await manager.sync()
         except Exception:
