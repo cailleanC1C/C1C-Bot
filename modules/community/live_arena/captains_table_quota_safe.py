@@ -74,6 +74,7 @@ def install() -> None:
         from modules.community.live_arena import (
             full_set_scoring,
             simulation_ux_finalizer,
+            swiss_panel,
             swiss_runtime,
             tournament_lifecycle,
         )
@@ -90,6 +91,43 @@ def install() -> None:
             # Discord message render inside this sync path.
             if status is None or not getattr(manager, "_captains_table_rendering", False):
                 return result
+
+            preview_round = getattr(manager, "_captains_table_swiss_preview_round", None)
+            preview_status = _text(
+                getattr(manager, "_captains_table_swiss_preview_status", "")
+            ).lower()
+            if (
+                _text(status).lower() == "active"
+                and preview_round in {2, 3}
+                and preview_status in {"preview", "approved"}
+            ):
+                # Some older decorated views have already dropped these controls
+                # before this final renderer gets to prune them. Re-add the real
+                # callback buttons here, at the same boundary that owns the visible
+                # Captain's Table edit, rather than depending on wrapper order.
+                custom_ids = {
+                    _text(getattr(item, "custom_id", ""))
+                    for item in getattr(result, "children", ())
+                }
+                if "live_arena:organizer:swiss:regenerate" not in custom_ids:
+                    result.add_item(
+                        swiss_panel.SwissActionButton(
+                            manager,
+                            "Regenerate Swiss Preview",
+                            "regenerate",
+                            disabled=False,
+                        )
+                    )
+                if "live_arena:organizer:swiss:publish" not in custom_ids:
+                    result.add_item(
+                        swiss_panel.SwissActionButton(
+                            manager,
+                            "Approve & Publish Swiss",
+                            "publish",
+                            disabled=False,
+                        )
+                    )
+
             allowed = getattr(manager, "_captains_table_allowed", None)
             if not allowed:
                 allowed = _safe_panel_actions(manager, status)
