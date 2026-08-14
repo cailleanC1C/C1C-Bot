@@ -74,12 +74,14 @@ def install() -> None:
         from modules.community.live_arena import (
             full_set_scoring,
             simulation_ux_finalizer,
+            swiss_runtime,
             tournament_lifecycle,
         )
 
         base_view = manager.view
         manager._captains_table_allowed = None
         manager._captains_table_rendering = False
+        manager._captains_table_stage_reconciling = False
 
         def view(status=None):
             result = base_view(status)
@@ -95,6 +97,22 @@ def install() -> None:
 
         async def sync():
             with sheet_read_scope():
+                # This is the real startup/live render boundary. Reconcile the
+                # persisted Q2/Q3 preview here before deciding which controls are
+                # visible, rather than relying on an older manager.sync wrapper
+                # that this quota-safe path intentionally bypasses.
+                manager._captains_table_stage_reconciling = True
+                try:
+                    await swiss_runtime._reconcile_preview(manager)
+                except Exception as exc:
+                    log.warning(
+                        "Live Arena Swiss stage reconciliation failed at final Captain's Table render • error=%s: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
+                finally:
+                    manager._captains_table_stage_reconciling = False
+
                 allowed = None
                 try:
                     allowed = set(
