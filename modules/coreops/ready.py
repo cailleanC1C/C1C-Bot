@@ -12,6 +12,7 @@ from modules.community.fusion.opt_in_view import register_persistent_fusion_view
 from modules.community.shard_tracker.views import register_persistent_shard_views
 from modules.community.reset_reminders.scheduler import register_persistent_reset_views
 from modules.community.live_arena.panel import register_live_arena
+from modules.housekeeping.staff_thread_guard import install as install_staff_thread_guard
 from modules.onboarding import watcher_promo, watcher_welcome
 from modules.onboarding.ui import panels
 
@@ -22,6 +23,13 @@ log = logging.getLogger("modules.coreops.ready")
 async def on_ready(bot: commands.Bot) -> None:
     """Run startup wiring that must execute after the bot is ready."""
     try:
+        # Install the staff-thread guard ahead of the app-level on_message router.
+        # The installer is idempotent so reconnects cannot stack wrappers.
+        try:
+            install_staff_thread_guard(bot)
+        except Exception:
+            log.exception("CORE_READY FAILURE: install_staff_thread_guard")
+
         # Existing startup wiring …
         # Register onboarding persistent views *after* the bot is ready to avoid race conditions.
         try:
