@@ -92,6 +92,11 @@ def install() -> None:
             if status is None or not getattr(manager, "_captains_table_rendering", False):
                 return result
 
+            allowed = getattr(manager, "_captains_table_allowed", None)
+            if not allowed:
+                allowed = _safe_panel_actions(manager, status)
+            result = full_set_scoring._finalize_visible_view(result, set(allowed))
+
             preview_round = getattr(manager, "_captains_table_swiss_preview_round", None)
             preview_status = _text(
                 getattr(manager, "_captains_table_swiss_preview_status", "")
@@ -101,10 +106,10 @@ def install() -> None:
                 and preview_round in {2, 3}
                 and preview_status in {"preview", "approved"}
             ):
-                # Some older decorated views have already dropped these controls
-                # before this final renderer gets to prune them. Re-add the real
-                # callback buttons here, at the same boundary that owns the visible
-                # Captain's Table edit, rather than depending on wrapper order.
+                # This is intentionally after every older pruning/label wrapper.
+                # Some decorated views rename the Swiss controls before this final
+                # pass, causing the generic-label filter to delete them on a second
+                # pass. Re-add the real callbacks only at the final visible boundary.
                 custom_ids = {
                     _text(getattr(item, "custom_id", ""))
                     for item in getattr(result, "children", ())
@@ -113,7 +118,7 @@ def install() -> None:
                     result.add_item(
                         swiss_panel.SwissActionButton(
                             manager,
-                            "Regenerate Swiss Preview",
+                            f"Redo Qualification Round {preview_round}",
                             "regenerate",
                             disabled=False,
                         )
@@ -122,16 +127,12 @@ def install() -> None:
                     result.add_item(
                         swiss_panel.SwissActionButton(
                             manager,
-                            "Approve & Publish Swiss",
+                            f"Publish Qualification Round {preview_round}",
                             "publish",
                             disabled=False,
                         )
                     )
-
-            allowed = getattr(manager, "_captains_table_allowed", None)
-            if not allowed:
-                allowed = _safe_panel_actions(manager, status)
-            return full_set_scoring._finalize_visible_view(result, set(allowed))
+            return result
 
         async def sync():
             with sheet_read_scope():
