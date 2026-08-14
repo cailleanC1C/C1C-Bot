@@ -50,6 +50,10 @@ docs/ops/.env.example
   1. Listed here,
   2. Justified in the PR body,
   3. Reflected in CI/guardrails as needed.
+- Housekeeping Staff Thread Guard requires no additional gateway intent.
+- Guard `delete` enforcement requires Woadkeeper to have **Manage Messages** in the protected thread.
+- Guard `redirect` enforcement requires **Send Messages** and **Embed Links** in the configured destination, plus **Manage Messages** in the protected source thread so the original can be removed after a successful copy.
+- Repeat-offense timeouts require **Moderate Members** and sufficient role hierarchy. If Discord denies a timeout, the guard logs the failure and keeps the offense state rather than disabling unrelated message handling.
 
 **RBAC / Access Lists**
 - Permissions UI blacklists: `PERMS_BLACKLIST_CHANNEL_IDS`, `PERMS_BLACKLIST_CATEGORY_IDS` — **IDs only**; numeric; comma-separated if needed.
@@ -132,4 +136,4 @@ For PR formatting rules, labels, and doc footers see `docs/contracts/Collaborati
 
 ---
 
-Doc last updated: 2026-08-07 (v0.9.8.2)
+Doc last updated: 2026-08-14 (v0.9.8.2)
