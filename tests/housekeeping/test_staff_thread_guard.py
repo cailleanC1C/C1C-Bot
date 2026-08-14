@@ -20,6 +20,7 @@ def _row(**overrides):
         "timeout_text": "Into the brig for {timeout_seconds} seconds.",
         "redirect_notice_text": "Hauled to {redirect_target}.",
         "redirect_header_text": "Hauled from {source_thread}",
+        "redirect_body_text": "{user_name} from {source_thread}: {message_content}{attachment_links}",
         "failure_text": "Could not haul that message away.",
     }
     row.update(overrides)
@@ -40,6 +41,7 @@ def _rule(**overrides):
         "timeout_text": "Brig.",
         "redirect_notice_text": "Redirected.",
         "redirect_header_text": "Redirected from {source_thread}",
+        "redirect_body_text": "{message_content}{attachment_links}",
         "failure_text": "Failed.",
     }
     values.update(overrides)
@@ -75,6 +77,19 @@ def test_validate_rule_keeps_guard_but_disables_bad_timeout_config():
     assert parsed is not None
     assert parsed.timeout_after_offenses == 0
     assert parsed.timeout_seconds == 0
+
+
+def test_validate_redirect_rule_requires_configured_body_template():
+    parsed = guard._validate_rule(
+        _row(
+            action="redirect",
+            redirect_target_id="67890",
+            redirect_body_text="",
+        ),
+        row_number=5,
+    )
+
+    assert parsed is None
 
 
 def test_advance_offense_counts_only_inside_the_configured_window():
@@ -191,7 +206,9 @@ def test_load_rules_caches_sheet_rows(monkeypatch):
         return [_row()]
 
     monkeypatch.setattr(guard, "_tab_names", fake_tabs)
-    monkeypatch.setattr(guard.recruitment, "get_recruitment_sheet_id", lambda: "sheet")
+    monkeypatch.setattr(
+        guard.recruitment, "get_recruitment_sheet_id", lambda: "sheet"
+    )
     monkeypatch.setattr(guard.async_core, "afetch_records", fake_records)
 
     async def run():
