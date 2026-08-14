@@ -40,6 +40,7 @@ from modules.community.live_arena.full_set_scoring import install as _install_fu
 from modules.community.live_arena.captains_table_quota_safe import install as _install_captains_table_quota_safe
 from modules.community.live_arena.scheduling_resolution_ux import install as _install_scheduling_resolution_ux
 from modules.community.live_arena.victory_ledger_link_guard import install as _install_victory_ledger_link_guard
+from modules.community.live_arena.round_finish_refresh import install as _install_round_finish_refresh
 
 _install_runtime_hooks()
 _install_repair()
@@ -78,3 +79,4 @@ _install_full_set_scoring()
 _install_captains_table_quota_safe()
 _install_scheduling_resolution_ux()
 _install_victory_ledger_link_guard()
+_install_round_finish_refresh()
