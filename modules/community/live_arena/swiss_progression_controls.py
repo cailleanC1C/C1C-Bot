@@ -2,7 +2,7 @@
 
 This is intentionally stage-driven, not round-specific: one cache covers both
 qualification Swiss rounds and is updated whenever the organizer preview is
-created, refreshed, or retired.  The quota-safe Captain's Table fallback can
+created, refreshed, or retired. The quota-safe Captain's Table fallback can
 therefore still expose the correct next action even if a lifecycle Sheet read
 is temporarily rate-limited.
 """
@@ -49,6 +49,7 @@ def _clear_preview_state(manager, number: int) -> bool:
 
 
 def _swiss_fallback_actions(manager, status: str | None, base_actions: set[str]) -> set[str]:
+    """Expose safe Q2/Q3 progression even when the lifecycle lookup hits quota."""
     if _text(status).lower() != "active":
         return base_actions
     number = getattr(manager, "_captains_table_swiss_preview_round", None)
@@ -84,17 +85,30 @@ def _apply_dynamic_labels(view, manager):
     return view
 
 
-async def _refresh_previous_closed_overview(manager) -> None:
-    """Best-effort one-shot rerender of Q1/Q2 after the next preview appears."""
+async def _refresh_previous_closed_overview(manager, preview_number: int) -> None:
+    """Best-effort one-shot rerender of the just-finished qualification round."""
     try:
-        from modules.community.live_arena import qualification_panel
+        if preview_number == 2:
+            from modules.community.live_arena import qualification_panel
 
-        service = qualification_panel.QualificationService(manager.sheet_id)
-        await service.initialize()
-        snapshot = await service.snapshot()
-        if snapshot.round_row is None or _text(snapshot.status).lower() != "closed":
+            service = qualification_panel.QualificationService(manager.sheet_id)
+            await service.initialize()
+            snapshot = await service.snapshot()
+            if snapshot.round_row is None or _text(snapshot.status).lower() != "closed":
+                return
+            await qualification_panel.QualificationPublisher(manager.bot, service).reconcile()
             return
-        await qualification_panel.QualificationPublisher(manager.bot, service).reconcile()
+
+        if preview_number == 3:
+            from modules.community.live_arena.swiss import SwissQualificationService
+            from modules.community.live_arena.swiss_panel import SwissPublisher
+
+            service = SwissQualificationService(manager.sheet_id)
+            await service.initialize()
+            snapshot = await service.snapshot(2)
+            if snapshot.round_row is None or _text(snapshot.status).lower() != "closed":
+                return
+            await SwissPublisher(manager.bot, service).reconcile(snapshot)
     except Exception:
         log.exception("Live Arena previous qualification overview refresh failed")
 
@@ -138,9 +152,11 @@ def install() -> None:
         await original_sync_preview(manager, service, snapshot)
         if not changed:
             return
-        # Rerender the previous closed round with the latest presentation layer,
-        # then expose the Q2/Q3 progression controls immediately.
-        await _refresh_previous_closed_overview(manager)
+        number = getattr(manager, "_captains_table_swiss_preview_round", None)
+        # Re-render the round that just finished with the current presentation
+        # layer, then expose the Q2/Q3 progression controls immediately.
+        if number in {2, 3}:
+            await _refresh_previous_closed_overview(manager, number)
         try:
             await manager.sync()
         except Exception:
