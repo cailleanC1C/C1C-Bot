@@ -130,11 +130,18 @@ def _normalize_float_rationale(match) -> str:
 
 def _normalize_preview_embed(embed, snapshot):
     """Normalize persisted legacy float wording at the final Discord render."""
-    for field, match in zip(getattr(embed, "fields", ()), getattr(snapshot, "matches", ())):
+    for index, (field, match) in enumerate(
+        zip(getattr(embed, "fields", ()), getattr(snapshot, "matches", ()))
+    ):
         raw = _text(match.get("notes"))
         fixed = _normalize_float_rationale(match)
         if raw and fixed != raw:
-            field.value = _text(field.value).replace(raw, fixed)
+            embed.set_field_at(
+                index,
+                name=_text(field.name),
+                value=_text(field.value).replace(raw, fixed),
+                inline=bool(field.inline),
+            )
     return embed
 
 
