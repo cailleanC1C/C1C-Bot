@@ -213,8 +213,13 @@ def install() -> None:
 
     def preview_with_direction(snapshot, *, official: bool):
         embed = original_preview(snapshot, official=official)
-        for field in embed.fields:
-            field.value = normalize_float_rationale(str(field.value))
+        for index, field in enumerate(list(embed.fields)):
+            embed.set_field_at(
+                index,
+                name=str(field.name),
+                value=normalize_float_rationale(str(field.value)),
+                inline=bool(field.inline),
+            )
         return embed
 
     swiss_panel.preview_embed = preview_with_direction
