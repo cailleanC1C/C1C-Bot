@@ -125,6 +125,16 @@ def install() -> None:
                         exc,
                     )
 
+                # If reconciliation just established a Q2/Q3 preview, trust that
+                # stage cache over a lifecycle action lookup that may have reused
+                # pre-write rows from the surrounding startup read scope.
+                preview_round = getattr(manager, "_captains_table_swiss_preview_round", None)
+                preview_status = _text(
+                    getattr(manager, "_captains_table_swiss_preview_status", "")
+                ).lower()
+                if preview_round in {2, 3} and preview_status in {"preview", "approved"}:
+                    allowed = set(_safe_panel_actions(manager, "active"))
+
                 manager._captains_table_allowed = set(allowed or ()) or None
                 manager._captains_table_rendering = True
                 try:
