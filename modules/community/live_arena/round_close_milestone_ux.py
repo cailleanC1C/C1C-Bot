@@ -105,6 +105,7 @@ async def _close_round_callback(self, interaction) -> None:
         return
 
     round_name = "current round"
+    await _respond_progress(interaction, round_name)
     try:
         service = CompetitionResolutionService(self.manager.sheet_id)
         await service.initialize()
@@ -122,7 +123,6 @@ async def _close_round_callback(self, interaction) -> None:
                 "Exactly one round must be ready to close or in correction before using this action"
             )
         round_name = _text(closable[0].get("round_name")) or round_name
-        await _respond_progress(interaction, round_name)
 
         warnings: list[str] = []
         with sheet_read_scope():
@@ -161,14 +161,8 @@ async def _close_round_callback(self, interaction) -> None:
             )
         await _replace_progress(interaction, embed)
     except Exception as exc:
-        runtime_log = __import__(
-            "modules.community.live_arena.runtime_hooks", fromlist=["log"]
-        ).log
-        runtime_log.exception("Live Arena round close action failed")
-        if interaction.response.is_done():
-            await _replace_progress(interaction, error_embed(exc))
-        else:
-            await interaction.response.send_message(embed=error_embed(exc), ephemeral=True)
+        runtime_hooks.log.exception("Live Arena round close action failed")
+        await _replace_progress(interaction, error_embed(exc))
 
 
 def install() -> None:
