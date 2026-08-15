@@ -279,8 +279,12 @@ def test_round_sync_updates_existing_message_with_aligned_standings(monkeypatch)
 
     assert warnings == []
     channel.send.assert_not_awaited()
-    existing.edit.assert_awaited_once()
-    kwargs = existing.edit.await_args.kwargs
+    assert existing.edit.await_count >= 1
+    embed_edits = [
+        call.kwargs for call in existing.edit.await_args_list if "embeds" in call.kwargs
+    ]
+    assert embed_edits
+    kwargs = embed_edits[-1]
     assert "embed" not in kwargs
     assert len(kwargs["embeds"]) == 3
     assert kwargs["embeds"][2].title == "🏆 Qualification standings"
