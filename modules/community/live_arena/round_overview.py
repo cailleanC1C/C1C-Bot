@@ -15,7 +15,7 @@ import discord
 
 from shared.sheets.async_core import afetch_values
 
-from modules.community.live_arena.messages import MESSAGE_HEADERS
+from modules.community.live_arena.messages import MESSAGE_HEADERS, load_pr5_config
 from modules.community.live_arena.service import (
     LiveArenaConfigError,
     _enabled,
@@ -102,16 +102,18 @@ class CopyTemplate:
         return discord.Embed(title=title, description=description, color=self.color)
 
 
-async def _templates(sheet_id: str, messages_tab: str) -> dict[str, CopyTemplate]:
+async def _templates(sheet_id: str) -> dict[str, CopyTemplate]:
     sid = str(sheet_id or "").strip()
     cached = _COPY_CACHE.get(sid)
     if cached is not None:
         return cached
 
+    config, _ = await load_pr5_config(sid)
+    messages_tab = config["MESSAGES_TAB"]
     rows = _rows(
-        await afetch_values(sid, str(messages_tab)) or [],
+        await afetch_values(sid, messages_tab) or [],
         MESSAGE_HEADERS,
-        str(messages_tab),
+        messages_tab,
     )
     result: dict[str, CopyTemplate] = {}
     for key, expected in _COPY_CONTRACTS.items():
@@ -223,7 +225,6 @@ def _thread_link(
 async def render_round_overview_embeds(
     *,
     sheet_id: str,
-    messages_tab: str,
     tournament,
     round_row,
     matches,
@@ -233,7 +234,7 @@ async def render_round_overview_embeds(
     """Return the final ordered embed payload for one Victory Ledger message."""
     from modules.community.live_arena import qualification_panel
 
-    templates = await _templates(sheet_id, messages_tab)
+    templates = await _templates(sheet_id)
     rows = [dict(row) for row in matches]
     terminal = {"finalized", "forfeit", "double_forfeit", "bye"}
     completed = sum(_text(row.get("status")) in terminal for row in rows)
