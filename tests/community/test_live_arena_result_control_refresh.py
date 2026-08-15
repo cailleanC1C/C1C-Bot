@@ -113,27 +113,33 @@ def test_targeted_thread_refresh_runs_before_broad_reconciliation(monkeypatch):
 
     monkeypatch.setattr(refresh, "_refresh_channel_controls", fake_refresh)
     monkeypatch.setattr(refresh, "_original_post_mutation_sync", fake_broad)
-    refresh._mutation_channel.set(thread)
 
-    run(refresh._sync_with_targeted_control_refresh("sheet-live"))
+    async def scenario():
+        refresh._mutation_channel.set(thread)
+        await refresh._sync_with_targeted_control_refresh("sheet-live")
+        assert refresh._mutation_channel.get() is None
+
+    run(scenario())
 
     assert events == ["targeted", "broad"]
-    assert refresh._mutation_channel.get() is None
 
 
-def test_thread_notice_captures_exact_mutated_thread_for_next_sync(monkeypatch):
+def test_thread_notice_captures_exact_mutated_thread_for_next_sync():
     thread = SimpleNamespace(id=1538130704028672043)
     notice = AsyncMock()
     wrapped = refresh._wrap_notice(notice)
 
-    run(wrapped(thread, "Result reported", title="Result reported by organizer"))
+    async def scenario():
+        await wrapped(thread, "Result reported", title="Result reported by organizer")
+        assert refresh._mutation_channel.get() is thread
+
+    run(scenario())
 
     notice.assert_awaited_once_with(
         thread,
         "Result reported",
         title="Result reported by organizer",
     )
-    assert refresh._mutation_channel.get() is thread
 
 
 def test_open_match_keeps_report_enabled_and_dispute_disabled(monkeypatch):
