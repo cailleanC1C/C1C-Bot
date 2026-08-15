@@ -68,6 +68,7 @@ _COPY_CONTRACTS: dict[str, set[str]] = {
 }
 
 _COPY_CACHE: dict[str, dict[str, "CopyTemplate"]] = {}
+_installed = False
 
 
 @dataclass(frozen=True)
@@ -228,15 +229,19 @@ async def render_round_overview_embeds(
     matches,
     standings,
     guild_id: str,
-    deadline: str,
 ) -> list[discord.Embed]:
     """Return the final ordered embed payload for one Victory Ledger message."""
+    from modules.community.live_arena import qualification_panel
+
     templates = await _templates(sheet_id, messages_tab)
     rows = [dict(row) for row in matches]
     terminal = {"finalized", "forfeit", "double_forfeit", "bye"}
     completed = sum(_text(row.get("status")) in terminal for row in rows)
     status = _text(round_row.get("status"))
     stage = _text(round_row.get("round_stage")).lower()
+    deadline = qualification_panel._format_timestamp(
+        _text(round_row.get("deadline_at_utc")), "F"
+    )
 
     common = dict(
         round_name=_text(round_row.get("round_name")),
@@ -245,7 +250,12 @@ async def render_round_overview_embeds(
         total_matches=len(rows),
     )
     if status == "closed":
-        finalized = _text(round_row.get("completed_at_utc")) or deadline
+        completed_at = _text(round_row.get("completed_at_utc"))
+        finalized = (
+            qualification_panel._format_timestamp(completed_at, "F")
+            if completed_at
+            else deadline
+        )
         general = templates["round_overview_general_closed"].embed(
             finalized=finalized,
             **common,
@@ -301,3 +311,21 @@ async def render_round_overview_embeds(
             )
         )
     return embeds
+
+
+def install() -> None:
+    """Disable legacy cosmetic re-renderers now that the core renderer is final."""
+    global _installed
+    if _installed:
+        return
+    _installed = True
+
+    from modules.community.live_arena import simulation_ux_hardening
+
+    async def no_legacy_link_refresh(*_args, **_kwargs):
+        return None
+
+    # simulation_ux_hardening still performs useful thread renaming after each
+    # round sync, but its old link refresh rebuilt the overview as one embed.
+    # Keep the rename behavior and retire only that obsolete presentation pass.
+    simulation_ux_hardening._refresh_victory_ledger_links = no_legacy_link_refresh
