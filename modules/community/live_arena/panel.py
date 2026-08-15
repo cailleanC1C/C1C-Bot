@@ -344,18 +344,31 @@ async def _run_startup_sync(
                 )
 
             if qualification_installed:
-                try:
-                    publication_warnings = await reconcile_qualification_publication(
-                        organizer
-                    )
-                    warnings.extend(publication_warnings)
-                except Exception as exc:
-                    if is_rate_limited_error(exc):
-                        raise
-                    log.exception(
-                        "⚠️ Live Arena qualification startup publication retry failed"
-                    )
-                    warnings.append("qualification publication")
+                stage_sync = getattr(organizer, "_competition_sync", None)
+                if callable(stage_sync):
+                    try:
+                        competition_warnings = await stage_sync()
+                        warnings.extend(list(competition_warnings or []))
+                    except Exception as exc:
+                        if is_rate_limited_error(exc):
+                            raise
+                        log.exception(
+                            "⚠️ Live Arena stage-aware startup reconciliation failed"
+                        )
+                        warnings.append("competition Discord state")
+                else:
+                    try:
+                        publication_warnings = await reconcile_qualification_publication(
+                            organizer
+                        )
+                        warnings.extend(publication_warnings)
+                    except Exception as exc:
+                        if is_rate_limited_error(exc):
+                            raise
+                        log.exception(
+                            "⚠️ Live Arena qualification startup publication retry failed"
+                        )
+                        warnings.append("qualification publication")
         except Exception as exc:
             if is_rate_limited_error(exc):
                 if attempt < _STARTUP_MAX_ATTEMPTS:
