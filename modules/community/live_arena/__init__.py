@@ -44,6 +44,7 @@ from modules.community.live_arena.round_finish_refresh import install as _instal
 from modules.community.live_arena.round_close_milestone_ux import install as _install_round_close_milestone_ux
 from modules.community.live_arena.swiss_progression_controls import install as _install_swiss_progression_controls
 from modules.community.live_arena.live_stage_render import install as _install_live_stage_render
+from modules.community.live_arena.matchup_thread_ux import install as _install_matchup_thread_ux
 
 _install_runtime_hooks()
 _install_repair()
@@ -86,3 +87,4 @@ _install_round_finish_refresh()
 _install_round_close_milestone_ux()
 _install_swiss_progression_controls()
 _install_live_stage_render()
+_install_matchup_thread_ux()
