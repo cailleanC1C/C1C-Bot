@@ -216,6 +216,7 @@ async def _best_effort_competition_sync(manager) -> list[str]:
 async def _sync_round_discord(bot, qualification_service, snapshot) -> list[str]:
     """Repair the round forward from Sheet truth and reflect current result state."""
     from modules.community.live_arena import qualification_panel
+    from modules.community.live_arena.round_overview import render_round_overview_embeds
 
     warnings: list[str] = []
     sheet_id = qualification_service.sheet_id
@@ -263,11 +264,13 @@ async def _sync_round_discord(bot, qualification_service, snapshot) -> list[str]
             competition_service = CompetitionResolutionService(sheet_id)
             await competition_service.initialize()
             standings = await competition_service.standings()
-        embed = _competition_overview_embed(
-            tournament,
-            snapshot.round_row,
-            matches,
-            standings,
+        embeds = await render_round_overview_embeds(
+            sheet_id=sheet_id,
+            messages_tab=config["MESSAGES_TAB"],
+            tournament=tournament,
+            round_row=snapshot.round_row,
+            matches=matches,
+            standings=standings,
             guild_id=guild_id,
         )
         overview_id = _text(snapshot.round_row.get("overview_message_id"))
@@ -278,9 +281,9 @@ async def _sync_round_discord(bot, qualification_service, snapshot) -> list[str]
             except discord.NotFound:
                 message = None
         if message is not None:
-            await message.edit(embed=embed)
+            await message.edit(embeds=embeds)
         else:
-            created = await overview_channel.send(embed=embed)
+            created = await overview_channel.send(embeds=embeds)
             try:
                 await qualification_service.record_overview_message_id(
                     _text(snapshot.round_row["round_id"]), str(created.id)
@@ -305,7 +308,7 @@ def _competition_overview_embed(
     *,
     guild_id="",
 ):
-    """Render the final Victory Ledger round overview in one pass."""
+    """Legacy single-embed renderer retained for compatibility only."""
     from modules.community.live_arena import qualification_panel
 
     deadline = qualification_panel._format_timestamp(
