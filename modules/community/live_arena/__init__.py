@@ -48,6 +48,7 @@ from modules.community.live_arena.matchup_thread_ux import install as _install_m
 from modules.community.live_arena.matchup_thread_result_copy import install as _install_matchup_thread_result_copy
 from modules.community.live_arena.swiss_overview_persistence import install as _install_swiss_overview_persistence
 from modules.community.live_arena.round_overview import install as _install_round_overview
+from modules.community.live_arena.round_overview_migration import install as _install_round_overview_migration
 
 _install_runtime_hooks()
 _install_repair()
@@ -94,3 +95,4 @@ _install_matchup_thread_ux()
 _install_matchup_thread_result_copy()
 _install_swiss_overview_persistence()
 _install_round_overview()
+_install_round_overview_migration()
