@@ -180,8 +180,21 @@ def install() -> None:
     # rounds visibly final rather than silently changing "State: Round closed".
     original_overview = runtime_hooks._competition_overview_embed
 
-    def overview_with_final_outcome(tournament, round_row, matches, standings):
-        embed = original_overview(tournament, round_row, matches, standings)
+    def overview_with_final_outcome(
+        tournament,
+        round_row,
+        matches,
+        standings,
+        *,
+        guild_id="",
+    ):
+        embed = original_overview(
+            tournament,
+            round_row,
+            matches,
+            standings,
+            guild_id=guild_id,
+        )
         return _closed_round_embed(embed, tournament, round_row, matches)
 
     runtime_hooks._competition_overview_embed = overview_with_final_outcome

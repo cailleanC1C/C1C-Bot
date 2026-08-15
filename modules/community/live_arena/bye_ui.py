@@ -19,10 +19,23 @@ def install() -> None:
     original_overview = runtime_hooks._competition_overview_embed
     original_preview = swiss_panel.preview_embed
 
-    def overview_with_byes(tournament, round_row, matches, standings):
+    def overview_with_byes(
+        tournament,
+        round_row,
+        matches,
+        standings,
+        *,
+        guild_id="",
+    ):
         byes = [row for row in matches if _is_bye(row)]
         normal = [row for row in matches if not _is_bye(row)]
-        embed = original_overview(tournament, round_row, normal, standings)
+        embed = original_overview(
+            tournament,
+            round_row,
+            normal,
+            standings,
+            guild_id=guild_id,
+        )
         for row in byes:
             embed.add_field(
                 name="Qualification bye",
