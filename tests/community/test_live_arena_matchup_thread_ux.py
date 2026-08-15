@@ -4,6 +4,9 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import discord
+
+from modules.community.live_arena import matchup_thread_result_copy as result_copy
 from modules.community.live_arena import matchup_thread_ux as ux
 from modules.community.live_arena import qualification_panel, result_views
 
@@ -184,3 +187,25 @@ def test_existing_q2_thread_starter_is_rerendered_from_sheet_copy():
     embed = starter.edit.await_args.kwargs["embed"]
     assert "What you need to do" in embed.description
     assert "Report Match Result" in embed.description
+
+
+def test_screenshot_required_response_uses_sheet_button_label():
+    sheet_id = _copy()
+    delegate = SimpleNamespace(send=AsyncMock())
+    proxy = result_copy._FollowupProxy(delegate, sheet_id)
+
+    run(
+        proxy.send(
+            embed=discord.Embed(
+                title="Screenshot required",
+                description="old hardcoded copy",
+            ),
+            ephemeral=True,
+        )
+    )
+
+    delegate.send.assert_awaited_once()
+    embed = delegate.send.await_args.kwargs["embed"]
+    assert embed.title == "Screenshot required"
+    assert "**Report Match Result**" in embed.description
+    assert "old hardcoded copy" not in embed.description
