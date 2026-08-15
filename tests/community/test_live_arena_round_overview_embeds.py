@@ -43,6 +43,11 @@ def _prime_copy(sheet_id="sheet-round-overview"):
             "",
             "**#{rank}** {player_mention} · **{record}**",
         ),
+        "round_overview_standing_player": (
+            "",
+            "**#{rank}** {player_mention}",
+        ),
+        "round_overview_standing_record": ("", "**{record}**"),
         "round_overview_bye": (
             "Qualification bye",
             "{player_mention} receives the bye.\nFinal: **bye** · +1 match win · +2 game differential.",
@@ -82,7 +87,7 @@ def _prime_copy(sheet_id="sheet-round-overview"):
     return sheet_id
 
 
-def _round(status="active"):
+def _round(status="active", overview_message_id=""):
     return {
         "round_name": "Qualification Round 2",
         "round_stage": "qualification",
@@ -90,7 +95,7 @@ def _round(status="active"):
         "status": status,
         "deadline_at_utc": "2026-08-21T12:22:00Z",
         "completed_at_utc": "2026-08-21T12:30:00Z" if status == "closed" else "",
-        "overview_message_id": "",
+        "overview_message_id": overview_message_id,
         "round_id": "Q2",
     }
 
@@ -149,8 +154,13 @@ def test_qualification_overview_is_one_payload_with_three_structured_embeds():
     assert "Final: **2-1**" in embeds[1].fields[1].value
 
     assert embeds[2].title == "🏆 Qualification standings"
-    assert "**#1** <@10> · **1-0**" in embeds[2].description
-    assert "**#2** <@20> · **0-1**" in embeds[2].description
+    assert embeds[2].description in (None, "")
+    assert len(embeds[2].fields) == 2
+    assert all(field.inline for field in embeds[2].fields)
+    assert embeds[2].fields[0].name == "\u200b"
+    assert embeds[2].fields[1].name == "\u200b"
+    assert embeds[2].fields[0].value == "**#1** <@10>\n**#2** <@20>"
+    assert embeds[2].fields[1].value == "**1-0**\n**0-1**"
 
 
 def test_closed_round_keeps_same_three_embed_structure_with_final_outcome_header():
@@ -172,36 +182,31 @@ def test_closed_round_keeps_same_three_embed_structure_with_final_outcome_header
     assert "**Status:** Final outcome" in embeds[0].description
     assert embeds[1].title == "⚔️ Matchups"
     assert embeds[2].title == "🏆 Qualification standings"
+    assert len(embeds[2].fields) == 2
 
 
-def test_round_sync_sends_all_embeds_in_one_discord_message(monkeypatch):
-    sheet_id = _prime_copy()
-    created = SimpleNamespace(id=999, delete=AsyncMock())
-    channel = SimpleNamespace(
-        guild=SimpleNamespace(id=111),
-        send=AsyncMock(return_value=created),
-        fetch_message=AsyncMock(),
-    )
+def _sync_context(sheet_id, channel):
     bot = SimpleNamespace(
         get_channel=lambda _channel_id: channel,
         fetch_channel=AsyncMock(return_value=channel),
     )
     service = SimpleNamespace(
         sheet_id=sheet_id,
-        repository=SimpleNamespace(
-            config={"ROUND_OVERVIEW_CHANNEL_ID": "333"}
-        ),
+        repository=SimpleNamespace(config={"ROUND_OVERVIEW_CHANNEL_ID": "333"}),
         context=AsyncMock(
-            return_value=(None, (None, {"tournament_name": "C1C Live Arena Trial Cup"}), None, [])
+            return_value=(
+                None,
+                (None, {"tournament_name": "C1C Live Arena Trial Cup"}),
+                None,
+                [],
+            )
         ),
         record_overview_message_id=AsyncMock(),
     )
-    snapshot = SimpleNamespace(
-        status="active",
-        round_row=_round(),
-        matches=(),
-    )
+    return bot, service
 
+
+def _install_fake_standings(monkeypatch):
     class FakeCompetitionResolutionService:
         def __init__(self, _sheet_id):
             pass
@@ -218,6 +223,23 @@ def test_round_sync_sends_all_embeds_in_one_discord_message(monkeypatch):
         FakeCompetitionResolutionService,
     )
 
+
+def test_round_sync_sends_all_embeds_in_one_discord_message(monkeypatch):
+    sheet_id = _prime_copy()
+    created = SimpleNamespace(id=999, delete=AsyncMock())
+    channel = SimpleNamespace(
+        guild=SimpleNamespace(id=111),
+        send=AsyncMock(return_value=created),
+        fetch_message=AsyncMock(),
+    )
+    bot, service = _sync_context(sheet_id, channel)
+    snapshot = SimpleNamespace(
+        status="active",
+        round_row=_round(),
+        matches=(),
+    )
+    _install_fake_standings(monkeypatch)
+
     warnings = run(runtime_hooks._sync_round_discord(bot, service, snapshot))
 
     assert warnings == []
@@ -228,4 +250,34 @@ def test_round_sync_sends_all_embeds_in_one_discord_message(monkeypatch):
     assert kwargs["embeds"][0].title == "Qualification Round 2"
     assert kwargs["embeds"][1].title == "⚔️ Matchups"
     assert kwargs["embeds"][2].title == "🏆 Qualification standings"
+    assert kwargs["embeds"][2].fields[1].value == "**1-0**\n**0-1**"
     service.record_overview_message_id.assert_awaited_once_with("Q2", "999")
+
+
+def test_round_sync_updates_existing_message_with_aligned_standings(monkeypatch):
+    sheet_id = _prime_copy()
+    existing = SimpleNamespace(edit=AsyncMock())
+    channel = SimpleNamespace(
+        guild=SimpleNamespace(id=111),
+        send=AsyncMock(),
+        fetch_message=AsyncMock(return_value=existing),
+    )
+    bot, service = _sync_context(sheet_id, channel)
+    snapshot = SimpleNamespace(
+        status="active",
+        round_row=_round(overview_message_id="1538166405499715656"),
+        matches=(),
+    )
+    _install_fake_standings(monkeypatch)
+
+    warnings = run(runtime_hooks._sync_round_discord(bot, service, snapshot))
+
+    assert warnings == []
+    channel.send.assert_not_awaited()
+    existing.edit.assert_awaited_once()
+    kwargs = existing.edit.await_args.kwargs
+    assert "embed" not in kwargs
+    assert len(kwargs["embeds"]) == 3
+    assert kwargs["embeds"][2].title == "🏆 Qualification standings"
+    assert kwargs["embeds"][2].fields[0].value == "**#1** <@10>\n**#2** <@20>"
+    assert kwargs["embeds"][2].fields[1].value == "**1-0**\n**0-1**"
