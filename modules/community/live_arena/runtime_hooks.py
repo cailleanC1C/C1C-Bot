@@ -266,7 +266,6 @@ async def _sync_round_discord(bot, qualification_service, snapshot) -> list[str]
             standings = await competition_service.standings()
         embeds = await render_round_overview_embeds(
             sheet_id=sheet_id,
-            messages_tab=config["MESSAGES_TAB"],
             tournament=tournament,
             round_row=snapshot.round_row,
             matches=matches,
