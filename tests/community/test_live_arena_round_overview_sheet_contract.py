@@ -9,7 +9,7 @@ def run(awaitable):
     return asyncio.run(awaitable)
 
 
-def test_standings_column_copy_contract_includes_player_and_record_templates(monkeypatch):
+def test_standings_copy_contract_uses_one_mobile_safe_line_template(monkeypatch):
     rows = [
         ["message_key", "title", "description", "color_hex", "active", "notes"],
         *[
@@ -25,10 +25,8 @@ def test_standings_column_copy_contract_includes_player_and_record_templates(mon
         ],
     ]
     for row in rows[1:]:
-        if row[0] == "round_overview_standing_player":
-            row[2] = "**#{rank}** {player_mention}"
-        elif row[0] == "round_overview_standing_record":
-            row[2] = "**{record}**"
+        if row[0] == "round_overview_standing_line":
+            row[2] = "**#{rank} · {record}** {player_mention}"
 
     async def fake_config(_sheet_id):
         return {"MESSAGES_TAB": "MESSAGES"}, {}
@@ -42,5 +40,8 @@ def test_standings_column_copy_contract_includes_player_and_record_templates(mon
 
     templates = run(round_overview._templates("sheet-live"))
 
-    assert templates["round_overview_standing_player"].description == "**#{rank}** {player_mention}"
-    assert templates["round_overview_standing_record"].description == "**{record}**"
+    assert templates["round_overview_standing_line"].description == (
+        "**#{rank} · {record}** {player_mention}"
+    )
+    assert "round_overview_standing_player" not in templates
+    assert "round_overview_standing_record" not in templates
