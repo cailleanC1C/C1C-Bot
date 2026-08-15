@@ -10,11 +10,18 @@ is temporarily rate-limited.
 from __future__ import annotations
 
 import logging
+import re
 
 from modules.community.live_arena.service import _text
 
 log = logging.getLogger("c1c.community.live_arena.swiss_progression_controls")
 _installed = False
+
+_FLOAT_RE = re.compile(
+    r"^Swiss adjacent-group float · (?P<name>.+) \((?P<wins>\d+)-(?P<losses>\d+)\) "
+    r"floated down to (?P<target_wins>\d+)-(?P<target_losses>\d+) · "
+    r"no-rematch constraint preserved$"
+)
 
 
 def _cache_preview_state(manager, snapshot) -> bool:
@@ -85,6 +92,59 @@ def _apply_dynamic_labels(view, manager):
     return view
 
 
+def _record_strength(record: tuple[int, int]) -> tuple[int, int]:
+    """Swiss record strength: more wins, then fewer losses."""
+    wins, losses = record
+    return wins, -losses
+
+
+def _normalize_float_rationale(match) -> str:
+    """Correct legacy float copy without changing persisted tournament state."""
+    rationale = _text(match.get("notes"))
+    parsed = _FLOAT_RE.match(rationale)
+    if parsed is None:
+        return rationale
+
+    shown = (int(parsed["wins"]), int(parsed["losses"]))
+    target = (int(parsed["target_wins"]), int(parsed["target_losses"]))
+    if _record_strength(shown) >= _record_strength(target):
+        return rationale
+
+    shown_name = parsed["name"]
+    player_a = _text(match.get("player_a_display_name"))
+    player_b = _text(match.get("player_b_display_name"))
+    if shown_name == player_a:
+        stronger_name = player_b
+    elif shown_name == player_b:
+        stronger_name = player_a
+    else:
+        return rationale
+    if not stronger_name:
+        return rationale
+
+    return (
+        f"Swiss adjacent-group float · {stronger_name} ({target[0]}-{target[1]}) "
+        f"floated down to {shown[0]}-{shown[1]} · no-rematch constraint preserved"
+    )
+
+
+def _normalize_preview_embed(embed, snapshot):
+    """Normalize persisted legacy float wording at the final Discord render."""
+    for index, (field, match) in enumerate(
+        zip(getattr(embed, "fields", ()), getattr(snapshot, "matches", ()))
+    ):
+        raw = _text(match.get("notes"))
+        fixed = _normalize_float_rationale(match)
+        if raw and fixed != raw:
+            embed.set_field_at(
+                index,
+                name=_text(field.name),
+                value=_text(field.value).replace(raw, fixed),
+                inline=bool(field.inline),
+            )
+    return embed
+
+
 async def _refresh_previous_closed_overview(manager, preview_number: int) -> None:
     """Best-effort one-shot rerender of the just-finished qualification round."""
     try:
@@ -122,6 +182,7 @@ def install() -> None:
     from modules.community.live_arena import (
         captains_table_quota_safe,
         full_set_scoring,
+        swiss_panel,
         swiss_runtime,
     )
 
@@ -145,6 +206,17 @@ def install() -> None:
 
     full_set_scoring._finalize_visible_view = finalize_with_swiss_labels
 
+    original_preview_embed = swiss_panel.preview_embed
+
+    def preview_embed_with_normalized_float(snapshot, *, official):
+        return _normalize_preview_embed(
+            original_preview_embed(snapshot, official=official), snapshot
+        )
+
+    # swiss_runtime imported preview_embed directly, so update both references.
+    swiss_panel.preview_embed = preview_embed_with_normalized_float
+    swiss_runtime.preview_embed = preview_embed_with_normalized_float
+
     original_sync_preview = swiss_runtime._sync_preview_message
 
     async def sync_preview_and_panel(manager, service, snapshot):
@@ -157,6 +229,11 @@ def install() -> None:
         # layer, then expose the Q2/Q3 progression controls immediately.
         if number in {2, 3}:
             await _refresh_previous_closed_overview(manager, number)
+        # The final quota-safe Captain's Table sync now invokes Swiss
+        # reconciliation itself. Do not recurse back into the same final render
+        # while that reconciliation is in progress.
+        if getattr(manager, "_captains_table_stage_reconciling", False):
+            return
         try:
             await manager.sync()
         except Exception:
