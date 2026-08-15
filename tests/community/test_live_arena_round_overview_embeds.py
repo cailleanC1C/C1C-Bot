@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from modules.community.live_arena import round_overview, runtime_hooks
+from modules.community.live_arena import competition_resolution, round_overview, runtime_hooks
 
 
 def run(awaitable):
@@ -219,6 +219,11 @@ def _install_fake_standings(monkeypatch):
 
     monkeypatch.setattr(
         runtime_hooks,
+        "CompetitionResolutionService",
+        FakeCompetitionResolutionService,
+    )
+    monkeypatch.setattr(
+        competition_resolution,
         "CompetitionResolutionService",
         FakeCompetitionResolutionService,
     )
