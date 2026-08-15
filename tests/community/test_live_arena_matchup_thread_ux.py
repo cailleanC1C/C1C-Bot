@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import discord
+import pytest
 
 from modules.community.live_arena import matchup_thread_result_copy as result_copy
 from modules.community.live_arena import matchup_thread_ux as ux
@@ -13,6 +14,15 @@ from modules.community.live_arena import qualification_panel, result_views
 
 def run(awaitable):
     return asyncio.run(awaitable)
+
+
+@pytest.fixture(autouse=True)
+def reset_matchup_copy_cache():
+    ux._MATCHUP_COPY.clear()
+    ux._ACTIVE_SHEET_ID = ""
+    yield
+    ux._MATCHUP_COPY.clear()
+    ux._ACTIVE_SHEET_ID = ""
 
 
 def _copy(sheet_id: str = "sheet-matchup"):
