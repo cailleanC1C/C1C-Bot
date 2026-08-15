@@ -17,6 +17,7 @@ from modules.community.live_arena.competition_admin import (
 )
 from modules.community.live_arena.competition_resolution import CompetitionResolutionService
 from modules.community.live_arena.organizer_panel import OrganizerView
+from modules.community.live_arena.overview_links import match_thread_link
 from modules.community.live_arena.registration import RegistrationError
 from modules.community.live_arena.result_views import (
     MatchResultView,
@@ -255,6 +256,7 @@ async def _sync_round_discord(bot, qualification_service, snapshot) -> list[str]
         overview_channel = await qualification_panel._resolve_channel(
             bot, int(config["ROUND_OVERVIEW_CHANNEL_ID"])
         )
+        guild_id = _text(getattr(getattr(overview_channel, "guild", None), "id", ""))
         _, (_, tournament), _, _ = await qualification_service.context()
         standings = []
         if _text(snapshot.round_row.get("round_stage")).lower() == "qualification":
@@ -266,6 +268,7 @@ async def _sync_round_discord(bot, qualification_service, snapshot) -> list[str]
             snapshot.round_row,
             matches,
             standings,
+            guild_id=guild_id,
         )
         overview_id = _text(snapshot.round_row.get("overview_message_id"))
         message = None
@@ -294,7 +297,15 @@ async def _sync_round_discord(bot, qualification_service, snapshot) -> list[str]
     return warnings
 
 
-def _competition_overview_embed(tournament, round_row, matches, standings):
+def _competition_overview_embed(
+    tournament,
+    round_row,
+    matches,
+    standings,
+    *,
+    guild_id="",
+):
+    """Render the final Victory Ledger round overview in one pass."""
     from modules.community.live_arena import qualification_panel
 
     deadline = qualification_panel._format_timestamp(
@@ -324,7 +335,7 @@ def _competition_overview_embed(tournament, round_row, matches, standings):
     )
     for match in sorted(matches, key=lambda row: int(_text(row["match_number"]))):
         thread_id = _text(match.get("thread_id"))
-        location = f"<#{thread_id}>" if thread_id else "Forum post pending"
+        location = match_thread_link(thread_id, guild_id)
         result = _public_match_result(match)
         embed.add_field(
             name=f"Match {_text(match['match_number'])}",
