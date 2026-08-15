@@ -129,7 +129,6 @@ def test_qualification_overview_is_one_payload_with_three_structured_embeds():
     embeds = run(
         round_overview.render_round_overview_embeds(
             sheet_id=sheet_id,
-            messages_tab="MESSAGES",
             tournament={"tournament_name": "C1C Live Arena Trial Cup"},
             round_row=_round(),
             matches=_matches(),
@@ -160,7 +159,6 @@ def test_closed_round_keeps_same_three_embed_structure_with_final_outcome_header
     embeds = run(
         round_overview.render_round_overview_embeds(
             sheet_id=sheet_id,
-            messages_tab="MESSAGES",
             tournament={"tournament_name": "C1C Live Arena Trial Cup"},
             round_row=_round(status="closed"),
             matches=_matches(),
@@ -191,10 +189,7 @@ def test_round_sync_sends_all_embeds_in_one_discord_message(monkeypatch):
     service = SimpleNamespace(
         sheet_id=sheet_id,
         repository=SimpleNamespace(
-            config={
-                "ROUND_OVERVIEW_CHANNEL_ID": "333",
-                "MESSAGES_TAB": "MESSAGES",
-            }
+            config={"ROUND_OVERVIEW_CHANNEL_ID": "333"}
         ),
         context=AsyncMock(
             return_value=(None, (None, {"tournament_name": "C1C Live Arena Trial Cup"}), None, [])
