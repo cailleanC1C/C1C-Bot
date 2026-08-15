@@ -41,13 +41,8 @@ def _prime_copy(sheet_id="sheet-round-overview"):
         ),
         "round_overview_standing_line": (
             "",
-            "**#{rank}** {player_mention} · **{record}**",
+            "**#{rank} · {record}** {player_mention}",
         ),
-        "round_overview_standing_player": (
-            "",
-            "**#{rank}** {player_mention}",
-        ),
-        "round_overview_standing_record": ("", "**{record}**"),
         "round_overview_bye": (
             "Qualification bye",
             "{player_mention} receives the bye.\nFinal: **bye** · +1 match win · +2 game differential.",
@@ -154,13 +149,8 @@ def test_qualification_overview_is_one_payload_with_three_structured_embeds():
     assert "Final: **2-1**" in embeds[1].fields[1].value
 
     assert embeds[2].title == "🏆 Qualification standings"
-    assert embeds[2].description in (None, "")
-    assert len(embeds[2].fields) == 2
-    assert all(field.inline for field in embeds[2].fields)
-    assert embeds[2].fields[0].name == "\u200b"
-    assert embeds[2].fields[1].name == "\u200b"
-    assert embeds[2].fields[0].value == "**#1** <@10>\n**#2** <@20>"
-    assert embeds[2].fields[1].value == "**1-0**\n**0-1**"
+    assert embeds[2].fields == []
+    assert embeds[2].description == "**#1 · 1-0** <@10>\n**#2 · 0-1** <@20>"
 
 
 def test_closed_round_keeps_same_three_embed_structure_with_final_outcome_header():
@@ -182,7 +172,8 @@ def test_closed_round_keeps_same_three_embed_structure_with_final_outcome_header
     assert "**Status:** Final outcome" in embeds[0].description
     assert embeds[1].title == "⚔️ Matchups"
     assert embeds[2].title == "🏆 Qualification standings"
-    assert len(embeds[2].fields) == 2
+    assert embeds[2].fields == []
+    assert embeds[2].description == "**#1 · 1-0** <@10>\n**#2 · 0-1** <@20>"
 
 
 def _sync_context(sheet_id, channel):
@@ -255,11 +246,12 @@ def test_round_sync_sends_all_embeds_in_one_discord_message(monkeypatch):
     assert kwargs["embeds"][0].title == "Qualification Round 2"
     assert kwargs["embeds"][1].title == "⚔️ Matchups"
     assert kwargs["embeds"][2].title == "🏆 Qualification standings"
-    assert kwargs["embeds"][2].fields[1].value == "**1-0**\n**0-1**"
+    assert kwargs["embeds"][2].fields == []
+    assert kwargs["embeds"][2].description == "**#1 · 1-0** <@10>\n**#2 · 0-1** <@20>"
     service.record_overview_message_id.assert_awaited_once_with("Q2", "999")
 
 
-def test_round_sync_updates_existing_message_with_aligned_standings(monkeypatch):
+def test_round_sync_updates_existing_message_with_mobile_safe_standings(monkeypatch):
     sheet_id = _prime_copy()
     existing = SimpleNamespace(edit=AsyncMock())
     channel = SimpleNamespace(
@@ -288,5 +280,5 @@ def test_round_sync_updates_existing_message_with_aligned_standings(monkeypatch)
     assert "embed" not in kwargs
     assert len(kwargs["embeds"]) == 3
     assert kwargs["embeds"][2].title == "🏆 Qualification standings"
-    assert kwargs["embeds"][2].fields[0].value == "**#1** <@10>\n**#2** <@20>"
-    assert kwargs["embeds"][2].fields[1].value == "**1-0**\n**0-1**"
+    assert kwargs["embeds"][2].fields == []
+    assert kwargs["embeds"][2].description == "**#1 · 1-0** <@10>\n**#2 · 0-1** <@20>"

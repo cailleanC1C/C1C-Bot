@@ -49,8 +49,6 @@ _COPY_CONTRACTS: dict[str, set[str]] = {
     },
     "round_overview_standings": {"standings_lines"},
     "round_overview_standing_line": {"rank", "player_mention", "record"},
-    "round_overview_standing_player": {"rank", "player_mention"},
-    "round_overview_standing_record": {"record"},
     "round_overview_bye": {"player_mention"},
     "round_state_open": set(),
     "round_state_ready_to_close": set(),
@@ -295,41 +293,24 @@ async def render_round_overview_embeds(
     embeds = [general, matchups]
     if stage == "qualification":
         if standings:
-            standings_embed = templates["round_overview_standings"].embed(
-                standings_lines=""
-            )
-            player_lines = [
+            standings_lines = [
                 _description(
                     templates,
-                    "round_overview_standing_player",
+                    "round_overview_standing_line",
                     rank=entry.rank,
+                    record=entry.match_record,
                     player_mention=f"<@{entry.discord_user_id}>",
                 )
                 for entry in standings
             ]
-            record_lines = [
-                _description(
-                    templates,
-                    "round_overview_standing_record",
-                    record=entry.match_record,
-                )
-                for entry in standings
-            ]
-            standings_embed.add_field(
-                name="\u200b",
-                value="\n".join(player_lines)[:1024],
-                inline=True,
-            )
-            standings_embed.add_field(
-                name="\u200b",
-                value="\n".join(record_lines)[:1024],
-                inline=True,
-            )
+            standings_text = "\n".join(standings_lines)
         else:
-            standings_embed = templates["round_overview_standings"].embed(
-                standings_lines=_title(templates, "round_standings_empty")
+            standings_text = _title(templates, "round_standings_empty")
+        embeds.append(
+            templates["round_overview_standings"].embed(
+                standings_lines=standings_text[:4096]
             )
-        embeds.append(standings_embed)
+        )
     return embeds
 
 
