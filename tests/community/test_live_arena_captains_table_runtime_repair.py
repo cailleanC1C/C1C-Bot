@@ -119,19 +119,45 @@ async def test_existing_blank_tiebreak_row_creates_one_thread_and_becomes_restar
 
     class Thread:
         id = 999
+        owner_id = 42
+        parent_id = 123
+        name = "Qualification Tiebreak • smurf vs Glove"
 
         async def delete(self, **_kwargs):
             raise AssertionError("successful tracked thread must not be deleted")
 
+    thread = Thread()
+
+    class Bot:
+        user = SimpleNamespace(id=42)
+
+        def get_channel(self, channel_id):
+            return thread if int(channel_id) == 999 else None
+
+        async def fetch_channel(self, channel_id):
+            assert int(channel_id) == 999
+            return thread
+
+    bot = Bot()
+
     class Forum:
+        id = 123
+        guild = None
+
+        def __init__(self):
+            self.threads = []
+
         async def create_thread(self, **_kwargs):
             nonlocal created_count
             created_count += 1
-            return SimpleNamespace(thread=Thread())
+            self.threads.append(thread)
+            return SimpleNamespace(thread=thread)
+
+    forum = Forum()
 
     async def fake_resolve(_bot, channel_id):
         assert channel_id == 123
-        return Forum()
+        return forum
 
     async def fake_worksheet(_sheet_id, _tab):
         return Worksheet()
@@ -150,7 +176,7 @@ async def test_existing_blank_tiebreak_row_creates_one_thread_and_becomes_restar
     monkeypatch.setattr(repair, "_ensure_result_controls", no_controls)
 
     service = SimpleNamespace(sheet_id="sheet", repository=Repo())
-    manager = SimpleNamespace(bot=SimpleNamespace(), sheet_id="sheet")
+    manager = SimpleNamespace(bot=bot, sheet_id="sheet")
     templates = {"qualification_tiebreak_thread": _Template("Qualification tiebreak")}
 
     await repair._publish_tiebreak_threads(manager, service, state, templates)
