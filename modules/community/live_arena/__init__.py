@@ -60,6 +60,7 @@ from modules.community.live_arena.victory_ledger_final_refresh import install as
 from modules.community.live_arena.captains_table_control_center import install as _install_captains_table_control_center
 from modules.community.live_arena.captains_table_runtime_repair import install as _install_captains_table_runtime_repair
 from modules.community.live_arena.tiebreak_thread_guard import install as _install_tiebreak_thread_guard
+from modules.community.live_arena.tiebreak_completion_boundary import install as _install_tiebreak_completion_boundary
 from modules.community.live_arena.plain_language_ux import install as _install_plain_language_ux
 
 _install_runtime_hooks()
@@ -119,4 +120,5 @@ _install_victory_ledger_final_refresh()
 _install_captains_table_control_center()
 _install_captains_table_runtime_repair()
 _install_tiebreak_thread_guard()
+_install_tiebreak_completion_boundary()
 _install_plain_language_ux()
