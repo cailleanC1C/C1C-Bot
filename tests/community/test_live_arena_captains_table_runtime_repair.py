@@ -7,6 +7,7 @@ import pytest
 
 from modules.community.live_arena import captains_table_control_center as control
 from modules.community.live_arena import captains_table_runtime_repair as repair
+from modules.community.live_arena import tiebreak_thread_guard as guard
 
 
 class _Template:
@@ -111,7 +112,7 @@ async def test_existing_blank_tiebreak_row_creates_one_thread_and_becomes_restar
         }
 
         async def matches(self):
-            raise AssertionError("publication must not re-read MATCHES")
+            raise AssertionError("publication must not use repository.matches here")
 
     class Worksheet:
         def update_cell(self, row, column, value):
@@ -168,12 +169,16 @@ async def test_existing_blank_tiebreak_row_creates_one_thread_and_becomes_restar
     async def no_controls(_manager, _thread_id):
         return None
 
+    async def fresh_match(_service, _match_id):
+        return dict(state.tiebreak_matches[0])
+
     from modules.community.live_arena import qualification_panel
 
     monkeypatch.setattr(qualification_panel, "_resolve_channel", fake_resolve)
     monkeypatch.setattr(repair, "aget_worksheet", fake_worksheet)
     monkeypatch.setattr(repair, "acall_with_backoff", fake_call)
     monkeypatch.setattr(repair, "_ensure_result_controls", no_controls)
+    monkeypatch.setattr(guard, "_fresh_match", fresh_match)
 
     service = SimpleNamespace(sheet_id="sheet", repository=Repo())
     manager = SimpleNamespace(bot=bot, sheet_id="sheet")

@@ -75,6 +75,7 @@ def _state(*, thread_id=""):
         "player_b_display_name": "Glove",
         "status": "published",
         "thread_id": thread_id,
+        "final_winner_discord_user_id": "",
     }
     return control.ControlState(
         "LA-TEST",
@@ -114,7 +115,7 @@ def _service():
     )
 
 
-async def _install_fakes(monkeypatch, forum, writes, controls):
+async def _install_fakes(monkeypatch, forum, writes, controls, *, fresh_match=None):
     from modules.community.live_arena import qualification_panel
 
     async def resolve(_bot, channel_id):
@@ -134,9 +135,18 @@ async def _install_fakes(monkeypatch, forum, writes, controls):
     async def ensure_controls(_manager, thread_id):
         controls.append(str(thread_id))
 
+    async def fresh(_service, _match_id):
+        if fresh_match is not None:
+            return dict(fresh_match)
+        state_match = getattr(forum, "state_match", None)
+        if state_match is not None:
+            return dict(state_match)
+        raise AssertionError("test must provide current match state")
+
     monkeypatch.setattr(qualification_panel, "_resolve_channel", resolve)
     monkeypatch.setattr(runtime, "_persist_thread_id_without_reread", persist)
     monkeypatch.setattr(runtime, "_ensure_result_controls", ensure_controls)
+    monkeypatch.setattr(guard, "_fresh_match", fresh)
 
 
 @pytest.mark.asyncio
@@ -145,6 +155,7 @@ async def test_eight_existing_bot_threads_converge_to_oldest_and_delete_seven(mo
     bot = _Bot(threads)
     forum = _Forum(bot, threads)
     state = _state(thread_id="107")
+    forum.state_match = state.tiebreak_matches[0]
     writes, controls = [], []
     await _install_fakes(monkeypatch, forum, writes, controls)
 
@@ -173,6 +184,7 @@ async def test_same_named_user_thread_is_never_adopted_or_deleted(monkeypatch):
     bot = _Bot(threads)
     forum = _Forum(bot, threads)
     state = _state(thread_id="101")
+    forum.state_match = state.tiebreak_matches[0]
     writes, controls = [], []
     await _install_fakes(monkeypatch, forum, writes, controls)
 
@@ -195,6 +207,7 @@ async def test_simultaneous_in_process_reconciliation_creates_only_one_thread(mo
     bot = _Bot()
     forum = _Forum(bot)
     state = _state()
+    forum.state_match = state.tiebreak_matches[0]
     writes, controls = [], []
     await _install_fakes(monkeypatch, forum, writes, controls)
 
@@ -210,3 +223,81 @@ async def test_simultaneous_in_process_reconciliation_creates_only_one_thread(mo
     assert writes == ["1000"]
     assert state.tiebreak_matches[0]["thread_id"] == "1000"
     assert controls == ["1000", "1000"]
+
+
+@pytest.mark.asyncio
+async def test_stale_open_state_cannot_recreate_thread_after_match_finalizes(monkeypatch):
+    """Exact production race: old reconciliation resumes after organizer confirmation."""
+    bot = _Bot()
+    forum = _Forum(bot)
+    state = _state(thread_id="")
+    writes, controls = [], []
+    finalized = dict(state.tiebreak_matches[0])
+    finalized.update(
+        status="finalized",
+        final_score_a="1",
+        final_score_b="2",
+        final_winner_discord_user_id="2",
+        finalized_by_discord_user_id="1",
+        finalized_at_utc="2026-08-16T18:48:55Z",
+    )
+    await _install_fakes(
+        monkeypatch,
+        forum,
+        writes,
+        controls,
+        fresh_match=finalized,
+    )
+
+    manager = SimpleNamespace(bot=bot, sheet_id="sheet")
+    await guard._publish_tiebreak_threads(
+        manager,
+        _service(),
+        state,
+        {"qualification_tiebreak_thread": _Template()},
+    )
+
+    assert forum.created == 0
+    assert writes == []
+    assert controls == []
+    assert state.tiebreak_matches[0]["status"] == "finalized"
+    assert state.tiebreak_matches[0]["final_winner_discord_user_id"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_finalized_tiebreak_cleans_duplicate_threads_but_never_restores_controls(monkeypatch):
+    canonical = _Thread(100)
+    resurrected = _Thread(101)
+    threads = [canonical, resurrected]
+    bot = _Bot(threads)
+    forum = _Forum(bot, threads)
+    state = _state(thread_id="101")
+    finalized = dict(state.tiebreak_matches[0])
+    finalized.update(
+        status="finalized",
+        final_score_a="1",
+        final_score_b="2",
+        final_winner_discord_user_id="2",
+    )
+    writes, controls = [], []
+    await _install_fakes(
+        monkeypatch,
+        forum,
+        writes,
+        controls,
+        fresh_match=finalized,
+    )
+
+    manager = SimpleNamespace(bot=bot, sheet_id="sheet")
+    await guard._publish_tiebreak_threads(
+        manager,
+        _service(),
+        state,
+        {"qualification_tiebreak_thread": _Template()},
+    )
+
+    assert forum.created == 0
+    assert writes == ["100"]
+    assert canonical.deleted is False
+    assert resurrected.deleted is True
+    assert controls == []
