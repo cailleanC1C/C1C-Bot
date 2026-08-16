@@ -44,6 +44,7 @@ from modules.community.live_arena.round_finish_refresh import install as _instal
 from modules.community.live_arena.round_close_milestone_ux import install as _install_round_close_milestone_ux
 from modules.community.live_arena.discord_resource_identity_repair import install as _install_discord_resource_identity_repair
 from modules.community.live_arena.preview_message_guard import install as _install_preview_message_guard
+from modules.community.live_arena.preview_retirement_cleanup import install as _install_preview_retirement_cleanup
 from modules.community.live_arena.swiss_progression_controls import install as _install_swiss_progression_controls
 from modules.community.live_arena.live_stage_render import install as _install_live_stage_render
 from modules.community.live_arena.matchup_thread_ux import install as _install_matchup_thread_ux
@@ -98,6 +99,7 @@ _install_round_finish_refresh()
 _install_round_close_milestone_ux()
 _install_discord_resource_identity_repair()
 _install_preview_message_guard()
+_install_preview_retirement_cleanup()
 _install_swiss_progression_controls()
 _install_live_stage_render()
 _install_matchup_thread_ux()
