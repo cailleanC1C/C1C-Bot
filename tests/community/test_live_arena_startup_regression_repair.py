@@ -89,7 +89,7 @@ def test_finalized_pre_feature_match_reconciles_without_placeholder_title_render
     kwargs = old_message.edit.await_args.kwargs
     assert kwargs["view"] is None
     assert kwargs["embed"].title == "Result resolved"
-    assert "3-0" in kwargs["embed"].description
+    assert "0-3" in kwargs["embed"].description
 
 
 def test_finalized_match_without_old_lifecycle_message_is_valid_history(monkeypatch):
