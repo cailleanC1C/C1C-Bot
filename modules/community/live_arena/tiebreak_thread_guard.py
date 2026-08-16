@@ -96,9 +96,13 @@ async def _candidate_threads(manager, forum, match: dict[str, object]) -> list[o
     if persisted_id:
         try:
             persisted = await runtime._resolve_thread(manager.bot, persisted_id)
-        except (discord.NotFound, discord.Forbidden):
+        except discord.NotFound:
             persisted = None
         except Exception as exc:
+            # A persisted ID already exists. On permission/transient/cache errors,
+            # fail closed rather than creating another thread and making the live
+            # duplication problem worse. Only a confirmed Discord 404 permits a
+            # replacement to be created.
             log.exception(
                 "Live Arena persisted tiebreak thread resolution failed • match=%s • thread=%s • error=%s: %s",
                 _text(match.get("match_id")),
@@ -106,7 +110,7 @@ async def _candidate_threads(manager, forum, match: dict[str, object]) -> list[o
                 type(exc).__name__,
                 exc,
             )
-            persisted = None
+            raise
         if persisted is not None:
             add(persisted)
 
