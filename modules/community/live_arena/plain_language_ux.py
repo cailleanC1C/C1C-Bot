@@ -69,7 +69,11 @@ def install() -> None:
     _installed = True
 
     from modules.community.live_arena import competition, result_views, swiss_panel
+    from modules.community.live_arena.captains_table_control_center_repair import (
+        install as install_control_center_repair,
+    )
 
+    install_control_center_repair()
     swiss_panel.preview_embed = _qualification_preview
 
     original_swiss_button_init = swiss_panel.SwissActionButton.__init__
