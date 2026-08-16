@@ -195,12 +195,20 @@ def install() -> None:
     round_overview.render_round_overview_embeds = render_with_last_updated
 
     # Older migration logic may consider an existing three-embed message healthy
-    # even if the real content refresh just failed. Finish every sync with one
-    # authoritative write so stale-but-correct-shaped panels cannot survive.
+    # even if the real content refresh just failed. Existing persisted overviews
+    # therefore get one final authoritative rewrite after every sync. A brand-new
+    # round with no overview ID is left to the normal sync path unless that path
+    # reported a Victory Ledger failure, preventing duplicate first-publish posts.
     original_sync = runtime_hooks._sync_round_discord
 
     async def sync_with_final_victory_ledger(bot, qualification_service, snapshot):
         warnings = list(await original_sync(bot, qualification_service, snapshot))
+        round_row = getattr(snapshot, "round_row", None)
+        overview_id = _text(round_row.get("overview_message_id")) if round_row else ""
+        needs_final_refresh = bool(overview_id) or "Victory Ledger overview" in warnings
+        if not needs_final_refresh:
+            return list(dict.fromkeys(warnings))
+
         try:
             refreshed = await _force_overview_refresh(
                 bot, qualification_service, snapshot
@@ -212,11 +220,7 @@ def install() -> None:
         except Exception as exc:
             log.exception(
                 "Live Arena final Victory Ledger refresh failed • round=%s • error=%s: %s",
-                _text(
-                    getattr(snapshot, "round_row", {}).get("round_id")
-                    if getattr(snapshot, "round_row", None)
-                    else ""
-                ),
+                _text(round_row.get("round_id")) if round_row else "",
                 type(exc).__name__,
                 exc,
             )
