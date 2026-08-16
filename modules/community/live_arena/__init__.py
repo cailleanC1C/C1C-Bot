@@ -51,6 +51,7 @@ from modules.community.live_arena.round_overview import install as _install_roun
 from modules.community.live_arena.round_overview_migration import install as _install_round_overview_migration
 from modules.community.live_arena.result_control_refresh import install as _install_result_control_refresh
 from modules.community.live_arena.result_lifecycle_ux import install as _install_result_lifecycle_ux
+from modules.community.live_arena.result_lifecycle_fallback import install as _install_result_lifecycle_fallback
 
 _install_runtime_hooks()
 _install_repair()
@@ -100,3 +101,4 @@ _install_round_overview()
 _install_round_overview_migration()
 _install_result_control_refresh()
 _install_result_lifecycle_ux()
+_install_result_lifecycle_fallback()
