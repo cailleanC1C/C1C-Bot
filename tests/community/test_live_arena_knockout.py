@@ -172,8 +172,9 @@ def test_freeze_top8_rejects_competitive_tie(monkeypatch):
     service, _, _ = make_service(monkeypatch, table=standings(tied=True))
     run(service.initialize())
 
-    with pytest.raises(RegistrationError, match="BO3 tiebreak"):
+    with pytest.raises(RegistrationError, match="Qualification tiebreak required") as exc:
         run(service.freeze_top8("42"))
+    assert "BO3" not in str(exc.value)
 
 
 def test_quarterfinal_preview_has_fixed_seed_slots(monkeypatch):

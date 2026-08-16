@@ -57,6 +57,8 @@ from modules.community.live_arena.result_lifecycle_ux import install as _install
 from modules.community.live_arena.result_lifecycle_fallback import install as _install_result_lifecycle_fallback
 from modules.community.live_arena.result_staff_override import install as _install_result_staff_override
 from modules.community.live_arena.victory_ledger_final_refresh import install as _install_victory_ledger_final_refresh
+from modules.community.live_arena.captains_table_control_center import install as _install_captains_table_control_center
+from modules.community.live_arena.plain_language_ux import install as _install_plain_language_ux
 
 _install_runtime_hooks()
 _install_repair()
@@ -112,3 +114,5 @@ _install_result_lifecycle_ux()
 _install_result_lifecycle_fallback()
 _install_result_staff_override()
 _install_victory_ledger_final_refresh()
+_install_captains_table_control_center()
+_install_plain_language_ux()
