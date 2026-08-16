@@ -42,6 +42,7 @@ from modules.community.live_arena.scheduling_resolution_ux import install as _in
 from modules.community.live_arena.victory_ledger_link_guard import install as _install_victory_ledger_link_guard
 from modules.community.live_arena.round_finish_refresh import install as _install_round_finish_refresh
 from modules.community.live_arena.round_close_milestone_ux import install as _install_round_close_milestone_ux
+from modules.community.live_arena.preview_message_guard import install as _install_preview_message_guard
 from modules.community.live_arena.swiss_progression_controls import install as _install_swiss_progression_controls
 from modules.community.live_arena.live_stage_render import install as _install_live_stage_render
 from modules.community.live_arena.matchup_thread_ux import install as _install_matchup_thread_ux
@@ -93,6 +94,7 @@ _install_scheduling_resolution_ux()
 _install_victory_ledger_link_guard()
 _install_round_finish_refresh()
 _install_round_close_milestone_ux()
+_install_preview_message_guard()
 _install_swiss_progression_controls()
 _install_live_stage_render()
 _install_matchup_thread_ux()
