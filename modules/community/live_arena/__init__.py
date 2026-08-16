@@ -62,6 +62,7 @@ from modules.community.live_arena.captains_table_runtime_repair import install a
 from modules.community.live_arena.tiebreak_thread_guard import install as _install_tiebreak_thread_guard
 from modules.community.live_arena.tiebreak_completion_boundary import install as _install_tiebreak_completion_boundary
 from modules.community.live_arena.plain_language_ux import install as _install_plain_language_ux
+from modules.community.live_arena.knockout_transition_repair import install as _install_knockout_transition_repair
 
 _install_runtime_hooks()
 _install_repair()
@@ -122,3 +123,4 @@ _install_captains_table_runtime_repair()
 _install_tiebreak_thread_guard()
 _install_tiebreak_completion_boundary()
 _install_plain_language_ux()
+_install_knockout_transition_repair()
