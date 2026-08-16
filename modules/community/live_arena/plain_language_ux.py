@@ -72,8 +72,12 @@ def install() -> None:
     from modules.community.live_arena.captains_table_control_center_repair import (
         install as install_control_center_repair,
     )
+    from modules.community.live_arena.captains_table_action_state import (
+        install as install_control_action_state,
+    )
 
     install_control_center_repair()
+    install_control_action_state()
     swiss_panel.preview_embed = _qualification_preview
 
     original_swiss_button_init = swiss_panel.SwissActionButton.__init__
