@@ -160,7 +160,7 @@ def test_final_refresh_recreates_missing_overview_and_persists_new_message_id(mo
     created = SimpleNamespace(id=12345, delete=AsyncMock())
     channel = SimpleNamespace(
         guild=SimpleNamespace(id=111),
-        fetch_message=AsyncMock(side_effect=discord.NotFound(SimpleNamespace(status=404, reason="not found"), "missing")),
+        fetch_message=AsyncMock(),
         send=AsyncMock(return_value=created),
     )
     monkeypatch.setattr(
@@ -203,7 +203,7 @@ def test_final_refresh_recreates_missing_overview_and_persists_new_message_id(mo
             "round_id": "Q2",
             "round_stage": "qualification",
             "status": "active",
-            "overview_message_id": "999",
+            "overview_message_id": "",
         },
         matches=(),
     )
@@ -211,5 +211,6 @@ def test_final_refresh_recreates_missing_overview_and_persists_new_message_id(mo
     refreshed = run(final_refresh._force_overview_refresh(SimpleNamespace(), service, snapshot))
 
     assert refreshed is True
+    channel.fetch_message.assert_not_awaited()
     channel.send.assert_awaited_once()
     service.record_overview_message_id.assert_awaited_once_with("Q2", "12345")
