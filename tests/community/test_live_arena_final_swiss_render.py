@@ -49,8 +49,8 @@ def test_final_captains_table_render_reconciles_swiss_before_quota_fallback(
     async def render(current_manager):
         calls.append("render")
         labels = {item.label for item in current_manager.view("active").children}
-        assert f"Publish Qualification Round {number}" in labels
-        assert f"Redo Qualification Round {number}" in labels
+        assert "Approve & Publish Round" in labels
+        assert "Refresh Round Preview" in labels
         assert "Finish Round" not in labels
         return PanelSyncResult(True)
 
