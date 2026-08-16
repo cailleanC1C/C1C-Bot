@@ -208,12 +208,16 @@ def test_organizer_proxy_resolves_to_non_reporting_participant(monkeypatch):
     assert proxied is True
 
 
-def test_reporter_cannot_use_organizer_proxy_to_self_confirm(monkeypatch):
+def test_reporting_organizer_can_proxy_non_reporting_participant(monkeypatch):
     interaction = SimpleNamespace(user=SimpleNamespace(id=1, roles=[]))
     monkeypatch.setattr(ux, "_is_organizer", AsyncMock(return_value=True))
 
-    with pytest.raises(RegistrationError, match="cannot confirm or dispute"):
-        run(ux._represented_opponent(interaction, "sheet", pending_match()))
+    participant, proxied = run(
+        ux._represented_opponent(interaction, "sheet", pending_match())
+    )
+
+    assert participant == "2"
+    assert proxied is True
 
 
 def finalized(number, a, b, sa, sb, round_number, **extra):
