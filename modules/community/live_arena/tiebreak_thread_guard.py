@@ -5,6 +5,11 @@ follow-ups at nearly the same time. A persisted MATCHES.thread_id is authoritati
 but multiple processes can still observe it blank before any one of them writes.
 This guard converges those races on one bot-created forum thread and repairs the
 already-duplicated live state without touching user-authored threads.
+
+A tiebreak result can become final while an older reconciliation pass is still
+running. Thread creation therefore has one additional hard boundary: immediately
+before any create/adopt decision we re-read the exact MATCHES row outside the
+operation read cache. A finalized tiebreak can be cleaned up, but never resurrected.
 """
 
 from __future__ import annotations
@@ -13,11 +18,15 @@ import asyncio
 import logging
 
 import discord
+import shared.sheets.core as sheets_core
 
 from modules.community.live_arena import captains_table_runtime_repair as runtime
 from modules.community.live_arena import captains_table_control_center as control
 from modules.community.live_arena import knockout
-from modules.community.live_arena.service import _text
+from modules.community.live_arena.competition import MATCH_TERMINAL_STATUSES
+from modules.community.live_arena.qualification import MATCH_HEADERS
+from modules.community.live_arena.registration import RegistrationError
+from modules.community.live_arena.service import _rows, _text
 
 log = logging.getLogger("c1c.community.live_arena.tiebreak_thread_guard")
 _installed = False
@@ -62,6 +71,50 @@ def _is_owned_match_thread(thread, forum, *, bot_id: str, expected_name: str) ->
     owner_id = _text(getattr(thread, "owner_id", ""))
     # Never delete/adopt a thread unless Discord identifies the bot as its owner.
     return bool(bot_id and owner_id and owner_id == bot_id)
+
+
+def _terminal_with_winner(match: dict[str, object]) -> bool:
+    return (
+        _text(match.get("status")) in MATCH_TERMINAL_STATUSES
+        and bool(_text(match.get("final_winner_discord_user_id")))
+    )
+
+
+async def _fresh_match(service, match_id: str) -> dict[str, object]:
+    """Read one authoritative MATCHES row without reusing ``sheet_read_scope``.
+
+    Result confirmation can persist while a startup/panel reconciliation still owns
+    an older scoped MATCHES matrix. The normal async-core read would intentionally
+    reuse that stale matrix. Read through the underlying core only at this final
+    publication boundary so an already-finalized tiebreak cannot be recreated.
+    """
+
+    tab = _text(service.repository.config.get("MATCHES_TAB"))
+    if not tab:
+        raise RegistrationError("Live Arena MATCHES table is not configured")
+    matrix = await sheets_core.afetch_values(service.sheet_id, tab) or []
+    rows = _rows(matrix, MATCH_HEADERS, tab)
+    matches = [
+        dict(row)
+        for row in rows
+        if _text(row.get("match_id")) == str(match_id)
+    ]
+    if len(matches) != 1:
+        raise RegistrationError(
+            f"Qualification tiebreak match {match_id} could not be resolved from fresh Sheet state"
+        )
+    return matches[0]
+
+
+def _write_fresh_match_into_state(state: control.ControlState, match, fresh) -> None:
+    match.clear()
+    match.update(dict(fresh))
+    match_id = _text(fresh.get("match_id"))
+    for collection in (state.matches, state.tiebreak_matches):
+        for row in collection:
+            if _text(row.get("match_id")) == match_id:
+                row.clear()
+                row.update(dict(fresh))
 
 
 async def _candidate_threads(manager, forum, match: dict[str, object]) -> list[object]:
@@ -178,8 +231,22 @@ async def _sync_one(manager, service, state: control.ControlState, match, forum,
     lock = _locks.setdefault(identity, asyncio.Lock())
 
     async with lock:
+        # This is intentionally outside the normal per-operation Sheet read cache.
+        # A result can have finalized after this reconciliation started. Fresh truth
+        # wins before we are allowed to create or restore any Discord thread.
+        fresh = await _fresh_match(service, _text(match.get("match_id")))
+        _write_fresh_match_into_state(state, match, fresh)
+        finalized = _terminal_with_winner(match)
+
         candidates = await _candidate_threads(manager, forum, match)
         created = None
+
+        if not candidates and finalized:
+            log.info(
+                "Live Arena finalized qualification tiebreak will not be republished • match=%s",
+                _text(match.get("match_id")),
+            )
+            return
 
         if not candidates:
             created = await _create_thread(manager, forum, match, templates)
@@ -218,7 +285,8 @@ async def _sync_one(manager, service, state: control.ControlState, match, forum,
             raise
 
         removed = await _cleanup_duplicates(match, canonical, candidates)
-        await runtime._ensure_result_controls(manager, canonical_id)
+        if not finalized:
+            await runtime._ensure_result_controls(manager, canonical_id)
         if removed:
             log.info(
                 "Live Arena qualification tiebreak converged • match=%s • canonical=%s • duplicates_removed=%s",
