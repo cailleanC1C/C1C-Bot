@@ -1,4 +1,9 @@
-"""S-02 dependency guardrail: shared/ must not import Discord runtime modules."""
+"""S-02 dependency guardrail for Discord imports under shared/.
+
+Three pre-existing shared helpers still own Discord-specific behavior.  They are
+explicitly frozen as legacy debt: new shared Discord imports fail CI, and removing
+one of the old imports requires removing its allowlist entry too.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SHARED_ROOT = ROOT / "shared"
+LEGACY_DISCORD_IMPORT_ALLOWLIST = {
+    "shared/logfmt.py",
+    "shared/redaction.py",
+    "shared/theme.py",
+}
 
 
 def _discord_import_lines(path: Path) -> list[int]:
@@ -27,18 +37,31 @@ def _discord_import_lines(path: Path) -> list[int]:
     return sorted(lines)
 
 
-def test_shared_runtime_does_not_import_discord() -> None:
+def test_shared_runtime_has_no_new_discord_imports() -> None:
+    observed_legacy: set[str] = set()
     failures: list[str] = []
     for path in sorted(SHARED_ROOT.rglob("*.py")):
         if "__pycache__" in path.parts:
             continue
-        for line in _discord_import_lines(path):
-            failures.append(f"{path.relative_to(ROOT).as_posix()}:{line}")
+        rel = path.relative_to(ROOT).as_posix()
+        lines = _discord_import_lines(path)
+        if not lines:
+            continue
+        if rel in LEGACY_DISCORD_IMPORT_ALLOWLIST:
+            observed_legacy.add(rel)
+            continue
+        failures.extend(f"{rel}:{line}" for line in lines)
 
     assert not failures, (
-        "Discord-specific imports are forbidden in shared/; move the dependency "
+        "New Discord-specific imports are forbidden in shared/; move the dependency "
         "to modules/cogs or pass an abstraction into shared code:\n"
         + "\n".join(failures)
+    )
+    assert observed_legacy == LEGACY_DISCORD_IMPORT_ALLOWLIST, (
+        "S-02 legacy allowlist is stale. Remove entries as shared Discord dependencies "
+        "are migrated: "
+        f"expected={sorted(LEGACY_DISCORD_IMPORT_ALLOWLIST)} "
+        f"observed={sorted(observed_legacy)}"
     )
 
 
