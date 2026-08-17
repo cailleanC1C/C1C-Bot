@@ -9,6 +9,7 @@ These files describe how the **entire bot** works: architecture, operations, tro
 * [`Architecture.md`](Architecture.md) - Canonical explanation of the bot’s architecture, runtime flow, Sheets integration, caches, and environment separation.
 * [`Runbook.md`](Runbook.md) - Single source of truth for admin operations: health checks, maintenance, refresh rules, deployment expectations.
 * [`Troubleshooting.md`](Troubleshooting.md) - How to diagnose common issues, logs to check, and recovery steps.
+* [`sheets-read-broker.md`](sheets-read-broker.md) - Process-wide Google Sheets read broker foundation, cache policies, pacing, retry ownership, and migration contract.
 * [`README.md`](README.md) — you are here; master index for the documentation tree.
 
 ##   Architectural Decision Records `/docs/adr/`
@@ -113,7 +114,7 @@ Repository sources use guardrail-compliant `lower_snake_case.md` names. The publ
 
 ## Module Deep Dives `/docs/modules/` 
 * [`CoreOps.md`](modules/CoreOps.md) — CoreOps responsibilities, scheduler contracts, and cache façade expectations.
-* [`CoreOps-Development.md`](modules/CoreOps-Development.md) — developer setup notes and contribution workflow guidance for CoreOps.
+* [`CoreOps-Development.md`](modules/CoreOps-Development.md) — developer setup notes for CoreOps: telemetry, preloader rules, caveats, dev behaviour, testing commands.
 * [`Onboarding.md`](modules/Onboarding.md) — onboarding engine scope, flows, sheet mappings, and dependencies.
 * [`Welcome.md`](modules/Welcome.md) — welcome UX scope, ticket-thread flow, summary formatting, and integrations.
 * [`Recruitment.md`](modules/Recruitment.md) — recruitment module responsibilities, sheet schemas, panels, and reporting flows.
