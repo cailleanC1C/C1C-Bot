@@ -221,3 +221,140 @@ def test_load_rules_caches_sheet_rows(monkeypatch):
     assert first[12345].guard_id == "captains_table"
     assert second[12345].guard_id == "captains_table"
     assert calls == [("sheet", "HousekeepingThreadGuard")]
+
+
+class _FakeThread:
+    def __init__(self, thread_id=12345):
+        self.id = thread_id
+        self.name = "captains-table"
+        self.sent = []
+
+    async def send(self, *args, **kwargs):
+        self.sent.append((args, kwargs))
+
+
+class _FakeRole:
+    def __init__(self, role_id):
+        self.id = role_id
+
+
+class _FakeMember:
+    def __init__(self, user_id, role_ids, *, bot=False, administrator=False):
+        self.id = user_id
+        self.roles = [_FakeRole(role_id) for role_id in role_ids]
+        self.bot = bot
+        self.display_name = f"user-{user_id}"
+        self.name = self.display_name
+        self.mention = f"<@{user_id}>"
+        self.guild_permissions = SimpleNamespace(administrator=administrator)
+        self.timeout_calls = []
+
+    async def timeout(self, duration, reason=None):
+        self.timeout_calls.append((duration, reason))
+
+
+class _FakeMessage:
+    def __init__(self, author, channel, *, message_id=98765):
+        self.author = author
+        self.channel = channel
+        self.guild = SimpleNamespace(id=1)
+        self.content = "hello"
+        self.attachments = []
+        self.id = message_id
+        self.delete_calls = 0
+
+    async def delete(self):
+        self.delete_calls += 1
+
+
+def test_handle_message_allows_clan_lead_without_recording_offense(monkeypatch):
+    monkeypatch.setattr(guard, "_feature_enabled", lambda: True)
+    monkeypatch.setattr(guard.discord, "Thread", _FakeThread)
+    monkeypatch.setattr(guard.discord, "Member", _FakeMember)
+    monkeypatch.setattr(guard, "get_clan_lead_ids", lambda: {222, 333})
+    monkeypatch.setattr(guard, "is_admin_member", lambda author: False)
+
+    async def fail_load_rules():
+        raise AssertionError("load_rules should not be called for allowed clan leads")
+
+    async def fail_save_state(state):
+        raise AssertionError("allowed clan leads must not record offenses")
+
+    monkeypatch.setattr(guard, "load_rules", fail_load_rules)
+    monkeypatch.setattr(guard, "_save_state", fail_save_state)
+
+    author = _FakeMember(77, [333])
+    message = _FakeMessage(author, _FakeThread())
+
+    handled = asyncio.run(guard.handle_message(SimpleNamespace(), message))
+
+    assert handled is False
+    assert message.delete_calls == 0
+
+
+def test_handle_message_allows_admin_without_recording_offense(monkeypatch):
+    monkeypatch.setattr(guard, "_feature_enabled", lambda: True)
+    monkeypatch.setattr(guard.discord, "Thread", _FakeThread)
+    monkeypatch.setattr(guard.discord, "Member", _FakeMember)
+    monkeypatch.setattr(guard, "get_clan_lead_ids", lambda: set())
+    monkeypatch.setattr(guard, "is_admin_member", lambda author: True)
+
+    async def fail_load_rules():
+        raise AssertionError("load_rules should not be called for admins")
+
+    monkeypatch.setattr(guard, "load_rules", fail_load_rules)
+
+    author = _FakeMember(88, [], administrator=True)
+    message = _FakeMessage(author, _FakeThread())
+
+    handled = asyncio.run(guard.handle_message(SimpleNamespace(), message))
+
+    assert handled is False
+    assert message.delete_calls == 0
+
+
+def test_handle_message_enforces_guard_for_staff_only_member(monkeypatch):
+    monkeypatch.setattr(guard, "_feature_enabled", lambda: True)
+    monkeypatch.setattr(guard.discord, "Thread", _FakeThread)
+    monkeypatch.setattr(guard.discord, "Member", _FakeMember)
+    monkeypatch.setattr(guard, "get_clan_lead_ids", lambda: {222})
+    monkeypatch.setattr(guard, "is_admin_member", lambda author: False)
+
+    saved_states = []
+
+    async def fake_load_rules():
+        return {12345: _rule()}
+
+    async def fake_load_state(rule, message):
+        return guard.OffenseState(
+            guard_id=rule.guard_id,
+            thread_id=rule.thread_id,
+            user_id=message.author.id,
+            offense_count=1,
+            window_started_at_utc="2026-08-17T22:42:00Z",
+            last_offense_at_utc="2026-08-17T22:42:00Z",
+        )
+
+    async def fake_save_state(state):
+        saved_states.append(state)
+
+    async def fake_send_notice(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(guard, "load_rules", fake_load_rules)
+    monkeypatch.setattr(guard, "_load_and_advance_state", fake_load_state)
+    monkeypatch.setattr(guard, "_save_state", fake_save_state)
+    monkeypatch.setattr(guard, "_send_notice", fake_send_notice)
+
+    staff_role_id = 999
+    author = _FakeMember(99, [staff_role_id])
+    message = _FakeMessage(author, _FakeThread())
+
+    handled = asyncio.run(guard.handle_message(SimpleNamespace(), message))
+
+    assert handled is True
+    assert message.delete_calls == 1
+    assert len(saved_states) == 1
+    assert saved_states[0].user_id == 99
+    assert saved_states[0].last_action == "delete"
+    assert saved_states[0].offense_count == 1
