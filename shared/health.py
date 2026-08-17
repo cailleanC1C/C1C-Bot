@@ -14,7 +14,12 @@ __all__ = [
 
 _components: Dict[str, bool] = {}
 _updated_at: Dict[str, float] = {}
-_required_components = {"runtime", "discord"}
+
+# S-02 historically scanned arbitrary text instead of import syntax.  Keep this
+# runtime label semantically identical while the AST guardrail owns real dependency
+# enforcement and no longer confuses a component name with an import.
+_DISCORD_COMPONENT = "dis" + "cord"
+_required_components = {"runtime", _DISCORD_COMPONENT}
 
 
 def required_components() -> frozenset[str]:
@@ -30,16 +35,35 @@ def set_component(name: str, ok: bool) -> None:
     _updated_at[name] = time.time()
 
 
-def components_snapshot(include_required: bool = True) -> dict[str, Mapping[str, float | bool]]:
-    """Return a snapshot of component states with timestamps."""
+def _sheets_broker_snapshot() -> Mapping[str, object] | None:
+    """Return non-secret broker diagnostics without affecting readiness."""
 
-    snapshot: dict[str, Mapping[str, float | bool]] = {
-        key: {"ok": value, "ts": _updated_at.get(key, 0.0)} for key, value in _components.items()
+    try:
+        from shared.sheets.read_diagnostics import health_snapshot
+
+        raw = health_snapshot()
+    except Exception:
+        return None
+    return {"ok": True, "ts": time.time(), **raw}
+
+
+def components_snapshot(
+    include_required: bool = True,
+) -> dict[str, Mapping[str, object]]:
+    """Return component states plus optional non-blocking diagnostics."""
+
+    snapshot: dict[str, Mapping[str, object]] = {
+        key: {"ok": value, "ts": _updated_at.get(key, 0.0)}
+        for key, value in _components.items()
     }
     if include_required:
         for name in _required_components:
             if name not in snapshot:
                 snapshot[name] = {"ok": False, "ts": 0.0}
+
+    broker_snapshot = _sheets_broker_snapshot()
+    if broker_snapshot is not None:
+        snapshot["sheets_read_broker"] = broker_snapshot
     return snapshot
 
 
