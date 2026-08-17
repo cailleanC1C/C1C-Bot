@@ -111,6 +111,99 @@ async def _adapter_call(
     return await func(*args, timeout=timeout, **kwargs)
 
 
+_MUTATING_METHODS = frozenset(
+    {
+        "add_cols",
+        "add_rows",
+        "append_row",
+        "append_rows",
+        "batch_clear",
+        "batch_update",
+        "clear",
+        "clear_note",
+        "clear_notes",
+        "delete_columns",
+        "delete_rows",
+        "insert_row",
+        "insert_rows",
+        "resize",
+        "update",
+        "update_acell",
+        "update_cell",
+        "update_cells",
+        "update_note",
+        "update_notes",
+        "values_append",
+        "values_batch_update",
+        "values_update",
+    }
+)
+
+
+def _clean_identity(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _mutation_owner(func: Callable[..., Any], args: tuple[Any, ...]) -> tuple[str, Any] | None:
+    """Return ``(method_name, bound target)`` for a known mutating Sheets call."""
+
+    method_name = _clean_identity(getattr(func, "__name__", ""))
+    owner = getattr(func, "__self__", None)
+
+    if method_name in {"worksheet_values_update", "batch_update"} and owner is None and args:
+        owner = args[0]
+        method_name = "update" if method_name == "worksheet_values_update" else method_name
+
+    if method_name not in _MUTATING_METHODS or owner is None:
+        return None
+    return method_name, owner
+
+
+def _worksheet_identity(owner: Any) -> tuple[str, str] | None:
+    """Best-effort extraction of a worksheet's spreadsheet ID and tab title."""
+
+    sheet_id = _clean_identity(getattr(owner, "spreadsheet_id", ""))
+    worksheet = _clean_identity(getattr(owner, "title", ""))
+    if sheet_id and worksheet:
+        return sheet_id, worksheet
+
+    parent = getattr(owner, "spreadsheet", None) or getattr(owner, "_spreadsheet", None)
+    parent_id = _clean_identity(getattr(parent, "id", ""))
+    if parent_id and worksheet:
+        return parent_id, worksheet
+    return None
+
+
+def _workbook_identity(owner: Any) -> str:
+    """Best-effort extraction of a Spreadsheet resource ID."""
+
+    class_name = owner.__class__.__name__.casefold()
+    if "worksheet" in class_name:
+        return ""
+    return _clean_identity(getattr(owner, "id", "") or getattr(owner, "key", ""))
+
+
+async def _invalidate_after_mutation(
+    func: Callable[..., Any], args: tuple[Any, ...]
+) -> int:
+    """Invalidate broker snapshots affected by one successful mutation."""
+
+    resolved = _mutation_owner(func, args)
+    if resolved is None:
+        return 0
+
+    _method_name, owner = resolved
+    worksheet_identity = _worksheet_identity(owner)
+    if worksheet_identity is not None:
+        sheet_id, worksheet = worksheet_identity
+        return await broker.invalidate_worksheet(sheet_id, worksheet)
+
+    workbook_id = _workbook_identity(owner)
+    if workbook_id:
+        return await broker.invalidate_workbook(workbook_id)
+    return 0
+
+
 async def aopen_by_key(
     sheet_id: str | None = None,
     *,
@@ -422,10 +515,11 @@ async def acall_with_backoff(
     """Execute a generic/write callable with legacy async backoff.
 
     Read-side callers should use ``afetch_records``, ``afetch_values`` or
-    ``asheets_read``. This helper remains for writes and migration compatibility.
+    ``asheets_read``. Successful recognized mutations invalidate the affected
+    broker worksheet/workbook before control returns to the feature.
     """
 
-    return await _core.acall_with_backoff(
+    result = await _core.acall_with_backoff(
         func,
         *args,
         attempts=attempts,
@@ -434,6 +528,8 @@ async def acall_with_backoff(
         timeout=timeout,
         **kwargs,
     )
+    await _invalidate_after_mutation(func, tuple(args))
+    return result
 
 
 async def a_to_thread_with_backoff(
@@ -445,19 +541,25 @@ async def a_to_thread_with_backoff(
     timeout: float | None = None,
     **kwargs: P.kwargs,
 ) -> T:
-    """Run a generic synchronous Sheets callable off-loop with legacy backoff."""
+    """Run a generic synchronous Sheets callable off-loop with legacy backoff.
+
+    Successful recognized mutations invalidate the broker snapshot just like
+    :func:`acall_with_backoff`.
+    """
 
     async def _invoke() -> T:
         if timeout is None:
             return await _core.async_adapter.arun(func, *args, **kwargs)
         return await _core.async_adapter.arun(func, *args, timeout=timeout, **kwargs)
 
-    return await _core._retry_with_backoff_async(
+    result = await _core._retry_with_backoff_async(
         _invoke,
         attempts=attempts,
         base_delay=base_delay,
         factor=factor,
     )
+    await _invalidate_after_mutation(func, tuple(args))
+    return result
 
 
 __all__ = [
