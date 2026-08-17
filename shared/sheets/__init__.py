@@ -1,9 +1,16 @@
-"""Helpers for working with Google Sheets (import side-effect free)."""
+"""Helpers for working with Google Sheets.
+
+The package remains free of network I/O at import time.  A lightweight in-memory
+read-diagnostics observer is installed so physical broker attempts can be
+attributed without changing read behavior.
+"""
 
 from __future__ import annotations
 
 import importlib
 from typing import Any
+
+from shared.sheets import read_diagnostics as _read_diagnostics
 
 __all__ = [
     "get_service_account_client",
@@ -30,6 +37,8 @@ _LAZY_ATTRS = {
         "register_default_cache_buckets",
     ),
 }
+
+_read_diagnostics.install()
 
 
 def __getattr__(name: str) -> Any:
