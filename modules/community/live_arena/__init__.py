@@ -64,6 +64,7 @@ from modules.community.live_arena.tiebreak_completion_boundary import install as
 from modules.community.live_arena.plain_language_ux import install as _install_plain_language_ux
 from modules.community.live_arena.knockout_transition_repair import install as _install_knockout_transition_repair
 from modules.community.live_arena.knockout_progression_finalizer import install as _install_knockout_progression_finalizer
+from modules.community.live_arena.final_tournament_close_boundary import install as _install_final_tournament_close_boundary
 
 _install_runtime_hooks()
 _install_repair()
@@ -126,3 +127,4 @@ _install_tiebreak_completion_boundary()
 _install_plain_language_ux()
 _install_knockout_transition_repair()
 _install_knockout_progression_finalizer()
+_install_final_tournament_close_boundary()
