@@ -2,15 +2,35 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 from modules.community.live_arena import hall_of_fame, organizer_panel
 from modules.community.live_arena import sheets_read_hardening as hardening
 from shared.sheets import async_core
+from shared.sheets.read_broker import SheetsReadBroker
 
 
 def run(awaitable):
     return asyncio.run(awaitable)
+
+
+def _new_broker() -> SheetsReadBroker:
+    return SheetsReadBroker(
+        read_budget_rpm=1_000_000,
+        rate_window_seconds=0.001,
+        retry_attempts=1,
+        retry_base_delay_sec=0,
+    )
+
+
+def _prime_sheet_handles(*tabs: str) -> None:
+    """Avoid credential/metadata setup so tests count physical value reads only."""
+
+    async_core._core._WorkbookCache.clear()
+    async_core._core._WorksheetCache.clear()
+    async_core._core._WorkbookCache["sheet"] = object()
+    for tab in tabs:
+        async_core._core._WorksheetCache[("sheet", tab)] = object()
 
 
 def test_transition_deduplicates_reads_but_refreshes_after_write(monkeypatch):
@@ -42,8 +62,26 @@ def test_transition_deduplicates_reads_but_refreshes_after_write(monkeypatch):
     )
 
     monkeypatch.setattr(organizer_panel, "OrganizerService", Service)
-    with patch.object(async_core._core, "afetch_values", raw):
-        run(hardening._budgeted_execute_transition(interaction, manager, "close"))
+
+    async def scenario():
+        test_broker = _new_broker()
+        monkeypatch.setattr(async_core, "broker", test_broker)
+        _prime_sheet_handles("CONFIG")
+        monkeypatch.setattr(
+            async_core._core.async_adapter,
+            "aworksheet_values_all",
+            raw,
+        )
+        try:
+            await hardening._budgeted_execute_transition(
+                interaction, manager, "close"
+            )
+        finally:
+            await test_broker.close()
+            async_core._core._WorkbookCache.clear()
+            async_core._core._WorksheetCache.clear()
+
+    run(scenario())
 
     # One physical CONFIG read before the mutation, then one fresh physical read for
     # the post-write panel refresh. The second scope must not reuse pre-write state.
@@ -64,8 +102,25 @@ def test_hall_of_fame_startup_sync_reuses_identical_reads(monkeypatch):
     monkeypatch.setattr(hardening, "_HALL_OF_FAME_STARTUP_DELAY_SECONDS", 0)
     monkeypatch.setattr(hall_of_fame, "sync_hall_of_fame", sync)
 
-    with patch.object(async_core._core, "afetch_values", raw):
-        run(hardening._run_hall_of_fame_startup_sync(SimpleNamespace(sheet_id="sheet")))
+    async def scenario():
+        test_broker = _new_broker()
+        monkeypatch.setattr(async_core, "broker", test_broker)
+        _prime_sheet_handles("CONFIG")
+        monkeypatch.setattr(
+            async_core._core.async_adapter,
+            "aworksheet_values_all",
+            raw,
+        )
+        try:
+            await hardening._run_hall_of_fame_startup_sync(
+                SimpleNamespace(sheet_id="sheet")
+            )
+        finally:
+            await test_broker.close()
+            async_core._core._WorkbookCache.clear()
+            async_core._core._WorksheetCache.clear()
+
+    run(scenario())
 
     assert raw.await_count == 1
 
