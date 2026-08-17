@@ -19,8 +19,7 @@ from modules.common.embeds import (
     SERVER_RULES_FAQ_YELLOW,
     get_embed_colour,
 )
-from shared.sheets import async_adapter
-from shared.sheets import core as sheets_core
+from shared.sheets import async_core as sheets_core
 from shared.sheets import recruitment as recruitment_sheet
 from shared.config import get_recruitment_sheet_id
 from shared.theme import colors
@@ -400,7 +399,12 @@ async def load_rows() -> tuple[str, dict[str, int], list[Row], list[str]]:
     )
     if not tab:
         return "", {}, [], ["Config key SERVER_RULES_FAQ_TAB is missing"]
-    matrix = await sheets_core.afetch_values(_mirralith_sheet_id(), tab)
+    matrix = await sheets_core.afetch_values(
+        _mirralith_sheet_id(),
+        tab,
+        component="server_rules",
+        reason="load_rows",
+    )
     if not matrix:
         return tab, {}, [], ["sheet tab has no header row"]
     headers = [_text(value).lower() for value in matrix[0]]
@@ -537,7 +541,12 @@ def _validate_topic_runs(rows: list[Row]) -> list[tuple[str, str]]:
 
 
 async def _worksheet(tab: str) -> Any:
-    return await sheets_core.aget_worksheet(_mirralith_sheet_id(), tab)
+    return await sheets_core.aget_worksheet(
+        _mirralith_sheet_id(),
+        tab,
+        component="server_rules",
+        reason="message_id_write",
+    )
 
 
 def _message_id_range(header_map: dict[str, int], row_number: int) -> str:
@@ -548,8 +557,10 @@ async def _write_message_id(
     tab: str, header_map: dict[str, int], row: Row, message_id: str
 ) -> None:
     ws = await _worksheet(tab)
-    await async_adapter.aworksheet_values_update(
-        ws, _message_id_range(header_map, row.row_number), [[message_id]]
+    await sheets_core.acall_with_backoff(
+        ws.update,
+        _message_id_range(header_map, row.row_number),
+        [[message_id]],
     )
 
 
