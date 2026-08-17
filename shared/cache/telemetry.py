@@ -5,12 +5,51 @@ import asyncio
 import datetime as dt
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Mapping, Optional
+from typing import Dict, List, Mapping, Optional, Sequence
 
 from shared.sheets import cache_service
 from shared.utils import humanize_duration
 
 UTC = dt.timezone.utc
+
+# Runtime startup already waits 15 seconds before entering the cache preloader.
+# Pace the remaining warmup across ~285 seconds so non-critical cache work lands
+# near the five-minute mark instead of producing an 8-second-spaced read burst.
+_STARTUP_WARMUP_WINDOW_SECONDS = 285.0
+_STARTUP_WARMUP_RESET_SECONDS = 360.0
+_STARTUP_WARMUP_STARTED_AT: float | None = None
+_STARTUP_WARMUP_OFFSETS: dict[str, float] = {}
+
+# The broker still owns physical request priority and pacing. These bands only
+# control when background startup cache demand is introduced into that broker.
+_STARTUP_CRITICAL_BUCKETS = {
+    "clans",
+    "clan_tags",
+    "onboarding_questions",
+}
+_STARTUP_BACKGROUND_TOKENS = (
+    "achievement",
+    "audit",
+    "history",
+    "realmwalker",
+    "wandering",
+)
+_STARTUP_ACTIVE_TOKENS = (
+    "fusion",
+    "live_arena",
+    "placement",
+    "recruitment",
+    "reminder",
+    "reset",
+    "shard",
+)
+_STARTUP_SUPPORT_TOKENS = (
+    "guide",
+    "help",
+    "league",
+    "server_map",
+    "template",
+)
 
 
 @dataclass(frozen=True)
@@ -153,9 +192,82 @@ def _build_snapshot(name: str, raw: Optional[Dict[str, object]]) -> CacheSnapsho
     )
 
 
-def list_buckets() -> List[str]:
-    """Return the registered bucket names (fail-soft)."""
+def startup_priority(name: str) -> int:
+    """Return startup warmup band for a cache bucket (0=earliest, 3=latest)."""
 
+    normalized = str(name or "").strip().lower()
+    if normalized in _STARTUP_CRITICAL_BUCKETS or "config" in normalized:
+        return 0
+    if any(token in normalized for token in _STARTUP_ACTIVE_TOKENS):
+        return 1
+    if any(token in normalized for token in _STARTUP_BACKGROUND_TOKENS):
+        return 3
+    if any(token in normalized for token in _STARTUP_SUPPORT_TOKENS):
+        return 2
+    return 2
+
+
+def startup_order(names: Sequence[str]) -> list[str]:
+    """Return deterministic cache warmup order with operational data first."""
+
+    return sorted(
+        (str(name) for name in names if str(name).strip()),
+        key=lambda name: (startup_priority(name), name),
+    )
+
+
+def startup_warmup_offsets(
+    names: Sequence[str],
+    *,
+    window_seconds: float = _STARTUP_WARMUP_WINDOW_SECONDS,
+) -> dict[str, float]:
+    """Build deterministic target offsets for startup cache refreshes.
+
+    Bands intentionally leave the first operational resources near the beginning
+    of the warmup while pushing support/background work toward the five-minute
+    boundary. The runtime's existing 15-second initial delay is outside this
+    window.
+    """
+
+    ordered = startup_order(names)
+    if not ordered:
+        return {}
+
+    window = max(0.0, float(window_seconds))
+    band_edges = {
+        0: (0.0, window * (30.0 / 285.0)),
+        1: (window * (30.0 / 285.0), window * (90.0 / 285.0)),
+        2: (window * (90.0 / 285.0), window * (180.0 / 285.0)),
+        3: (window * (180.0 / 285.0), window),
+    }
+    grouped: dict[int, list[str]] = {0: [], 1: [], 2: [], 3: []}
+    for name in ordered:
+        grouped[startup_priority(name)].append(name)
+
+    offsets: dict[str, float] = {}
+    for priority in range(4):
+        group = grouped[priority]
+        if not group:
+            continue
+        start, end = band_edges[priority]
+        span = max(0.0, end - start)
+        if priority == 0:
+            # Critical cache data begins immediately; spread the remainder of the
+            # band without deliberately delaying the first usable snapshot.
+            denominator = max(1, len(group))
+            for index, name in enumerate(group):
+                offsets[name] = start + span * (index / denominator)
+        else:
+            # Non-critical bands finish at their boundary. With one bucket this
+            # deliberately places it at the end of its band instead of clustering
+            # everything at startup.
+            denominator = max(1, len(group))
+            for index, name in enumerate(group, start=1):
+                offsets[name] = start + span * (index / denominator)
+    return offsets
+
+
+def _registered_bucket_names() -> List[str]:
     try:
         caps = cache_service.capabilities()
     except Exception:
@@ -164,7 +276,32 @@ def list_buckets() -> List[str]:
     for key in caps.keys():
         if isinstance(key, str):
             names.append(key)
-    return sorted(names)
+    return names
+
+
+def list_buckets() -> List[str]:
+    """Return registered bucket names in startup-safe priority order."""
+
+    return startup_order(_registered_bucket_names())
+
+
+async def _await_startup_warmup_slot(bucket: str) -> None:
+    global _STARTUP_WARMUP_STARTED_AT, _STARTUP_WARMUP_OFFSETS
+
+    now = time.monotonic()
+    if (
+        _STARTUP_WARMUP_STARTED_AT is None
+        or now - _STARTUP_WARMUP_STARTED_AT > _STARTUP_WARMUP_RESET_SECONDS
+        or bucket not in _STARTUP_WARMUP_OFFSETS
+    ):
+        _STARTUP_WARMUP_STARTED_AT = now
+        _STARTUP_WARMUP_OFFSETS = startup_warmup_offsets(_registered_bucket_names())
+
+    target = float(_STARTUP_WARMUP_OFFSETS.get(bucket, 0.0))
+    elapsed = max(0.0, time.monotonic() - _STARTUP_WARMUP_STARTED_AT)
+    delay = max(0.0, target - elapsed)
+    if delay > 0:
+        await asyncio.sleep(delay)
 
 
 def get_snapshot(name: str) -> CacheSnapshot:
@@ -228,6 +365,9 @@ async def refresh_now(name: str, actor: Optional[str] = None) -> RefreshResult:
     """
 
     bucket = _normalize_bucket_name(name)
+    if actor == "startup":
+        await _await_startup_warmup_slot(bucket)
+
     start = time.monotonic()
     error_text: Optional[str] = None
     ok = True

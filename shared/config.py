@@ -690,7 +690,11 @@ async def areload_config() -> Dict[str, object]:
     return dict(_CONFIG)
 
 
-reload_config()
+# Import-time configuration is environment-only. Google Sheets hydration is
+# deliberately deferred to the async runtime startup path, where reads are
+# brokered, paced, coalesced, and observable.
+_CONFIG = _load_config_snapshot()
+_log_snapshot(_CONFIG)
 
 
 def _normalise_key(name: object) -> Optional[str]:
@@ -794,7 +798,6 @@ def get_config_snapshot() -> Dict[str, object]:
     """Return a shallow copy of the cached config values."""
 
     return dict(_CONFIG)
-
 def get_env_name(default: str = "dev") -> str:
     value = _CONFIG.get("ENV_NAME")
     return str(value) if isinstance(value, str) and value else default
