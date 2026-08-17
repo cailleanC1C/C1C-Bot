@@ -20,10 +20,6 @@ ASYNC_ADAPTER_IMPORT_ALLOWLIST = {
     "shared/sheets/core.py",
     "shared/sheets/async_core.py",
     "shared/sheets/async_facade.py",
-    # Pre-existing Rules/FAQ publisher debt. This module still performs one
-    # adapter-backed cell write directly and is migrated in the next cleanup
-    # slice. Keeping the exception explicit prevents any new runtime bypasses.
-    "modules/ops/server_rules.py",
 }
 
 
