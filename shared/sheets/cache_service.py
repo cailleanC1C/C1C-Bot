@@ -7,6 +7,7 @@ from types import ModuleType
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 from shared.sheets import audit as sheets_audit
+from shared.sheets.read_broker import is_rate_limited_error
 
 UTC = dt.timezone.utc
 log = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ def _get_runtime_module() -> ModuleType:
 
         _runtime_module = _rt
     return _runtime_module
+
 
 _ONBOARDING_QUESTIONS_TTL_SEC = 7 * 24 * 60 * 60
 
@@ -50,8 +52,8 @@ def _errtext(exc: BaseException) -> str:
     return s or getattr(exc, "__class__", type(exc)).__name__
 
 
-# Type aliases
 Loader = Callable[[], Awaitable[Any]]
+
 
 class CacheBucket:
     __slots__ = (
@@ -70,7 +72,10 @@ class CacheBucket:
         "last_ttl_expired",
         "retry_delay_sec",
     )
-    def __init__(self, name: str, ttl_sec: int, loader: Loader, *, retry_delay_sec: int = 300):
+
+    def __init__(
+        self, name: str, ttl_sec: int, loader: Loader, *, retry_delay_sec: int = 300
+    ):
         self.name = name
         self.ttl_sec = ttl_sec
         self.loader = loader
@@ -91,10 +96,13 @@ class CacheBucket:
             return None
         return int((dt.datetime.now(UTC) - self.last_refresh).total_seconds())
 
-    def next_refresh_at(self, schedule_hint: Optional[dt.datetime] = None) -> Optional[dt.datetime]:
+    def next_refresh_at(
+        self, schedule_hint: Optional[dt.datetime] = None
+    ) -> Optional[dt.datetime]:
         if self.last_refresh:
             return self.last_refresh + dt.timedelta(seconds=self.ttl_sec)
         return schedule_hint
+
 
 class CacheService:
     def __init__(self):
@@ -123,7 +131,6 @@ class CacheService:
 
     async def get(self, name: str) -> Any:
         b = self._buckets[name]
-        # Fast-path: fresh enough
         age = b.age_sec()
         if age is not None and age < b.ttl_sec and b.value is not None:
             with sheets_audit.log_read(
@@ -136,8 +143,10 @@ class CacheService:
             ) as audit_fields:
                 audit_fields["result"] = b.value
                 return b.value
-        # Otherwise trigger background refresh (debounced) and return stale ASAP
-        await self._ensure_background_refresh(name)
+
+        # Start one shared refresh and return stale ASAP. A subsequent
+        # refresh_now() joins this same task rather than creating a duplicate load.
+        self._ensure_refresh_task(name, trigger="schedule", actor=None)
         with sheets_audit.log_read(
             component="cache_service",
             operation="get",
@@ -151,18 +160,34 @@ class CacheService:
 
     async def invalidate(self, name: str) -> None:
         b = self._buckets[name]
-        b.last_refresh = None  # mark stale
+        b.last_refresh = None
 
     async def refresh_now(
         self, name: str, *, actor: Optional[str] = None, trigger: str = "manual"
     ) -> None:
-        await self._refresh(name, trigger=trigger, actor=actor)
+        """Refresh now, joining an already-running refresh for this bucket."""
+
+        task = self._ensure_refresh_task(name, trigger=trigger, actor=actor)
+        await asyncio.shield(task)
 
     async def _ensure_background_refresh(self, name: str) -> None:
+        # Kept for compatibility with callers/tests that use the old private helper.
+        self._ensure_refresh_task(name, trigger="schedule", actor=None)
+
+    def _ensure_refresh_task(
+        self, name: str, *, trigger: str, actor: Optional[str]
+    ) -> asyncio.Task:
         b = self._buckets[name]
-        if b.refreshing and not b.refreshing.done():
-            return
-        b.refreshing = asyncio.create_task(self._refresh(name, trigger="schedule", actor=None))
+        existing = b.refreshing
+        if existing is not None and not existing.done():
+            return existing
+
+        task = asyncio.create_task(
+            self._refresh(name, trigger=trigger, actor=actor),
+            name=f"sheets-cache-refresh:{name}",
+        )
+        b.refreshing = task
+        return task
 
     async def _refresh(self, name: str, *, trigger: str, actor: Optional[str]) -> None:
         b = self._buckets[name]
@@ -183,8 +208,8 @@ class CacheService:
             ttl_expired = True
         elif isinstance(age, int):
             ttl_expired = age >= b.ttl_sec
+
         try:
-            # run loader with async backoff (single retry on failure)
             try:
                 with sheets_audit.log_read(
                     component="cache_service",
@@ -198,47 +223,53 @@ class CacheService:
                     audit_fields["result"] = new_val
                 success = True
             except asyncio.CancelledError:
-                # Propagate cancellation so shutdown isn't blocked
                 result = "cancelled"
                 err_text = "cancelled"
                 raise
             except Exception as exc:
-                retries = 1
                 first_err = _errtext(exc)
                 err_text = first_err
                 b.last_error = first_err
-                await asyncio.sleep(b.retry_delay_sec)
-                try:
-                    with sheets_audit.log_read(
-                        component="cache_service",
-                        operation="refresh_retry",
-                        sheet_source="loader",
-                        cache_bucket=name,
-                        trigger=trigger,
-                        cache_status="refresh_retry",
-                    ) as audit_fields:
-                        new_val = await b.loader()
-                        audit_fields["result"] = new_val
-                    success = True
-                    result = "retry_ok"
-                except asyncio.CancelledError:
-                    result = "cancelled"
-                    err_text = "cancelled"
-                    raise
-                except Exception as exc2:
-                    second_err = _errtext(exc2)
-                    if second_err in (None, "", "-"):
-                        err_text = first_err
-                    else:
-                        err_text = f"{first_err} | retry: {second_err}"
+
+                # The process-wide read broker owns quota retry/backoff. Re-running
+                # a bucket loader after the broker already exhausted a 429 would
+                # multiply physical reads and defeat the shared quota budget.
+                if is_rate_limited_error(exc):
                     result = "fail"
+                else:
+                    retries = 1
+                    await asyncio.sleep(b.retry_delay_sec)
+                    try:
+                        with sheets_audit.log_read(
+                            component="cache_service",
+                            operation="refresh_retry",
+                            sheet_source="loader",
+                            cache_bucket=name,
+                            trigger=trigger,
+                            cache_status="refresh_retry",
+                        ) as audit_fields:
+                            new_val = await b.loader()
+                            audit_fields["result"] = new_val
+                        success = True
+                        result = "retry_ok"
+                    except asyncio.CancelledError:
+                        result = "cancelled"
+                        err_text = "cancelled"
+                        raise
+                    except Exception as exc2:
+                        second_err = _errtext(exc2)
+                        if second_err in (None, "", "-"):
+                            err_text = first_err
+                        else:
+                            err_text = f"{first_err} | retry: {second_err}"
+                        result = "fail"
+
             if success:
                 b.value = new_val
                 b.last_refresh = dt.datetime.now(UTC)
                 b.last_item_count = _count_items(new_val)
                 err_text = None
         except asyncio.CancelledError:
-            # Let the runtime cancel this task; finally will still run
             result = "cancelled"
             err_text = "cancelled"
             raise
@@ -253,11 +284,12 @@ class CacheService:
             b.last_trigger = trigger
             b.last_ttl_expired = ttl_expired
             await self._log_refresh(b, trigger=trigger, actor=actor, retries=retries)
-            # clear marker
-            b.refreshing = None
+            if b.refreshing is asyncio.current_task():
+                b.refreshing = None
 
-    async def _log_refresh(self, b: CacheBucket, *, trigger: str, actor: Optional[str], retries: int) -> None:
-        # Format: [refresh] bucket=clans trigger=schedule actor=@user duration=842ms result=ok hits=?,misses=?,retries=1
+    async def _log_refresh(
+        self, b: CacheBucket, *, trigger: str, actor: Optional[str], retries: int
+    ) -> None:
         normalized_trigger = "manual"
         if trigger in {"schedule", "cron"}:
             normalized_trigger = "cron"
@@ -293,6 +325,7 @@ def _count_items(value: Any) -> Optional[int]:
         except Exception:  # pragma: no cover - defensive guard
             return None
     return None
+
 
 cache = CacheService()
 

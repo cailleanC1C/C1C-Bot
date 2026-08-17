@@ -8,12 +8,13 @@ value, and downstream tab-open errors.
 from __future__ import annotations
 
 import difflib
-import os
 from typing import Any, Mapping, Sequence
 
 from shared.config import get_milestones_sheet_id
+from shared.config_sheets import get_milestones_config_tab
 from shared.sheets import async_core
 from shared.sheets import core as sheets_core
+from shared.sheets.read_broker import ReadPriority, STATIC_CONFIG
 
 
 class MilestonesConfigError(RuntimeError):
@@ -83,7 +84,7 @@ class MilestonesResolvedTabUnavailable(MilestonesConfigError):
 
 
 def _source_tab() -> str:
-    tab = (os.getenv("MILESTONES_CONFIG_TAB") or "").strip()
+    tab = get_milestones_config_tab()
     if not tab:
         raise MilestonesConfigSourceUnavailable("milestones Config source unavailable")
     return tab
@@ -136,6 +137,8 @@ def _missing(key: str, config: Mapping[str, str], sheet_id: str, tab: str) -> Mi
 
 
 def load_values() -> tuple[str, str, dict[str, str]]:
+    # Sync compatibility path. Runtime async callers use ``aload_values`` and the
+    # broker; remaining sync readers are migrated in the startup/guardrail PR.
     sheet_id = _sheet_id()
     tab = _source_tab()
     try:
@@ -154,10 +157,19 @@ def load_values() -> tuple[str, str, dict[str, str]]:
 
 
 async def aload_values() -> tuple[str, str, dict[str, str]]:
+    """Load the canonical Config snapshot with stale-safe broker semantics."""
+
     sheet_id = _sheet_id()
     tab = _source_tab()
     try:
-        rows = await async_core.afetch_records(sheet_id, tab)
+        rows = await async_core.afetch_records(
+            sheet_id,
+            tab,
+            policy=STATIC_CONFIG,
+            priority=ReadPriority.HIGH,
+            component="milestones_config",
+            reason="config_resolve",
+        )
     except Exception as exc:
         raise MilestonesConfigLoadFailed(
             f"Milestones Config load failed: {type(exc).__name__}: {exc}",

@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from shared.sheets import milestones_config
+from shared.sheets.read_broker import ReadPriority, STATIC_CONFIG
 
 
 def test_parse_normalizes_headers_keys_and_values():
@@ -30,7 +31,7 @@ def test_require_value_blank_missing_and_load_failures(monkeypatch):
         monkeypatch.setenv("MILESTONES_CONFIG_TAB", "ConfigFromEnv")
         monkeypatch.setattr(milestones_config, "get_milestones_sheet_id", lambda: "sheet-abcdef")
 
-        async def blank_records(sheet_id, tab):
+        async def blank_records(sheet_id, tab, **kwargs):
             return [{"KEY": "FUSION_TAB", "VALUE": "   "}]
 
         monkeypatch.setattr(milestones_config.async_core, "afetch_records", blank_records)
@@ -39,7 +40,7 @@ def test_require_value_blank_missing_and_load_failures(monkeypatch):
         assert blank.value.reason == "key_value_blank"
         assert blank.value.present is True
 
-        async def missing_records(sheet_id, tab):
+        async def missing_records(sheet_id, tab, **kwargs):
             return [{"KEY": "FUSION_TBA", "VALUE": "fusion"}]
 
         monkeypatch.setattr(milestones_config.async_core, "afetch_records", missing_records)
@@ -49,7 +50,7 @@ def test_require_value_blank_missing_and_load_failures(monkeypatch):
         assert missing.value.keys_loaded == 1
         assert "FUSION_TBA" in missing.value.nearest
 
-        async def load_fails(sheet_id, tab):
+        async def load_fails(sheet_id, tab, **kwargs):
             raise RuntimeError("boom")
 
         monkeypatch.setattr(milestones_config.async_core, "afetch_records", load_fails)
@@ -76,9 +77,10 @@ def test_milestones_config_tab_env_selects_config_without_fallback(monkeypatch):
     monkeypatch.setenv("MILESTONES_CONFIG_TAB", "Config")
     monkeypatch.setattr(milestones_config, "get_milestones_sheet_id", lambda: "sheet-abcdef")
 
-    async def records(sheet_id, tab):
+    async def records(sheet_id, tab, **kwargs):
         seen["sheet_id"] = sheet_id
         seen["tab"] = tab
+        seen.update(kwargs)
         return [{"KEY": "FUSION_TAB", "VALUE": "fusion"}]
 
     monkeypatch.setattr(milestones_config.async_core, "afetch_records", records)
@@ -86,7 +88,12 @@ def test_milestones_config_tab_env_selects_config_without_fallback(monkeypatch):
     value = asyncio.run(milestones_config.arequire_value("FUSION_TAB"))
 
     assert value == "fusion"
-    assert seen == {"sheet_id": "sheet-abcdef", "tab": "Config"}
+    assert seen["sheet_id"] == "sheet-abcdef"
+    assert seen["tab"] == "Config"
+    assert seen["policy"] is STATIC_CONFIG
+    assert seen["priority"] is ReadPriority.HIGH
+    assert seen["component"] == "milestones_config"
+    assert seen["reason"] == "config_resolve"
 
 
 def test_milestones_config_does_not_fallback_to_config_when_source_missing(monkeypatch):
