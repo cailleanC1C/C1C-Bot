@@ -10,8 +10,9 @@ from typing import Any, Mapping, Sequence
 import discord
 from discord.ext import commands
 
-from c1c_coreops.rbac import is_admin_member, is_staff_member
+from c1c_coreops.rbac import is_admin_member
 from modules.common import feature_flags
+from shared.config import get_clan_lead_ids
 from shared.sheets import async_core, recruitment
 
 log = logging.getLogger("c1c.housekeeping.staff_thread_guard")
@@ -130,6 +131,32 @@ def _feature_enabled() -> bool:
         and not status.get("invalid")
         and not status.get("global_failure_reason")
     )
+
+
+def _member_role_ids(member: discord.Member | None) -> set[int]:
+    if not isinstance(member, discord.Member):
+        return set()
+    role_ids: set[int] = set()
+    for role in getattr(member, "roles", []) or []:
+        role_id = getattr(role, "id", None)
+        if role_id is None:
+            continue
+        try:
+            role_ids.add(int(role_id))
+        except (TypeError, ValueError):
+            continue
+    return role_ids
+
+
+def _is_thread_allowed_member(author: Any) -> bool:
+    if is_admin_member(author):
+        return True
+    if not isinstance(author, discord.Member):
+        return False
+    clan_lead_role_ids = get_clan_lead_ids()
+    if not clan_lead_role_ids:
+        return False
+    return bool(clan_lead_role_ids.intersection(_member_role_ids(author)))
 
 
 def _validate_rule(row: Mapping[str, Any], *, row_number: int) -> GuardRule | None:
@@ -639,7 +666,7 @@ async def handle_message(bot: commands.Bot, message: discord.Message) -> bool:
     author = getattr(message, "author", None)
     if author is None or getattr(author, "bot", False):
         return False
-    if is_staff_member(author) or is_admin_member(author):
+    if _is_thread_allowed_member(author):
         return False
 
     rule = (await load_rules()).get(message.channel.id)
