@@ -8,10 +8,10 @@ value, and downstream tab-open errors.
 from __future__ import annotations
 
 import difflib
-import os
 from typing import Any, Mapping, Sequence
 
 from shared.config import get_milestones_sheet_id
+from shared.config_sheets import get_milestones_config_tab
 from shared.sheets import async_core
 from shared.sheets import core as sheets_core
 from shared.sheets.read_broker import ReadPriority, STATIC_CONFIG
@@ -84,7 +84,7 @@ class MilestonesResolvedTabUnavailable(MilestonesConfigError):
 
 
 def _source_tab() -> str:
-    tab = (os.getenv("MILESTONES_CONFIG_TAB") or "").strip()
+    tab = get_milestones_config_tab()
     if not tab:
         raise MilestonesConfigSourceUnavailable("milestones Config source unavailable")
     return tab
