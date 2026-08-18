@@ -67,6 +67,7 @@ from modules.community.live_arena.knockout_progression_finalizer import install 
 from modules.community.live_arena.final_tournament_close_boundary import install as _install_final_tournament_close_boundary
 from modules.community.live_arena.victory_ledger_workspace import install as _install_victory_ledger_workspace
 from modules.community.live_arena.victory_ledger_workspace_fallback import install as _install_victory_ledger_workspace_fallback
+from modules.community.live_arena.victory_ledger_thread_parent import install as _install_victory_ledger_thread_parent
 
 _install_runtime_hooks()
 _install_repair()
@@ -132,3 +133,4 @@ _install_knockout_progression_finalizer()
 _install_final_tournament_close_boundary()
 _install_victory_ledger_workspace()
 _install_victory_ledger_workspace_fallback()
+_install_victory_ledger_thread_parent()
