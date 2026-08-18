@@ -41,9 +41,7 @@ class FakeRepository:
     def __init__(self, resources=None):
         self.resources = dict(resources or {})
         self.upserts = []
-
-    async def discord_resource(self, tournament_id, resource_type, resource_key="main"):
-        return self.resources.get((tournament_id, resource_type, resource_key))
+        self.config = {}
 
     async def upsert_discord_resource(self, **kwargs):
         self.upserts.append(kwargs)
@@ -52,38 +50,63 @@ class FakeRepository:
         ] = dict(kwargs)
 
 
-async def _noop_index(*_args, **_kwargs):
-    return None
-
-
-def test_closed_round_archives_once_and_retires_current(monkeypatch):
-    parent = FakeChannel("10")
-    current = FakeMessage("55")
-    parent.messages[current.id] = current
-    archive = FakeChannel("20")
-    repo = FakeRepository(
-        {
-            (
-                workspace._GLOBAL_RESOURCE_ID,
-                workspace._CURRENT_RESOURCE_TYPE,
-                "main",
-            ): {
-                "channel_id": "10",
-                "message_id": "55",
-                "state": "active",
-                "notes": "T-QF",
-                "created_at_utc": "old",
-            }
-        }
+def make_workspace(repo, *, parent=None, archive=None, current=None):
+    parent = parent or FakeChannel("10")
+    archive = archive or FakeChannel("20")
+    resources = {key: dict(value) for key, value in repo.resources.items()}
+    current = current or resources.get(
+        (workspace._GLOBAL_RESOURCE_ID, workspace._CURRENT_RESOURCE_TYPE, "main"),
+        {},
     )
-    ws = SimpleNamespace(
+    return workspace.Workspace(
         repository=repo,
         parent=parent,
         archive=archive,
         results=FakeChannel("30"),
         hall_of_fame=FakeChannel("40"),
         templates={},
+        resources=resources,
+        current_message_id=current.get("message_id", ""),
+        current_round_id=current.get("notes", ""),
+        current_state=current.get("state", "retired"),
+        archived_messages={
+            (key[0], key[2]): value.get("message_id", "")
+            for key, value in resources.items()
+            if key[1] == workspace._ARCHIVE_RESOURCE_TYPE
+        },
     )
+
+
+async def _noop_index(*_args, **_kwargs):
+    return None
+
+
+def test_closed_round_archives_once_and_retires_current(monkeypatch):
+    parent = FakeChannel("10")
+    current_message = FakeMessage("55")
+    parent.messages[current_message.id] = current_message
+    archive = FakeChannel("20")
+    current_resource = {
+        "tournament_id": workspace._GLOBAL_RESOURCE_ID,
+        "resource_type": workspace._CURRENT_RESOURCE_TYPE,
+        "resource_key": "main",
+        "channel_id": "10",
+        "message_id": "55",
+        "thread_id": "",
+        "state": "active",
+        "notes": "T-QF",
+        "created_at_utc": "old",
+    }
+    repo = FakeRepository(
+        {
+            (
+                workspace._GLOBAL_RESOURCE_ID,
+                workspace._CURRENT_RESOURCE_TYPE,
+                "main",
+            ): current_resource
+        }
+    )
+    ws = make_workspace(repo, parent=parent, archive=archive, current=current_resource)
 
     async def ensure(*_args, **_kwargs):
         return ws
@@ -91,10 +114,7 @@ def test_closed_round_archives_once_and_retires_current(monkeypatch):
     monkeypatch.setattr(workspace, "ensure_workspace", ensure)
     monkeypatch.setattr(workspace, "refresh_index", _noop_index)
 
-    service = SimpleNamespace(
-        sheet_id="sheet",
-        registration_repository=repo,
-    )
+    service = SimpleNamespace(sheet_id="sheet", registration_repository=repo)
     snapshot = SimpleNamespace(
         round_row={
             "tournament_id": "T",
@@ -107,15 +127,14 @@ def test_closed_round_archives_once_and_retires_current(monkeypatch):
     asyncio.run(workspace.sync_round_overview(None, service, snapshot, ["embed"]))
 
     assert len(archive.sent) == 1
-    assert current.deleted is True
+    assert current_message.deleted is True
     archive_resource = repo.resources[("T", workspace._ARCHIVE_RESOURCE_TYPE, "T-QF")]
     assert archive_resource["thread_id"] == "20"
-    current_resource = repo.resources[
+    current = repo.resources[
         (workspace._GLOBAL_RESOURCE_ID, workspace._CURRENT_RESOURCE_TYPE, "main")
     ]
-    assert current_resource["state"] == "retired"
+    assert current["state"] == "retired"
 
-    # Reconciliation must not rewrite or duplicate an existing immutable snapshot.
     asyncio.run(workspace.sync_round_overview(None, service, snapshot, ["new embed"]))
     assert len(archive.sent) == 1
 
@@ -124,14 +143,7 @@ def test_active_round_owns_single_parent_message(monkeypatch):
     parent = FakeChannel("10")
     archive = FakeChannel("20")
     repo = FakeRepository()
-    ws = SimpleNamespace(
-        repository=repo,
-        parent=parent,
-        archive=archive,
-        results=FakeChannel("30"),
-        hall_of_fame=FakeChannel("40"),
-        templates={},
-    )
+    ws = make_workspace(repo, parent=parent, archive=archive)
 
     async def ensure(*_args, **_kwargs):
         return ws
@@ -168,19 +180,20 @@ def test_active_round_owns_single_parent_message(monkeypatch):
     assert current["notes"] == "T-Q1"
     assert recorded == [("T-Q1", current["message_id"])]
 
+    # Result updates edit the same parent message and do not spend another resource write.
+    first_upsert_count = len(repo.upserts)
+    snapshot.round_row["overview_message_id"] = current["message_id"]
+    asyncio.run(workspace.sync_round_overview(None, service, snapshot, ["updated embed"]))
+    assert len(parent.sent) == 1
+    assert len(repo.upserts) == first_upsert_count
+
 
 def test_final_recap_is_routed_to_results_thread_and_config_restored(monkeypatch):
     repo = FakeRepository()
     repo.config = {"ROUND_OVERVIEW_CHANNEL_ID": "10"}
     results = FakeChannel("30")
-    ws = SimpleNamespace(
-        repository=repo,
-        parent=FakeChannel("10"),
-        archive=FakeChannel("20"),
-        results=results,
-        hall_of_fame=FakeChannel("40"),
-        templates={},
-    )
+    ws = make_workspace(repo)
+    ws.results = results
 
     async def ensure(*_args, **_kwargs):
         return ws
