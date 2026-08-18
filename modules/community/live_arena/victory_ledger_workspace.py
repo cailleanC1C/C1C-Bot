@@ -1,20 +1,19 @@
 """Mobile-first Victory Ledger navigation, archive, results, and Hall of Fame routing.
 
-The parent Victory Ledger channel is intentionally kept small: one persistent index
-plus at most one currently active round overview. Closed-round snapshots are copied
-once into an immutable Round Archive thread, final tournament recaps live in a
-Tournament Results thread, and the cross-tournament Hall of Fame lives in its own
-thread.
+The parent Victory Ledger channel stays deliberately small: one persistent index plus
+at most one currently active round overview. Closed-round snapshots are copied once
+into an immutable Round Archive thread, final tournament recaps live in Tournament
+Results, and the cross-tournament Hall of Fame lives in its own thread.
 
-All visible copy and thread names are Sheet-owned through MESSAGES. Discord resource
-IDs are persisted in TOURNAMENT_DISCORD_RESOURCES; no thread IDs are hard-coded.
+Visible copy and thread names are Sheet-owned through MESSAGES. Discord resource IDs
+are persisted in TOURNAMENT_DISCORD_RESOURCES; no thread IDs are hard-coded.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from string import Formatter
 
@@ -66,6 +65,7 @@ _COPY_CONTRACTS = {
 }
 
 _TEMPLATE_CACHE: dict[str, dict[str, "Template"]] = {}
+_WORKSPACE_CACHE: dict[str, "Workspace"] = {}
 _reconcile_tasks: dict[str, asyncio.Task] = {}
 _installed = False
 _original_final_recap = None
@@ -110,10 +110,38 @@ class Workspace:
     results: object
     hall_of_fame: object
     templates: dict[str, Template]
+    resources: dict[tuple[str, str, str], dict[str, object]] = field(default_factory=dict)
+    index_message_id: str = ""
+    current_message_id: str = ""
+    current_round_id: str = ""
+    current_state: str = "retired"
+    archived_messages: dict[tuple[str, str], str] = field(default_factory=dict)
 
 
 def _now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _identity(row) -> tuple[str, str, str]:
+    return (
+        _text(row.get("tournament_id")),
+        _text(row.get("resource_type")),
+        _text(row.get("resource_key")) or "main",
+    )
+
+
+def _resource(workspace: Workspace, tournament_id: str, resource_type: str, resource_key: str = "main"):
+    return workspace.resources.get((tournament_id, resource_type, resource_key))
+
+
+def _remember(workspace: Workspace, values: dict[str, object]) -> None:
+    workspace.resources[
+        (
+            _text(values.get("tournament_id")),
+            _text(values.get("resource_type")),
+            _text(values.get("resource_key")) or "main",
+        )
+    ] = dict(values)
 
 
 async def _templates(sheet_id: str, messages_tab: str) -> dict[str, Template]:
@@ -169,6 +197,13 @@ def clear_template_cache(sheet_id: str | None = None) -> None:
         _TEMPLATE_CACHE.pop(str(sheet_id), None)
 
 
+def clear_workspace_cache(sheet_id: str | None = None) -> None:
+    if sheet_id is None:
+        _WORKSPACE_CACHE.clear()
+    else:
+        _WORKSPACE_CACHE.pop(str(sheet_id), None)
+
+
 async def _resolve_channel(bot, channel_id: str):
     if not channel_id:
         return None
@@ -194,7 +229,7 @@ async def _delete_message(channel, message_id: str) -> None:
     try:
         await message.delete()
     except discord.NotFound:
-        return
+        pass
 
 
 def _channel_link(guild_id: str, channel_id: str, message_id: str = "") -> str:
@@ -206,6 +241,39 @@ def _thread_link(template: Template, guild_id: str, thread_id: str) -> str:
     return f"[{template.title}]({_channel_link(guild_id, thread_id)})"
 
 
+async def _persist_resource(
+    workspace: Workspace,
+    *,
+    tournament_id: str,
+    resource_type: str,
+    resource_key: str,
+    channel_id: str,
+    message_id: str,
+    thread_id: str = "",
+    state: str = "active",
+    notes: str = "",
+    created_at_utc: str = "",
+) -> dict[str, object]:
+    existing = _resource(workspace, tournament_id, resource_type, resource_key)
+    values = {
+        "tournament_id": tournament_id,
+        "resource_type": resource_type,
+        "resource_key": resource_key,
+        "channel_id": channel_id,
+        "message_id": message_id,
+        "thread_id": thread_id,
+        "created_at_utc": created_at_utc
+        or (_text(existing.get("created_at_utc")) if existing else "")
+        or _now(),
+        "updated_at_utc": _now(),
+        "state": state,
+        "notes": notes,
+    }
+    await workspace.repository.upsert_discord_resource(**values)
+    _remember(workspace, values)
+    return values
+
+
 async def _ensure_thread(
     *,
     bot,
@@ -213,10 +281,9 @@ async def _ensure_thread(
     parent,
     key: str,
     template: Template,
+    resources: dict[tuple[str, str, str], dict[str, object]],
 ):
-    resource = await repository.discord_resource(
-        _GLOBAL_RESOURCE_ID, _THREAD_RESOURCE_TYPE, key
-    )
+    resource = resources.get((_GLOBAL_RESOURCE_ID, _THREAD_RESOURCE_TYPE, key))
     thread_id = _text(resource.get("thread_id")) if resource else ""
     thread = None
     if thread_id:
@@ -230,36 +297,53 @@ async def _ensure_thread(
                 thread = candidate
                 break
     if thread is None:
-        thread = await parent.create_thread(
-            name=template.title[:100],
-            type=discord.ChannelType.public_thread,
-            auto_archive_duration=10080,
-            reason="C1C Live Arena Victory Ledger workspace",
-        )
+        try:
+            thread = await parent.create_thread(
+                name=template.title[:100],
+                type=discord.ChannelType.public_thread,
+                auto_archive_duration=10080,
+                reason="C1C Live Arena Victory Ledger workspace",
+            )
+        except discord.HTTPException:
+            thread = await parent.create_thread(
+                name=template.title[:100],
+                type=discord.ChannelType.public_thread,
+                auto_archive_duration=1440,
+                reason="C1C Live Arena Victory Ledger workspace",
+            )
     elif getattr(thread, "archived", False):
         await thread.edit(archived=False, reason="Live Arena workspace refresh")
 
     intro = None
     if resource and _text(resource.get("message_id")):
-        intro = await _fetch_message(thread, _text(resource["message_id"]))
+        intro = await _fetch_message(thread, _text(resource.get("message_id")))
     if intro is None:
         intro = await thread.send(embed=template.embed())
     else:
         await intro.edit(embed=template.embed())
 
-    now = _now()
-    await repository.upsert_discord_resource(
-        tournament_id=_GLOBAL_RESOURCE_ID,
-        resource_type=_THREAD_RESOURCE_TYPE,
-        resource_key=key,
-        channel_id=str(parent.id),
-        message_id=str(intro.id),
-        thread_id=str(thread.id),
-        created_at_utc=_text(resource.get("created_at_utc")) if resource else now,
-        updated_at_utc=now,
-        state="active",
-        notes=f"Victory Ledger workspace thread: {key}",
+    changed = (
+        resource is None
+        or _text(resource.get("channel_id")) != str(parent.id)
+        or _text(resource.get("thread_id")) != str(thread.id)
+        or _text(resource.get("message_id")) != str(intro.id)
+        or _text(resource.get("state")) != "active"
     )
+    if changed:
+        values = {
+            "tournament_id": _GLOBAL_RESOURCE_ID,
+            "resource_type": _THREAD_RESOURCE_TYPE,
+            "resource_key": key,
+            "channel_id": str(parent.id),
+            "message_id": str(intro.id),
+            "thread_id": str(thread.id),
+            "created_at_utc": _text(resource.get("created_at_utc")) if resource else _now(),
+            "updated_at_utc": _now(),
+            "state": "active",
+            "notes": f"Victory Ledger workspace thread: {key}",
+        }
+        await repository.upsert_discord_resource(**values)
+        resources[_identity(values)] = values
     return thread
 
 
@@ -268,17 +352,29 @@ async def ensure_workspace(
     sheet_id: str,
     repository: LiveArenaRepository | None = None,
 ) -> Workspace:
-    repository = repository or LiveArenaRepository(str(sheet_id))
+    sid = str(sheet_id)
+    cached = _WORKSPACE_CACHE.get(sid)
+    if cached is not None:
+        for thread in (cached.archive, cached.results, cached.hall_of_fame):
+            if getattr(thread, "archived", False):
+                await thread.edit(archived=False, reason="Live Arena workspace refresh")
+        return cached
+
+    repository = repository or LiveArenaRepository(sid)
     if not repository.config:
         await repository.initialize()
     parent = await _resolve_channel(bot, _text(repository.config["ROUND_OVERVIEW_CHANNEL_ID"]))
-    templates = await _templates(str(sheet_id), _text(repository.config["MESSAGES_TAB"]))
+    templates = await _templates(sid, _text(repository.config["MESSAGES_TAB"]))
+
+    resource_rows = await repository.discord_resources()
+    resources = {_identity(row): dict(row) for row in resource_rows}
     archive = await _ensure_thread(
         bot=bot,
         repository=repository,
         parent=parent,
         key="round_archive",
         template=templates["victory_ledger_round_archive_thread"],
+        resources=resources,
     )
     results = await _ensure_thread(
         bot=bot,
@@ -286,6 +382,7 @@ async def ensure_workspace(
         parent=parent,
         key="tournament_results",
         template=templates["victory_ledger_tournament_results_thread"],
+        resources=resources,
     )
     hall = await _ensure_thread(
         bot=bot,
@@ -293,19 +390,41 @@ async def ensure_workspace(
         parent=parent,
         key="hall_of_fame",
         template=templates["victory_ledger_hall_of_fame_thread"],
+        resources=resources,
     )
-    return Workspace(repository, parent, archive, results, hall, templates)
+
+    index_resource = resources.get((_GLOBAL_RESOURCE_ID, _INDEX_RESOURCE_TYPE, "main"))
+    current_resource = resources.get((_GLOBAL_RESOURCE_ID, _CURRENT_RESOURCE_TYPE, "main"))
+    archived = {
+        (_text(row.get("tournament_id")), _text(row.get("resource_key"))): _text(
+            row.get("message_id")
+        )
+        for row in resources.values()
+        if _text(row.get("resource_type")) == _ARCHIVE_RESOURCE_TYPE
+        and _text(row.get("message_id"))
+    }
+    workspace = Workspace(
+        repository=repository,
+        parent=parent,
+        archive=archive,
+        results=results,
+        hall_of_fame=hall,
+        templates=templates,
+        resources=resources,
+        index_message_id=_text(index_resource.get("message_id")) if index_resource else "",
+        current_message_id=_text(current_resource.get("message_id")) if current_resource else "",
+        current_round_id=_text(current_resource.get("notes")) if current_resource else "",
+        current_state=_text(current_resource.get("state")) if current_resource else "retired",
+        archived_messages=archived,
+    )
+    _WORKSPACE_CACHE[sid] = workspace
+    return workspace
 
 
 async def _current_message(workspace: Workspace):
-    resource = await workspace.repository.discord_resource(
-        _GLOBAL_RESOURCE_ID, _CURRENT_RESOURCE_TYPE, "main"
-    )
-    if not resource or _text(resource.get("state")) != "active":
+    if workspace.current_state != "active" or not workspace.current_message_id:
         return None
-    if _text(resource.get("channel_id")) != str(workspace.parent.id):
-        return None
-    return await _fetch_message(workspace.parent, _text(resource.get("message_id")))
+    return await _fetch_message(workspace.parent, workspace.current_message_id)
 
 
 async def refresh_index(workspace: Workspace, *, current_message=None) -> None:
@@ -337,28 +456,24 @@ async def refresh_index(workspace: Workspace, *, current_message=None) -> None:
             str(workspace.hall_of_fame.id),
         ),
     )
-    resource = await workspace.repository.discord_resource(
-        _GLOBAL_RESOURCE_ID, _INDEX_RESOURCE_TYPE, "main"
-    )
-    message = None
-    if resource and _text(resource.get("channel_id")) == str(workspace.parent.id):
-        message = await _fetch_message(workspace.parent, _text(resource.get("message_id")))
+    message = await _fetch_message(workspace.parent, workspace.index_message_id)
+    created = message is None
     if message is None:
         message = await workspace.parent.send(embed=embed)
     else:
         await message.edit(embed=embed)
-    now = _now()
-    await workspace.repository.upsert_discord_resource(
-        tournament_id=_GLOBAL_RESOURCE_ID,
-        resource_type=_INDEX_RESOURCE_TYPE,
-        resource_key="main",
-        channel_id=str(workspace.parent.id),
-        message_id=str(message.id),
-        created_at_utc=_text(resource.get("created_at_utc")) if resource else now,
-        updated_at_utc=now,
-        state="active",
-        notes="Persistent Victory Ledger navigation index",
-    )
+    if created or workspace.index_message_id != str(message.id):
+        await _persist_resource(
+            workspace,
+            tournament_id=_GLOBAL_RESOURCE_ID,
+            resource_type=_INDEX_RESOURCE_TYPE,
+            resource_key="main",
+            channel_id=str(workspace.parent.id),
+            message_id=str(message.id),
+            state="active",
+            notes="Persistent Victory Ledger navigation index",
+        )
+    workspace.index_message_id = str(message.id)
 
 
 async def _set_current_resource(
@@ -368,21 +483,25 @@ async def _set_current_resource(
     round_id: str,
     state: str,
 ) -> None:
-    resource = await workspace.repository.discord_resource(
-        _GLOBAL_RESOURCE_ID, _CURRENT_RESOURCE_TYPE, "main"
-    )
-    now = _now()
-    await workspace.repository.upsert_discord_resource(
+    if (
+        workspace.current_message_id == message_id
+        and workspace.current_round_id == round_id
+        and workspace.current_state == state
+    ):
+        return
+    await _persist_resource(
+        workspace,
         tournament_id=_GLOBAL_RESOURCE_ID,
         resource_type=_CURRENT_RESOURCE_TYPE,
         resource_key="main",
         channel_id=str(workspace.parent.id),
         message_id=message_id,
-        created_at_utc=_text(resource.get("created_at_utc")) if resource else now,
-        updated_at_utc=now,
         state=state,
         notes=round_id,
     )
+    workspace.current_message_id = message_id
+    workspace.current_round_id = round_id
+    workspace.current_state = state
 
 
 async def _archive_round_message(
@@ -392,43 +511,30 @@ async def _archive_round_message(
     round_id: str,
     embeds,
 ):
-    resource = await workspace.repository.discord_resource(
-        tournament_id, _ARCHIVE_RESOURCE_TYPE, round_id
-    )
-    message = None
-    if resource and _text(resource.get("thread_id")) == str(workspace.archive.id):
-        message = await _fetch_message(workspace.archive, _text(resource.get("message_id")))
+    archive_key = (tournament_id, round_id)
+    message_id = workspace.archived_messages.get(archive_key, "")
+    message = await _fetch_message(workspace.archive, message_id)
     if message is not None:
         return message
 
-    # Closed-round snapshots are append-only. If the archived message still exists,
-    # later repair/reconciliation passes never edit it; organizer commentary beneath
-    # it is therefore safe from bot rewrites.
+    # Closed-round snapshots are append-only. Later repair/reconciliation passes do
+    # not edit an existing archive message, so organizer commentary beneath it is
+    # safe from bot rewrites.
     message = await workspace.archive.send(embeds=list(embeds))
-    now = _now()
-    await workspace.repository.upsert_discord_resource(
+    existing = _resource(workspace, tournament_id, _ARCHIVE_RESOURCE_TYPE, round_id)
+    await _persist_resource(
+        workspace,
         tournament_id=tournament_id,
         resource_type=_ARCHIVE_RESOURCE_TYPE,
         resource_key=round_id,
         channel_id=str(workspace.archive.id),
         message_id=str(message.id),
         thread_id=str(workspace.archive.id),
-        created_at_utc=_text(resource.get("created_at_utc")) if resource else now,
-        updated_at_utc=now,
-        state=_text(resource.get("state")) or "active" if resource else "active",
+        state=_text(existing.get("state")) if existing else "active",
         notes="Immutable finalized round snapshot",
     )
+    workspace.archived_messages[archive_key] = str(message.id)
     return message
-
-
-async def _route_round_overview(qualification_service, snapshot, embeds):
-    repository = qualification_service.registration_repository
-    workspace = await ensure_workspace(
-        qualification_service.bot if hasattr(qualification_service, "bot") else None,
-        qualification_service.sheet_id,
-        repository,
-    )
-    return workspace
 
 
 async def sync_round_overview(bot, qualification_service, snapshot, embeds) -> None:
@@ -441,9 +547,6 @@ async def sync_round_overview(bot, qualification_service, snapshot, embeds) -> N
     tournament_id = _text(snapshot.round_row.get("tournament_id"))
     status = _text(snapshot.round_row.get("status")).lower()
     overview_id = _text(snapshot.round_row.get("overview_message_id"))
-    current_resource = await workspace.repository.discord_resource(
-        _GLOBAL_RESOURCE_ID, _CURRENT_RESOURCE_TYPE, "main"
-    )
 
     if status == "closed":
         await _archive_round_message(
@@ -452,18 +555,15 @@ async def sync_round_overview(bot, qualification_service, snapshot, embeds) -> N
             round_id=round_id,
             embeds=embeds,
         )
-        ids_to_delete = set()
-        if overview_id:
-            ids_to_delete.add(overview_id)
-        if current_resource and _text(current_resource.get("notes")) == round_id:
-            if _text(current_resource.get("message_id")):
-                ids_to_delete.add(_text(current_resource.get("message_id")))
+        ids_to_delete = {message_id for message_id in (overview_id,) if message_id}
+        if workspace.current_round_id == round_id and workspace.current_message_id:
+            ids_to_delete.add(workspace.current_message_id)
         for message_id in ids_to_delete:
             await _delete_message(workspace.parent, message_id)
-        if current_resource and _text(current_resource.get("notes")) == round_id:
+        if workspace.current_round_id == round_id:
             await _set_current_resource(
                 workspace,
-                message_id=_text(current_resource.get("message_id")),
+                message_id=workspace.current_message_id,
                 round_id=round_id,
                 state="retired",
             )
@@ -473,15 +573,12 @@ async def sync_round_overview(bot, qualification_service, snapshot, embeds) -> N
     if status not in _PUBLIC_ROUND_STATUSES:
         return
 
+    previous_message_id = workspace.current_message_id
+    previous_round_id = workspace.current_round_id
+    previous_state = workspace.current_state
     message = None
-    if (
-        current_resource
-        and _text(current_resource.get("state")) == "active"
-        and _text(current_resource.get("notes")) == round_id
-    ):
-        message = await _fetch_message(
-            workspace.parent, _text(current_resource.get("message_id"))
-        )
+    if workspace.current_state == "active" and workspace.current_round_id == round_id:
+        message = await _fetch_message(workspace.parent, workspace.current_message_id)
     if message is None and overview_id:
         message = await _fetch_message(workspace.parent, overview_id)
     if message is None:
@@ -489,8 +586,8 @@ async def sync_round_overview(bot, qualification_service, snapshot, embeds) -> N
     else:
         await message.edit(embeds=list(embeds))
 
-    if current_resource and _text(current_resource.get("notes")) not in {"", round_id}:
-        await _delete_message(workspace.parent, _text(current_resource.get("message_id")))
+    if previous_round_id not in {"", round_id} and previous_message_id:
+        await _delete_message(workspace.parent, previous_message_id)
     await _set_current_resource(
         workspace,
         message_id=str(message.id),
@@ -501,7 +598,14 @@ async def sync_round_overview(bot, qualification_service, snapshot, embeds) -> N
         recorder = getattr(qualification_service, "record_overview_message_id", None)
         if callable(recorder):
             await recorder(round_id, str(message.id))
-    await refresh_index(workspace, current_message=message)
+
+    if (
+        previous_message_id != str(message.id)
+        or previous_round_id != round_id
+        or previous_state != "active"
+        or not workspace.index_message_id
+    ):
+        await refresh_index(workspace, current_message=message)
 
 
 async def _sync_round_discord(bot, qualification_service, snapshot) -> list[str]:
@@ -602,9 +706,7 @@ async def _sync_hall_of_fame(manager) -> None:
     )
     workspace = await ensure_workspace(manager.bot, manager.sheet_id, repository)
     target = workspace.hall_of_fame
-    resource = await repository.discord_resource(
-        _GLOBAL_RESOURCE_ID, "hall_of_fame", "main"
-    )
+    resource = _resource(workspace, _GLOBAL_RESOURCE_ID, "hall_of_fame", "main")
     message = None
     old_message = None
     if resource and _text(resource.get("message_id")):
@@ -619,16 +721,14 @@ async def _sync_hall_of_fame(manager) -> None:
         message = await target.send(embed=embed, view=view)
     else:
         await message.edit(embed=embed, view=view)
-    now = _now()
-    await repository.upsert_discord_resource(
+    await _persist_resource(
+        workspace,
         tournament_id=_GLOBAL_RESOURCE_ID,
         resource_type="hall_of_fame",
         resource_key="main",
         channel_id=str(target.id),
         message_id=str(message.id),
         thread_id=str(target.id),
-        created_at_utc=_text(resource.get("created_at_utc")) if resource else now,
-        updated_at_utc=now,
         state="active",
         notes="Cross-tournament Live Arena Hall of Fame",
     )
@@ -637,7 +737,8 @@ async def _sync_hall_of_fame(manager) -> None:
             await old_message.delete()
         except discord.NotFound:
             pass
-    await refresh_index(workspace)
+    if not workspace.index_message_id:
+        await refresh_index(workspace)
 
 
 async def _sync_final_recap(manager, service, summary) -> None:
@@ -653,11 +754,12 @@ async def _sync_final_recap(manager, service, summary) -> None:
         await _original_final_recap(manager, service, summary)
     finally:
         service.repository.config["ROUND_OVERVIEW_CHANNEL_ID"] = previous
-    await refresh_index(workspace)
+    if not workspace.index_message_id:
+        await refresh_index(workspace)
 
 
 async def _migrate_final_recaps(manager, workspace: Workspace) -> None:
-    resources = await workspace.repository.discord_resources()
+    resources = list(workspace.resources.values())
     for resource in resources:
         if _text(resource.get("resource_type")) != "final_recap":
             continue
@@ -672,17 +774,17 @@ async def _migrate_final_recaps(manager, workspace: Workspace) -> None:
         if old_message is None:
             continue
         copied = await workspace.results.send(embeds=list(old_message.embeds))
-        await workspace.repository.upsert_discord_resource(
+        await _persist_resource(
+            workspace,
             tournament_id=_text(resource.get("tournament_id")),
             resource_type="final_recap",
             resource_key=_text(resource.get("resource_key")) or "main",
             channel_id=str(workspace.results.id),
             message_id=str(copied.id),
             thread_id=str(workspace.results.id),
-            created_at_utc=_text(resource.get("created_at_utc")),
-            updated_at_utc=_now(),
             state=_text(resource.get("state")) or "active",
             notes=_text(resource.get("notes")) or "Final tournament recap",
+            created_at_utc=_text(resource.get("created_at_utc")),
         )
         try:
             await old_message.delete()
@@ -692,7 +794,6 @@ async def _migrate_final_recaps(manager, workspace: Workspace) -> None:
 
 async def _fallback_round_embeds(
     manager,
-    service,
     round_row,
     all_matches,
     tournament_by_id,
@@ -729,8 +830,7 @@ async def _fallback_round_embeds(
 
 
 async def reconcile_workspace(manager) -> None:
-    """One-time/startup migration of legacy main-channel history into the workspace."""
-    from modules.community.live_arena import hall_of_fame
+    """Migrate legacy parent-channel history into the new workspace once/startup."""
     from modules.community.live_arena.qualification import QualificationService
 
     service = QualificationService(manager.sheet_id)
@@ -759,23 +859,16 @@ async def reconcile_workspace(manager) -> None:
         round_id = _text(round_row.get("round_id"))
         tid = _text(round_row.get("tournament_id"))
         legacy_id = _text(round_row.get("overview_message_id"))
-        archive_resource = await workspace.repository.discord_resource(
-            tid, _ARCHIVE_RESOURCE_TYPE, round_id
+        archived_message = await _fetch_message(
+            workspace.archive,
+            workspace.archived_messages.get((tid, round_id), ""),
         )
-        archived_message = None
-        if archive_resource and (
-            _text(archive_resource.get("thread_id")) == str(workspace.archive.id)
-        ):
-            archived_message = await _fetch_message(
-                workspace.archive, _text(archive_resource.get("message_id"))
-            )
         legacy_message = await _fetch_message(workspace.parent, legacy_id)
         if archived_message is None:
             embeds = list(legacy_message.embeds) if legacy_message is not None else []
             if not embeds:
                 embeds = await _fallback_round_embeds(
                     manager,
-                    service,
                     round_row,
                     matches,
                     tournament_by_id,
@@ -818,15 +911,12 @@ async def reconcile_workspace(manager) -> None:
             await refresh_index(workspace, current_message=message)
             return
 
-    current_resource = await workspace.repository.discord_resource(
-        _GLOBAL_RESOURCE_ID, _CURRENT_RESOURCE_TYPE, "main"
-    )
-    if current_resource and _text(current_resource.get("state")) == "active":
-        await _delete_message(workspace.parent, _text(current_resource.get("message_id")))
+    if workspace.current_state == "active" and workspace.current_message_id:
+        await _delete_message(workspace.parent, workspace.current_message_id)
         await _set_current_resource(
             workspace,
-            message_id=_text(current_resource.get("message_id")),
-            round_id=_text(current_resource.get("notes")),
+            message_id=workspace.current_message_id,
+            round_id=workspace.current_round_id,
             state="retired",
         )
     await refresh_index(workspace, current_message=None)
