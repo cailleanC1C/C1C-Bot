@@ -69,6 +69,7 @@ from modules.community.live_arena.victory_ledger_workspace import install as _in
 from modules.community.live_arena.victory_ledger_workspace_fallback import install as _install_victory_ledger_workspace_fallback
 from modules.community.live_arena.victory_ledger_thread_parent import install as _install_victory_ledger_thread_parent
 from modules.community.live_arena.victory_ledger_routing_config import install as _install_victory_ledger_routing_config
+from modules.community.live_arena.post_tournament_controls import install as _install_post_tournament_controls
 
 _install_runtime_hooks()
 _install_repair()
@@ -136,3 +137,4 @@ _install_victory_ledger_workspace()
 _install_victory_ledger_workspace_fallback()
 _install_victory_ledger_thread_parent()
 _install_victory_ledger_routing_config()
+_install_post_tournament_controls()
