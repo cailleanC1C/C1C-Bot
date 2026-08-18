@@ -1,12 +1,18 @@
-"""Fail-safe wrapper for the Victory Ledger workspace.
+"""Fail-safe wrapper and startup boundary for the Victory Ledger workspace.
 
 The workspace is presentation-only. If its thread/index layer cannot initialize, live
 round/result processing must keep working and the canonical overview falls back to
 the legacy parent-channel destination instead of returning a broken Discord state.
+
+The startup migration is scheduled from the final register_live_arena() boundary that
+runs from on_ready. This deliberately does not rely on qualification installation
+side-effects, because archived/completed tournaments still need their history migrated
+when no qualification work is happening.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import discord
@@ -94,13 +100,98 @@ async def _sync_with_fallback(workspace_sync, bot, qualification_service, snapsh
     return [warning for warning in warnings if warning != "Victory Ledger overview"]
 
 
+def _schedule_workspace_reconcile(workspace, manager, *, delay_seconds: float = 240.0):
+    """Schedule one observable startup migration task for this Live Arena sheet."""
+    sheet_id = str(getattr(manager, "sheet_id", "") or "").strip()
+    if not sheet_id:
+        log.warning("Live Arena Victory Ledger startup migration not scheduled: missing sheet_id")
+        return None
+
+    existing = workspace._reconcile_tasks.get(sheet_id)
+    if existing is not None and not existing.done():
+        log.info(
+            "Live Arena Victory Ledger startup migration already scheduled • sheet_tail=%s",
+            sheet_id[-6:],
+        )
+        return existing
+
+    async def runner():
+        try:
+            await asyncio.sleep(delay_seconds)
+            log.info(
+                "Live Arena Victory Ledger startup migration started • sheet_tail=%s",
+                sheet_id[-6:],
+            )
+            await workspace.reconcile_workspace(manager)
+        except asyncio.CancelledError:
+            log.info(
+                "Live Arena Victory Ledger startup migration cancelled • sheet_tail=%s",
+                sheet_id[-6:],
+            )
+            raise
+        except Exception:
+            log.exception(
+                "Live Arena Victory Ledger startup migration failed • sheet_tail=%s",
+                sheet_id[-6:],
+            )
+        else:
+            log.info(
+                "Live Arena Victory Ledger startup migration completed • sheet_tail=%s",
+                sheet_id[-6:],
+            )
+        finally:
+            if workspace._reconcile_tasks.get(sheet_id) is asyncio.current_task():
+                workspace._reconcile_tasks.pop(sheet_id, None)
+
+    try:
+        task = asyncio.create_task(
+            runner(), name=f"live-arena-victory-ledger:{sheet_id[-6:]}"
+        )
+    except RuntimeError:
+        log.exception(
+            "Live Arena Victory Ledger startup migration could not be scheduled • sheet_tail=%s",
+            sheet_id[-6:],
+        )
+        return None
+
+    workspace._reconcile_tasks[sheet_id] = task
+    log.info(
+        "Live Arena Victory Ledger startup migration scheduled • sheet_tail=%s • delay=%ss",
+        sheet_id[-6:],
+        int(delay_seconds),
+    )
+    return task
+
+
+async def _register_and_schedule_workspace(original_register, workspace, bot):
+    """Run the real registration first, then schedule migration from its final boundary."""
+    manager = await original_register(bot)
+    if manager is None:
+        return None
+
+    organizer = getattr(manager, "organizer_manager", None)
+    if organizer is None:
+        log.warning(
+            "Live Arena Victory Ledger startup migration not scheduled: organizer manager missing"
+        )
+        return manager
+
+    _schedule_workspace_reconcile(workspace, organizer)
+    return manager
+
+
 def install() -> None:
     global _installed
     if _installed:
         return
     _installed = True
 
-    from modules.community.live_arena import hall_of_fame, knockout_runtime, runtime_hooks
+    from modules.community.live_arena import (
+        hall_of_fame,
+        knockout_runtime,
+        panel,
+        runtime_hooks,
+    )
     from modules.community.live_arena import victory_ledger_workspace as workspace
 
     workspace_sync = runtime_hooks._sync_round_discord
@@ -144,3 +235,22 @@ def install() -> None:
             return None
 
     hall_of_fame.sync_hall_of_fame = hall
+
+    # Replace the silent/indirect scheduler used by the workspace installer. Existing
+    # qualification wrappers resolve this global at call time, so they become
+    # observable and idempotent too.
+    workspace._schedule_reconcile = lambda manager: _schedule_workspace_reconcile(
+        workspace, manager
+    )
+
+    # Most importantly, schedule from the final Live Arena registration boundary used
+    # by coreops.on_ready. This guarantees completed/archived tournaments get migrated
+    # even when qualification installation does not trigger another action.
+    original_register = panel.register_live_arena
+
+    async def register_live_arena_with_workspace(bot):
+        return await _register_and_schedule_workspace(
+            original_register, workspace, bot
+        )
+
+    panel.register_live_arena = register_live_arena_with_workspace
