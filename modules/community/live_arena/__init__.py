@@ -65,6 +65,7 @@ from modules.community.live_arena.plain_language_ux import install as _install_p
 from modules.community.live_arena.knockout_transition_repair import install as _install_knockout_transition_repair
 from modules.community.live_arena.knockout_progression_finalizer import install as _install_knockout_progression_finalizer
 from modules.community.live_arena.final_tournament_close_boundary import install as _install_final_tournament_close_boundary
+from modules.community.live_arena.victory_ledger_workspace import install as _install_victory_ledger_workspace
 
 _install_runtime_hooks()
 _install_repair()
@@ -128,3 +129,4 @@ _install_plain_language_ux()
 _install_knockout_transition_repair()
 _install_knockout_progression_finalizer()
 _install_final_tournament_close_boundary()
+_install_victory_ledger_workspace()
