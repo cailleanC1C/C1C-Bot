@@ -169,5 +169,10 @@ def test_register_live_arena_wires_controls_before_deferred_startup_sync(monkeyp
     assert public_manager.organizer_manager is created[0]
     public_manager.sync.assert_not_awaited()
     created[0].sync.assert_not_awaited()
-    assert len(registered_views) == 3
+    assert len(registered_views) == 4
+    persistent_create_next = registered_views[-1]
+    assert persistent_create_next.timeout is None
+    assert [child.custom_id for child in persistent_create_next.children] == [
+        "live_arena:organizer:tournament:create_next"
+    ]
     assert len(scheduled) == 1
