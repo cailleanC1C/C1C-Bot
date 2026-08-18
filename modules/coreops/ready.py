@@ -13,7 +13,7 @@ from modules.community.shard_tracker.views import register_persistent_shard_view
 from modules.community.reset_reminders.scheduler import register_persistent_reset_views
 from modules.community.live_arena.panel import register_live_arena
 from modules.housekeeping.staff_thread_guard import install as install_staff_thread_guard
-from modules.onboarding import watcher_promo, watcher_welcome
+from modules.onboarding import watcher_promo, watcher_welcome, welcome_self_heal
 from modules.onboarding.ui import panels
 
 
@@ -81,11 +81,20 @@ async def on_ready(bot: commands.Bot) -> None:
             )
             return
 
-        # Ensure both onboarding watchers are wired
+        # Ensure both onboarding watchers are wired.
         try:
             await watcher_welcome.setup(bot)
         except Exception:
             log.exception("CORE_READY FAILURE: watcher_welcome.setup")
+            return
+
+        # WelcomeWatcher is added from inside this on_ready dispatch. Explicitly
+        # initialize it and schedule reconciliation so first-start ticket handling
+        # does not depend on the newly-added cog receiving the current on_ready event.
+        try:
+            await welcome_self_heal.setup(bot)
+        except Exception:
+            log.exception("CORE_READY FAILURE: welcome_self_heal.setup")
             return
 
         try:
