@@ -8,7 +8,6 @@ import logging
 from shared.sheets.async_core import sheet_read_scope
 from shared.sheets.core import is_rate_limited_error
 
-from modules.community.live_arena.competition_resolution import CompetitionResolutionService
 from modules.community.live_arena.service import _text
 
 log = logging.getLogger("c1c.community.live_arena.reconciliation_hardening")
@@ -99,17 +98,20 @@ async def _sync_round_discord(bot, qualification_service, snapshot) -> list[str]
                 )
 
     try:
+        registration_repository = getattr(
+            qualification_service, "registration_repository", None
+        ) or getattr(qualification_service, "repository", None)
         workspace = await ensure_workspace(
             bot,
             sheet_id,
-            qualification_service.registration_repository,
+            registration_repository,
         )
         guild_id = _text(
             getattr(getattr(workspace.parent, "guild", None), "id", "")
         )
         standings = []
         if _text(snapshot.round_row.get("round_stage")).lower() == "qualification":
-            competition_service = CompetitionResolutionService(sheet_id)
+            competition_service = runtime_hooks.CompetitionResolutionService(sheet_id)
             await competition_service.initialize()
             standings = await competition_service.standings()
         embeds = await render_round_overview_embeds(
@@ -217,7 +219,7 @@ async def _run_startup_sync(
                         publication_warnings = (
                             await reconcile_qualification_publication(organizer)
                         )
-                        warnings.extend(publication_warnings)
+                        warnings.extend(publication_warnings or [])
                     except Exception as exc:
                         if is_rate_limited_error(exc):
                             raise
