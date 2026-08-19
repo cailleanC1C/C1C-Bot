@@ -144,7 +144,7 @@ def test_build_fusion_embed_fragment_goal_and_end_in_milestones() -> None:
     assert "get 100 fragments -> fuse the Champion" not in description
     assert "—" not in description
     milestones = embed.fields[0].value or ""
-    assert "End: 2026-04-22 00:00 UTC" in milestones
+    assert "End: Wed, Apr 22 · 00:00 UTC" in milestones
 
 
 def test_build_fusion_embed_event_rows_start_with_status_emoji_not_bullet() -> None:
