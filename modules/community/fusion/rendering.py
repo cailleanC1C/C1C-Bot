@@ -18,7 +18,7 @@ _EMBED_MAX_FIELDS = 25
 
 
 def _format_dt_utc(value) -> str:
-    return value.strftime("%Y-%m-%d %H:%M UTC")
+    return f"{_format_day_label(value.date())} · {value.strftime('%H:%M')} UTC"
 
 
 def _format_day_label(value: dt.date) -> str:
