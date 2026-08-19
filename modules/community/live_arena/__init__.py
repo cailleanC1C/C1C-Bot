@@ -73,6 +73,7 @@ from modules.community.live_arena.post_tournament_controls import install as _in
 from modules.community.live_arena.tournament_motto import install as _install_tournament_motto
 from modules.community.live_arena.reconciliation_hardening import install as _install_reconciliation_hardening
 from modules.community.live_arena.next_tournament_modal_boundary import install as _install_next_tournament_modal_boundary
+from modules.community.live_arena.next_tournament_wizard_ux import install as _install_next_tournament_wizard_ux
 
 _install_runtime_hooks()
 _install_repair()
@@ -144,3 +145,4 @@ _install_post_tournament_controls()
 _install_tournament_motto()
 _install_reconciliation_hardening()
 _install_next_tournament_modal_boundary()
+_install_next_tournament_wizard_ux()
