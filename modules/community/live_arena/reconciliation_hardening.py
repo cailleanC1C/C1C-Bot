@@ -12,6 +12,7 @@ from modules.community.live_arena.service import _text
 
 log = logging.getLogger("c1c.community.live_arena.reconciliation_hardening")
 _installed = False
+_base_round_sync = None
 _TERMINAL_TOURNAMENT_STATUSES = {"completed", "archived"}
 _ACTIVE_RESULT_ROUND_STATUSES = {
     "active",
@@ -29,13 +30,24 @@ def _tournament_status(tournament) -> str:
 
 
 async def _sync_round_discord(bot, qualification_service, snapshot) -> list[str]:
-    """Reconcile one round without reattaching live controls to terminal tournaments."""
+    """Reconcile one real tournament round without reviving terminal match controls."""
     from modules.community.live_arena import runtime_hooks
     from modules.community.live_arena.round_overview import render_round_overview_embeds
     from modules.community.live_arena.victory_ledger_workspace import (
         ensure_workspace,
         sync_round_overview,
     )
+
+    # Preserve the already-installed Victory Ledger compatibility/fallback wrapper for
+    # lightweight/legacy callers that intentionally do not expose a registration
+    # repository. Real QualificationService instances always have one.
+    registration_repository = getattr(
+        qualification_service, "registration_repository", None
+    )
+    if registration_repository is None:
+        if _base_round_sync is None:
+            raise RuntimeError("Live Arena base round reconciliation is unavailable")
+        return list(await _base_round_sync(bot, qualification_service, snapshot))
 
     warnings: list[str] = []
     sheet_id = qualification_service.sheet_id
@@ -98,9 +110,6 @@ async def _sync_round_discord(bot, qualification_service, snapshot) -> list[str]
                 )
 
     try:
-        registration_repository = getattr(
-            qualification_service, "registration_repository", None
-        ) or getattr(qualification_service, "repository", None)
         workspace = await ensure_workspace(
             bot,
             sheet_id,
@@ -278,13 +287,14 @@ async def _run_startup_sync(
 
 
 def install() -> None:
-    """Install after Victory Ledger workspace so this guard is the final reconciliation path."""
-    global _installed
+    """Install after Victory Ledger fallbacks so this guard is the final real-service path."""
+    global _installed, _base_round_sync
     if _installed:
         return
     _installed = True
 
     from modules.community.live_arena import panel, runtime_hooks
 
+    _base_round_sync = runtime_hooks._sync_round_discord
     runtime_hooks._sync_round_discord = _sync_round_discord
     panel._run_startup_sync = _run_startup_sync
