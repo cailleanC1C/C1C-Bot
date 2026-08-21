@@ -185,7 +185,6 @@ def install() -> None:
 
     from modules.community.live_arena import (
         hall_of_fame,
-        next_tournament,
         organizer_panel,
         organizer_registration_hardening,
         panel,
@@ -293,30 +292,9 @@ def install() -> None:
 
     organizer_panel.RefreshRoster.callback = safe_refresh_roster
 
-    # The first Create Next Tournament click loads Sheet-backed copy before opening
-    # the ephemeral wizard. Acknowledge first; the later modal handoffs are already
-    # protected by next_tournament_modal_boundary / next_tournament_wizard_ux.
-    async def safe_create_next_tournament(self, interaction):
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True, thinking=True)
-        if not await organizer_panel.OrganizerView(self.manager).authorized(interaction):
-            return
-        try:
-            messages = await next_tournament._load_next_messages(
-                self.manager.sheet_id, {"next_tournament_intro"}
-            )
-            await interaction.followup.send(
-                embed=messages["next_tournament_intro"].embed(),
-                view=next_tournament.NextTournamentStartView(self.manager),
-                ephemeral=True,
-            )
-        except Exception as exc:
-            log.exception("Live Arena Create Next Tournament start failed")
-            await interaction.followup.send(
-                embed=next_tournament.error_embed(exc), ephemeral=True
-            )
-
-    next_tournament.CreateNextTournamentButton.callback = safe_create_next_tournament
+    # The final Create Next Tournament callback is installed later by
+    # post_tournament_controls and already acknowledges before authorization/copy
+    # reads. Do not replace that runtime boundary here.
 
     # The historical panel used to wake 90 seconds after deploy, almost directly on
     # top of the 75-second core startup reconciliation. Move it well clear of that
