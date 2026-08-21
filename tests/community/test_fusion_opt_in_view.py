@@ -464,7 +464,6 @@ def test_my_progress_uses_tracker_reward_type_for_titan():
 
 
 
-
 def test_progress_summary_field_uses_inline_heading_and_needed_copy():
     embed = opt_in_view._build_progress_summary_embed(
         target=replace(_fusion_row(opt_in_role_id=777), needed=100, available=115, reward_type="fragments"),
@@ -477,6 +476,7 @@ def test_progress_summary_field_uses_inline_heading_and_needed_copy():
     assert "100 / 115 needed" in progress_field.value
     assert "still needed" not in progress_field.value
     assert "required" not in progress_field.value
+
 def test_status_options_include_done_bonus_only_when_event_has_bonus():
     bonus_event = replace(_event_row("e_bonus"), bonus=10.0)
     plain_event = _event_row("e_plain")
@@ -815,9 +815,9 @@ def test_traditional_prep_modal_save_edits_original_panel(monkeypatch):
 
         await modal.on_submit(interaction)
 
-        interaction.response.defer.assert_not_awaited()
-        interaction.response.edit_message.assert_awaited_once()
-        interaction.edit_original_response.assert_not_awaited()
+        interaction.response.defer.assert_awaited_once_with(thinking=False)
+        interaction.response.edit_message.assert_not_awaited()
+        interaction.edit_original_response.assert_awaited_once()
         interaction.followup.send.assert_not_awaited()
         assert upsert.await_args.kwargs["target_ready"] is True
         assert panel.prep.epics_ascended == 4
@@ -830,7 +830,7 @@ def test_traditional_prep_modal_save_acknowledges_when_panel_refresh_fails(monke
         member = _Member(role=None)
         guild = _Guild(role=None, member=member)
         interaction = _interaction(guild, member)
-        interaction.response.edit_message.side_effect = RuntimeError("edit failed")
+        interaction.edit_original_response.side_effect = RuntimeError("edit failed")
         target = _fusion_row(opt_in_role_id=777, fusion_type="traditional")
         events = [_event_row("e1", reward_type="rare", reward_amount=16)]
         progress_by_event = {"e1": "done"}
@@ -868,9 +868,10 @@ def test_traditional_prep_modal_save_acknowledges_when_panel_refresh_fails(monke
 
         await modal.on_submit(interaction)
 
-        interaction.response.edit_message.assert_awaited_once()
-        interaction.response.send_message.assert_awaited_once()
-        message = interaction.response.send_message.await_args.args[0]
+        interaction.response.defer.assert_awaited_once_with(thinking=False)
+        interaction.edit_original_response.assert_awaited_once()
+        interaction.followup.send.assert_awaited_once()
+        message = interaction.followup.send.await_args.args[0]
         assert "was saved" in message
         assert panel.prep.epics_ascended == 4
 
@@ -882,7 +883,7 @@ def test_traditional_prep_modal_save_still_notifies_when_refresh_and_ops_alert_f
         member = _Member(role=None)
         guild = _Guild(role=None, member=member)
         interaction = _interaction(guild, member)
-        interaction.response.edit_message.side_effect = RuntimeError("edit failed")
+        interaction.edit_original_response.side_effect = RuntimeError("edit failed")
         target = _fusion_row(opt_in_role_id=777, fusion_type="traditional")
         events = [_event_row("e1", reward_type="rare", reward_amount=16)]
         progress_by_event = {"e1": "done"}
@@ -920,21 +921,23 @@ def test_traditional_prep_modal_save_still_notifies_when_refresh_and_ops_alert_f
 
         await modal.on_submit(interaction)
 
-        interaction.response.edit_message.assert_awaited_once()
-        interaction.response.send_message.assert_awaited_once()
-        message = interaction.response.send_message.await_args.args[0]
+        interaction.response.defer.assert_awaited_once_with(thinking=False)
+        interaction.edit_original_response.assert_awaited_once()
+        interaction.followup.send.assert_awaited_once()
+        message = interaction.followup.send.await_args.args[0]
         assert "was saved" in message
         assert panel.prep.epics_ascended == 4
 
     asyncio.run(_run())
+
 
 def test_traditional_prep_modal_save_does_not_raise_when_refresh_and_fallback_notification_fail(monkeypatch):
     async def _run() -> None:
         member = _Member(role=None)
         guild = _Guild(role=None, member=member)
         interaction = _interaction(guild, member)
-        interaction.response.edit_message.side_effect = RuntimeError("edit failed")
-        interaction.response.send_message.side_effect = RuntimeError("notification failed")
+        interaction.edit_original_response.side_effect = RuntimeError("edit failed")
+        interaction.followup.send.side_effect = RuntimeError("notification failed")
         target = _fusion_row(opt_in_role_id=777, fusion_type="traditional")
         events = [_event_row("e1", reward_type="rare", reward_amount=16)]
         progress_by_event = {"e1": "done"}
@@ -972,11 +975,13 @@ def test_traditional_prep_modal_save_does_not_raise_when_refresh_and_fallback_no
 
         await modal.on_submit(interaction)
 
-        interaction.response.edit_message.assert_awaited_once()
-        interaction.response.send_message.assert_awaited_once()
+        interaction.response.defer.assert_awaited_once_with(thinking=False)
+        interaction.edit_original_response.assert_awaited_once()
+        interaction.followup.send.assert_awaited_once()
         assert panel.prep.epics_ascended == 4
 
     asyncio.run(_run())
+
 
 def _button_by_label(view, label: str):
     for child in view.children:
