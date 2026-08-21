@@ -159,6 +159,7 @@ def _build_traditional_prep_embed(
     embed.add_field(name="Final Fusion", value="\n".join(final_fusion_lines), inline=False)
     return embed
 
+
 def _supports_partial_fragments(event: fusion_sheets.FusionEventRow | None, *, status: str | None) -> bool:
     if event is None:
         return False
@@ -270,6 +271,49 @@ async def _send_ephemeral(interaction: discord.Interaction, message: str) -> Non
         await interaction.followup.send(message, ephemeral=True)
         return
     await interaction.response.send_message(message, ephemeral=True)
+
+
+def _interaction_error_code(error: BaseException) -> int | None:
+    code = getattr(error, "code", None)
+    try:
+        return int(code) if code is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_unknown_interaction_error(error: BaseException) -> bool:
+    return _interaction_error_code(error) == 10062
+
+
+async def _safe_defer_ephemeral_interaction(
+    interaction: discord.Interaction,
+    *,
+    custom_id: str,
+) -> int:
+    started_at = time.monotonic()
+    response = getattr(interaction, "response", None)
+    if response is None or response.is_done():
+        return int((time.monotonic() - started_at) * 1000)
+    defer = getattr(response, "defer", None)
+    if not callable(defer):
+        return int((time.monotonic() - started_at) * 1000)
+    try:
+        await defer(ephemeral=True, thinking=True)
+    except Exception as exc:
+        context = fusion_logs.interaction_context(interaction, custom_id=custom_id)
+        context.update(
+            {
+                "ack_elapsed_ms": int((time.monotonic() - started_at) * 1000),
+                "discord_error_code": _interaction_error_code(exc) or "",
+            }
+        )
+        log.error(
+            "fusion interaction acknowledgement failed",
+            extra=context,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        raise
+    return int((time.monotonic() - started_at) * 1000)
 
 
 async def _resolve_member(interaction: discord.Interaction) -> discord.Member | None:
@@ -731,6 +775,7 @@ class FusionProgressShareModeView(discord.ui.View):
         row=0,
     )
     async def share_summary_button(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        await _safe_defer_ephemeral_interaction(interaction, custom_id=_FUSION_PROGRESS_SHARE_SUMMARY_CUSTOM_ID)
         await self._handle_share(interaction, mode="summary")
 
     @discord.ui.button(
@@ -740,9 +785,8 @@ class FusionProgressShareModeView(discord.ui.View):
         row=0,
     )
     async def share_detailed_button(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        await _safe_defer_ephemeral_interaction(interaction, custom_id=_FUSION_PROGRESS_SHARE_DETAILED_CUSTOM_ID)
         await self._handle_share(interaction, mode="detailed")
-
-
 
 
 class _FusionProgressMarkAllButton(discord.ui.Button):
@@ -795,6 +839,7 @@ class _FusionProgressMarkAllButton(discord.ui.Button):
             view.progress_by_event[f"{event.event_id}:{milestone_key}"] = "done"
         view.last_update = (event.event_name, "done")
         await _edit_progress_message(interaction, view=view)
+
 
 class _FusionProgressPageButton(discord.ui.Button):
     def __init__(self, *, direction: Literal["previous", "next"], disabled: bool) -> None:
@@ -948,7 +993,6 @@ class _FusionProgressModal(discord.ui.Modal, title="Log Partial Fragments"):
         await _edit_progress_message(interaction, view=self.panel_view)
 
 
-
 def _build_traditional_progress_choice_embed(target: fusion_sheets.FusionRow) -> discord.Embed:
     embed = discord.Embed(
         title=f"My Progress: {target.fusion_name}",
@@ -1014,6 +1058,7 @@ class TraditionalProgressChoiceView(discord.ui.View):
 
     @discord.ui.button(label="Champion Preparation", style=discord.ButtonStyle.secondary, custom_id=_FUSION_TRAD_CHOICE_PREP_CUSTOM_ID)
     async def champion_prep(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        await _safe_defer_progress_interaction(interaction)
         try:
             prep = await fusion_sheets.get_user_traditional_progress(self.target.fusion_id, str(self.user_id))
         except Exception as exc:
@@ -1029,7 +1074,7 @@ class TraditionalProgressChoiceView(discord.ui.View):
             partial_by_event=self.partial_by_event,
             prep=prep,
         )
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+        await _edit_traditional_prep_message(interaction, view=view)
 
 
 class TraditionalPrepPanelView(discord.ui.View):
@@ -1128,6 +1173,7 @@ class _TraditionalPrepModal(discord.ui.Modal, title="Champion Preparation"):
         if error:
             await _send_ephemeral(interaction, error)
             return
+        await _safe_defer_progress_interaction(interaction)
         try:
             prep = await fusion_sheets.upsert_user_traditional_progress(self.panel_view.target.fusion_id, str(self.panel_view.user_id), rares_owned=self.panel_view.prep.rares_owned, rares_level_40=values[0], rares_ascended=values[1], epics_fused=values[2], epics_level_50=values[3], epics_ascended=values[4], target_ready=_traditional_target_ready(epics_ascended=values[4], required_epics=required_epics), updated_at=dt.datetime.now(dt.timezone.utc))
         except Exception as exc:
@@ -1181,6 +1227,7 @@ class _TraditionalPrepModal(discord.ui.Modal, title="Champion Preparation"):
                     },
                     exc_info=True,
                 )
+
 
 async def _edit_traditional_prep_message(interaction: discord.Interaction, *, view: "TraditionalPrepPanelView") -> None:
     context = fusion_logs.interaction_context(interaction, custom_id=_FUSION_TRAD_PREP_UPDATE_CUSTOM_ID)
@@ -1318,6 +1365,7 @@ def _progress_panel_diagnostics(
     view: "FusionProgressPanelView" | None = None,
     response_path: str,
     elapsed_ms: int,
+    ack_elapsed_ms: int | None = None,
 ) -> dict[str, object]:
     context = fusion_logs.interaction_context(interaction, custom_id=_FUSION_MY_PROGRESS_CUSTOM_ID)
     if target is not None:
@@ -1334,6 +1382,8 @@ def _progress_panel_diagnostics(
     context["response_path"] = response_path
     context["response_done_before_send"] = interaction.response.is_done()
     context["elapsed_ms"] = elapsed_ms
+    if ack_elapsed_ms is not None:
+        context["ack_elapsed_ms"] = ack_elapsed_ms
     return context
 
 
@@ -1344,6 +1394,7 @@ async def _send_my_progress_panel(
     events: Sequence[fusion_sheets.FusionEventRow],
     view: "FusionProgressPanelView",
     started_at: float,
+    ack_elapsed_ms: int | None = None,
 ) -> None:
     embed = view.build_embed()
     response_path = "followup_send_ephemeral" if interaction.response.is_done() else "direct_send_ephemeral"
@@ -1354,12 +1405,17 @@ async def _send_my_progress_panel(
         view=view,
         response_path=response_path,
         elapsed_ms=int((time.monotonic() - started_at) * 1000),
+        ack_elapsed_ms=ack_elapsed_ms,
     )
     log.info("fusion my-progress response path selected", extra=diagnostics)
     await _send_or_followup_ephemeral(interaction, embed=embed, view=view)
 
 
-async def _handle_my_progress(interaction: discord.Interaction) -> None:
+async def _handle_my_progress(
+    interaction: discord.Interaction,
+    *,
+    ack_elapsed_ms: int | None = None,
+) -> None:
     started_at = time.monotonic()
     try:
         target = await fusion_sheets.get_publishable_fusion()
@@ -1441,6 +1497,16 @@ async def _handle_my_progress(interaction: discord.Interaction) -> None:
             partial_by_event=partial_by_event,
         )
         embed = _build_traditional_progress_choice_embed(target)
+        response_path = "followup_send_ephemeral" if interaction.response.is_done() else "direct_send_ephemeral"
+        diagnostics = _progress_panel_diagnostics(
+            interaction,
+            target=target,
+            events=events,
+            response_path=response_path,
+            elapsed_ms=int((time.monotonic() - started_at) * 1000),
+            ack_elapsed_ms=ack_elapsed_ms,
+        )
+        log.info("fusion my-progress response path selected", extra=diagnostics)
         await _send_or_followup_ephemeral(interaction, embed=embed, view=view)
         return
 
@@ -1451,7 +1517,14 @@ async def _handle_my_progress(interaction: discord.Interaction) -> None:
         progress_by_event=progress_by_event,
         partial_by_event=partial_by_event,
     )
-    await _send_my_progress_panel(interaction, target=target, events=events, view=view, started_at=started_at)
+    await _send_my_progress_panel(
+        interaction,
+        target=target,
+        events=events,
+        view=view,
+        started_at=started_at,
+        ack_elapsed_ms=ack_elapsed_ms,
+    )
 
 
 async def _safe_defer_progress_interaction(interaction: discord.Interaction) -> None:
@@ -1464,7 +1537,8 @@ async def _safe_defer_progress_interaction(interaction: discord.Interaction) -> 
     try:
         await defer(thinking=False)
     except Exception:
-        log.debug("fusion progress interaction defer failed; continuing", exc_info=True)
+        log.exception("fusion progress interaction defer failed")
+        raise
 
 
 async def _edit_progress_message(interaction: discord.Interaction, *, view: "FusionProgressPanelView") -> None:
@@ -1552,6 +1626,7 @@ class FusionOptInView(discord.ui.View):
         row=0,
     )
     async def opt_in_button(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        await _safe_defer_ephemeral_interaction(interaction, custom_id=_FUSION_OPT_IN_CUSTOM_ID)
         await _handle_opt_action(interaction, action="in")
 
     @discord.ui.button(
@@ -1561,6 +1636,7 @@ class FusionOptInView(discord.ui.View):
         row=0,
     )
     async def opt_out_button(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        await _safe_defer_ephemeral_interaction(interaction, custom_id=_FUSION_OPT_OUT_CUSTOM_ID)
         await _handle_opt_action(interaction, action="out")
 
     @discord.ui.button(
@@ -1570,19 +1646,54 @@ class FusionOptInView(discord.ui.View):
         row=0,
     )
     async def my_progress_button(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
-        await _handle_my_progress(interaction)
+        ack_elapsed_ms = await _safe_defer_ephemeral_interaction(
+            interaction,
+            custom_id=_FUSION_MY_PROGRESS_CUSTOM_ID,
+        )
+        await _handle_my_progress(interaction, ack_elapsed_ms=ack_elapsed_ms)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
         context = fusion_logs.interaction_context(interaction, custom_id=getattr(item, "custom_id", None))
-        log.exception("fusion opt-in view interaction failed", extra=context)
-        await fusion_logs.send_ops_alert(
-            component="interaction",
-            summary="view_handler_failed",
-            dedupe_key=f"fusion:view_error:{context.get('custom_id')}",
-            error=error,
-            fields=context,
+        error_code = _interaction_error_code(error)
+        context.update(
+            {
+                "discord_error_code": error_code or "",
+                "response_done": interaction.response.is_done(),
+            }
         )
-        await _send_ephemeral(interaction, "Temporary issue. Try again shortly.")
+        exc_info = (type(error), error, error.__traceback__)
+        if _is_unknown_interaction_error(error):
+            log.warning("fusion opt-in view interaction expired", extra=context, exc_info=exc_info)
+        else:
+            log.error("fusion opt-in view interaction failed", extra=context, exc_info=exc_info)
+
+        try:
+            await fusion_logs.send_ops_alert(
+                component="interaction",
+                summary="view_handler_failed",
+                dedupe_key=f"fusion:view_error:{context.get('custom_id')}",
+                error=error,
+                fields=context,
+            )
+        except Exception:
+            log.exception("fusion opt-in view ops alert failed", extra=context)
+
+        if _is_unknown_interaction_error(error):
+            return
+
+        try:
+            await _send_ephemeral(interaction, "Temporary issue. Try again shortly.")
+        except Exception as notify_error:
+            notify_context = dict(context)
+            notify_context["notification_error_code"] = _interaction_error_code(notify_error) or ""
+            if _is_unknown_interaction_error(notify_error):
+                log.warning("fusion opt-in view error notification skipped; interaction expired", extra=notify_context)
+                return
+            log.error(
+                "fusion opt-in view error notification failed",
+                extra=notify_context,
+                exc_info=(type(notify_error), notify_error, notify_error.__traceback__),
+            )
 
 
 def build_fusion_opt_in_view(target: fusion_sheets.FusionRow) -> discord.ui.View:
