@@ -94,7 +94,7 @@ def test_refresh_roster_acknowledges_before_sheet_backed_render():
     interaction.edit_original_response.assert_awaited_once()
 
 
-def test_create_next_acknowledges_before_loading_sheet_copy():
+def test_effective_create_next_callback_acknowledges_before_loading_sheet_copy():
     sheets_read_hardening._auth_cache.clear()
     _seed_role()
     interaction = _interaction()
@@ -114,6 +114,6 @@ def test_create_next_acknowledges_before_loading_sheet_copy():
     ):
         run(button.callback(interaction))
 
-    interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
     interaction.followup.send.assert_awaited_once()
     assert interaction.followup.send.await_args.kwargs["ephemeral"] is True
