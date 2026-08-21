@@ -4,7 +4,7 @@ import logging
 
 from discord.ext import commands
 
-from .interaction_safe_cog import ShardTracker
+from modules.community.shard_tracker.interaction_safe_runtime import ShardTracker
 
 __all__ = ["ShardTracker", "setup"]
 
