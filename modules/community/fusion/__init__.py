@@ -6,7 +6,7 @@ import logging
 
 from discord.ext import commands
 
-from .cog import FusionCog
+from modules.community.fusion.cog import FusionCog
 from modules.community.fusion.deferred_response_hardening import install as _install_deferred_response_hardening
 
 log = logging.getLogger("c1c.community.fusion")
