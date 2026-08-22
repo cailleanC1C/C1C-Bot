@@ -1,9 +1,14 @@
 """Harden deferred Fusion interaction responses.
 
-Fusion's My Progress button now acknowledges with a thinking ephemeral defer before
-Sheet I/O.  The result of that defer is an original interaction response, so populate
-that response through ``edit_original_response`` instead of relying on Discord's
-deprecated "first follow-up edits the deferred response" compatibility behaviour.
+Fusion's My Progress button acknowledges with a thinking ephemeral defer before Sheet
+I/O. The result of that defer is an original interaction response, so populate that
+response through ``edit_original_response`` instead of relying on Discord's deprecated
+"first follow-up edits the deferred response" compatibility behaviour.
+
+The response boundary also validates select-option values before sending a view.
+Discord rejects an entire component payload when one select contains duplicate option
+values. Fusion event IDs are persistence keys as well as select values, so duplicate
+values indicate invalid event configuration and must never be sent to Discord.
 """
 
 from __future__ import annotations
@@ -16,6 +21,10 @@ from modules.community.fusion import opt_in_view
 
 log = logging.getLogger("c1c.community.fusion.deferred_response")
 _installed = False
+_DUPLICATE_EVENT_MESSAGE = (
+    "Fusion progress is temporarily unavailable because the event setup contains "
+    "duplicate event IDs. An admin needs to correct the fusion event data."
+)
 
 
 def _error_code(error: BaseException) -> int | None:
@@ -26,6 +35,27 @@ def _error_code(error: BaseException) -> int | None:
         return None
 
 
+def _duplicate_select_option_values(view: discord.ui.View | None) -> tuple[str, ...]:
+    """Return duplicate option values found inside any select in ``view``."""
+
+    if view is None:
+        return tuple()
+
+    duplicates: set[str] = set()
+    for item in getattr(view, "children", ()):
+        options = getattr(item, "options", None)
+        if not options:
+            continue
+        seen: set[str] = set()
+        for option in options:
+            value = str(getattr(option, "value", "") or "")
+            if value in seen:
+                duplicates.add(value)
+            else:
+                seen.add(value)
+    return tuple(sorted(duplicates))
+
+
 async def _send_or_edit_ephemeral(
     interaction: discord.Interaction,
     *,
@@ -34,6 +64,22 @@ async def _send_or_edit_ephemeral(
     view: discord.ui.View | None = None,
 ) -> None:
     """Send the initial response or populate an already-deferred response."""
+
+    duplicate_values = _duplicate_select_option_values(view)
+    if duplicate_values:
+        log.error(
+            "fusion response blocked duplicate select option values",
+            extra={
+                "duplicate_select_option_values": duplicate_values,
+                "component_count": len(getattr(view, "children", ())),
+            },
+        )
+        # Never send a component payload Discord will reject. A duplicate Fusion
+        # event_id is also unsafe for saved progress/reminder keys, so fail closed
+        # with an actionable message until the source event data is corrected.
+        content = _DUPLICATE_EVENT_MESSAGE
+        embed = None
+        view = None
 
     if not interaction.response.is_done():
         await interaction.response.send_message(
