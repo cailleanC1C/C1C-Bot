@@ -782,12 +782,6 @@ class RecruiterPanelView(discord.ui.View):
     async def _on_search(self, interaction: discord.Interaction) -> None:
         if not await self._begin_interaction(interaction):
             return
-        if not self._has_any_filter():
-            self.status_message = "Pick at least one filter, then try again. 🙂"
-            self._sync_visuals()
-            self._update_task = asyncio.create_task(self._rebuild_and_edit(interaction))
-            return
-
         self._update_task = asyncio.create_task(self._run_search(interaction))
 
     async def _run_search(self, interaction: discord.Interaction) -> None:
@@ -954,4 +948,3 @@ class RecruiterPanelView(discord.ui.View):
                 await self.results_message.edit(view=self.results_view)
         if self.message:
             self.cog.unregister_panel(self.message.id)
-
