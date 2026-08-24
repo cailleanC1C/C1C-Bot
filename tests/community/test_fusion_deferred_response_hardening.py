@@ -29,6 +29,20 @@ def _interaction(*, done: bool):
     )
 
 
+def _duplicate_select_view() -> discord.ui.View:
+    view = discord.ui.View()
+    view.add_item(
+        discord.ui.Select(
+            custom_id="fusion:test:duplicate",
+            options=[
+                discord.SelectOption(label="Champion Training I", value="CT_1"),
+                discord.SelectOption(label="Champion Training II", value="CT_1"),
+            ],
+        )
+    )
+    return view
+
+
 def test_deferred_progress_response_edits_original_instead_of_followup():
     interaction = _interaction(done=True)
     embed = discord.Embed(title="Progress")
@@ -67,6 +81,55 @@ def test_non_deferred_progress_response_still_uses_initial_response():
         content=None,
         embed=embed,
         view=view,
+        ephemeral=True,
+    )
+    interaction.edit_original_response.assert_not_awaited()
+    interaction.followup.send.assert_not_awaited()
+
+
+def test_duplicate_select_values_are_detected():
+    assert deferred_response_hardening._duplicate_select_option_values(
+        _duplicate_select_view()
+    ) == ("CT_1",)
+
+
+def test_duplicate_select_payload_is_blocked_before_discord_edit(monkeypatch):
+    interaction = _interaction(done=True)
+    error_log = Mock()
+    monkeypatch.setattr(deferred_response_hardening.log, "error", error_log)
+
+    run(
+        deferred_response_hardening._send_or_edit_ephemeral(
+            interaction,
+            embed=discord.Embed(title="Progress"),
+            view=_duplicate_select_view(),
+        )
+    )
+
+    interaction.edit_original_response.assert_awaited_once_with(
+        content=deferred_response_hardening._DUPLICATE_EVENT_MESSAGE
+    )
+    interaction.followup.send.assert_not_awaited()
+    interaction.response.send_message.assert_not_awaited()
+    extra = error_log.call_args.kwargs["extra"]
+    assert extra["duplicate_select_option_values"] == ("CT_1",)
+
+
+def test_duplicate_select_payload_is_blocked_before_initial_response():
+    interaction = _interaction(done=False)
+
+    run(
+        deferred_response_hardening._send_or_edit_ephemeral(
+            interaction,
+            embed=discord.Embed(title="Progress"),
+            view=_duplicate_select_view(),
+        )
+    )
+
+    interaction.response.send_message.assert_awaited_once_with(
+        content=deferred_response_hardening._DUPLICATE_EVENT_MESSAGE,
+        embed=None,
+        view=None,
         ephemeral=True,
     )
     interaction.edit_original_response.assert_not_awaited()
