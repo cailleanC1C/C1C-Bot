@@ -14,7 +14,11 @@ from modules.common.embeds import get_embed_colour
 from modules.common.logs import channel_label
 from modules.ops import server_rules
 import modules.ops.server_rules_interactive as server_rules_interactive
-from modules.ops import server_rules_faq_navigation, server_rules_revision
+from modules.ops import (
+    server_rules_faq_navigation,
+    server_rules_revision,
+    server_rules_share_destinations,
+)
 
 FEATURE_TOGGLE = "server_rules_faq"
 
@@ -90,5 +94,6 @@ class ServerRulesCog(commands.Cog):
 
 async def setup(bot: commands.Bot) -> None:
     server_rules_revision.install()
+    server_rules_share_destinations.install()
     server_rules_interactive.register_persistent_view(bot)
     await bot.add_cog(ServerRulesCog(bot, operations=server_rules_revision))
