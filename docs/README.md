@@ -120,6 +120,7 @@ Repository sources use guardrail-compliant `lower_snake_case.md` names. The publ
 * [`Recruitment.md`](modules/Recruitment.md) — recruitment module responsibilities, sheet schemas, panels, and reporting flows.
 * [`Placement.md`](modules/Placement.md) — placement ledger, clan math reconciliation, and reservation upkeep (commands + cron jobs).
 * [`PermissionsUI.md`](modules/PermissionsUI.md) — interactive permissions UI runbook and overwrite apply workflow.
+* [`cluster_evaluation.md`](modules/cluster_evaluation.md) — cluster result history, evaluation semantics, ranking model, and 13-week review plan.
 
 ## 🧩 Module Documentation `/docs/modules`
 Each module has a **dedicated deep-dive file** describing its scope, flows, data sources, and integrations.
@@ -142,4 +143,4 @@ Each module has a **dedicated deep-dive file** describing its scope, flows, data
 ## Cross-References
 * [`docs/contracts/CollaborationContract.md`](contracts/CollaborationContract.md) documents contributor responsibilities and embeds this index under “Documentation Discipline.”
 
-Doc last updated: 2026-07-20 (v0.9.8.2)
+Doc last updated: 2026-09-20 (v0.9.8.3)

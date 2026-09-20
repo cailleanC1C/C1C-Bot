@@ -17,7 +17,11 @@ from modules.community.leagues.config import (
     LeaguesConfigError,
     aload_league_bundles,
 )
-from modules.community.leagues.history import HistoryCaptureError, capture_weekly_history
+from modules.community.leagues.history import (
+    HistoryCaptureError,
+    capture_weekly_history,
+    previous_iso_week_key,
+)
 from shared.config import cfg
 from shared.logfmt import channel_label, user_label
 from shared.sheets.async_core import acall_with_backoff, afetch_records, afetch_values, aget_worksheet
@@ -838,16 +842,20 @@ class LeaguesCog(commands.Cog):
         await self._set_job_fields(approval_row, initial_updates)
         await self._progress_message(status_channel, approval_row, week_key, state="running")
 
+        result_week_key = previous_iso_week_key(week_key)
         try:
             history_summary = await capture_weekly_history(
                 sheet_id,
                 config_tab=self._config_tab_name(),
-                week_key=week_key,
+                week_key=result_week_key,
                 trigger=trigger,
             )
         except Exception as exc:
-            log.exception("league history capture failed", extra={"week_key": week_key})
-            return await fail(f"history capture failed: {exc}")
+            log.exception(
+                "league history capture failed",
+                extra={"posting_week_key": week_key, "result_week_key": result_week_key},
+            )
+            return await fail(f"history capture failed for {result_week_key}: {exc}")
 
         # Phase 1: render every asset needed by this run before publishing anything.
         await self._set_job_fields(
