@@ -28,6 +28,10 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("c1c.community.leagues")
 
+_LEAGUE_EXPORT_PACING_SECONDS = 30.0
+_GENERIC_EXPORT_RETRY_DELAYS = (30.0, 60.0)
+_RATE_LIMIT_EXPORT_RETRY_DELAYS = (60.0, 120.0)
+
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _APPROVAL_CONFIG_KEY = "league_approval_state_tab"
 _PUBLISH_CONFIG_KEY = "league_publish_state_tab"
@@ -1397,6 +1401,7 @@ class LeaguesCog(commands.Cog):
             return f"{slug.title()}: gid missing for {spec.sheet_name}"
 
         last_error = "unknown export failure"
+        retry_after_seconds: float | None = None
         for attempt in range(1, 4):
             try:
                 png_bytes = await export_pdf_as_png(
@@ -1412,22 +1417,42 @@ class LeaguesCog(commands.Cog):
                     raise_on_failure=True,
                 )
                 if png_bytes:
+                    # League publishing is a weekly background job. Deliberately
+                    # pace every successful export so Google never receives a
+                    # burst of board-render requests from this job.
+                    await asyncio.sleep(_LEAGUE_EXPORT_PACING_SECONDS)
                     return discord.File(fp=io.BytesIO(png_bytes), filename=filename)
                 last_error = "export returned no data"
+                retry_after_seconds = None
             except ImageExportError as exc:
                 last_error = str(exc)
+                retry_after_seconds = exc.retry_after_seconds
                 log.warning(
                     "league image export attempt failed",
                     extra={"key": spec.key, "attempt": attempt, "reason": last_error},
                 )
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
+                retry_after_seconds = None
                 log.exception(
                     "league image export attempt failed",
                     extra={"key": spec.key, "attempt": attempt},
                 )
             if attempt < 3:
-                await asyncio.sleep(attempt)
+                is_rate_limited = last_error == "pdf_export_status_429"
+                delays = (
+                    _RATE_LIMIT_EXPORT_RETRY_DELAYS
+                    if is_rate_limited
+                    else _GENERIC_EXPORT_RETRY_DELAYS
+                )
+                delay = delays[attempt - 1]
+                if retry_after_seconds is not None:
+                    delay = max(delay, retry_after_seconds)
+                log.info(
+                    "league image export retry scheduled",
+                    extra={"key": spec.key, "attempt": attempt, "delay_seconds": delay},
+                )
+                await asyncio.sleep(delay)
 
         return f"{slug.title()}: {spec.key} export failed after 3 attempts ({last_error})"
 
