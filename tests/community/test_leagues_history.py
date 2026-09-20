@@ -91,7 +91,7 @@ def test_config_drives_tabs_range_columns_aliases_missing_and_unmapped(monkeypat
     sheets = install(
         monkeypatch,
         specs=[weekly_spec()],
-        sources={"Live Input": [["C1C Cambion", "x", 125], ["Old Clan", "x", 999], ["Unknown!", "x", 8]]},
+        sources={"Live Input": [["C1C Cambion", "x", 125], ["Eff-it", "x", ""], ["Old Clan", "x", 999], ["Unknown!", "x", 8]]},
     )
     summary = run_capture()
     rows = appended_dicts(sheets["Archive"])
