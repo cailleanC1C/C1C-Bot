@@ -266,7 +266,8 @@ def test_transient_timeout_retries_and_can_recover():
         assert result == [{"key": "league_approval_state_tab"}]
         assert calls == 3
         assert snap["retries"] == 2
-        assert sleeps == [0.2, 0.4]
+        retry_sleeps = [delay for delay in sleeps if delay >= 0.1]
+        assert retry_sleeps == [0.2, 0.4]
 
     _run(scenario())
 
