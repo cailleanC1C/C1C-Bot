@@ -56,21 +56,24 @@ def test_export_spec_retries_transient_export_failure(monkeypatch) -> None:
 
     spec = LeagueSpec(
         key="LEAGUE_RISING_HEADER",
+        slug="rising",
+        kind="header",
+        index=None,
         sheet_name="RisingStars",
         cell_range="A1:M15",
-        index=None,
     )
     cog = LeaguesCog(SimpleNamespace())
 
-    result = asyncio.run(
-        cog._export_spec(
-            asyncio.new_event_loop(),
+    async def _run():
+        return await cog._export_spec(
+            asyncio.get_running_loop(),
             "sheet",
             "rising",
             spec,
             filename="rising_header.png",
         )
-    )
+
+    result = asyncio.run(_run())
 
     assert isinstance(result, discord.File)
     assert calls["count"] == 3
