@@ -233,6 +233,10 @@ class LeaguesCog(commands.Cog):
 
     @staticmethod
     def _league_title(bundle: LeagueBundle, now: dt.datetime) -> str:
+        if bundle.slug == "storm":
+            previous_week = now.date() - dt.timedelta(days=7)
+            calendar_week = previous_week.isocalendar().week
+            return f"{bundle.display_name} – Calendar Week {calendar_week} Results"
         today = now.date().isoformat()
         return f"{bundle.display_name} – Weekly Update {today}"
 
