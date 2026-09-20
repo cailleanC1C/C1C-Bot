@@ -10,16 +10,16 @@ from modules.community.leagues import history
 
 CONFIG = [
     {"KEY": "cluster_capture_config_tab", "VALUE": "Capture Specs"},
-    {"KEY": "cluster_clan_map_tab", "VALUE": "Clan Registry"},
+    {"KEY": "cluster_clans_tab", "VALUE": "Clan Registry"},
     {"KEY": "cluster_event_history_tab", "VALUE": "Archive"},
     {"KEY": "cluster_evaluation_tab", "VALUE": "Ratings"},
 ]
 CLANS = [
-    {"active": "TRUE", "clan_tag": "C1C-A", "canonical_clan_name": "Cambion", "source_alias": "Cambion"},
-    {"active": "TRUE", "clan_tag": "C1C-A", "canonical_clan_name": "Cambion", "source_alias": "C1C Cambion"},
-    {"active": "TRUE", "clan_tag": "C1C-B", "canonical_clan_name": "Eff-it", "source_alias": "Eff-it"},
-    {"active": "TRUE", "clan_tag": "C1C-B", "canonical_clan_name": "Eff-it", "source_alias": "Eff it"},
-    {"active": "FALSE", "clan_tag": "OLD", "canonical_clan_name": "Former", "source_alias": "Old Clan"},
+    {"active": "TRUE", "clan_tag": "C1C-A", "canonical_clan_name": "Cambion", "source_alias": "Cambion", "hydra": "Mandatory", "chimera": "Mandatory", "cvc": "Mandatory", "siege": "Mandatory"},
+    {"active": "TRUE", "clan_tag": "C1C-A", "canonical_clan_name": "Cambion", "source_alias": "C1C Cambion", "hydra": "Mandatory", "chimera": "Mandatory", "cvc": "Mandatory", "siege": "Mandatory"},
+    {"active": "TRUE", "clan_tag": "C1C-B", "canonical_clan_name": "Eff-it", "source_alias": "Eff-it", "hydra": "Mandatory", "chimera": "Mandatory", "cvc": "Mandatory", "siege": "Mandatory"},
+    {"active": "TRUE", "clan_tag": "C1C-B", "canonical_clan_name": "Eff-it", "source_alias": "Eff it", "hydra": "Mandatory", "chimera": "Mandatory", "cvc": "Mandatory", "siege": "Mandatory"},
+    {"active": "FALSE", "clan_tag": "OLD", "canonical_clan_name": "Former", "source_alias": "Old Clan", "hydra": "Mandatory", "chimera": "Mandatory", "cvc": "Mandatory", "siege": "Mandatory"},
 ]
 HEADERS = list(history.HISTORY_HEADERS)
 
@@ -75,8 +75,9 @@ def weekly_spec(**updates):
 
 
 def run_capture(**kwargs):
+    week_key = kwargs.pop("week_key", "2026-W31")
     return asyncio.run(history.capture_weekly_history(
-        "sheet", config_tab="Config", week_key="2026-W31",
+        "sheet", config_tab="Config", week_key=week_key,
         trigger="reaction_approval", **kwargs
     ))
 
@@ -116,7 +117,7 @@ def test_blank_invalid_and_zero_scores_are_missing_not_zero(monkeypatch, score):
 
 
 def test_alias_collision_is_rejected(monkeypatch):
-    clans = CLANS + [{"active": "TRUE", "clan_tag": "C1C-X", "canonical_clan_name": "Other", "source_alias": "Cambion"}]
+    clans = CLANS + [{"active": "TRUE", "clan_tag": "C1C-X", "canonical_clan_name": "Other", "source_alias": "Cambion", "hydra": "Mandatory", "chimera": "Mandatory", "cvc": "Mandatory", "siege": "Mandatory"}]
     install(monkeypatch, specs=[weekly_spec()], sources={"Live Input": []}, clans=clans)
     with pytest.raises(history.HistoryCaptureError, match="alias collision"):
         run_capture()
@@ -128,25 +129,26 @@ def delta_spec():
         "source_worksheet": "Siege Input", "source_range": "A2:D8",
         "current_clan_column": "A", "current_total_column": "B",
         "previous_clan_column": "C", "previous_total_column": "D",
-        "history_status": "result_only",
+        "history_status": "valid",
     }
 
 
-def test_cumulative_delta_captures_win_loss_and_result_only(monkeypatch):
+def test_cumulative_delta_captures_win_loss_as_valid(monkeypatch):
     sheets = install(monkeypatch, specs=[delta_spec()], sources={
         "Siege Input": [["Cambion", 12, "C1C Cambion", 10], ["Eff-it", 7, "Eff it", 7]]
     })
-    summary = run_capture()
+    summary = run_capture(week_key="2026-W32")
     rows = appended_dicts(sheets["Archive"])
     assert [(row["score"], row["result"]) for row in rows] == [(2, "win"), (0, "loss")]
     assert all(row["score_unit"] == "wins" for row in rows)
-    assert summary.result_only_rows == 2
+    assert all(row["evaluation_status"] == "valid" for row in rows)
+    assert summary.result_only_rows == 0
 
 
 def test_negative_delta_aborts_without_append(monkeypatch):
     sheets = install(monkeypatch, specs=[delta_spec()], sources={"Siege Input": [["Cambion", 9, "Cambion", 10]]})
     with pytest.raises(history.HistoryCaptureError, match="negative cumulative delta"):
-        run_capture()
+        run_capture(week_key="2026-W32")
     assert sheets["Archive"].appended == []
 
 
@@ -313,7 +315,7 @@ def test_semantic_result_conflict_still_aborts(monkeypatch):
     sheets = install(monkeypatch, specs=[delta_spec()], sources={
         "Siege Input": [["Cambion", 12, "Cambion", 10], ["Eff-it", 7, "Eff-it", 7]]
     })
-    run_capture()
+    run_capture(week_key="2026-W32")
     original = [list(row) for row in sheets["Archive"].appended[0][0]]
     archive = [HEADERS, *original]
     result_index = HEADERS.index("result")
@@ -323,7 +325,7 @@ def test_semantic_result_conflict_still_aborts(monkeypatch):
     }, archive=archive)
 
     with pytest.raises(history.HistoryCaptureError, match="history-conflict"):
-        run_capture()
+        run_capture(week_key="2026-W32")
     assert sheets["Archive"].appended == []
 
 
@@ -357,7 +359,8 @@ def test_concurrent_manual_and_reaction_jobs_keep_explicit_week_keys():
 def test_active_map_with_live_headers_supports_duplicate_alias_rows():
     clans, aliases = history.build_active_clan_map(CLANS)
     assert set(clans) == {"C1C-A", "C1C-B"}
-    assert clans["C1C-A"] == ("C1C-A", "Cambion")
+    assert clans["C1C-A"][0:2] == ("C1C-A", "Cambion")
+    assert clans["C1C-A"][2]["hydra_clash"] == "mandatory"
     assert aliases[history.normalize_alias("Cambion")] == "C1C-A"
     assert aliases[history.normalize_alias("C1C Cambion")] == "C1C-A"
     assert aliases[history.normalize_alias("Eff-it")] == "C1C-B"
@@ -394,3 +397,79 @@ def test_populated_source_with_zero_active_matches_aborts_without_append(monkeyp
         run_capture()
     assert sheets["Live Input"].get_calls
     assert sheets["Archive"].appended == []
+
+
+
+def test_previous_result_week_handles_year_boundary():
+    assert history.previous_iso_week_key("2026-W01") == "2025-W52"
+    assert history.previous_iso_week_key("2027-W01") == "2026-W53"
+
+
+def test_event_calendar_and_cvc_class_follow_authoritative_anchor():
+    assert history.event_occurs("cvc", "2026-W31")
+    assert not history.event_occurs("siege", "2026-W31")
+    assert history.cvc_event_class("2026-W31") == "PR"
+    assert history.event_occurs("siege", "2026-W32")
+    assert not history.event_occurs("cvc", "2026-W32")
+    assert history.cvc_event_class("2026-W33") == "Non-PR"
+    assert history.cvc_event_class("2026-W35") == "PR"
+    assert history.cvc_event_class("2026-W37") == "Non-PR"
+
+
+def test_off_week_event_is_not_captured(monkeypatch):
+    sheets = install(monkeypatch, specs=[delta_spec()], sources={"Siege Input": []})
+    summary = run_capture(week_key="2026-W31")
+    assert summary.candidate_rows == 0
+    assert summary.event_stats["siege"]["scheduled"] == "no"
+    assert sheets["Archive"].appended == []
+
+
+def test_na_event_is_excluded_but_optional_missing_is_neutral(monkeypatch):
+    clans = [
+        {"active": "TRUE", "clan_tag": "A", "clan_name": "Alpha", "hydra": "N/A", "chimera": "N/A", "cvc": "Optional", "siege": "N/A"},
+        {"active": "TRUE", "clan_tag": "B", "clan_name": "Beta", "hydra": "N/A", "chimera": "N/A", "cvc": "Mandatory", "siege": "N/A"},
+    ]
+    sheets = install(
+        monkeypatch,
+        specs=[weekly_spec(event_type="cvc")],
+        sources={"Live Input": [["Alpha", "", ""], ["Beta", "", ""]]},
+        clans=clans,
+    )
+    summary = run_capture()
+    rows = appended_dicts(sheets["Archive"])
+    assert len(rows) == 2
+    assert summary.optional_missing_rows == 1
+    assert summary.mandatory_missing_rows == 1
+
+
+def test_absent_source_is_error_and_malformed_score_is_error(monkeypatch):
+    sheets = install(
+        monkeypatch,
+        specs=[weekly_spec()],
+        sources={"Live Input": [["Cambion", "", "not-a-number"]]},
+    )
+    summary = run_capture()
+    rows = appended_dicts(sheets["Archive"])
+    assert rows[0]["evaluation_status"] == "error"
+    assert rows[1]["evaluation_status"] == "error"
+    assert summary.error_rows == 2
+
+
+def test_status_text_is_human_readable():
+    summary = history.CaptureSummary(
+        week_key="2026-W37", active_clans=2, enabled_specs=4,
+        candidate_rows=6, appended_rows=6, identical_rows=0,
+        missing_rows=1, ignored_source_clans=0, error_rows=1,
+        mandatory_missing_rows=1, optional_missing_rows=0,
+        event_stats={
+            "hydra_clash": {"scheduled": "yes", "valid": 1, "mandatory_missing": 1, "optional_missing": 0, "error": 0},
+            "chimera_clash": {"scheduled": "yes", "valid": 2, "mandatory_missing": 0, "optional_missing": 0, "error": 0},
+            "cvc": {"scheduled": "yes", "valid": 1, "mandatory_missing": 0, "optional_missing": 0, "error": 1},
+            "siege": {"scheduled": "no"},
+        },
+    )
+    text = summary.status_text()
+    assert "results for 2026-W37" in text
+    assert "Siege: not scheduled" in text
+    assert "1 mandatory missing" in text
+    assert "Data errors: 1" in text
