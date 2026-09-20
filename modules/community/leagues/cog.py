@@ -43,12 +43,6 @@ _APPROVAL_HEADERS = (
     "created_at_utc",
     "updated_at_utc",
     "last_error",
-    "progress_message_id",
-    "prepare_status",
-    "legendary_status",
-    "rising_status",
-    "storm_status",
-    "announcement_status",
 )
 _APPROVAL_ACTIVE_STATUSES = {"pending"}
 _APPROVAL_DUPLICATE_PROMPT_STATUSES = {"pending", "posting", "approved", "posted"}
@@ -635,7 +629,10 @@ class LeaguesCog(commands.Cog):
             "storm_status": "pending",
             "announcement_status": "pending",
         }
-        ordered = [values[name] for name in _APPROVAL_HEADERS]
+        ordered = [""] * len(header_map)
+        for name, idx in header_map.items():
+            if name in values:
+                ordered[idx] = values[name]
         await acall_with_backoff(worksheet.append_row, ordered, value_input_option="RAW")
         log.info("league approval state row created", extra={"message_id": message.id, "channel_id": getattr(message.channel, "id", None), "season_key": season_key, "week_key": week_key})
 
