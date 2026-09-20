@@ -23,12 +23,13 @@ from __future__ import annotations
 import asyncio
 import collections
 import logging
-import os
 import random
 import time
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, Awaitable, Callable, Deque, Dict, Mapping, TypeVar
+
+from shared.config import cfg
 
 T = TypeVar("T")
 Loader = Callable[[], Awaitable[T]]
@@ -536,7 +537,8 @@ class SheetsReadBroker:
                     ok=False,
                     rate_limited=rate_limited,
                 )
-                if not rate_limited or attempt >= self._retry_attempts:
+                retryable = is_retryable_read_error(exc)
+                if not retryable or attempt >= self._retry_attempts:
                     raise
                 self._stats["retries"] += 1
                 await self._sleep(self._retry_delay(attempt))
@@ -738,7 +740,7 @@ def _safe_meta(value: object) -> str:
 
 
 def _read_budget_from_env() -> int:
-    raw = str(os.getenv("SHEETS_READ_BUDGET_RPM", "") or "").strip()
+    raw = str(cfg.get("SHEETS_READ_BUDGET_RPM", "") or "").strip()
     if not raw:
         return _DEFAULT_READ_BUDGET_RPM
     try:
@@ -758,6 +760,53 @@ def _read_budget_from_env() -> int:
         )
         return _DEFAULT_READ_BUDGET_RPM
     return value
+
+
+def is_retryable_read_error(exc: BaseException) -> bool:
+    """Return True for transient Google/HTTP/network read failures."""
+
+    if is_rate_limited_error(exc):
+        return True
+
+    candidates: list[object] = [
+        getattr(exc, "status_code", None),
+        getattr(exc, "code", None),
+        getattr(exc, "status", None),
+    ]
+    response = getattr(exc, "response", None)
+    if response is not None:
+        candidates.extend(
+            [
+                getattr(response, "status_code", None),
+                getattr(response, "status", None),
+            ]
+        )
+    for value in candidates:
+        try:
+            if int(value) in {408, 425, 500, 502, 503, 504}:
+                return True
+        except (TypeError, ValueError):
+            pass
+
+    text = str(exc or "").casefold()
+    return any(
+        token in text
+        for token in (
+            "read timed out",
+            "readtimeout",
+            "connect timeout",
+            "connecttimeout",
+            "connection timed out",
+            "connection reset",
+            "connection aborted",
+            "temporarily unavailable",
+            "remote end closed connection",
+            "server disconnected",
+            "bad gateway",
+            "service unavailable",
+            "gateway timeout",
+        )
+    )
 
 
 def is_rate_limited_error(exc: BaseException) -> bool:
@@ -814,4 +863,5 @@ __all__ = [
     "SheetsReadBroker",
     "broker",
     "is_rate_limited_error",
+    "is_retryable_read_error",
 ]

@@ -233,6 +233,73 @@ def test_429_retries_with_async_backoff_and_counts_each_physical_attempt():
     _run(scenario())
 
 
+def test_transient_timeout_retries_and_can_recover():
+    async def scenario():
+        sleeps = []
+        calls = 0
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+
+        broker = SheetsReadBroker(
+            read_budget_rpm=60000,
+            retry_attempts=3,
+            retry_base_delay_sec=0.2,
+            retry_factor=2,
+            retry_max_delay_sec=1,
+            sleep_fn=fake_sleep,
+            jitter_fn=lambda _low, _high: 1.0,
+        )
+        key = SheetReadKey.records("sheet-123456", "Config")
+
+        async def loader():
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                raise TimeoutError("HTTPSConnectionPool: Read timed out. (read timeout=20)")
+            return [{"key": "league_approval_state_tab"}]
+
+        result = await broker.read(key, loader)
+        snap = broker.snapshot()
+        await broker.close()
+
+        assert result == [{"key": "league_approval_state_tab"}]
+        assert calls == 3
+        assert snap["retries"] == 2
+        retry_sleeps = [delay for delay in sleeps if delay >= 0.1]
+        assert retry_sleeps == [0.2, 0.4]
+
+    _run(scenario())
+
+
+def test_non_transient_read_error_is_not_retried():
+    async def scenario():
+        calls = 0
+        broker = SheetsReadBroker(
+            read_budget_rpm=60000,
+            retry_attempts=3,
+            retry_base_delay_sec=0,
+        )
+        key = SheetReadKey.records("sheet-123456", "Config")
+
+        async def loader():
+            nonlocal calls
+            calls += 1
+            raise ValueError("bad sheet schema")
+
+        try:
+            await broker.read(key, loader)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("non-transient error should be raised")
+
+        await broker.close()
+        assert calls == 1
+
+    _run(scenario())
+
+
 def test_exact_invalidation_forces_reload():
     async def scenario():
         broker = SheetsReadBroker(read_budget_rpm=60000)

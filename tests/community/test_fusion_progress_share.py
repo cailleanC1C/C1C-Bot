@@ -122,7 +122,10 @@ def test_traditional_progress_share_includes_event_and_champion_prep():
     event_field = next(field for field in embed.fields if field.name == "Event/Tournament Progress")
     assert "✅ Done: 3" in event_field.value
     assert "🟡 In Progress: 1" in event_field.value
-    assert "⬜ Not Started: 13" in event_field.value
+    # These fixtures ended in August 2026, so untouched events are correctly
+    # rendered as missed rather than still not started.
+    assert "⚠️ Missed: 13" in event_field.value
+    assert "⬜ Not Started: 0" in event_field.value
     rare_field = next(field for field in embed.fields if field.name == "Rare Progress")
     assert "3 acquired" in rare_field.value
     assert not any(field.name == "\u200b" for field in embed.fields)
