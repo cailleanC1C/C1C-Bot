@@ -4,7 +4,6 @@ import asyncio
 import io
 import json
 import logging
-import os
 from typing import Any, Dict
 
 import importlib.util
@@ -13,6 +12,7 @@ from PIL import Image, ImageChops
 from google.auth.transport.requests import Request
 from google.oauth2.service_account import Credentials
 
+from shared.config import cfg
 from shared.sheets import core as sheets_core
 
 log = logging.getLogger("c1c.sheets.export")
@@ -77,7 +77,7 @@ def _export_delay_seconds() -> float:
     Empty / missing / invalid / <= 0 -> 0.0 (no delay)
     """
 
-    raw = os.getenv("SHEETS_EXPORT_DELAY_MS", "").strip()
+    raw = str(cfg.get("SHEETS_EXPORT_DELAY_MS", "") or "").strip()
     if not raw:
         return 0.0
     try:
@@ -107,9 +107,9 @@ async def _sleep_after_export(label: str | None) -> None:
 
 
 def _service_account_info() -> Dict[str, Any]:
-    raw = (
-        os.getenv("GSPREAD_CREDENTIALS")
-        or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    raw = str(
+        cfg.get("GSPREAD_CREDENTIALS", "")
+        or cfg.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
         or ""
     )
     if not raw:
