@@ -813,10 +813,21 @@ class LeaguesCog(commands.Cog):
         if await self._publish_state_sheet(sheet_id) is None:
             return await fail("LeaguePublishState is unavailable or misconfigured.")
 
-        await self._set_job_fields(
-            approval_row,
-            {"status": "posting", "updated_at_utc": self._utc_iso()},
-        )
+        initial_updates: dict[str, object] = {
+            "status": "posting",
+            "updated_at_utc": self._utc_iso(),
+        }
+        if approval_row is not None:
+            for key in (
+                "prepare_status",
+                "legendary_status",
+                "rising_status",
+                "storm_status",
+                "announcement_status",
+            ):
+                if not approval_row["values"].get(key):
+                    initial_updates[key] = "pending"
+        await self._set_job_fields(approval_row, initial_updates)
         await self._progress_message(status_channel, approval_row, week_key, state="running")
 
         try:
@@ -886,11 +897,19 @@ class LeaguesCog(commands.Cog):
             header_file, board_files = prepared[bundle.slug]
             try:
                 header_msg = await channel.send(content=self._league_title(bundle, now), file=header_file)
-                await self._record_publish_message(sheet_id, week_key, bundle.slug, "header", header_msg)
+                try:
+                    await self._record_publish_message(sheet_id, week_key, bundle.slug, "header", header_msg)
+                except Exception:
+                    await header_msg.delete()
+                    raise
                 jump_links[bundle.slug] = header_msg.jump_url
                 for board_file in board_files:
                     message = await channel.send(file=board_file)
-                    await self._record_publish_message(sheet_id, week_key, bundle.slug, "board", message)
+                    try:
+                        await self._record_publish_message(sheet_id, week_key, bundle.slug, "board", message)
+                    except Exception:
+                        await message.delete()
+                        raise
             except Exception as exc:
                 log.exception("league component publish failed", extra={"league": bundle.slug})
                 await self._set_job_fields(approval_row, {status_key: "partial"})
@@ -922,9 +941,13 @@ class LeaguesCog(commands.Cog):
                 announcement_message = await announcement_channel.send(
                     content=self._league_role_mention(), embed=announcement_embed
                 )
-                await self._record_publish_message(
-                    sheet_id, week_key, "announcement", "announcement", announcement_message
-                )
+                try:
+                    await self._record_publish_message(
+                        sheet_id, week_key, "announcement", "announcement", announcement_message
+                    )
+                except Exception:
+                    await announcement_message.delete()
+                    raise
                 rr: ReactionRolesCog | None = self.bot.get_cog("ReactionRolesCog")  # type: ignore[name-defined]
                 if rr is not None:
                     await rr.attach_to_message(announcement_message, key="leagues")
