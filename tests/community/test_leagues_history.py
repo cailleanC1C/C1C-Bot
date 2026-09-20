@@ -107,13 +107,20 @@ def test_config_drives_tabs_range_columns_aliases_missing_and_unmapped(monkeypat
     assert all(row["clan_tag"] != "OLD" for row in rows)
 
 
-@pytest.mark.parametrize("score", ["", 0, "not-a-number"])
-def test_blank_invalid_and_zero_scores_are_missing_not_zero(monkeypatch, score):
+@pytest.mark.parametrize("score", ["", 0])
+def test_blank_and_zero_scores_are_missing_not_zero(monkeypatch, score):
     sheets = install(monkeypatch, specs=[weekly_spec()], sources={"Live Input": [["Cambion", "", score]]})
     run_capture()
     alpha = appended_dicts(sheets["Archive"])[0]
     assert alpha["score"] == ""
     assert alpha["evaluation_status"] == "missing"
+
+
+def test_malformed_weekly_score_is_error(monkeypatch):
+    sheets = install(monkeypatch, specs=[weekly_spec()], sources={"Live Input": [["Cambion", "", "not-a-number"]]})
+    run_capture()
+    alpha = appended_dicts(sheets["Archive"])[0]
+    assert alpha["evaluation_status"] == "error"
 
 
 def test_alias_collision_is_rejected(monkeypatch):
@@ -145,11 +152,12 @@ def test_cumulative_delta_captures_win_loss_as_valid(monkeypatch):
     assert summary.result_only_rows == 0
 
 
-def test_negative_delta_aborts_without_append(monkeypatch):
+def test_negative_delta_is_recorded_as_data_error(monkeypatch):
     sheets = install(monkeypatch, specs=[delta_spec()], sources={"Siege Input": [["Cambion", 9, "Cambion", 10]]})
-    with pytest.raises(history.HistoryCaptureError, match="negative cumulative delta"):
-        run_capture(week_key="2026-W32")
-    assert sheets["Archive"].appended == []
+    summary = run_capture(week_key="2026-W32")
+    rows = appended_dicts(sheets["Archive"])
+    assert rows[0]["evaluation_status"] == "error"
+    assert summary.error_rows >= 1
 
 
 def test_identical_retry_dedupes_and_conflict_never_overwrites(monkeypatch):
