@@ -296,7 +296,6 @@ def _export_pdf_as_png_sync(
             pdf_content,
             fail_on_multi_page=fail_on_multi_page,
             crop_to_content=crop_to_content,
-            raise_on_failure=raise_on_failure,
         )
         if png is None and raise_on_failure:
             raise ImageExportError("pdf_rasterization_returned_no_data")
@@ -339,6 +338,7 @@ async def export_pdf_as_png(
             fit_range_to_one_page=fit_range_to_one_page,
             fail_on_multi_page=fail_on_multi_page,
             crop_to_content=crop_to_content,
+            raise_on_failure=raise_on_failure,
         )
     finally:
         await _sleep_after_export(label)
