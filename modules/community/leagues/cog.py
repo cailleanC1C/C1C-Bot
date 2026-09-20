@@ -21,7 +21,7 @@ from modules.community.leagues.history import HistoryCaptureError, capture_weekl
 from shared.config import cfg
 from shared.logfmt import channel_label, user_label
 from shared.sheets.async_core import acall_with_backoff, afetch_records, afetch_values, aget_worksheet
-from shared.sheets.export_utils import export_pdf_as_png, get_tab_gid
+from shared.sheets.export_utils import ImageExportError, export_pdf_as_png, get_tab_gid
 
 if TYPE_CHECKING:
     from modules.community.reaction_roles import ReactionRolesCog
@@ -30,6 +30,7 @@ log = logging.getLogger("c1c.community.leagues")
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _APPROVAL_CONFIG_KEY = "league_approval_state_tab"
+_PUBLISH_CONFIG_KEY = "league_publish_state_tab"
 _APPROVAL_HEADERS = (
     "season_key",
     "week_key",
@@ -48,6 +49,25 @@ _APPROVAL_DUPLICATE_PROMPT_STATUSES = {"pending", "posting", "approved", "posted
 _APPROVAL_EMOJIS = {"👍", "👍🏻", "👍🏽", "👍🏿", "👍🏾"}
 
 
+class LeagueRetryView(discord.ui.View):
+    """Persistent recovery control for a failed weekly league publication."""
+
+    def __init__(self, cog: "LeaguesCog") -> None:
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="Retry Failed Step",
+        emoji="🔄",
+        style=discord.ButtonStyle.primary,
+        custom_id="c1c:leagues:retry_failed_step",
+    )
+    async def retry_failed_step(
+        self, interaction: discord.Interaction, _button: discord.ui.Button
+    ) -> None:
+        await self.cog._handle_retry_interaction(interaction)
+
+
 class LeaguesCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -60,6 +80,54 @@ class LeaguesCog(commands.Cog):
         sheet_id = str(cfg.get("LEAGUES_SHEET_ID", "") or "").strip()
         if not sheet_id:
             log.warning("Leagues sheet ID missing at startup; feature will remain idle")
+
+    async def cog_load(self) -> None:
+        # Persistent custom_id keeps recovery usable after a bot restart.
+        self.bot.add_view(LeagueRetryView(self))
+        self._stale_recovery_task = asyncio.create_task(self._recover_stale_jobs_after_ready())
+
+    def cog_unload(self) -> None:
+        task = getattr(self, "_stale_recovery_task", None)
+        if task is not None:
+            task.cancel()
+
+    async def _recover_stale_jobs_after_ready(self) -> None:
+        try:
+            await self.bot.wait_until_ready()
+            loaded = await self._approval_sheet()
+            if loaded is None:
+                return
+            tab_name, worksheet, header_map, matrix = loaded
+            for row_number, raw in enumerate(matrix[1:], start=2):
+                values = {
+                    name: (str(raw[idx]).strip() if idx < len(raw) else "")
+                    for name, idx in header_map.items()
+                }
+                if values.get("status", "").lower() != "posting":
+                    continue
+                row = {
+                    "tab": tab_name,
+                    "worksheet": worksheet,
+                    "header_map": header_map,
+                    "row_number": row_number,
+                    "values": values,
+                }
+                reason = "Previous league job was interrupted by a bot restart; use Retry Failed Step to resume safely."
+                await self._set_job_fields(
+                    row,
+                    {"status": "failed", "last_error": reason, "updated_at_utc": self._utc_iso()},
+                )
+                try:
+                    channel_id = int(values.get("prompt_channel_id", ""))
+                    channel = await self._resolve_channel(channel_id)
+                    durable_week = self._format_week_key(values.get("season_key"), values.get("week_key"))
+                except (TypeError, ValueError, HistoryCaptureError):
+                    continue
+                await self._progress_message(channel, row, durable_week, state="failed", detail=f"**Error:** {reason}")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("failed to recover stale league jobs")
 
     # === Helpers ===
     @staticmethod
@@ -165,6 +233,10 @@ class LeaguesCog(commands.Cog):
 
     @staticmethod
     def _league_title(bundle: LeagueBundle, now: dt.datetime) -> str:
+        if bundle.slug == "storm":
+            previous_week = now.date() - dt.timedelta(days=7)
+            calendar_week = previous_week.isocalendar().week
+            return f"{bundle.display_name} – Calendar Week {calendar_week} Results"
         today = now.date().isoformat()
         return f"{bundle.display_name} – Weekly Update {today}"
 
@@ -334,7 +406,7 @@ class LeaguesCog(commands.Cog):
             error = f"{type(exc).__name__}: {exc}"
             log.exception("league board publish failed", extra={"reason": error})
         else:
-            error = "" if ok else "posting job returned failure"
+            error = "" if ok else ""
 
         posted_at = ""
         async with self._approval_lock:
@@ -347,7 +419,11 @@ class LeaguesCog(commands.Cog):
                         "status": "posted" if ok else "failed",
                         "posted_at_utc": posted_at,
                         "updated_at_utc": self._utc_iso(),
-                        "last_error": error[:500],
+                        "last_error": (
+                            error[:500]
+                            if error
+                            else ("" if ok else fresh["values"].get("last_error", "posting job returned failure")[:500])
+                        ),
                     },
                 )
         log.info(
@@ -550,8 +626,17 @@ class LeaguesCog(commands.Cog):
             "created_at_utc": created_at,
             "updated_at_utc": now,
             "last_error": "",
+            "progress_message_id": "",
+            "prepare_status": "pending",
+            "legendary_status": "pending",
+            "rising_status": "pending",
+            "storm_status": "pending",
+            "announcement_status": "pending",
         }
-        ordered = [values[name] for name in _APPROVAL_HEADERS]
+        ordered = [""] * len(header_map)
+        for name, idx in header_map.items():
+            if name in values:
+                ordered[idx] = values[name]
         await acall_with_backoff(worksheet.append_row, ordered, value_input_option="RAW")
         log.info("league approval state row created", extra={"message_id": message.id, "channel_id": getattr(message.channel, "id", None), "season_key": season_key, "week_key": week_key})
 
@@ -676,13 +761,26 @@ class LeaguesCog(commands.Cog):
         week_key: str,
     ) -> bool:
         sheet_id = str(cfg.get("LEAGUES_SHEET_ID", "") or "").strip()
-        if not sheet_id:
-            await self._post_status(
-                status_channel,
-                f"❌ C1C Leagues job failed\nTrigger: {trigger}\nReason: LEAGUES_SHEET_ID is missing.",
-                trigger=trigger,
+        season_key, week_number = self._split_durable_week(week_key)
+        approval_row = await self._find_approval_row_for_week(season_key, week_number)
+
+        async def fail(reason: str) -> bool:
+            log.error("league publish stopped", extra={"trigger": trigger, "reason": reason, "week_key": week_key})
+            await self._set_job_fields(
+                approval_row,
+                {
+                    "status": "failed",
+                    "last_error": reason[:500],
+                    "updated_at_utc": self._utc_iso(),
+                },
+            )
+            await self._progress_message(
+                status_channel, approval_row, week_key, state="failed", detail=f"**Error:** {reason}"
             )
             return False
+
+        if not sheet_id:
+            return await fail("LEAGUES_SHEET_ID is missing.")
 
         channel_ids = {
             "legendary": self._parse_int_config("LEAGUES_LEGENDARY_THREAD_ID"),
@@ -690,202 +788,534 @@ class LeaguesCog(commands.Cog):
             "storm": self._parse_int_config("LEAGUES_STORMFORGED_THREAD_ID"),
         }
         announcement_id = self._parse_int_config("ANNOUNCEMENT_CHANNEL_ID")
-
         targets: dict[str, discord.abc.Messageable] = {}
         missing_targets: list[str] = []
-
         for slug, channel_id in channel_ids.items():
             channel = await self._resolve_channel(channel_id)
             if channel is None:
                 missing_targets.append(slug)
             else:
                 targets[slug] = channel
-
         announcement_channel = await self._resolve_channel(announcement_id)
         if announcement_channel is None:
             missing_targets.append("announcement")
-
         if missing_targets:
-            reason = f"missing targets: {', '.join(sorted(missing_targets))}"
-            await self._post_status(
-                status_channel,
-                f"❌ C1C Leagues job failed\nTrigger: {trigger}\nReason: {reason}.",
-                trigger=trigger,
-            )
-            return False
+            return await fail(f"missing targets: {', '.join(sorted(missing_targets))}")
 
         try:
             bundles = await aload_league_bundles(sheet_id, config_tab=self._config_tab_name())
         except LeaguesConfigError as exc:
-            await self._post_status(
-                status_channel,
-                f"❌ C1C Leagues job failed\nTrigger: {trigger}\nReason: {exc}.",
-                trigger=trigger,
-            )
-            return False
+            return await fail(str(exc))
         except Exception as exc:
             log.exception("leagues config load failed")
-            await self._post_status(
-                status_channel,
-                f"❌ C1C Leagues job failed\nTrigger: {trigger}\nReason: config load error: {exc}.",
-                trigger=trigger,
-            )
-            return False
+            return await fail(f"config load error: {exc}")
 
         validation_error = self._validate_bundles(bundles)
         if validation_error:
-            await self._post_status(
-                status_channel,
-                f"❌ C1C Leagues job failed\nTrigger: {trigger}\nReason: {validation_error}.",
-                trigger=trigger,
-            )
-            return False
+            return await fail(validation_error)
 
-        capture_week = week_key
+        if await self._publish_state_sheet(sheet_id) is None:
+            return await fail("LeaguePublishState is unavailable or misconfigured.")
+
+        initial_updates: dict[str, object] = {
+            "status": "posting",
+            "updated_at_utc": self._utc_iso(),
+        }
+        if approval_row is not None:
+            for key in (
+                "prepare_status",
+                "legendary_status",
+                "rising_status",
+                "storm_status",
+                "announcement_status",
+            ):
+                if not approval_row["values"].get(key):
+                    initial_updates[key] = "pending"
+        await self._set_job_fields(approval_row, initial_updates)
+        await self._progress_message(status_channel, approval_row, week_key, state="running")
+
         try:
             history_summary = await capture_weekly_history(
                 sheet_id,
                 config_tab=self._config_tab_name(),
-                week_key=capture_week,
+                week_key=week_key,
                 trigger=trigger,
             )
         except Exception as exc:
-            log.exception(
-                "league history capture failed",
-                extra={
-                    "week_key": capture_week,
-                    "failure": str(exc),
-                    "failure_type": type(exc).__name__,
-                    "validation_or_conflict_failure": isinstance(
-                        exc, HistoryCaptureError
-                    ),
-                },
-            )
-            await self._post_status(
-                status_channel,
-                f"❌ C1C Leagues job failed\nTrigger: {trigger}\nReason: history capture failed: {exc}.",
-                trigger=trigger,
-            )
-            return False
+            log.exception("league history capture failed", extra={"week_key": week_key})
+            return await fail(f"history capture failed: {exc}")
+
+        # Phase 1: render every asset needed by this run before publishing anything.
+        await self._set_job_fields(
+            approval_row,
+            {"prepare_status": "preparing", "updated_at_utc": self._utc_iso()},
+        )
+        await self._progress_message(status_channel, approval_row, week_key, state="running")
 
         loop = asyncio.get_running_loop()
-        posted_messages: list[discord.Message] = []
-        jump_links: dict[str, str] = {}
-        now = dt.datetime.now(dt.timezone.utc)
-
+        prepared: dict[str, tuple[discord.File, list[discord.File]]] = {}
         for bundle in bundles:
-            channel = targets[bundle.slug]
-
+            current = approval_row["values"].get(f"{bundle.slug}_status", "pending") if approval_row else "pending"
+            if current == "posted":
+                continue
             header_file = await self._export_header_image(loop, sheet_id, bundle)
             if isinstance(header_file, str):
-                await self._post_status(
-                    status_channel,
-                    f"❌ C1C Leagues job failed\nTrigger: {trigger}\nReason: {header_file}.",
-                    trigger=trigger,
-                )
-                return False
-
-            title = self._league_title(bundle, now)
-            try:
-                header_msg = await channel.send(content=title, file=header_file)
-            except Exception as exc:
-                log.exception("failed to send league header", extra={"league": bundle.slug})
-                await self._cleanup_posts(posted_messages)
-                await self._post_status(
-                    status_channel,
-                    f"❌ C1C Leagues job failed\nTrigger: {trigger}\nReason: sending {bundle.display_name} header failed ({exc}).",
-                    trigger=trigger,
-                )
-                return False
-
-            posted_messages.append(header_msg)
-            jump_links[bundle.slug] = header_msg.jump_url
-
+                await self._set_job_fields(approval_row, {"prepare_status": "failed"})
+                return await fail(header_file)
             board_files = await self._export_board_images(loop, sheet_id, bundle)
             if isinstance(board_files, str):
-                await self._cleanup_posts(posted_messages)
-                await self._post_status(
-                    status_channel,
-                    f"❌ C1C Leagues job failed\nTrigger: {trigger}\nReason: {board_files}.",
-                    trigger=trigger,
-                )
-                return False
+                await self._set_job_fields(approval_row, {"prepare_status": "failed"})
+                return await fail(board_files)
+            prepared[bundle.slug] = (header_file, board_files)
 
-            for board_file in board_files:
-                try:
-                    message = await channel.send(file=board_file)
-                except Exception as exc:
-                    log.exception("failed to send league board", extra={"league": bundle.slug})
-                    await self._cleanup_posts(posted_messages)
-                    await self._post_status(
-                        status_channel,
-                        f"❌ C1C Leagues job failed\nTrigger: {trigger}\nReason: sending {bundle.display_name} board failed ({exc}).",
-                        trigger=trigger,
-                    )
-                    return False
-                posted_messages.append(message)
-
-        announcement_text = self._build_announcement(bundles, jump_links)
-        announcement_embed = discord.Embed(description=announcement_text)
-        announcement_embed.set_footer(
-            text=(
-                "Want to keep up to date with our C1C League Leaderboards? Click the 🏆 emoji to subscribe. "
-                "To unsubscribe, remove your reaction."
-            )
+        await self._set_job_fields(
+            approval_row,
+            {"prepare_status": "ready", "updated_at_utc": self._utc_iso()},
         )
+        await self._progress_message(status_channel, approval_row, week_key, state="running")
 
-        reaction_roles_attached: int | None = None
-        try:
-            announcement_message = await announcement_channel.send(
-                content=self._league_role_mention(),
-                embed=announcement_embed,
-            )
-        except Exception:
-            log.exception("leagues announcement failed")
-            await self._post_status(
-                status_channel,
-                "⚠️ C1C Leagues boards posted, but announcement failed – check ANNOUNCEMENT_CHANNEL_ID and permissions.",
-                trigger=trigger,
-            )
-            return False
-        else:
+        # Phase 2: reconcile partial components and publish only unfinished leagues.
+        jump_links: dict[str, str] = {}
+        now = dt.datetime.now(dt.timezone.utc)
+        for bundle in bundles:
+            channel = targets[bundle.slug]
+            status_key = f"{bundle.slug}_status"
+            current = approval_row["values"].get(status_key, "pending") if approval_row else "pending"
+            if current == "posted":
+                link = await self._component_header_link(sheet_id, week_key, bundle.slug, channel)
+                if not link:
+                    await self._set_job_fields(approval_row, {status_key: "failed"})
+                    return await fail(f"{bundle.display_name} is marked posted but its recorded header message is missing.")
+                jump_links[bundle.slug] = link
+                continue
+
+            if current in {"partial", "posting", "failed"}:
+                try:
+                    await self._cleanup_partial_component(sheet_id, week_key, bundle.slug, channel)
+                except Exception as exc:
+                    await self._set_job_fields(approval_row, {status_key: "failed"})
+                    return await fail(f"cleanup of partial {bundle.display_name} post failed ({exc}).")
+
+            await self._set_job_fields(approval_row, {status_key: "posting"})
+            await self._progress_message(status_channel, approval_row, week_key, state="running")
+            header_file, board_files = prepared[bundle.slug]
             try:
+                header_msg = await channel.send(content=self._league_title(bundle, now), file=header_file)
+                try:
+                    await self._record_publish_message(sheet_id, week_key, bundle.slug, "header", header_msg)
+                except Exception:
+                    await header_msg.delete()
+                    raise
+                jump_links[bundle.slug] = header_msg.jump_url
+                for board_file in board_files:
+                    message = await channel.send(file=board_file)
+                    try:
+                        await self._record_publish_message(sheet_id, week_key, bundle.slug, "board", message)
+                    except Exception:
+                        await message.delete()
+                        raise
+            except Exception as exc:
+                log.exception("league component publish failed", extra={"league": bundle.slug})
+                await self._set_job_fields(approval_row, {status_key: "partial"})
+                return await fail(f"sending {bundle.display_name} failed ({exc}).")
+
+            await self._set_job_fields(approval_row, {status_key: "posted"})
+            await self._progress_message(status_channel, approval_row, week_key, state="running")
+
+        announcement_status = approval_row["values"].get("announcement_status", "pending") if approval_row else "pending"
+        if announcement_status != "posted":
+            if announcement_status in {"partial", "posting", "failed"}:
+                try:
+                    await self._cleanup_partial_component(sheet_id, week_key, "announcement", announcement_channel)
+                except Exception as exc:
+                    await self._set_job_fields(approval_row, {"announcement_status": "failed"})
+                    return await fail(f"cleanup of partial announcement failed ({exc}).")
+
+            await self._set_job_fields(approval_row, {"announcement_status": "posting"})
+            await self._progress_message(status_channel, approval_row, week_key, state="running")
+            announcement_text = self._build_announcement(bundles, jump_links)
+            announcement_embed = discord.Embed(description=announcement_text)
+            announcement_embed.set_footer(
+                text=(
+                    "Want to keep up to date with our C1C League Leaderboards? Click the 🏆 emoji to subscribe. "
+                    "To unsubscribe, remove your reaction."
+                )
+            )
+            try:
+                announcement_message = await announcement_channel.send(
+                    content=self._league_role_mention(), embed=announcement_embed
+                )
+                try:
+                    await self._record_publish_message(
+                        sheet_id, week_key, "announcement", "announcement", announcement_message
+                    )
+                except Exception:
+                    await announcement_message.delete()
+                    raise
                 rr: ReactionRolesCog | None = self.bot.get_cog("ReactionRolesCog")  # type: ignore[name-defined]
                 if rr is not None:
-                    reaction_roles_attached = await rr.attach_to_message(
-                        announcement_message, key="leagues"
-                    )
-            except Exception:
-                reaction_roles_attached = None
-                log.exception("leagues reaction-roles wiring failed")
+                    await rr.attach_to_message(announcement_message, key="leagues")
+            except Exception as exc:
+                log.exception("leagues announcement failed")
+                await self._set_job_fields(approval_row, {"announcement_status": "partial"})
+                return await fail(f"league announcement/reaction-role setup failed ({exc}).")
+            await self._set_job_fields(approval_row, {"announcement_status": "posted"})
 
-        log.info(
-            "📣 leagues: announcement posted",
-            extra={
-                "images": len(posted_messages),
-                "announcement_id": getattr(announcement_message, "id", None),
-                "reaction_roles": {"key": "leagues", "attached": reaction_roles_attached},
+        await self._set_job_fields(
+            approval_row,
+            {
+                "status": "posted",
+                "posted_at_utc": self._utc_iso(),
+                "last_error": "",
+                "updated_at_utc": self._utc_iso(),
             },
         )
-
-        await self._post_status(
+        await self._progress_message(
             status_channel,
-            "\n".join(
-                [
-                    "🧹 C1C Leagues job finished",
-                    f"Trigger: {trigger}",
-                    f"Leagues updated: {len(bundles)} / {len(bundles)}",
-                    "Result: all posted successfully",
-                    history_summary.status_text(),
-                    f"Timestamp: {dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
-                ]
-            ),
-            trigger=trigger,
+            approval_row,
+            week_key,
+            state="complete",
+            detail=history_summary.status_text(),
         )
         return True
 
+    async def _configured_sheet_tab(self, sheet_id: str, config_key: str) -> str | None:
+        try:
+            rows = await afetch_records(sheet_id, self._config_tab_name())
+        except Exception:
+            log.exception("league config tab lookup failed", extra={"config_key": config_key})
+            return None
+        for row in rows or []:
+            key = ""
+            value = ""
+            for column, cell in row.items():
+                normalized = str(column or "").strip().lower()
+                if normalized in {"spec_key", "key", "name"}:
+                    key = str(cell or "").strip()
+                if normalized in {"sheet_name", "sheet", "tab", "value", "val"}:
+                    value = str(cell or "").strip()
+            if key.lower() == config_key.lower() and value:
+                return value
+        log.error("league configured tab missing", extra={"config_key": config_key})
+        return None
+
+    async def _publish_state_sheet(
+        self, sheet_id: str
+    ) -> tuple[Any, dict[str, int], list[list[Any]]] | None:
+        tab_name = await self._configured_sheet_tab(sheet_id, _PUBLISH_CONFIG_KEY)
+        if not tab_name:
+            return None
+        try:
+            matrix = await afetch_values(sheet_id, tab_name)
+            worksheet = await aget_worksheet(sheet_id, tab_name)
+        except Exception:
+            log.exception("league publish state load failed", extra={"tab": tab_name})
+            return None
+        if not matrix:
+            return None
+        header = [str(cell or "").strip() for cell in matrix[0]]
+        header_map = {name: idx for idx, name in enumerate(header) if name}
+        required = {
+            "season_key", "week_key", "component", "message_type",
+            "message_id", "status", "created_at_utc", "updated_at_utc",
+        }
+        if not required.issubset(header_map):
+            log.error(
+                "league publish state missing required headers",
+                extra={"missing": sorted(required - set(header_map))},
+            )
+            return None
+        return worksheet, header_map, matrix
+
+    @staticmethod
+    def _split_durable_week(week_key: str) -> tuple[str, str]:
+        season, week = week_key.split("-W", 1)
+        return season, week.zfill(2)
+
+    async def _publish_rows(
+        self, sheet_id: str, week_key: str, component: str | None = None
+    ) -> list[dict[str, Any]]:
+        loaded = await self._publish_state_sheet(sheet_id)
+        if loaded is None:
+            return []
+        worksheet, header_map, matrix = loaded
+        season, week = self._split_durable_week(week_key)
+        found: list[dict[str, Any]] = []
+        for row_number, row in enumerate(matrix[1:], start=2):
+            values = {
+                name: (str(row[idx]).strip() if idx < len(row) else "")
+                for name, idx in header_map.items()
+            }
+            if values.get("season_key") != season or values.get("week_key") != week:
+                continue
+            if component is not None and values.get("component") != component:
+                continue
+            found.append(
+                {
+                    "worksheet": worksheet,
+                    "header_map": header_map,
+                    "row_number": row_number,
+                    "values": values,
+                }
+            )
+        return found
+
+    async def _record_publish_message(
+        self,
+        sheet_id: str,
+        week_key: str,
+        component: str,
+        message_type: str,
+        message: discord.Message,
+    ) -> None:
+        loaded = await self._publish_state_sheet(sheet_id)
+        if loaded is None:
+            raise RuntimeError("LeaguePublishState is unavailable")
+        worksheet, header_map, _matrix = loaded
+        season, week = self._split_durable_week(week_key)
+        now = self._utc_iso()
+        values = {
+            "season_key": season,
+            "week_key": week,
+            "component": component,
+            "message_type": message_type,
+            "message_id": str(message.id),
+            "status": "posted",
+            "created_at_utc": now,
+            "updated_at_utc": now,
+        }
+        ordered = [""] * len(header_map)
+        for name, idx in header_map.items():
+            if name in values:
+                ordered[idx] = values[name]
+        await acall_with_backoff(worksheet.append_row, ordered, value_input_option="RAW")
+
+    async def _mark_publish_row(self, row: dict[str, Any], status: str) -> None:
+        header_map = row["header_map"]
+        if "status" not in header_map:
+            return
+        worksheet = row["worksheet"]
+        row_number = int(row["row_number"])
+        status_col = self._column_label(header_map["status"])
+        updated_col = self._column_label(header_map["updated_at_utc"])
+        await acall_with_backoff(
+            worksheet.update,
+            f"{status_col}{row_number}",
+            [[status]],
+            value_input_option="RAW",
+        )
+        await acall_with_backoff(
+            worksheet.update,
+            f"{updated_col}{row_number}",
+            [[self._utc_iso()]],
+            value_input_option="RAW",
+        )
+
+    async def _fetch_recorded_message(
+        self, channel: discord.abc.Messageable, message_id: str
+    ) -> discord.Message | None:
+        if not hasattr(channel, "fetch_message"):
+            return None
+        try:
+            return await channel.fetch_message(int(message_id))  # type: ignore[attr-defined]
+        except discord.NotFound:
+            return None
+        except Exception:
+            log.exception("failed to fetch recorded league message", extra={"message_id": message_id})
+            return None
+
+    async def _cleanup_partial_component(
+        self,
+        sheet_id: str,
+        week_key: str,
+        component: str,
+        channel: discord.abc.Messageable,
+    ) -> None:
+        for row in await self._publish_rows(sheet_id, week_key, component):
+            if row["values"].get("status") != "posted":
+                continue
+            message = await self._fetch_recorded_message(channel, row["values"].get("message_id", ""))
+            if message is not None:
+                try:
+                    await message.delete()
+                except Exception:
+                    log.exception(
+                        "failed to delete partial league message",
+                        extra={"component": component, "message_id": row["values"].get("message_id")},
+                    )
+                    raise
+            await self._mark_publish_row(row, "deleted")
+
+    async def _component_header_link(
+        self,
+        sheet_id: str,
+        week_key: str,
+        component: str,
+        channel: discord.abc.Messageable,
+    ) -> str | None:
+        for row in await self._publish_rows(sheet_id, week_key, component):
+            values = row["values"]
+            if values.get("status") != "posted" or values.get("message_type") != "header":
+                continue
+            message = await self._fetch_recorded_message(channel, values.get("message_id", ""))
+            if message is not None:
+                return message.jump_url
+        return None
+
+    async def _set_job_fields(
+        self, row: dict[str, Any] | None, updates: Mapping[str, object]
+    ) -> None:
+        if row is None:
+            return
+        await self._update_approval_row(row, updates)
+        row["values"].update({key: str(value) for key, value in updates.items()})
+
+    def _progress_text(
+        self,
+        row: dict[str, Any] | None,
+        week_key: str,
+        *,
+        state: str,
+        detail: str = "",
+    ) -> str:
+        values = row["values"] if row is not None else {}
+        labels = {
+            "pending": "⏸️ waiting",
+            "preparing": "🔄 preparing",
+            "ready": "✅ ready",
+            "posting": "🔄 posting",
+            "partial": "⚠️ partial",
+            "posted": "✅ posted",
+            "failed": "❌ failed",
+        }
+        overall = {
+            "running": "🔄 Running",
+            "recovery": "🔄 Recovery running",
+            "failed": "❌ Failed",
+            "complete": "✅ Complete",
+        }.get(state, state)
+        lines = [
+            "## 🏆 C1C Leagues — Weekly Update",
+            f"**Week:** {week_key}",
+            f"**Status:** {overall}",
+            "",
+            f"📸 Images — {labels.get(values.get('prepare_status', 'pending'), values.get('prepare_status', 'pending'))}",
+            f"🦅 Legendary League — {labels.get(values.get('legendary_status', 'pending'), values.get('legendary_status', 'pending'))}",
+            f"🌟 Rising Stars League — {labels.get(values.get('rising_status', 'pending'), values.get('rising_status', 'pending'))}",
+            f"⚡ Stormforged League — {labels.get(values.get('storm_status', 'pending'), values.get('storm_status', 'pending'))}",
+            f"📣 Announcement — {labels.get(values.get('announcement_status', 'pending'), values.get('announcement_status', 'pending'))}",
+        ]
+        if detail:
+            lines.extend(["", detail[:900]])
+        lines.extend(["", f"**Last update:** {dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"])
+        return "\n".join(lines)
+
+    async def _progress_message(
+        self,
+        channel: discord.abc.Messageable | None,
+        row: dict[str, Any] | None,
+        week_key: str,
+        *,
+        state: str,
+        detail: str = "",
+    ) -> discord.Message | None:
+        if channel is None:
+            return None
+        content = self._progress_text(row, week_key, state=state, detail=detail)
+        view: discord.ui.View | None = LeagueRetryView(self) if state == "failed" else None
+        message: discord.Message | None = None
+        existing_id = (row["values"].get("progress_message_id", "") if row else "").strip()
+        if existing_id and hasattr(channel, "fetch_message"):
+            try:
+                message = await channel.fetch_message(int(existing_id))  # type: ignore[attr-defined]
+            except Exception:
+                message = None
+        try:
+            if message is None:
+                message = await channel.send(content, view=view)
+                await self._set_job_fields(row, {"progress_message_id": str(message.id)})
+            else:
+                await message.edit(content=content, view=view)
+        except Exception:
+            log.exception("failed to update leagues progress message")
+            return message
+        return message
+
+    async def _is_retry_admin(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id in self._admin_ids():
+            return True
+        member = interaction.user
+        return isinstance(member, discord.Member) and is_admin_member(member)
+
+    async def _handle_retry_interaction(self, interaction: discord.Interaction) -> None:
+        if not await self._is_retry_admin(interaction):
+            await interaction.response.send_message("You are not allowed to retry this league job.", ephemeral=True)
+            return
+        progress_id = str(getattr(interaction.message, "id", ""))
+        loaded = await self._approval_sheet()
+        row = None
+        if loaded is not None:
+            tab_name, worksheet, header_map, matrix = loaded
+            for row_number, raw in enumerate(matrix[1:], start=2):
+                values = {
+                    name: (str(raw[idx]).strip() if idx < len(raw) else "")
+                    for name, idx in header_map.items()
+                }
+                if values.get("progress_message_id") == progress_id:
+                    row = {
+                        "tab": tab_name,
+                        "worksheet": worksheet,
+                        "header_map": header_map,
+                        "row_number": row_number,
+                        "values": values,
+                    }
+                    break
+        if row is None:
+            await interaction.response.send_message("I could not find the league job state for this message.", ephemeral=True)
+            return
+        if row["values"].get("status") == "posted" or row["values"].get("posted_at_utc"):
+            await interaction.response.send_message("This league job is already complete.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        durable_week = self._format_week_key(row["values"].get("season_key"), row["values"].get("week_key"))
+        await self._set_job_fields(
+            row,
+            {"status": "posting", "last_error": "", "updated_at_utc": self._utc_iso()},
+        )
+        await self._progress_message(interaction.channel, row, durable_week, state="recovery", detail=f"Recovery requested by <@{interaction.user.id}>.")
+        try:
+            ok = await self.run_leagues_job(
+                trigger="retry_button",
+                status_channel=interaction.channel,
+                week_key=durable_week,
+            )
+        except Exception as exc:
+            ok = False
+            error = f"{type(exc).__name__}: {exc}"
+            log.exception("league recovery failed")
+        else:
+            error = "" if ok else row["values"].get("last_error", "posting job returned failure")
+        fresh = await self._find_approval_row_for_week(
+            row["values"].get("season_key", ""), row["values"].get("week_key", "")
+        )
+        await self._set_job_fields(
+            fresh,
+            {
+                "status": "posted" if ok else "failed",
+                "posted_at_utc": self._utc_iso() if ok else "",
+                "updated_at_utc": self._utc_iso(),
+                "last_error": error[:500],
+            },
+        )
+        await interaction.followup.send(
+            "League recovery completed." if ok else "League recovery stopped again; the status message has the failure.",
+            ephemeral=True,
+        )
+
     @staticmethod
     async def _cleanup_posts(messages: list[discord.Message]) -> None:
+        # Kept for compatibility with older callers/tests. New league publication
+        # recovery uses durable per-component message records instead.
         for message in messages:
             try:
                 await message.delete()
@@ -960,32 +1390,46 @@ class LeaguesCog(commands.Cog):
     ) -> discord.File | str:
         try:
             gid = await loop.run_in_executor(None, get_tab_gid, sheet_id, spec.sheet_name)
-        except Exception:
+        except Exception as exc:
             log.exception("gid lookup failed", extra={"key": spec.key, "tab": spec.sheet_name})
-            return f"{slug.title()}: gid lookup failed for {spec.key}"
-
+            return f"{slug.title()}: gid lookup failed for {spec.key} ({exc})"
         if gid is None:
             return f"{slug.title()}: gid missing for {spec.sheet_name}"
 
-        try:
-            png_bytes = await export_pdf_as_png(
-                sheet_id,
-                gid,
-                spec.cell_range,
-                log_context={
-                    "label": spec.key,
-                    "tab": spec.sheet_name,
-                    "range": spec.cell_range,
-                },
-            )
-        except Exception:
-            log.exception("export failed", extra={"key": spec.key, "tab": spec.sheet_name})
-            return f"{slug.title()}: export failed for {spec.key}"
+        last_error = "unknown export failure"
+        for attempt in range(1, 4):
+            try:
+                png_bytes = await export_pdf_as_png(
+                    sheet_id,
+                    gid,
+                    spec.cell_range,
+                    log_context={
+                        "label": spec.key,
+                        "tab": spec.sheet_name,
+                        "range": spec.cell_range,
+                        "attempt": attempt,
+                    },
+                    raise_on_failure=True,
+                )
+                if png_bytes:
+                    return discord.File(fp=io.BytesIO(png_bytes), filename=filename)
+                last_error = "export returned no data"
+            except ImageExportError as exc:
+                last_error = str(exc)
+                log.warning(
+                    "league image export attempt failed",
+                    extra={"key": spec.key, "attempt": attempt, "reason": last_error},
+                )
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                log.exception(
+                    "league image export attempt failed",
+                    extra={"key": spec.key, "attempt": attempt},
+                )
+            if attempt < 3:
+                await asyncio.sleep(attempt)
 
-        if not png_bytes:
-            return f"{slug.title()}: export returned no data for {spec.key}"
-
-        return discord.File(fp=io.BytesIO(png_bytes), filename=filename)
+        return f"{slug.title()}: {spec.key} export failed after 3 attempts ({last_error})"
 
     def _league_role_mention(self) -> str:
         role_id = self._parse_int_config("C1C_LEAGUE_ROLE_ID")

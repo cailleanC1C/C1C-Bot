@@ -359,6 +359,15 @@ def test_reaction_approval_runtime_uses_async_league_config_loader(monkeypatch):
     monkeypatch.setattr(cog, "_export_header_image", _export_header)
     monkeypatch.setattr(cog, "_export_board_images", _export_boards)
 
+    async def _publish_state_sheet(_sheet_id):
+        return (SimpleNamespace(), {}, [[]])
+
+    async def _record_publish_message(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(cog, "_publish_state_sheet", _publish_state_sheet)
+    monkeypatch.setattr(cog, "_record_publish_message", _record_publish_message)
+
     asyncio.run(cog.on_raw_reaction_add(_LeagueApprovalPayload()))
 
     assert calls["async_loader"] == 1

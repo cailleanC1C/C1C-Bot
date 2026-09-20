@@ -209,9 +209,18 @@ def test_capture_failure_prevents_first_export_or_board_send(monkeypatch):
 
     async def status(*_a, **_k):
         events.append("status")
+        return None
+
+    async def approval_row(*_a, **_k):
+        return None
+
+    async def publish_state(*_a, **_k):
+        return (SimpleNamespace(), {}, [[]])
 
     monkeypatch.setattr(cog, "_resolve_channel", resolve)
-    monkeypatch.setattr(cog, "_post_status", status)
+    monkeypatch.setattr(cog, "_progress_message", status)
+    monkeypatch.setattr(cog, "_find_approval_row_for_week", approval_row)
+    monkeypatch.setattr(cog, "_publish_state_sheet", publish_state)
     monkeypatch.setattr(cog, "_export_header_image", export)
     monkeypatch.setattr(leagues_cog, "aload_league_bundles", load)
     monkeypatch.setattr(leagues_cog, "capture_weekly_history", capture)
@@ -219,7 +228,7 @@ def test_capture_failure_prevents_first_export_or_board_send(monkeypatch):
     assert asyncio.run(cog._run_leagues_job(
         trigger="command", status_channel=channel, week_key="2026-W31"
     )) is False
-    assert events == ["capture", "status"]
+    assert events == ["status", "capture", "status"]
 
 
 def test_configured_columns_accept_both_a1_range_boundaries(monkeypatch):

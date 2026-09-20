@@ -4,7 +4,6 @@ import asyncio
 import io
 import json
 import logging
-import os
 from typing import Any, Dict
 
 import importlib.util
@@ -13,6 +12,7 @@ from PIL import Image, ImageChops
 from google.auth.transport.requests import Request
 from google.oauth2.service_account import Credentials
 
+from shared.config import cfg
 from shared.sheets import core as sheets_core
 
 log = logging.getLogger("c1c.sheets.export")
@@ -77,7 +77,7 @@ def _export_delay_seconds() -> float:
     Empty / missing / invalid / <= 0 -> 0.0 (no delay)
     """
 
-    raw = os.getenv("SHEETS_EXPORT_DELAY_MS", "").strip()
+    raw = str(cfg.get("SHEETS_EXPORT_DELAY_MS", "") or "").strip()
     if not raw:
         return 0.0
     try:
@@ -107,9 +107,9 @@ async def _sleep_after_export(label: str | None) -> None:
 
 
 def _service_account_info() -> Dict[str, Any]:
-    raw = (
-        os.getenv("GSPREAD_CREDENTIALS")
-        or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    raw = str(
+        cfg.get("GSPREAD_CREDENTIALS", "")
+        or cfg.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
         or ""
     )
     if not raw:
@@ -243,18 +243,24 @@ def _export_pdf_as_png_sync(
     fit_range_to_one_page: bool = False,
     fail_on_multi_page: bool = True,
     crop_to_content: bool = True,
+    raise_on_failure: bool = False,
 ) -> bytes | None:
     context = {"range": cell_range}
     context.update(log_context or {})
 
+    def fail(reason: str) -> None:
+        _log_error(reason, log_context=context)
+        if raise_on_failure:
+            raise ImageExportError(reason)
+
     try:
         headers = _get_service_account_headers()
     except Exception as exc:  # pragma: no cover - network/auth failure
-        _log_error(f"auth_failure:{exc}", log_context=context)
+        fail(f"auth_failure:{exc}")
         return None
 
     if not gid and gid != 0:
-        _log_error("missing_gid", log_context=context)
+        fail("missing_gid")
         return None
 
     try:
@@ -270,27 +276,30 @@ def _export_pdf_as_png_sync(
             timeout=20,
         )
     except Exception as exc:  # pragma: no cover - network failure
-        _log_error(f"pdf_request_failed:{exc}", log_context=context)
+        fail(f"pdf_request_failed:{exc}")
         return None
 
     if response.status_code != 200:
-        _log_error(
-            f"pdf_export_status_{response.status_code}",
-            log_context={**context, "status": response.status_code},
-        )
+        reason = f"pdf_export_status_{response.status_code}"
+        _log_error(reason, log_context={**context, "status": response.status_code})
+        if raise_on_failure:
+            raise ImageExportError(reason)
         return None
 
     pdf_content = response.content or b""
     if not pdf_content:
-        _log_error("empty_pdf_response", log_context=context)
+        fail("empty_pdf_response")
         return None
 
     try:
-        return _convert_pdf_to_png(
+        png = _convert_pdf_to_png(
             pdf_content,
             fail_on_multi_page=fail_on_multi_page,
             crop_to_content=crop_to_content,
         )
+        if png is None and raise_on_failure:
+            raise ImageExportError("pdf_rasterization_returned_no_data")
+        return png
     except ImageExportError as exc:
         page_count = exc.page_count
         _log_error(
@@ -313,6 +322,7 @@ async def export_pdf_as_png(
     fit_range_to_one_page: bool = False,
     fail_on_multi_page: bool = True,
     crop_to_content: bool = True,
+    raise_on_failure: bool = False,
 ) -> bytes | None:
     label = ""
     if log_context:
@@ -328,6 +338,7 @@ async def export_pdf_as_png(
             fit_range_to_one_page=fit_range_to_one_page,
             fail_on_multi_page=fail_on_multi_page,
             crop_to_content=crop_to_content,
+            raise_on_failure=raise_on_failure,
         )
     finally:
         await _sleep_after_export(label)
