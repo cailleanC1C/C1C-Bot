@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
+import email.utils
 import io
 import json
 import logging
@@ -65,9 +67,16 @@ def _trim_outer_whitespace(image: Image.Image) -> Image.Image:
 class ImageExportError(RuntimeError):
     """Raised when a sheet image export would be unsafe to post."""
 
-    def __init__(self, message: str, *, page_count: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        page_count: int | None = None,
+        retry_after_seconds: float | None = None,
+    ) -> None:
         super().__init__(message)
         self.page_count = page_count
+        self.retry_after_seconds = retry_after_seconds
 
 
 def _export_delay_seconds() -> float:
@@ -234,6 +243,25 @@ def _build_pdf_export_params(
     return params
 
 
+def _retry_after_seconds(response: requests.Response) -> float | None:
+    """Return a positive Retry-After delay from seconds or an HTTP date."""
+
+    raw = str(response.headers.get("Retry-After", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        try:
+            retry_at = email.utils.parsedate_to_datetime(raw)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=dt.timezone.utc)
+            seconds = (retry_at - dt.datetime.now(dt.timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return seconds if seconds > 0 else None
+
+
 def _export_pdf_as_png_sync(
     sheet_id: str,
     gid: str | int | None,
@@ -283,7 +311,10 @@ def _export_pdf_as_png_sync(
         reason = f"pdf_export_status_{response.status_code}"
         _log_error(reason, log_context={**context, "status": response.status_code})
         if raise_on_failure:
-            raise ImageExportError(reason)
+            raise ImageExportError(
+                reason,
+                retry_after_seconds=_retry_after_seconds(response),
+            )
         return None
 
     pdf_content = response.content or b""
