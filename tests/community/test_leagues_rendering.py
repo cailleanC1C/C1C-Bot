@@ -345,7 +345,7 @@ def test_reaction_approval_runtime_uses_async_league_config_loader(monkeypatch):
     monkeypatch.setattr(leagues_cog, "aload_league_bundles", _async_loader)
 
     async def _capture(*_args, **kwargs):
-        assert kwargs["week_key"] == "2026-W26"
+        assert kwargs["week_key"] == "2026-W25"
         return SimpleNamespace(status_text=lambda: "History: captured")
 
     monkeypatch.setattr(leagues_cog, "capture_weekly_history", _capture)
