@@ -47,8 +47,10 @@ def test_export_spec_retries_transient_export_failure(monkeypatch) -> None:
             raise ImageExportError("pdf_export_status_503")
         return b"png-data"
 
-    async def _sleep(_seconds):
-        return None
+    sleeps = []
+
+    async def _sleep(seconds):
+        sleeps.append(seconds)
 
     monkeypatch.setattr(leagues_cog, "export_pdf_as_png", _export)
     monkeypatch.setattr(leagues_cog.asyncio, "sleep", _sleep)
@@ -77,6 +79,7 @@ def test_export_spec_retries_transient_export_failure(monkeypatch) -> None:
 
     assert isinstance(result, discord.File)
     assert calls["count"] == 3
+    assert sleeps == [30.0, 60.0, 30.0]
 
 
 def test_export_spec_reports_terminal_reason_after_three_attempts(monkeypatch) -> None:
@@ -120,6 +123,56 @@ def test_export_spec_reports_terminal_reason_after_three_attempts(monkeypatch) -
     assert isinstance(result, str)
     assert "LEAGUE_RISING_HEADER export failed after 3 attempts" in result
     assert "empty_pdf_response" in result
+
+
+def test_export_spec_uses_conservative_429_backoff_and_retry_after(monkeypatch) -> None:
+    from modules.community.leagues import cog as leagues_cog
+
+    calls = {"count": 0}
+    sleeps = []
+
+    async def _export(*_args, **_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise ImageExportError("pdf_export_status_429")
+        if calls["count"] == 2:
+            raise ImageExportError("pdf_export_status_429", retry_after_seconds=180.0)
+        return b"png-data"
+
+    async def _sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(leagues_cog, "export_pdf_as_png", _export)
+    monkeypatch.setattr(leagues_cog.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(leagues_cog, "get_tab_gid", lambda *_args: "123")
+
+    spec = LeagueSpec(
+        key="LEAGUE_LEGENDARY_6",
+        slug="legendary",
+        kind="board",
+        index=6,
+        sheet_name="Legendary",
+        cell_range="A185:M212",
+    )
+    cog = LeaguesCog(SimpleNamespace())
+
+    async def _run():
+        return await cog._export_spec(
+            asyncio.get_running_loop(),
+            "sheet",
+            "legendary",
+            spec,
+            filename="legendary_6.png",
+        )
+
+    result = asyncio.run(_run())
+
+    assert isinstance(result, discord.File)
+    assert calls["count"] == 3
+    # First 429 uses our 60s floor. The second honors Google's longer
+    # Retry-After instead of our 120s floor. A successful export is then
+    # followed by the normal 30s pacing delay.
+    assert sleeps == [60.0, 180.0, 30.0]
 
 
 def test_publish_rows_keeps_each_message_id_in_its_own_row(monkeypatch) -> None:
