@@ -90,6 +90,50 @@ class LeaguesCog(commands.Cog):
     async def cog_load(self) -> None:
         # Persistent custom_id keeps recovery usable after a bot restart.
         self.bot.add_view(LeagueRetryView(self))
+        self._stale_recovery_task = asyncio.create_task(self._recover_stale_jobs_after_ready())
+
+    def cog_unload(self) -> None:
+        task = getattr(self, "_stale_recovery_task", None)
+        if task is not None:
+            task.cancel()
+
+    async def _recover_stale_jobs_after_ready(self) -> None:
+        try:
+            await self.bot.wait_until_ready()
+            loaded = await self._approval_sheet()
+            if loaded is None:
+                return
+            tab_name, worksheet, header_map, matrix = loaded
+            for row_number, raw in enumerate(matrix[1:], start=2):
+                values = {
+                    name: (str(raw[idx]).strip() if idx < len(raw) else "")
+                    for name, idx in header_map.items()
+                }
+                if values.get("status", "").lower() != "posting":
+                    continue
+                row = {
+                    "tab": tab_name,
+                    "worksheet": worksheet,
+                    "header_map": header_map,
+                    "row_number": row_number,
+                    "values": values,
+                }
+                reason = "Previous league job was interrupted by a bot restart; use Retry Failed Step to resume safely."
+                await self._set_job_fields(
+                    row,
+                    {"status": "failed", "last_error": reason, "updated_at_utc": self._utc_iso()},
+                )
+                try:
+                    channel_id = int(values.get("prompt_channel_id", ""))
+                    channel = await self._resolve_channel(channel_id)
+                    durable_week = self._format_week_key(values.get("season_key"), values.get("week_key"))
+                except (TypeError, ValueError, HistoryCaptureError):
+                    continue
+                await self._progress_message(channel, row, durable_week, state="failed", detail=f"**Error:** {reason}")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("failed to recover stale league jobs")
 
     # === Helpers ===
     @staticmethod
@@ -364,7 +408,7 @@ class LeaguesCog(commands.Cog):
             error = f"{type(exc).__name__}: {exc}"
             log.exception("league board publish failed", extra={"reason": error})
         else:
-            error = "" if ok else "posting job returned failure"
+            error = "" if ok else ""
 
         posted_at = ""
         async with self._approval_lock:
@@ -377,7 +421,11 @@ class LeaguesCog(commands.Cog):
                         "status": "posted" if ok else "failed",
                         "posted_at_utc": posted_at,
                         "updated_at_utc": self._utc_iso(),
-                        "last_error": error[:500],
+                        "last_error": (
+                            error[:500]
+                            if error
+                            else ("" if ok else fresh["values"].get("last_error", "posting job returned failure")[:500])
+                        ),
                     },
                 )
         log.info(
