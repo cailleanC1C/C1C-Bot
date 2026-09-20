@@ -23,12 +23,13 @@ from __future__ import annotations
 import asyncio
 import collections
 import logging
-import os
 import random
 import time
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, Awaitable, Callable, Deque, Dict, Mapping, TypeVar
+
+from shared.config import cfg
 
 T = TypeVar("T")
 Loader = Callable[[], Awaitable[T]]
@@ -739,7 +740,7 @@ def _safe_meta(value: object) -> str:
 
 
 def _read_budget_from_env() -> int:
-    raw = str(os.getenv("SHEETS_READ_BUDGET_RPM", "") or "").strip()
+    raw = str(cfg.get("SHEETS_READ_BUDGET_RPM", "") or "").strip()
     if not raw:
         return _DEFAULT_READ_BUDGET_RPM
     try:
