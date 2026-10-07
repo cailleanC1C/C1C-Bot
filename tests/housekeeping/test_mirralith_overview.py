@@ -31,7 +31,9 @@ async def test_export_spec_retries_retryable_failure_then_succeeds(monkeypatch):
 
     assert result == b"png"
     assert len(attempts) == 2
-    assert sleeps == [0.25]
+    # Match the league exporter: a 429 has a 60s floor even when Google's
+    # Retry-After is shorter, then successful exports get 30s pacing.
+    assert sleeps == [60.0, 30.0]
     assert attempts[0][1]["raise_on_failure"] is True
 
 
@@ -61,7 +63,7 @@ async def test_export_spec_reports_final_retryable_failure(monkeypatch):
         )
 
     assert attempts == mirralith._EXPORT_MAX_ATTEMPTS
-    assert sleeps == [1.0, 2.0]
+    assert sleeps == [30.0, 60.0]
 
 
 @pytest.mark.asyncio
