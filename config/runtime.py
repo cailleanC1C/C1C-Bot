@@ -25,17 +25,6 @@ def get_bot_name(default: str = "C1C-Recruitment") -> str:
     return os.getenv("BOT_NAME", default)
 
 
-def get_deployment_commit(default: str = "unknown") -> str:
-    """Return the deployment commit SHA exposed by the hosting/runtime environment."""
-
-    return (
-        os.getenv("RENDER_GIT_COMMIT")
-        or os.getenv("GIT_COMMIT_SHA")
-        or os.getenv("COMMIT_SHA")
-        or default
-    )
-
-
 def get_admin_ids() -> List[int]:
     """
     ADMIN_IDS can be:
