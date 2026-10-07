@@ -810,7 +810,14 @@ def get_bot_name(default: str = "C1C-Recruitment") -> str:
 
 
 def get_deployment_commit(default: str = "unknown") -> str:
-    return _runtime.get_deployment_commit(default)
+    """Return the deployment commit SHA exposed by the hosting/runtime environment."""
+
+    return (
+        os.getenv("RENDER_GIT_COMMIT")
+        or os.getenv("GIT_COMMIT_SHA")
+        or os.getenv("COMMIT_SHA")
+        or default
+    )
 
 
 def get_watchdog_check_sec(default_prod: int = 360, default_nonprod: int = 60) -> int:
