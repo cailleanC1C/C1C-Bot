@@ -87,3 +87,33 @@ async def test_export_spec_does_not_retry_nonretryable_failure(monkeypatch):
         )
 
     assert attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_export_spec_429_honors_longer_google_retry_after(monkeypatch):
+    attempts = 0
+    sleeps = []
+
+    async def export(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ImageExportError("pdf_export_status_429", retry_after_seconds=180.0)
+        return b"png"
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(mirralith, "export_pdf_as_png", export)
+    monkeypatch.setattr(mirralith.asyncio, "sleep", sleep)
+
+    result = await mirralith._export_spec_with_retry(
+        "sheet123",
+        "456",
+        "A65:F69",
+        label="[MIRRALITH_CLUSTER_BEGINNER]",
+        tab_name="cluster_structure",
+    )
+
+    assert result == b"png"
+    assert sleeps == [180.0, 30.0]
