@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
+
+from shared.config import get_deployment_commit
 
 
 STARTUP_PHASES = (
@@ -17,12 +18,7 @@ STARTUP_PHASES = (
 def deployment_identity(*, version: object, env: object) -> str:
     """Return a compact deployment identity using Render's commit metadata when present."""
 
-    commit = (
-        os.getenv("RENDER_GIT_COMMIT")
-        or os.getenv("GIT_COMMIT_SHA")
-        or os.getenv("COMMIT_SHA")
-        or "unknown"
-    )
+    commit = get_deployment_commit()
     short_commit = commit[:7] if commit != "unknown" else commit
     return f"commit={short_commit} • version={version or 'dev'} • env={env or 'unknown'}"
 
