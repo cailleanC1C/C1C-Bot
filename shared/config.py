@@ -19,6 +19,7 @@ __all__ = [
     "get_config_snapshot",
     "get_env_name",
     "get_bot_name",
+    "get_deployment_commit",
     "get_watchdog_check_sec",
     "get_watchdog_stall_sec",
     "get_watchdog_disconnect_grace_sec",
@@ -806,6 +807,17 @@ def get_env_name(default: str = "dev") -> str:
 def get_bot_name(default: str = "C1C-Recruitment") -> str:
     value = _CONFIG.get("BOT_NAME")
     return str(value) if isinstance(value, str) and value else default
+
+
+def get_deployment_commit(default: str = "unknown") -> str:
+    """Return the deployment commit SHA exposed by the hosting/runtime environment."""
+
+    return (
+        os.getenv("RENDER_GIT_COMMIT")
+        or os.getenv("GIT_COMMIT_SHA")
+        or os.getenv("COMMIT_SHA")
+        or default
+    )
 
 
 def get_watchdog_check_sec(default_prod: int = 360, default_nonprod: int = 60) -> int:

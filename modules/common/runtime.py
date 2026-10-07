@@ -1268,21 +1268,23 @@ class Runtime:
     async def shutdown_health_server(self) -> None:
         await self.shutdown_webserver()
 
-    async def send_log_message(self, message: str) -> None:
+    async def send_log_message(self, message: str) -> discord.Message | None:
+        """Send a human-readable ops log message and return it when delivery succeeds."""
         try:
             channel_id = get_log_channel_id()
             if not channel_id:
-                return
+                return None
             content = _trim_message(str(message))
             if not content:
-                return
+                return None
             await self.bot.wait_until_ready()
             channel = self.bot.get_channel(channel_id)
             if channel is None:
                 channel = await self.bot.fetch_channel(channel_id)
-            await channel.send(content)
+            return await channel.send(content)
         except Exception:
             log.warning("failed to send log message (non-fatal)", exc_info=True)
+            return None
 
     def schedule_startup_preload(self) -> asyncio.Task[StartupPreloadReport]:
         return schedule_startup_preload(self.bot)
