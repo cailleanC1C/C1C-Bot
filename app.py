@@ -27,6 +27,13 @@ from shared import health as healthmod
 from shared import socket_heartbeat as hb
 from modules.common.runtime import Runtime, StartupPhaseError, scheduler_report_lines
 from modules.common import keepalive
+from modules.ops.startup_progress import (
+    STARTUP_PHASES,
+    deployment_identity,
+    render_startup_failed,
+    render_startup_progress,
+    render_startup_ready,
+)
 from modules.coreops import ready as core_ready
 from c1c_coreops.config import (
     build_command_variants,
@@ -150,6 +157,17 @@ def _interaction_diagnostics(interaction: object | None) -> dict[str, object]:
             data.get("component_type") if isinstance(data, dict) else None
         ),
     }
+
+
+async def _edit_startup_progress(
+    message: discord.Message | None, content: str
+) -> None:
+    if message is None:
+        return
+    try:
+        await message.edit(content=content)
+    except Exception:
+        log.warning("failed to edit startup progress message", exc_info=True)
 
 
 async def _send_interaction_error_ops_message(metadata: dict[str, object]) -> None:
@@ -412,26 +430,60 @@ async def on_ready():
     if not await _enforce_guild_allow_list(log_when_empty=True, log_success=False):
         return
 
+    startup_identity = deployment_identity(
+        version=shared_config.cfg.get("BOT_VERSION", "dev"),
+        env=get_env_name(),
+    )
+    startup_states = {phase: "⏳" for phase in STARTUP_PHASES}
+    startup_states["Core initialization"] = "🔄"
+    startup_progress_message = await runtime.send_log_message(
+        render_startup_progress(identity=startup_identity, states=startup_states)
+    )
+
     try:
         runtime.startup_diag_mark(feature_init_started=True)
         await core_ready.on_ready(bot)
     except Exception:
         log.exception("READY FAILURE: core_ready.on_ready")
+        await _edit_startup_progress(
+            startup_progress_message,
+            render_startup_failed(
+                identity=startup_identity,
+                phase="Core initialization",
+            ),
+        )
         await _shutdown("ready_lifecycle_failure:core_ready")
         return
+    startup_states["Core initialization"] = "✅"
+    startup_states["Schedulers"] = "🔄"
+    await _edit_startup_progress(
+        startup_progress_message,
+        render_startup_progress(identity=startup_identity, states=startup_states),
+    )
 
+    scheduler_ok = True
     try:
         runtime.startup_diag_mark(scheduler_start_reached=True)
         await runtime.register_ready_schedulers()
     except Exception:
+        scheduler_ok = False
         log.exception("READY FAILURE: runtime.register_ready_schedulers")
 
     try:
         await ensure_scheduler_started(bot)
     except Exception:
+        scheduler_ok = False
         log.exception("READY FAILURE: ensure_scheduler_started")
 
+    startup_states["Schedulers"] = "✅" if scheduler_ok else "⚠️"
+    startup_states["Watchdog & keepalive"] = "🔄"
+    await _edit_startup_progress(
+        startup_progress_message,
+        render_startup_progress(identity=startup_identity, states=startup_states),
+    )
+
     watchdog_tuple: tuple[bool, int, int, int] | None = None
+    ready_tasks_ok = True
     try:
         runtime.watchdog(delay_sec=5.0)
         watchdog_tuple = runtime.watchdog(delay_sec=5.0)
@@ -458,7 +510,15 @@ async def on_ready():
 
         await keepalive.ensure_started(bot)
     except Exception:
+        ready_tasks_ok = False
         log.warning("non-critical ready task failed", exc_info=True)
+
+    startup_states["Watchdog & keepalive"] = "✅" if ready_tasks_ok else "⚠️"
+    startup_states["Startup refresh"] = "🔄"
+    await _edit_startup_progress(
+        startup_progress_message,
+        render_startup_progress(identity=startup_identity, states=startup_states),
+    )
 
     preload_report = None
     refresh_lines: list[str]
@@ -466,9 +526,11 @@ async def on_ready():
         preload_task = runtime.schedule_startup_preload()
         preload_report = await preload_task
     except Exception as exc:
+        startup_states["Startup refresh"] = "⚠️"
         log.warning("startup preload task failed before summary render", exc_info=True)
         refresh_lines = ["♻️ Refresh", f"• failed: {exc}"]
     else:
+        startup_states["Startup refresh"] = "✅" if preload_report.rows else "⚠️"
         if preload_report.rows:
             refresh_lines = ["♻️ Refresh"]
             for row in preload_report.rows:
@@ -521,6 +583,7 @@ async def on_ready():
             startup_message = "\n\n".join(
                 [
                     "✅ Woadkeeper Startup",
+                    startup_identity,
                     "\n".join(allow_list_lines),
                     "\n".join(watchers_lines),
                     "\n".join(watchdog_lines),
@@ -530,6 +593,13 @@ async def on_ready():
             refresh_message = "\n".join(["♻️ Startup Refresh", *refresh_lines[1:]])
             for message in (startup_message, scheduler_message, refresh_message):
                 await runtime.send_log_message(message)
+            await _edit_startup_progress(
+                startup_progress_message,
+                render_startup_ready(
+                    identity=startup_identity,
+                    duration_s=time.monotonic() - _STARTED_MONO,
+                ),
+            )
     except Exception:
         bot._startup_summary_sent = False
         log.exception("startup summary failed", exc_info=True)
