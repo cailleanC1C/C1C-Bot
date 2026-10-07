@@ -436,9 +436,11 @@ async def on_ready():
     )
     startup_states = {phase: "⏳" for phase in STARTUP_PHASES}
     startup_states["Core initialization"] = "🔄"
-    startup_progress_message = await runtime.send_log_message(
-        render_startup_progress(identity=startup_identity, states=startup_states)
-    )
+    startup_progress_message: discord.Message | None = None
+    if not getattr(bot, "_startup_summary_sent", False):
+        startup_progress_message = await runtime.send_log_message(
+            render_startup_progress(identity=startup_identity, states=startup_states)
+        )
 
     try:
         runtime.startup_diag_mark(feature_init_started=True)
@@ -545,6 +547,11 @@ async def on_ready():
                 "♻️ Refresh",
                 f"• failed: {preload_report.error or 'unknown'}",
             ]
+
+    await _edit_startup_progress(
+        startup_progress_message,
+        render_startup_progress(identity=startup_identity, states=startup_states),
+    )
 
     # Reporting is intentionally a registry read.  Do not call job/config helpers
     # here: registration already established both the live jobs and skip reasons.
