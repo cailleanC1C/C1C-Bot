@@ -5,7 +5,6 @@ import datetime as dt
 import io
 import logging
 import math
-import os
 from dataclasses import dataclass
 from typing import Iterable, List
 
@@ -13,9 +12,10 @@ import discord
 from PIL import Image, ImageDraw, ImageFont
 
 from modules.common import runtime as runtime_helpers
+from shared.config import cfg
 from shared.sheets import core as sheets_core
 from shared.sheets import recruitment
-from shared.sheets.export_utils import export_pdf_as_png, get_tab_gid
+from shared.sheets.export_utils import ImageExportError, export_pdf_as_png, get_tab_gid
 
 log = logging.getLogger("c1c.housekeeping.mirralith")
 
@@ -87,6 +87,70 @@ IMAGE_SPECS: List[ImageSpec] = [
         filename="cluster_beginner.png",
     ),
 ]
+
+_EXPORT_MAX_ATTEMPTS = 3
+_EXPORT_RETRY_BASE_SECONDS = 1.0
+
+
+def _is_retryable_export_error(exc: ImageExportError) -> bool:
+    reason = str(exc)
+    if reason.startswith("pdf_export_status_"):
+        try:
+            status = int(reason.rsplit("_", 1)[-1])
+        except ValueError:
+            return False
+        return status == 429 or 500 <= status < 600
+    return reason.startswith("pdf_request_failed:") or reason in {
+        "empty_pdf_response",
+        "pdf_rasterization_returned_no_data",
+    }
+
+
+async def _export_spec_with_retry(
+    spreadsheet_id: str,
+    gid: str | int,
+    range_value: str,
+    *,
+    label: str,
+    tab_name: str,
+) -> bytes:
+    context = {"label": label, "tab": tab_name, "range": range_value}
+
+    for attempt in range(1, _EXPORT_MAX_ATTEMPTS + 1):
+        try:
+            png_bytes = await export_pdf_as_png(
+                spreadsheet_id,
+                gid,
+                range_value,
+                log_context=context,
+                fit_range_to_one_page=True,
+                fail_on_multi_page=True,
+                crop_to_content=True,
+                raise_on_failure=True,
+            )
+            if png_bytes:
+                return png_bytes
+            raise ImageExportError("pdf_rasterization_returned_no_data")
+        except ImageExportError as exc:
+            if attempt >= _EXPORT_MAX_ATTEMPTS or not _is_retryable_export_error(exc):
+                raise
+
+            delay = exc.retry_after_seconds
+            if delay is None:
+                delay = _EXPORT_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+            log.warning(
+                "Mirralith export failed; retrying",
+                extra={
+                    **context,
+                    "attempt": attempt,
+                    "max_attempts": _EXPORT_MAX_ATTEMPTS,
+                    "reason": str(exc),
+                    "retry_after_seconds": delay,
+                },
+            )
+            await asyncio.sleep(delay)
+
+    raise ImageExportError("export_retry_exhausted")
 
 
 def _normalize_rows(values: Iterable[Iterable[object]]) -> list[list[str]]:
@@ -224,7 +288,7 @@ async def upsert_labeled_message(
 async def run_mirralith_overview_job(bot: discord.Client, trigger: str = "scheduled") -> None:
     log.info("Running Mirralith overview job (trigger=%s)", trigger)
 
-    raw_channel_id = os.getenv("MIRRALITH_CHANNEL_ID")
+    raw_channel_id = cfg.get("MIRRALITH_CHANNEL_ID")
     try:
         channel_id = int(raw_channel_id) if raw_channel_id is not None else None
     except (TypeError, ValueError):
@@ -247,7 +311,7 @@ async def run_mirralith_overview_job(bot: discord.Client, trigger: str = "schedu
         log.warning("Mirralith overview channel is not a text channel", extra={"channel_id": channel_id})
         return
 
-    spreadsheet_id = os.getenv("RECRUITMENT_SHEET_ID")
+    spreadsheet_id = cfg.get("RECRUITMENT_SHEET_ID")
     if not spreadsheet_id:
         log.warning("Recruitment sheet ID missing; skipping Mirralith overview job")
         return
@@ -327,35 +391,34 @@ async def run_mirralith_overview_job(bot: discord.Client, trigger: str = "schedu
             continue
 
         try:
-            png_bytes = await export_pdf_as_png(
+            png_bytes = await _export_spec_with_retry(
                 spreadsheet_id,
                 gid,
                 range_value,
-                log_context={
-                    "label": spec.label,
-                    "tab": tab_name,
-                    "range": range_value,
-                },
-                fit_range_to_one_page=True,
-                fail_on_multi_page=True,
-                crop_to_content=True,
+                label=spec.label,
+                tab_name=tab_name,
             )
-        except Exception:
-            record_failure("export exception")
+        except ImageExportError as exc:
+            reason = str(exc)
+            record_failure(reason)
+            log.error(
+                "❌ error — mirralith_export • label=%s • tab=%s • range=%s • reason=%s",
+                spec.label,
+                tab_name,
+                range_value,
+                reason,
+                extra={"label": spec.label, "tab": tab_name, "range": range_value},
+            )
+            continue
+        except Exception as exc:
+            reason = f"export_exception:{type(exc).__name__}"
+            record_failure(reason)
             log.exception(
                 "❌ error — mirralith_export • label=%s • tab=%s • range=%s • reason=%s",
                 spec.label,
                 tab_name,
                 range_value,
-                "export_exception",
-                extra={"label": spec.label, "tab": tab_name, "range": range_value},
-            )
-            continue
-
-        if not png_bytes:
-            record_failure("render failed")
-            log.warning(
-                "failed to export Mirralith range (PDF renderer unavailable or failed)",
+                reason,
                 extra={"label": spec.label, "tab": tab_name, "range": range_value},
             )
             continue
