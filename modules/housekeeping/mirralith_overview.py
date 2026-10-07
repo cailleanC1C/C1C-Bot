@@ -89,7 +89,9 @@ IMAGE_SPECS: List[ImageSpec] = [
 ]
 
 _EXPORT_MAX_ATTEMPTS = 3
-_EXPORT_RETRY_BASE_SECONDS = 1.0
+_EXPORT_PACING_SECONDS = 30.0
+_GENERIC_EXPORT_RETRY_DELAYS = (30.0, 60.0)
+_RATE_LIMIT_EXPORT_RETRY_DELAYS = (60.0, 120.0)
 
 
 def _is_retryable_export_error(exc: ImageExportError) -> bool:
@@ -129,15 +131,24 @@ async def _export_spec_with_retry(
                 raise_on_failure=True,
             )
             if png_bytes:
+                # Match league publishing: pace every successful export so the
+                # sequential Mirralith boards never burst Google's renderer.
+                await asyncio.sleep(_EXPORT_PACING_SECONDS)
                 return png_bytes
             raise ImageExportError("pdf_rasterization_returned_no_data")
         except ImageExportError as exc:
             if attempt >= _EXPORT_MAX_ATTEMPTS or not _is_retryable_export_error(exc):
                 raise
 
-            delay = exc.retry_after_seconds
-            if delay is None:
-                delay = _EXPORT_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+            is_rate_limited = str(exc) == "pdf_export_status_429"
+            delays = (
+                _RATE_LIMIT_EXPORT_RETRY_DELAYS
+                if is_rate_limited
+                else _GENERIC_EXPORT_RETRY_DELAYS
+            )
+            delay = delays[attempt - 1]
+            if exc.retry_after_seconds is not None:
+                delay = max(delay, exc.retry_after_seconds)
             log.warning(
                 "Mirralith export failed; retrying",
                 extra={
