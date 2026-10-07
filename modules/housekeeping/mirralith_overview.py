@@ -5,7 +5,6 @@ import datetime as dt
 import io
 import logging
 import math
-import os
 from dataclasses import dataclass
 from typing import Iterable, List
 
@@ -13,6 +12,7 @@ import discord
 from PIL import Image, ImageDraw, ImageFont
 
 from modules.common import runtime as runtime_helpers
+from shared.config import cfg
 from shared.sheets import core as sheets_core
 from shared.sheets import recruitment
 from shared.sheets.export_utils import ImageExportError, export_pdf_as_png, get_tab_gid
@@ -288,7 +288,7 @@ async def upsert_labeled_message(
 async def run_mirralith_overview_job(bot: discord.Client, trigger: str = "scheduled") -> None:
     log.info("Running Mirralith overview job (trigger=%s)", trigger)
 
-    raw_channel_id = os.getenv("MIRRALITH_CHANNEL_ID")
+    raw_channel_id = cfg.get("MIRRALITH_CHANNEL_ID")
     try:
         channel_id = int(raw_channel_id) if raw_channel_id is not None else None
     except (TypeError, ValueError):
@@ -311,7 +311,7 @@ async def run_mirralith_overview_job(bot: discord.Client, trigger: str = "schedu
         log.warning("Mirralith overview channel is not a text channel", extra={"channel_id": channel_id})
         return
 
-    spreadsheet_id = os.getenv("RECRUITMENT_SHEET_ID")
+    spreadsheet_id = cfg.get("RECRUITMENT_SHEET_ID")
     if not spreadsheet_id:
         log.warning("Recruitment sheet ID missing; skipping Mirralith overview job")
         return
